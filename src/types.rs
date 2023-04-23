@@ -4,7 +4,11 @@ use std::collections::HashMap;
 
 use bitcoin::Amount;
 use lightning_invoice::Invoice;
+use rand::Rng;
+use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::{dhke::blind_message, error::Error, utils::split_amount};
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,7 +18,41 @@ pub struct BlindedMessage {
     pub amount: Amount,
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
-    pub b: String,
+    pub b: PublicKey,
+}
+
+/// Blinded Messages [NUT-00]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BlindedMessages {
+    /// Blinded messages
+    pub blinded_messages: Vec<BlindedMessage>,
+    /// Secrets
+    pub secrets: Vec<Vec<u8>>,
+    /// Rs
+    pub rs: Vec<SecretKey>,
+    /// Amounts
+    pub amounts: Vec<Amount>,
+}
+
+impl BlindedMessages {
+    pub fn random(amount: Amount) -> Result<Self, Error> {
+        let mut blinded_messages = BlindedMessages::default();
+
+        let mut rng = rand::thread_rng();
+        for amount in split_amount(amount) {
+            let bytes: [u8; 32] = rng.gen();
+            let (blinded, r) = blind_message(&bytes, None)?;
+
+            let blinded_message = BlindedMessage { amount, b: blinded };
+
+            blinded_messages.secrets.push(bytes.to_vec());
+            blinded_messages.blinded_messages.push(blinded_message);
+            blinded_messages.rs.push(r);
+            blinded_messages.amounts.push(amount);
+        }
+
+        Ok(blinded_messages)
+    }
 }
 
 /// Promise (BlindedSignature) [NIP-00]

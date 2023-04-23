@@ -1,7 +1,6 @@
 //! Diffie-Hellmann key exchange
 
 use bitcoin_hashes::sha256;
-// use bitcoin_hashes::Hash;
 use bitcoin_hashes::Hash;
 use secp256k1::rand::rngs::OsRng;
 use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};

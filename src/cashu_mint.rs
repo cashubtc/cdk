@@ -5,9 +5,10 @@ use url::Url;
 use crate::{
     error::Error,
     types::{
-        BlindedMessage, CheckFeesRequest, CheckFeesResponse, CheckSpendableRequest,
-        CheckSpendableResponse, MeltRequest, MeltResposne, MintInfo, MintKeySets, MintKeys,
-        MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
+        BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse,
+        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResposne, MintInfo,
+        MintKeySets, MintKeys, MintRequest, PostMintResponse, Proof, RequestMintResponse,
+        SplitRequest, SplitResponse,
     },
 };
 
@@ -45,7 +46,7 @@ impl CashuMint {
     /// Mint Tokens [NUT-04]
     pub async fn mint(
         &self,
-        blinded_messages: Vec<BlindedMessage>,
+        blinded_messages: BlindedMessages,
         payment_hash: &str,
     ) -> Result<PostMintResponse, Error> {
         let mut url = self.url.join("mint")?;
@@ -53,7 +54,7 @@ impl CashuMint {
             .append_pair("payment_hash", payment_hash);
 
         let request = MintRequest {
-            outputs: blinded_messages,
+            outputs: blinded_messages.blinded_messages,
         };
 
         Ok(minreq::post(url)

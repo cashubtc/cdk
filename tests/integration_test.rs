@@ -1,10 +1,12 @@
 use std::str::FromStr;
+use std::thread;
+use std::time::Duration;
 
 use bitcoin::Amount;
 use lightning_invoice::Invoice;
 use url::Url;
 
-use cashu_rs::cashu_mint::CashuMint;
+use cashu_rs::{cashu_mint::CashuMint, types::BlindedMessages};
 
 const MINTURL: &str = "https://legend.lnbits.com/cashu/api/v1/SKvHRus9dmjWHhstHrsazW/";
 
@@ -34,6 +36,24 @@ async fn test_request_mint() {
     let mint = mint.request_mint(Amount::from_sat(21)).await.unwrap();
 
     assert!(mint.pr.check_signature().is_ok())
+}
+
+#[tokio::test]
+async fn test_mint() {
+    let url = Url::from_str(MINTURL).unwrap();
+    let mint = CashuMint::new(url);
+    let mint_req = mint.request_mint(Amount::from_sat(21)).await.unwrap();
+    println!("Mint Req: {:?}", mint_req.pr.to_string());
+
+    // Since before the mind happens the invoice in the int req has to be payed this wait is here
+    // probally some way to simulate this in a better way
+    // but for now pay it quick
+    thread::sleep(Duration::from_secs(10));
+
+    let blinded_messages = BlindedMessages::random(Amount::from_sat(21)).unwrap();
+    let mint_res = mint.mint(blinded_messages, &mint_req.hash).await.unwrap();
+
+    println!("Mint: {:?}", mint_res);
 }
 
 #[tokio::test]
