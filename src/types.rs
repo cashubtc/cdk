@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use bitcoin::Amount;
+use lightning_invoice::Invoice;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Blinded Message [NUT-00]
@@ -18,8 +20,8 @@ pub struct BlindedMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Promise {
     pub id: String,
-    /// Amount in satoshi
-    pub amount: u64,
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
+    pub amount: Amount,
     /// blinded signature (C_) on the secret message `B_` of [BlindedMessage]
     #[serde(rename = "C_")]
     pub c: String,
@@ -56,7 +58,7 @@ pub struct MintKeySets {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestMintResponse {
     /// Bolt11 payment request
-    pub pr: String,
+    pub pr: Invoice,
     /// Hash of Invoice
     pub hash: String,
 }
@@ -84,7 +86,7 @@ pub struct CheckFeesResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckFeesRequest {
     /// Lighting Invoice
-    pub pr: String,
+    pub pr: Invoice,
 }
 
 /// Melt Request [NUT-05]
@@ -92,7 +94,7 @@ pub struct CheckFeesRequest {
 pub struct MeltRequest {
     pub proofs: Vec<Proof>,
     /// bollt11
-    pub pr: String,
+    pub pr: Invoice,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount feild of blindedMessages `SHOULD` be set to zero
     pub outputs: Option<Vec<BlindedMessage>>,
