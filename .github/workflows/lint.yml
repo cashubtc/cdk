@@ -1,0 +1,26 @@
+name: lint
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Crate
+      uses: actions/checkout@v3
+    - name: Set Toolchain
+      # https://github.com/dtolnay/rust-toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - name: Run fmt
+      run: cargo fmt --all --check 
+    - name: Run clippy
+      run: |
+        rustup component add clippy
+        cargo clippy --all

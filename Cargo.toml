@@ -2,6 +2,12 @@
 name = "cashu-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["thesimplekid"]
+license = "BSD-3-Clause"
+readme = "README.md"
+repository = "https://github.com/thesimplekid/cashu-rs"
+description = "Cashu rust library"
+
 
 [dependencies]
 bitcoin = { version = "0.30.0", features=["serde"] }
@@ -17,4 +23,3 @@ url = "2.3.1"
 
 [dev-dependencies]
 tokio = {version = "1.27.0", features = ["rt", "macros"] }
-tokio-test = "0.4.2"
