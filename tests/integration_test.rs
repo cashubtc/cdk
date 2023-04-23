@@ -52,7 +52,7 @@ async fn test_check_fees() {
 async fn test_get_mint_info() {
     let url = Url::from_str(MINTURL).unwrap();
     let mint = CashuMint::new(url);
-    let mint_info = mint.get_info().await.unwrap();
+    let _mint_info = mint.get_info().await.unwrap();
 
     // println!("{:?}", mint_info);
 }

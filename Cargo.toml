@@ -5,9 +5,11 @@ edition = "2021"
 
 [dependencies]
 bitcoin = { version = "0.30.0", features=["serde"] }
+bitcoin_hashes = "0.12.0"
+hex = "0.4.3"
 lightning-invoice = { version = "0.22.0", features=["serde"] }
 minreq = { version = "2.7.0", features = ["json-using-serde", "https"] }
-secp256k1 = "0.27.0"
+secp256k1 = { version = "0.27.0", features = ["rand-std", "bitcoin-hashes-std"] }
 serde = { version = "1.0.160", features = ["derive"]}
 thiserror = "1.0.40"
 url = "2.3.1"
