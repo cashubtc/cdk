@@ -1,14 +1,16 @@
 //! Types for `cashu-rs`
 
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
+use base64::{engine::general_purpose, Engine as _};
 use bitcoin::Amount;
 use lightning_invoice::Invoice;
 use rand::Rng;
 use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use url::Url;
 
-use crate::{dhke::blind_message, error::Error, utils::split_amount};
+use crate::{dhke::blind_message, error::Error, serde_utils::serde_url, utils::split_amount};
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +51,28 @@ impl BlindedMessages {
             blinded_messages.blinded_messages.push(blinded_message);
             blinded_messages.rs.push(r);
             blinded_messages.amounts.push(amount);
+        }
+
+        Ok(blinded_messages)
+    }
+
+    pub fn blank() -> Result<Self, Error> {
+        let mut blinded_messages = BlindedMessages::default();
+
+        let mut rng = rand::thread_rng();
+        for _i in 0..4 {
+            let bytes: [u8; 32] = rng.gen();
+            let (blinded, r) = blind_message(&bytes, None)?;
+
+            let blinded_message = BlindedMessage {
+                amount: Amount::ZERO,
+                b: blinded,
+            };
+
+            blinded_messages.secrets.push(bytes.to_vec());
+            blinded_messages.blinded_messages.push(blinded_message);
+            blinded_messages.rs.push(r);
+            blinded_messages.amounts.push(Amount::ZERO);
         }
 
         Ok(blinded_messages)
@@ -182,11 +206,17 @@ pub struct CheckSpendableResponse {
     pub spendable: Vec<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofsStatus {
+    pub spendable: Vec<Proof>,
+    pub spent: Vec<Proof>,
+}
+
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintVersion {
-    name: String,
-    version: String,
+    pub name: String,
+    pub version: String,
 }
 
 impl Serialize for MintVersion {
@@ -235,4 +265,58 @@ pub struct MintInfo {
     pub nuts: Vec<String>,
     /// message of the day that the wallet must display to the user
     pub motd: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Token {
+    #[serde(with = "serde_url")]
+    pub mint: Url,
+    pub proofs: Vec<Proof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenData {
+    pub token: Vec<Token>,
+    pub memo: Option<String>,
+}
+
+impl FromStr for TokenData {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !s.starts_with("cashuA") {
+            return Err(Error::UnsupportedToken);
+        }
+
+        let s = s.replace("cashuA", "");
+        let decoded = general_purpose::STANDARD.decode(s)?;
+        let decoded_str = String::from_utf8(decoded)?;
+        println!("decode: {:?}", decoded_str);
+        let token: TokenData = serde_json::from_str(&decoded_str)?;
+        Ok(token)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_proof_seralize() {
+        let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
+        let proof: Vec<Proof> = serde_json::from_str(proof).unwrap();
+
+        assert_eq!(proof[0].clone().id.unwrap(), "DSAl9nvvyfva");
+    }
+
+    #[test]
+    fn test_token_from_str() {
+        let token = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJpZCI6IkRTQWw5bnZ2eWZ2YSIsImFtb3VudCI6Miwic2VjcmV0IjoiRWhwZW5uQzlxQjNpRmxXOEZaX3BadyIsIkMiOiIwMmMwMjAwNjdkYjcyN2Q1ODZiYzMxODNhZWNmOTdmY2I4MDBjM2Y0Y2M0NzU5ZjY5YzYyNmM5ZGI1ZDhmNWI1ZDQifSx7ImlkIjoiRFNBbDludnZ5ZnZhIiwiYW1vdW50Ijo4LCJzZWNyZXQiOiJUbVM2Q3YwWVQ1UFVfNUFUVktudWt3IiwiQyI6IjAyYWM5MTBiZWYyOGNiZTVkNzMyNTQxNWQ1YzI2MzAyNmYxNWY5Yjk2N2EwNzljYTk3NzlhYjZlNWMyZGIxMzNhNyJ9XX1dLCJtZW1vIjoiVGhhbmt5b3UuIn0=";
+        let token = TokenData::from_str(token).unwrap();
+
+        assert_eq!(
+            token.token[0].mint,
+            Url::from_str("https://8333.space:3338").unwrap()
+        );
+        assert_eq!(token.token[0].proofs[0].clone().id.unwrap(), "DSAl9nvvyfva");
+    }
 }

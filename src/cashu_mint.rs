@@ -121,10 +121,12 @@ impl CashuMint {
     /// Spendable check [NUT-07]
     pub async fn check_spendable(
         &self,
-        proofs: Vec<Proof>,
+        proofs: &Vec<Proof>,
     ) -> Result<CheckSpendableResponse, Error> {
         let url = self.url.join("check")?;
-        let request = CheckSpendableRequest { proofs };
+        let request = CheckSpendableRequest {
+            proofs: proofs.to_owned(),
+        };
 
         Ok(minreq::post(url)
             .with_json(&request)?
