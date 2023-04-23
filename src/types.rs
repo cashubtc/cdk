@@ -17,7 +17,7 @@ pub struct BlindedMessage {
     pub b: String,
 }
 
-/// Promise (BlindedMessage) [NIP-00]
+/// Promise (BlindedSignature) [NIP-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Promise {
     pub id: String,
