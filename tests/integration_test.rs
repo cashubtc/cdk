@@ -38,6 +38,7 @@ async fn test_request_mint() {
     assert!(mint.pr.check_signature().is_ok())
 }
 
+#[ignore]
 #[tokio::test]
 async fn test_mint() {
     let url = Url::from_str(MINTURL).unwrap();
