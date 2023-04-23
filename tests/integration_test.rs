@@ -45,7 +45,7 @@ async fn test_mint() {
     let mint_req = mint.request_mint(Amount::from_sat(21)).await.unwrap();
     println!("Mint Req: {:?}", mint_req.pr.to_string());
 
-    // Since before the mind happens the invoice in the int req has to be payed this wait is here
+    // Since before the mint happens the invoice in the mint req has to be payed this wait is here
     // probally some way to simulate this in a better way
     // but for now pay it quick
     thread::sleep(Duration::from_secs(10));
