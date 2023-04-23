@@ -1,3 +1,4 @@
+use lightning_invoice::Invoice;
 use url::Url;
 
 use crate::{
@@ -60,12 +61,10 @@ impl CashuMint {
     }
 
     /// Check Max expected fee [NUT-05]
-    pub async fn check_fees(&self, invoice: &str) -> Result<CheckFeesResponse, Error> {
+    pub async fn check_fees(&self, invoice: Invoice) -> Result<CheckFeesResponse, Error> {
         let url = self.url.join("checkfees")?;
 
-        let request = CheckFeesRequest {
-            pr: invoice.to_string(),
-        };
+        let request = CheckFeesRequest { pr: invoice };
 
         Ok(minreq::post(url)
             .with_json(&request)?
@@ -78,14 +77,14 @@ impl CashuMint {
     pub async fn melt(
         &self,
         proofs: Vec<Proof>,
-        invoice: &str,
+        invoice: Invoice,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> Result<MeltResposne, Error> {
         let url = self.url.join("melt")?;
 
         let request = MeltRequest {
             proofs,
-            pr: invoice.to_string(),
+            pr: invoice,
             outputs,
         };
 
