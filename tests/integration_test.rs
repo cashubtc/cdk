@@ -1,19 +1,12 @@
 use std::str::FromStr;
 
+use bitcoin::Amount;
+use lightning_invoice::Invoice;
 use url::Url;
 
 use cashu_rs::cashu_mint::CashuMint;
 
 const MINTURL: &str = "https://legend.lnbits.com/cashu/api/v1/SKvHRus9dmjWHhstHrsazW/";
-
-#[ignore]
-#[tokio::test]
-async fn test_get_mint_info() {
-    let url = Url::from_str(MINTURL).unwrap();
-    let mint = CashuMint::new(url);
-    let mint_info = mint.get_info().await.unwrap();
-    // println!("{:?}", mint_info);
-}
 
 #[tokio::test]
 async fn test_get_mint_keys() {
@@ -31,4 +24,35 @@ async fn test_get_mint_keysets() {
     let mint_keysets = mint.get_keysets().await.unwrap();
 
     assert!(!mint_keysets.keysets.is_empty())
+}
+
+#[tokio::test]
+async fn test_request_mint() {
+    let url = Url::from_str(MINTURL).unwrap();
+    let mint = CashuMint::new(url);
+
+    let mint = mint.request_mint(Amount::from_sat(21)).await.unwrap();
+
+    assert!(mint.pr.check_signature().is_ok())
+}
+
+#[tokio::test]
+async fn test_check_fees() {
+    let invoice = Invoice::from_str("lnbc10n1p3a6s0dsp5n55r506t2fv4r0mjcg30v569nk2u9s40ur4v3r3mgtscjvkvnrqqpp5lzfv8fmjzduelk74y9rsrxrayvhyzcdsh3zkdgv0g50napzalvqsdqhf9h8vmmfvdjn5gp58qengdqxq8p3aaymdcqpjrzjqwryaup9lh50kkranzgcdnn2fgvx390wgj5jd07rwr3vxeje0glc7z70cgqqg4sqqqqqqqlgqqqqrucqjq9qyysgqrjky5axsldzhqsjwsc38xa37k6t04le3ws4t26nqej62vst5xkz56qw85r6c4a3tr79588e0ceuuahwgfnkqc6n6269unlwqtvwr5vqqy0ncdq").unwrap();
+
+    let url = Url::from_str(MINTURL).unwrap();
+    let mint = CashuMint::new(url);
+
+    let fee = mint.check_fees(invoice).await.unwrap();
+    println!("{fee:?}");
+}
+
+#[ignore]
+#[tokio::test]
+async fn test_get_mint_info() {
+    let url = Url::from_str(MINTURL).unwrap();
+    let mint = CashuMint::new(url);
+    let mint_info = mint.get_info().await.unwrap();
+
+    // println!("{:?}", mint_info);
 }

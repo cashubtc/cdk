@@ -1,3 +1,4 @@
+use bitcoin::Amount;
 use lightning_invoice::Invoice;
 use url::Url;
 
@@ -32,10 +33,11 @@ impl CashuMint {
     }
 
     /// Request Mint [NUT-03]
-    pub async fn request_mint(&self, amount: u64) -> Result<RequestMintResponse, Error> {
+    pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
         let mut url = self.url.join("mint")?;
         url.query_pairs_mut()
-            .append_pair("amount", &amount.to_string());
+            .append_pair("amount", &amount.to_sat().to_string());
+        println!("{url}");
 
         Ok(minreq::get(url).send()?.json::<RequestMintResponse>()?)
     }
@@ -97,7 +99,7 @@ impl CashuMint {
     /// Split Token [NUT-06]
     pub async fn split(
         &self,
-        amount: u64,
+        amount: Amount,
         proofs: Vec<Proof>,
         outputs: Vec<BlindedMessage>,
     ) -> Result<SplitResponse, Error> {
