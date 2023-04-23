@@ -10,7 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindedMessage {
     /// Amount in satoshi
-    pub amount: u64,
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
+    pub amount: Amount,
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
     pub b: String,
@@ -31,7 +32,8 @@ pub struct Promise {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proof {
     /// Amount in satoshi
-    pub amount: u64,
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
+    pub amount: Amount,
     /// Secret message
     pub secret: String,
     /// Unblinded signature
@@ -78,8 +80,9 @@ pub struct PostMintResponse {
 /// Check Fees Response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckFeesResponse {
-    /// Expected Mac Fee in satoshis
-    pub fee: u64,
+    /// Expected Mac Fee in satoshis    
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
+    pub fee: Amount,
 }
 
 /// Check Fees request [NUT-05]
@@ -112,7 +115,8 @@ pub struct MeltResposne {
 /// Split Request [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitRequest {
-    pub amount: u64,
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
+    pub amount: Amount,
     pub proofs: Vec<Proof>,
     pub outputs: Vec<BlindedMessage>,
 }
@@ -163,7 +167,7 @@ impl<'de> Deserialize<'de> for MintVersion {
         D: Deserializer<'de>,
     {
         let combined = String::deserialize(deserializer)?;
-        let parts: Vec<&str> = combined.split(" / ").collect();
+        let parts: Vec<&str> = combined.split('/').collect();
         if parts.len() != 2 {
             return Err(serde::de::Error::custom("Invalid input string"));
         }

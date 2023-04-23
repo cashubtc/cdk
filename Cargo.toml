@@ -3,14 +3,11 @@ name = "cashu-rs"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-members = ["integration_test"]
-
-
 [dependencies]
 bitcoin = { version = "0.30.0", features=["serde"] }
 lightning-invoice = { version = "0.22.0", features=["serde"] }
 minreq = { version = "2.7.0", features = ["json-using-serde", "https"] }
+secp256k1 = "0.27.0"
 serde = { version = "1.0.160", features = ["derive"]}
 thiserror = "1.0.40"
 url = "2.3.1"
