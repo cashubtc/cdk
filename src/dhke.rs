@@ -1,14 +1,16 @@
 //! Diffie-Hellmann key exchange
 
+use std::str::FromStr;
+
 use bitcoin_hashes::sha256;
 use bitcoin_hashes::Hash;
 use secp256k1::rand::rngs::OsRng;
 use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::error::Error;
-// use crate::types::MintKeys;
-// use crate::types::Promise;
-// use crate::types::Proof;
+use crate::types::MintKeys;
+use crate::types::Promise;
+use crate::types::Proof;
 
 /// Hash to Curve
 pub fn hash_to_curve(secret_message: &[u8]) -> Result<PublicKey, Error> {
@@ -62,17 +64,32 @@ pub fn unblind_message(
     Ok(unblinded_key)
 }
 
-/*
 /// Construct Proof
 pub fn construct_proof(
     promises: Vec<Promise>,
     rs: Vec<SecretKey>,
-    secrets: Vec<String>,
-    keys: MintKeys,
+    secrets: Vec<Vec<u8>>,
+    keys: &MintKeys,
 ) -> Result<Vec<Proof>, Error> {
-    todo!()
+    let mut proofs = vec![];
+    for (i, promise) in promises.into_iter().enumerate() {
+        let blinded_c = PublicKey::from_str(&promise.c)?;
+        let a: PublicKey = PublicKey::from_str(keys.0.get(&promise.amount.to_sat()).unwrap())?;
+        let unblinded_signature = unblind_message(blinded_c, rs[i], a)?;
+
+        let proof = Proof {
+            id: Some(promise.id),
+            amount: promise.amount,
+            secret: hex::encode(&secrets[i]),
+            c: unblinded_signature.to_string(),
+            script: None,
+        };
+
+        proofs.push(proof);
+    }
+
+    Ok(proofs)
 }
-*/
 
 #[cfg(test)]
 mod tests {

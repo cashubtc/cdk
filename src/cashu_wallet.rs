@@ -1,9 +1,15 @@
+use std::str::FromStr;
+
 use bitcoin::Amount;
 
 use crate::{
     cashu_mint::CashuMint,
+    dhke::construct_proof,
     error::Error,
-    types::{MintKeys, Proof, ProofsStatus, RequestMintResponse},
+    types::{
+        BlindedMessages, MintKeys, Proof, ProofsStatus, RequestMintResponse, SplitPayload,
+        SplitRequest, TokenData,
+    },
 };
 
 pub struct CashuWallet {
@@ -20,6 +26,7 @@ impl CashuWallet {
     pub async fn check_proofs_spent(&self, proofs: Vec<Proof>) -> Result<ProofsStatus, Error> {
         let spendable = self.mint.check_spendable(&proofs).await?;
 
+        // Seperate proofs in spent and unspent based on mint response
         let (spendable, spent): (Vec<_>, Vec<_>) = proofs
             .iter()
             .zip(spendable.spendable.iter())
@@ -39,5 +46,86 @@ impl CashuWallet {
     /// Check fee
     pub async fn check_fee(&self, invoice: lightning_invoice::Invoice) -> Result<Amount, Error> {
         Ok(self.mint.check_fees(invoice).await?.fee)
+    }
+
+    /// Receive
+    pub async fn receive(&self, encoded_token: &str) -> Result<Vec<Proof>, Error> {
+        let token_data = TokenData::from_str(encoded_token)?;
+
+        let mut proofs = vec![];
+        for token in token_data.token {
+            if token.proofs.is_empty() {
+                continue;
+            }
+
+            let keys = if token.mint.eq(&self.mint.url) {
+                self.keys.clone()
+            } else {
+                // TODO:
+                println!("No match");
+                self.keys.clone()
+                // CashuMint::new(token.mint).get_keys().await.unwrap()
+            };
+
+            // Sum amount of all proofs
+            let amount = token
+                .proofs
+                .iter()
+                .fold(Amount::ZERO, |acc, p| acc + p.amount);
+
+            let split_payload = self
+                .create_split(Amount::ZERO, amount, token.proofs)
+                .await?;
+
+            let split_response = self.mint.split(split_payload.split_payload).await?;
+
+            // Proof to keep
+            let keep_proofs = construct_proof(
+                split_response.fst,
+                split_payload.keep_blinded_messages.rs,
+                split_payload.keep_blinded_messages.secrets,
+                &keys,
+            )?;
+
+            // Proofs to send
+            let send_proofs = construct_proof(
+                split_response.snd,
+                split_payload.send_blinded_messages.rs,
+                split_payload.send_blinded_messages.secrets,
+                &keys,
+            )?;
+
+            proofs.push(keep_proofs);
+            proofs.push(send_proofs);
+        }
+
+        Ok(proofs.iter().flatten().cloned().collect())
+    }
+
+    pub async fn create_split(
+        &self,
+        keep_amount: Amount,
+        send_amount: Amount,
+        proofs: Vec<Proof>,
+    ) -> Result<SplitPayload, Error> {
+        let keep_blinded_messages = BlindedMessages::random(keep_amount)?;
+        let send_blinded_messages = BlindedMessages::random(send_amount)?;
+
+        let outputs = {
+            let mut outputs = keep_blinded_messages.blinded_messages.clone();
+            outputs.extend(send_blinded_messages.blinded_messages.clone());
+            outputs
+        };
+        let split_payload = SplitRequest {
+            amount: send_amount,
+            proofs,
+            outputs,
+        };
+
+        Ok(SplitPayload {
+            keep_blinded_messages,
+            send_blinded_messages,
+            split_payload,
+        })
     }
 }
