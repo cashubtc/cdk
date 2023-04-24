@@ -6,7 +6,7 @@ use bitcoin::Amount;
 use lightning_invoice::Invoice;
 use url::Url;
 
-use cashu_rs::{cashu_mint::CashuMint, types::BlindedMessages};
+use cashu_rs::{cashu_mint::CashuMint, cashu_wallet::CashuWallet, types::BlindedMessages};
 
 const MINTURL: &str = "https://legend.lnbits.com/cashu/api/v1/SKvHRus9dmjWHhstHrsazW/";
 
@@ -66,6 +66,21 @@ async fn test_check_fees() {
 
     let fee = mint.check_fees(invoice).await.unwrap();
     println!("{fee:?}");
+}
+
+#[ignore]
+#[tokio::test]
+async fn test_receive() {
+    let url = Url::from_str(MINTURL).unwrap();
+    let mint = CashuMint::new(url);
+    let mint_keys = mint.get_keys().await.unwrap();
+
+    let wallet = CashuWallet::new(mint, mint_keys);
+    // FIXME: Have to manully paste an unspent token
+    let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MiwiQyI6IjAzNmY1NTU0ZDMyZDg3MGFjMzZjMDIwOGNiMDlkZmJmZjNhN2RkZTUyNzMwOTNjYzk3ZjE2NDBkNjYyZTgyMmMyMCIsInNlY3JldCI6ImtuRlhvelpjUG5YK1l4dytIcmV3VVlXRHU2ZFVFbkY0KzRUTkRIN010V289In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
+
+    let prom = wallet.receive(token).await.unwrap();
+    println!("{:?}", prom);
 }
 
 #[ignore]

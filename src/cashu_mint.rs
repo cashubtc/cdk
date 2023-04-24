@@ -1,5 +1,6 @@
 use bitcoin::Amount;
 use lightning_invoice::Invoice;
+use serde_json::Value;
 use url::Url;
 
 use crate::{
@@ -13,7 +14,7 @@ use crate::{
 };
 
 pub struct CashuMint {
-    url: Url,
+    pub url: Url,
 }
 
 impl CashuMint {
@@ -98,24 +99,18 @@ impl CashuMint {
     }
 
     /// Split Token [NUT-06]
-    pub async fn split(
-        &self,
-        amount: Amount,
-        proofs: Vec<Proof>,
-        outputs: Vec<BlindedMessage>,
-    ) -> Result<SplitResponse, Error> {
+    pub async fn split(&self, split_request: SplitRequest) -> Result<SplitResponse, Error> {
         let url = self.url.join("split")?;
 
-        let request = SplitRequest {
-            amount,
-            proofs,
-            outputs,
-        };
-
-        Ok(minreq::post(url)
-            .with_json(&request)?
+        let res = minreq::post(url)
+            .with_json(&split_request)?
             .send()?
-            .json::<SplitResponse>()?)
+            .json::<Value>()?;
+
+        // TODO: need to handle response error
+        // specfically token already spent
+
+        Ok(serde_json::from_value(res).unwrap())
     }
 
     /// Spendable check [NUT-07]

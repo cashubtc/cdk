@@ -79,6 +79,13 @@ impl BlindedMessages {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitPayload {
+    pub keep_blinded_messages: BlindedMessages,
+    pub send_blinded_messages: BlindedMessages,
+    pub split_payload: SplitRequest,
+}
+
 /// Promise (BlindedSignature) [NIP-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Promise {
@@ -187,9 +194,9 @@ pub struct SplitRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitResponse {
     /// Promises to keep
-    pub fst: Vec<BlindedMessage>,
+    pub fst: Vec<Promise>,
     /// Promises to send
-    pub snd: Vec<BlindedMessage>,
+    pub snd: Vec<Promise>,
 }
 
 /// Check spendabale request [NUT-07]

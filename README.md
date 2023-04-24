@@ -1,28 +1,27 @@
-
-
-⚠️ **Don't be reckless:** This project is in early development, it does however work with real sats! Always use amounts you don't mind loosing.
+> **Warning**
+> This project is in early development, it does however work with real sats! Always use amounts you don't mind loosing.
 
 Cashu RS is a rust library for [Cashu](https://github.com/cashubtc) wallets written in Rust.
 
-Implemented [NUTs](https://github.com/cashubtc/nuts/):
+## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
-- [x] [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
-- [x] [NUT-01](https://github.com/cashubtc/nuts/blob/main/01.md)
-- [x] [NUT-02](https://github.com/cashubtc/nuts/blob/main/02.md)
-- [x] [NUT-03](https://github.com/cashubtc/nuts/blob/main/03.md)
-- [x] [NUT-04](https://github.com/cashubtc/nuts/blob/main/04.md)
-- [x] [NUT-05](https://github.com/cashubtc/nuts/blob/main/05.md)
-- [x] [NUT-06](https://github.com/cashubtc/nuts/blob/main/06.md)
-- [x] [NUT-07](https://github.com/cashubtc/nuts/blob/main/07.md)
-- [x] [NUT-08](https://github.com/cashubtc/nuts/blob/main/08.md)
-- [x] [NUT-09](https://github.com/cashubtc/nuts/blob/main/09.md)
+- ✅ [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
+- ✅ [NUT-01](https://github.com/cashubtc/nuts/blob/main/01.md)
+- ✅ [NUT-02](https://github.com/cashubtc/nuts/blob/main/02.md)
+- ✅ [NUT-03](https://github.com/cashubtc/nuts/blob/main/03.md)
+- ✅ [NUT-04](https://github.com/cashubtc/nuts/blob/main/04.md)
+- ✅ [NUT-05](https://github.com/cashubtc/nuts/blob/main/05.md)
+- ✅ [NUT-06](https://github.com/cashubtc/nuts/blob/main/06.md)
+- ✅ [NUT-07](https://github.com/cashubtc/nuts/blob/main/07.md)
+- ✅ [NUT-08](https://github.com/cashubtc/nuts/blob/main/08.md)
+- ✅ [NUT-09](https://github.com/cashubtc/nuts/blob/main/09.md)
 
 
-Supported token formats:
+## Supported token formats:
 
-- [ ] v1 read
-- [ ] v2 read (deprecated)
-- [ ] v3 read/write
+- ❌ v1 read (deprecated)
+- ❌ v2 read (deprecated)
+- ✅ [v3](https://github.com/cashubtc/nuts/blob/main/00.md#023---v3-tokens) read/write
 
 
 ## License
