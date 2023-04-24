@@ -109,6 +109,7 @@ impl CashuMint {
 
         // TODO: need to handle response error
         // specfically token already spent
+        println!("{:?}", res);
 
         Ok(serde_json::from_value(res).unwrap())
     }

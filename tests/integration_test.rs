@@ -83,6 +83,23 @@ async fn test_receive() {
     println!("{:?}", prom);
 }
 
+// #[ignore]
+#[tokio::test]
+async fn test_send() {
+    let url = Url::from_str(MINTURL).unwrap();
+    let mint = CashuMint::new(url);
+    let mint_keys = mint.get_keys().await.unwrap();
+
+    let wallet = CashuWallet::new(mint, mint_keys);
+    // FIXME: Have to manully paste an unspent token
+    let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MSwiQyI6IjAyMjRhMjU5NGY5NWMyMmRiZTA2YjZlN2YzMDNkYTdiZWYwNmM1YzI5YTBjMDU3ZWYyNmNhOWU3ZDVlYzc3MTYzZiIsInNlY3JldCI6IncyL1FpZjZFdlBRYWRtUlYxZzQyTWMrZWVVZ1V3TVZtSC9ndlVlaHhZTXM9In0seyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6NCwiQyI6IjAyMWEwYTIwYTZmOGEwY2JmMWY2Njc5OTIzNWE5N2U4ZTgxNjkxZWExMTFkMWVjYWJiOWZlZjE5OWRhMzYxNmU0YiIsInNlY3JldCI6InFYazRGbjZKdFBaUnVIRWlFMVVBUDB4MCtEcjd4Y21yNWRwTUVRRldDZ2s9In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
+
+    let prom = wallet.receive(token).await.unwrap();
+    let send = wallet.send(Amount::from_sat(1), prom).await.unwrap();
+
+    println!("{:?}", send);
+}
+
 #[ignore]
 #[tokio::test]
 async fn test_get_mint_info() {

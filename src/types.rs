@@ -147,6 +147,7 @@ pub struct PostMintResponse {
 }
 
 /// Check Fees Response [NUT-05]
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckFeesResponse {
     /// Expected Mac Fee in satoshis    
@@ -217,6 +218,12 @@ pub struct CheckSpendableResponse {
 pub struct ProofsStatus {
     pub spendable: Vec<Proof>,
     pub spent: Vec<Proof>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendProofs {
+    pub change_proofs: Vec<Proof>,
+    pub send_proofs: Vec<Proof>,
 }
 
 /// Mint Version

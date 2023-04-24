@@ -7,8 +7,8 @@ use crate::{
     dhke::construct_proof,
     error::Error,
     types::{
-        BlindedMessages, MintKeys, Proof, ProofsStatus, RequestMintResponse, SplitPayload,
-        SplitRequest, TokenData,
+        BlindedMessages, MintKeys, Proof, ProofsStatus, RequestMintResponse, SendProofs,
+        SplitPayload, SplitRequest, TokenData,
     },
 };
 
@@ -102,6 +102,7 @@ impl CashuWallet {
         Ok(proofs.iter().flatten().cloned().collect())
     }
 
+    /// Create Split Payload
     pub async fn create_split(
         &self,
         keep_amount: Amount,
@@ -126,6 +127,61 @@ impl CashuWallet {
             keep_blinded_messages,
             send_blinded_messages,
             split_payload,
+        })
+    }
+
+    /// Send
+    pub async fn send(&self, amount: Amount, proofs: Vec<Proof>) -> Result<SendProofs, Error> {
+        let mut amount_avaliable = Amount::ZERO;
+        let mut send_proofs = SendProofs::default();
+
+        for proof in proofs {
+            amount_avaliable += proof.amount;
+            if amount_avaliable > amount {
+                send_proofs.change_proofs.push(proof);
+                break;
+            } else {
+                send_proofs.send_proofs.push(proof);
+            }
+        }
+
+        if amount_avaliable.lt(&amount) {
+            return Err(Error::InsufficantFunds);
+        }
+
+        // If amount avaliable is EQUAL to send amount no need to split
+        if amount_avaliable.eq(&amount) {
+            return Ok(send_proofs);
+        }
+
+        let amount_to_keep = amount_avaliable - amount;
+        let amount_to_send = amount;
+
+        let split_payload = self
+            .create_split(amount_to_keep, amount_to_send, send_proofs.send_proofs)
+            .await?;
+
+        let split_response = self.mint.split(split_payload.split_payload).await?;
+
+        // Proof to keep
+        let keep_proofs = construct_proof(
+            split_response.fst,
+            split_payload.keep_blinded_messages.rs,
+            split_payload.keep_blinded_messages.secrets,
+            &self.keys,
+        )?;
+
+        // Proofs to send
+        let send_proofs = construct_proof(
+            split_response.snd,
+            split_payload.send_blinded_messages.rs,
+            split_payload.send_blinded_messages.secrets,
+            &self.keys,
+        )?;
+
+        Ok(SendProofs {
+            change_proofs: keep_proofs,
+            send_proofs,
         })
     }
 }
