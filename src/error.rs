@@ -23,4 +23,7 @@ pub enum Error {
     /// Base64 error
     #[error("Base64 error: {0}")]
     Base64Error(#[from] base64::DecodeError),
+    /// Insufficaint Funds
+    #[error("Not enough funds")]
+    InsufficantFunds,
 }
