@@ -12,13 +12,16 @@ description = "Cashu rust library"
 [dependencies]
 base64 = "0.21.0"
 bitcoin = { version = "0.30.0", features=["serde"] }
+bitcoin-private = "0.1.0"
 bitcoin_hashes = "0.12.0"
 hex = "0.4.3"
+k256 = { version = "0.13.1", features=["arithmetic"] }
 lightning-invoice = { version = "0.22.0", features=["serde"] }
 minreq = { version = "2.7.0", features = ["json-using-serde", "https"] }
 rand = "0.8.5"
-secp256k1 = { version = "0.27.0", features = ["rand-std", "bitcoin-hashes-std"] }
+getrandom = { version = "0.2", features = ["js"] }
 serde = { version = "1.0.160", features = ["derive"]}
+serde_bytes = "0.11.9"
 serde_json = "1.0.96"
 thiserror = "1.0.40"
 url = "2.3.1"
