@@ -13,6 +13,7 @@ use crate::{
     },
 };
 
+#[derive(Debug, Clone)]
 pub struct CashuMint {
     pub url: Url,
 }

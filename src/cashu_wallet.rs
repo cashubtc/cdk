@@ -122,6 +122,7 @@ impl CashuWallet {
             proofs,
             outputs,
         };
+        println!("splint JSON {:?}", serde_json::to_string(&split_payload));
 
         Ok(SplitPayload {
             keep_blinded_messages,
@@ -136,21 +137,23 @@ impl CashuWallet {
         let mut send_proofs = SendProofs::default();
 
         for proof in proofs {
-            amount_avaliable += proof.amount;
             if amount_avaliable > amount {
                 send_proofs.change_proofs.push(proof);
                 break;
             } else {
+                amount_avaliable += proof.amount;
                 send_proofs.send_proofs.push(proof);
             }
         }
 
         if amount_avaliable.lt(&amount) {
+            println!("Not enough funds");
             return Err(Error::InsufficantFunds);
         }
 
         // If amount avaliable is EQUAL to send amount no need to split
         if amount_avaliable.eq(&amount) {
+            println!("Equal Proofs: {:#?}", send_proofs);
             return Ok(send_proofs);
         }
 
@@ -178,6 +181,9 @@ impl CashuWallet {
             split_payload.send_blinded_messages.secrets,
             &self.keys,
         )?;
+
+        println!("Send Proofs: {:#?}", send_proofs);
+        println!("Keep Proofs: {:#?}", keep_proofs);
 
         Ok(SendProofs {
             change_proofs: keep_proofs,

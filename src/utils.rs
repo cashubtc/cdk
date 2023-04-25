@@ -1,4 +1,6 @@
+use base64::{engine::general_purpose, Engine as _};
 use bitcoin::Amount;
+use rand::prelude::*;
 
 /// Split amount into cashu denominations (powers of 2)
 pub fn split_amount(amount: Amount) -> Vec<Amount> {
@@ -11,6 +13,13 @@ pub fn split_amount(amount: Amount) -> Vec<Amount> {
         }
     }
     chunks
+}
+
+pub fn generate_secret() -> String {
+    let mut rng = rand::thread_rng();
+    let mut secret = [0u8; 32];
+    rng.fill_bytes(&mut secret);
+    general_purpose::STANDARD.encode(secret)
 }
 
 #[cfg(test)]

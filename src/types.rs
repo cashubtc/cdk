@@ -4,13 +4,15 @@ use std::{collections::HashMap, str::FromStr};
 
 use base64::{engine::general_purpose, Engine as _};
 use bitcoin::Amount;
+use k256::{PublicKey, SecretKey};
 use lightning_invoice::Invoice;
-use rand::Rng;
-use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
-use crate::{dhke::blind_message, error::Error, serde_utils::serde_url, utils::split_amount};
+use crate::utils::generate_secret;
+use crate::{
+    dhke::blind_message, error::Error, serde_utils, serde_utils::serde_url, utils::split_amount,
+};
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +22,7 @@ pub struct BlindedMessage {
     pub amount: Amount,
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
+    #[serde(with = "serde_utils::serde_public_key")]
     pub b: PublicKey,
 }
 
@@ -29,7 +32,7 @@ pub struct BlindedMessages {
     /// Blinded messages
     pub blinded_messages: Vec<BlindedMessage>,
     /// Secrets
-    pub secrets: Vec<Vec<u8>>,
+    pub secrets: Vec<String>,
     /// Rs
     pub rs: Vec<SecretKey>,
     /// Amounts
@@ -40,14 +43,13 @@ impl BlindedMessages {
     pub fn random(amount: Amount) -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 
-        let mut rng = rand::thread_rng();
         for amount in split_amount(amount) {
-            let bytes: [u8; 32] = rng.gen();
-            let (blinded, r) = blind_message(&bytes, None)?;
+            let secret = generate_secret();
+            let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
             let blinded_message = BlindedMessage { amount, b: blinded };
 
-            blinded_messages.secrets.push(bytes.to_vec());
+            blinded_messages.secrets.push(secret);
             blinded_messages.blinded_messages.push(blinded_message);
             blinded_messages.rs.push(r);
             blinded_messages.amounts.push(amount);
@@ -56,20 +58,23 @@ impl BlindedMessages {
         Ok(blinded_messages)
     }
 
+    /*
+
     pub fn blank() -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 
         let mut rng = rand::thread_rng();
         for _i in 0..4 {
             let bytes: [u8; 32] = rng.gen();
-            let (blinded, r) = blind_message(&bytes, None)?;
+            let secret_base64 = general_purpose::STANDARD.encode(bytes);
+            let (blinded, r) = blind_message(secret_base64.as_bytes(), None)?;
 
             let blinded_message = BlindedMessage {
                 amount: Amount::ZERO,
                 b: blinded,
             };
 
-            blinded_messages.secrets.push(bytes.to_vec());
+            blinded_messages.secrets.push(secret_base64);
             blinded_messages.blinded_messages.push(blinded_message);
             blinded_messages.rs.push(r);
             blinded_messages.amounts.push(Amount::ZERO);
@@ -77,6 +82,7 @@ impl BlindedMessages {
 
         Ok(blinded_messages)
     }
+    */
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +92,7 @@ pub struct SplitPayload {
     pub split_payload: SplitRequest,
 }
 
-/// Promise (BlindedSignature) [NIP-00]
+/// Promise (BlindedSignature) [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Promise {
     pub id: String,
@@ -94,7 +100,8 @@ pub struct Promise {
     pub amount: Amount,
     /// blinded signature (C_) on the secret message `B_` of [BlindedMessage]
     #[serde(rename = "C_")]
-    pub c: String,
+    #[serde(with = "serde_utils::serde_public_key")]
+    pub c: PublicKey,
 }
 
 /// Proofs [NUT-00]
@@ -104,21 +111,24 @@ pub struct Proof {
     #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: Amount,
     /// Secret message
+    // #[serde(with = "crate::serde_utils::bytes_base64")]
     pub secret: String,
     /// Unblinded signature
     #[serde(rename = "C")]
-    pub c: String,
+    #[serde(with = "serde_utils::serde_public_key")]
+    pub c: PublicKey,
     /// `Keyset id`
     pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// P2SHScript that specifies the spending condition for this Proof
     pub script: Option<String>,
 }
 
-/// Mint Keys [NIP-01]
+/// Mint Keys [NUT-01]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeys(pub HashMap<u64, String>);
 
-/// Mint Keysets [NIP-02]
+/// Mint Keysets [UT-02]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeySets {
     /// set of public keys that the mint generates
@@ -134,7 +144,7 @@ pub struct RequestMintResponse {
     pub hash: String,
 }
 
-/// Post Mint Request [NIP-04]
+/// Post Mint Request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintRequest {
     pub outputs: Vec<BlindedMessage>,
@@ -266,7 +276,8 @@ pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: String,
     /// hex pubkey of the mint
-    pub pubkey: String,
+    #[serde(with = "serde_utils::serde_public_key")]
+    pub pubkey: PublicKey,
     /// implementation name and the version running
     pub version: MintVersion,
     /// short description of the mint

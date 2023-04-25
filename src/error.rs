@@ -8,9 +8,6 @@ pub enum Error {
     /// Parse Url Error
     #[error("minreq error: {0}")]
     UrlParseError(#[from] url::ParseError),
-    /// Secp245k1
-    #[error("secp256k1 error: {0}")]
-    Secpk256k1Error(#[from] secp256k1::Error),
     /// Unsupported Token
     #[error("Unsupported Token")]
     UnsupportedToken,
