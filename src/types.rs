@@ -58,23 +58,19 @@ impl BlindedMessages {
         Ok(blinded_messages)
     }
 
-    /*
-
     pub fn blank() -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 
-        let mut rng = rand::thread_rng();
         for _i in 0..4 {
-            let bytes: [u8; 32] = rng.gen();
-            let secret_base64 = general_purpose::STANDARD.encode(bytes);
-            let (blinded, r) = blind_message(secret_base64.as_bytes(), None)?;
+            let secret = generate_secret();
+            let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
             let blinded_message = BlindedMessage {
                 amount: Amount::ZERO,
                 b: blinded,
             };
 
-            blinded_messages.secrets.push(secret_base64);
+            blinded_messages.secrets.push(secret);
             blinded_messages.blinded_messages.push(blinded_message);
             blinded_messages.rs.push(r);
             blinded_messages.amounts.push(Amount::ZERO);
@@ -82,7 +78,6 @@ impl BlindedMessages {
 
         Ok(blinded_messages)
     }
-    */
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

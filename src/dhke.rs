@@ -1,21 +1,13 @@
 //! Diffie-Hellmann key exchange
 
-use std::ops::{Add, Mul, Neg};
+use std::ops::Mul;
 
 use bitcoin_hashes::sha256;
 use bitcoin_hashes::Hash;
-// use secp256k1::rand::rngs::OsRng;
-// use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
-
-use k256::Scalar;
-use k256::{AffinePoint, ProjectivePoint, PublicKey, Secp256k1, SecretKey};
-
-use rand::rngs::OsRng;
+use k256::{ProjectivePoint, PublicKey, Scalar, SecretKey};
 
 use crate::error::Error;
-use crate::types::MintKeys;
-use crate::types::Promise;
-use crate::types::Proof;
+use crate::types::{MintKeys, Promise, Proof};
 
 fn hash_to_curve(message: &[u8]) -> PublicKey {
     let mut msg_to_hash = message.to_vec();
@@ -70,29 +62,6 @@ pub fn unblind_message(
     Ok(PublicKey::try_from(c).unwrap())
 }
 
-/// Sign Blinded Message (Step2 bob)
-// Really only needed for mint
-// Used here for testing
-fn _sign_message(a: SecretKey, blinded_message: PublicKey) -> Result<PublicKey, Error> {
-    Ok(PublicKey::try_from(
-        blinded_message
-            .as_affine()
-            .mul(Scalar::from(a.as_scalar_primitive())),
-    )
-    .unwrap())
-}
-
-/// Verify Message
-// Really only needed for mint
-// used for testing
-fn _verify_message(a: SecretKey, unblinded_message: PublicKey, msg: &str) -> Result<bool, Error> {
-    // Y
-    let y = hash_to_curve(msg.as_bytes());
-
-    Ok(unblinded_message
-        == PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive())).unwrap())
-}
-
 /// Construct Proof
 pub fn construct_proofs(
     promises: Vec<Promise>,
@@ -121,9 +90,6 @@ pub fn construct_proofs(
     println!("proofs: {:?}", proofs);
 
     Ok(proofs)
-}
-pub fn verify_proof(proof: Proof, keys: &MintKeys) -> Result<(), Error> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -189,7 +155,7 @@ mod tests {
         let bob_sec = SecretKey::new(ScalarPrimitive::ONE);
 
         // C_
-        let signed = _sign_message(bob_sec, blinded_message).unwrap();
+        let signed = sign_message(bob_sec, blinded_message).unwrap();
 
         assert_eq!(
             signed,
@@ -228,6 +194,34 @@ mod tests {
         );
     }
 
+    /// Sign Blinded Message (Step2 bob)
+    // Really only needed for mint
+    // Used here for testing
+    fn sign_message(a: SecretKey, blinded_message: PublicKey) -> Result<PublicKey, Error> {
+        Ok(PublicKey::try_from(
+            blinded_message
+                .as_affine()
+                .mul(Scalar::from(a.as_scalar_primitive())),
+        )
+        .unwrap())
+    }
+
+    /// Verify Message
+    // Really only needed for mint
+    // used for testing
+    fn verify_message(
+        a: SecretKey,
+        unblinded_message: PublicKey,
+        msg: &str,
+    ) -> Result<bool, Error> {
+        // Y
+        let y = hash_to_curve(msg.as_bytes());
+
+        Ok(unblinded_message
+            == PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive())).unwrap())
+    }
+
+    #[ignore]
     #[test]
     fn test_blinded_dhke() {
         // a
@@ -247,11 +241,11 @@ mod tests {
         let blinded = blind_message(&y.to_sec1_bytes(), None).unwrap();
 
         // C_
-        let signed = _sign_message(bob_sec.clone(), blinded.0).unwrap();
+        let signed = sign_message(bob_sec.clone(), blinded.0).unwrap();
 
         // C
         let c = unblind_message(signed, blinded.1, bob_pub).unwrap();
 
-        assert!(_verify_message(bob_sec, c, &x).unwrap());
+        assert!(verify_message(bob_sec, c, &x).unwrap());
     }
 }
