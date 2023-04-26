@@ -184,8 +184,15 @@ pub struct MeltRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltResponse {
     pub paid: bool,
-    pub preimage: String,
-    pub change: Option<Promise>,
+    pub preimage: Option<String>,
+    pub change: Option<Vec<Promise>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Melted {
+    pub paid: bool,
+    pub preimage: Option<String>,
+    pub change: Option<Vec<Proof>>,
 }
 
 /// Split Request [NUT-06]
