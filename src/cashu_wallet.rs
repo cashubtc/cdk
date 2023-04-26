@@ -9,7 +9,7 @@ use crate::{
     error::Error,
     types::{
         BlindedMessages, MintKeys, Proof, ProofsStatus, RequestMintResponse, SendProofs,
-        SplitPayload, SplitRequest, Token, TokenData,
+        SplitPayload, SplitRequest, TokenData,
     },
 };
 
@@ -45,7 +45,11 @@ impl CashuWallet {
     }
 
     /// Mint Token
-    pub async fn mint_token(&self, amount: Amount, payment_hash: &str) -> Result<TokenData, Error> {
+    pub async fn mint_token(
+        &self,
+        amount: Amount,
+        payment_hash: &str,
+    ) -> Result<Vec<Proof>, Error> {
         let blinded_messages = BlindedMessages::random(amount)?;
 
         let mint_res = self
@@ -60,15 +64,7 @@ impl CashuWallet {
             &self.mint_keys,
         )?;
 
-        let token = Token {
-            mint: self.client.mint_url.clone(),
-            proofs,
-        };
-
-        Ok(TokenData {
-            token: vec![token],
-            memo: None,
-        })
+        Ok(proofs)
     }
 
     /// Check fee
@@ -89,7 +85,7 @@ impl CashuWallet {
             let keys = if token.mint.eq(&self.client.mint_url) {
                 self.mint_keys.clone()
             } else {
-                // TODO:
+                // FIXME:
                 println!("No match");
                 self.mint_keys.clone()
                 // CashuMint::new(token.mint).get_keys().await.unwrap()
@@ -131,7 +127,7 @@ impl CashuWallet {
     }
 
     /// Create Split Payload
-    pub async fn create_split(
+    async fn create_split(
         &self,
         keep_amount: Amount,
         send_amount: Amount,
@@ -150,7 +146,6 @@ impl CashuWallet {
             proofs,
             outputs,
         };
-        println!("splint JSON {:?}", serde_json::to_string(&split_payload));
 
         Ok(SplitPayload {
             keep_blinded_messages,
@@ -181,7 +176,6 @@ impl CashuWallet {
 
         // If amount available is EQUAL to send amount no need to split
         if amount_available.eq(&amount) {
-            println!("Equal Proofs: {:#?}", send_proofs);
             return Ok(send_proofs);
         }
 
@@ -210,12 +204,16 @@ impl CashuWallet {
             &self.mint_keys,
         )?;
 
-        println!("Send Proofs: {:#?}", send_proofs);
-        println!("Keep Proofs: {:#?}", keep_proofs);
+        // println!("Send Proofs: {:#?}", send_proofs);
+        // println!("Keep Proofs: {:#?}", keep_proofs);
 
         Ok(SendProofs {
             change_proofs: keep_proofs,
             send_proofs,
         })
+    }
+
+    pub fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> String {
+        TokenData::new(self.client.mint_url.clone(), proofs, memo).to_string()
     }
 }
