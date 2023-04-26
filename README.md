@@ -1,7 +1,10 @@
 > **Warning**
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind loosing.
 
-Cashu RS is a rust library for [Cashu](https://github.com/cashubtc) wallets written in Rust.
+Cashu Crab is a rust library for [Cashu](https://github.com/cashubtc) wallets written in Rust.
+Modeled after [Cashu-ts](https://github.com/cashubtc/cashu-ts.
+
+**ALPHA** This libary is in early development and should not be seen as stable, the api will change hopefully along with the name.
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
