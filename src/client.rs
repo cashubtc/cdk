@@ -56,7 +56,6 @@ impl Client {
         let mut url = self.mint_url.join("mint")?;
         url.query_pairs_mut()
             .append_pair("amount", &amount.to_sat().to_string());
-        println!("{url}");
 
         Ok(minreq::get(url).send()?.json::<RequestMintResponse>()?)
     }

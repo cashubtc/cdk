@@ -40,6 +40,7 @@ pub struct BlindedMessages {
 }
 
 impl BlindedMessages {
+    ///
     pub fn random(amount: Amount) -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 
@@ -294,10 +295,28 @@ pub struct Token {
     pub proofs: Vec<Proof>,
 }
 
+impl Token {
+    fn new(mint_url: Url, proofs: Vec<Proof>) -> Self {
+        Self {
+            mint: mint_url,
+            proofs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenData {
     pub token: Vec<Token>,
     pub memo: Option<String>,
+}
+
+impl TokenData {
+    pub fn new(mint_url: Url, proofs: Vec<Proof>, memo: Option<String>) -> Self {
+        Self {
+            token: vec![Token::new(mint_url, proofs)],
+            memo,
+        }
+    }
 }
 
 impl FromStr for TokenData {

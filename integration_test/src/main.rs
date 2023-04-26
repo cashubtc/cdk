@@ -7,7 +7,7 @@ use std::time::Duration;
 use bitcoin::Amount;
 use cashu_crab::cashu_wallet::CashuWallet;
 use cashu_crab::client::Client;
-use cashu_crab::types::{MintKeys, Token, TokenData};
+use cashu_crab::types::{MintKeys, Proof, Token, TokenData};
 use lightning_invoice::Invoice;
 use url::Url;
 
@@ -24,10 +24,19 @@ async fn main() {
     let wallet = CashuWallet::new(client.to_owned(), keys);
     test_get_mint_keysets(&client).await;
     test_request_mint(&wallet).await;
-    let token = test_mint(&wallet).await;
-    let new_token = test_receive(&wallet, &token).await;
-
+    let proofs = test_mint(&wallet).await;
+    let token = TokenData::new(
+        client.mint_url.clone(),
+        proofs,
+        Some("Hello World".to_string()),
+    );
+    let new_token = test_receive(&wallet, &token.to_string()).await;
     test_check_spendable(&client, &new_token).await;
+
+    let proofs = TokenData::from_str(&new_token).unwrap().token[0]
+        .clone()
+        .proofs;
+    test_send(&wallet, proofs).await;
 
     test_check_fees(&client).await;
 }
@@ -52,7 +61,7 @@ async fn test_request_mint(wallet: &CashuWallet) {
     assert!(mint.pr.check_signature().is_ok())
 }
 
-async fn test_mint(wallet: &CashuWallet) -> String {
+async fn test_mint(wallet: &CashuWallet) -> Vec<Proof> {
     let mint_req = wallet.request_mint(Amount::from_sat(21)).await.unwrap();
     println!("Mint Req: {:?}", mint_req.pr.to_string());
 
@@ -61,14 +70,12 @@ async fn test_mint(wallet: &CashuWallet) -> String {
     // but for now pay it quick
     thread::sleep(Duration::from_secs(30));
 
-    let mint_res = wallet
+    wallet
         .mint_token(Amount::from_sat(21), &mint_req.hash)
         .await
-        .unwrap();
+        .unwrap()
 
-    println!("Mint: {:?}", mint_res.to_string());
-
-    mint_res.to_string()
+    // println!("Mint: {:?}", mint_res.to_string());
 }
 
 async fn test_check_fees(mint: &Client) {
@@ -102,45 +109,29 @@ async fn test_check_spendable(client: &Client, token: &str) {
     let wallet = CashuWallet::new(client.to_owned(), mint_keys);
 
     let token_data = TokenData::from_str(token).unwrap();
-    let _spendable = wallet
+    let spendable = wallet
         .check_proofs_spent(token_data.token[0].clone().proofs)
         .await
         .unwrap();
+
+    assert!(!spendable.spendable.is_empty());
     // println!("Spendable: {:?}", spendable);
 }
 
-async fn _test_split(client: &Client, token: &str) {
-    let mint_keys = client.get_keys().await.unwrap();
-
-    let wallet = CashuWallet::new(client.clone(), mint_keys);
-    let proofs = wallet.receive(token).await.unwrap();
-
-    let split = wallet
-        .create_split(Amount::ONE_SAT, Amount::ONE_SAT, proofs)
-        .await
-        .unwrap();
-
-    println!("Split: {:#?}", split);
-    println!(
-        "splint JSON {:?}",
-        serde_json::to_string(&split.split_payload)
-    );
-
-    let split = client.split(split.split_payload).await;
-    println!("Split res: {:#?}", split);
-}
-
-async fn _test_send(mint: &Client, token: &str) {
-    let mint_keys = mint.get_keys().await.unwrap();
-
-    let wallet = CashuWallet::new(mint.to_owned(), mint_keys);
-    let prom = wallet.receive(token).await.unwrap();
-    let send = wallet.send(Amount::from_sat(2), prom).await.unwrap();
+async fn test_send(wallet: &CashuWallet, proofs: Vec<Proof>) {
+    let send = wallet.send(Amount::from_sat(2), proofs).await.unwrap();
 
     println!("{:?}", send);
+
+    let keep_token = wallet.proofs_to_token(send.change_proofs, Some("Keeping these".to_string()));
+
+    let send_token = wallet.proofs_to_token(send.send_proofs, Some("Sending these".to_string()));
+
+    println!("Keep Token: {keep_token}");
+    println!("Send Token: {send_token}");
 }
 
-async fn test_get_mint_info(mint: &Client) {
+async fn _test_get_mint_info(mint: &Client) {
     let _mint_info = mint.get_info().await.unwrap();
 
     // println!("{:?}", mint_info);
