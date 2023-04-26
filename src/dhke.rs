@@ -73,7 +73,6 @@ pub fn construct_proofs(
     for (i, promise) in promises.into_iter().enumerate() {
         let blinded_c = promise.c;
         let a: PublicKey = keys.0.get(&promise.amount.to_sat()).unwrap().to_owned();
-        // println!("Construct proof Pub {:?}", serde_json::to_string(&a));
         let unblinded_signature = unblind_message(blinded_c, rs[i].clone(), a)?;
 
         let proof = Proof {
@@ -86,8 +85,6 @@ pub fn construct_proofs(
 
         proofs.push(proof);
     }
-
-    println!("proofs: {:?}", proofs);
 
     Ok(proofs)
 }

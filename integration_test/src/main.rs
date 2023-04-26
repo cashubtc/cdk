@@ -31,12 +31,16 @@ async fn main() {
         Some("Hello World".to_string()),
     );
     let new_token = test_receive(&wallet, &token.to_string()).await;
-    test_check_spendable(&client, &new_token).await;
 
     let proofs = TokenData::from_str(&new_token).unwrap().token[0]
         .clone()
         .proofs;
-    test_send(&wallet, proofs).await;
+    test_send(&wallet, proofs.clone()).await;
+
+    let spendable = test_check_spendable(&client, &new_token).await;
+
+    let invoice = Invoice::from_str("lnbc20n1pjy3tp8pp5mmrp5vhzrmsz4d6sew77aw0wr7dfxptumxvstsl8peu8ypjhdmwsdq5g9kxy7fqd9h8vmmfvdjscqzpgxqyz5vqsp5aajwlqyxwwtk57tnxzgf9rk6mp0u3z33ksylqj6lu7et7dvlkdvs9qyyssq02rdva0hvamlgvfau0mqnknglk02v6d6x56xh5s8dtx9crtdrwf9hf6f87kk2n7tt0fsjg4xsyd50rqayxln5p9ygvetqtyrrtvy5ygpcjjwek").unwrap();
+    test_melt(&wallet, invoice, spendable).await;
 
     test_check_fees(&client).await;
 }
@@ -103,7 +107,7 @@ async fn test_receive(wallet: &CashuWallet, token: &str) -> String {
     s
 }
 
-async fn test_check_spendable(client: &Client, token: &str) {
+async fn test_check_spendable(client: &Client, token: &str) -> Vec<Proof> {
     let mint_keys = client.get_keys().await.unwrap();
 
     let wallet = CashuWallet::new(client.to_owned(), mint_keys);
@@ -116,6 +120,8 @@ async fn test_check_spendable(client: &Client, token: &str) {
 
     assert!(!spendable.spendable.is_empty());
     // println!("Spendable: {:?}", spendable);
+
+    spendable.spendable
 }
 
 async fn test_send(wallet: &CashuWallet, proofs: Vec<Proof>) {
@@ -129,6 +135,12 @@ async fn test_send(wallet: &CashuWallet, proofs: Vec<Proof>) {
 
     println!("Keep Token: {keep_token}");
     println!("Send Token: {send_token}");
+}
+
+async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Vec<Proof>) {
+    let res = wallet.melt(invoice, proofs).await.unwrap();
+
+    println!("{:?}", res);
 }
 
 async fn _test_get_mint_info(mint: &Client) {

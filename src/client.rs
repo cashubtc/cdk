@@ -108,10 +108,12 @@ impl Client {
             outputs,
         };
 
-        Ok(minreq::post(url)
+        let value = minreq::post(url)
             .with_json(&request)?
             .send()?
-            .json::<MeltResponse>()?)
+            .json::<Value>()?;
+
+        Ok(serde_json::from_value(value)?)
     }
 
     /// Split Token [NUT-06]

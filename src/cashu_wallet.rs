@@ -8,7 +8,7 @@ use crate::{
     dhke::construct_proofs,
     error::Error,
     types::{
-        BlindedMessages, MintKeys, Proof, ProofsStatus, RequestMintResponse, SendProofs,
+        BlindedMessages, Melted, MintKeys, Proof, ProofsStatus, RequestMintResponse, SendProofs,
         SplitPayload, SplitRequest, TokenData,
     },
 };
@@ -210,6 +210,34 @@ impl CashuWallet {
         Ok(SendProofs {
             change_proofs: keep_proofs,
             send_proofs,
+        })
+    }
+
+    pub async fn melt(
+        &self,
+        invoice: lightning_invoice::Invoice,
+        proofs: Vec<Proof>,
+    ) -> Result<Melted, Error> {
+        let change = BlindedMessages::blank()?;
+        let melt_response = self
+            .client
+            .melt(proofs, invoice, Some(change.blinded_messages))
+            .await?;
+
+        let change = match melt_response.change {
+            Some(promises) => Some(construct_proofs(
+                promises,
+                change.rs,
+                change.secrets,
+                &self.mint_keys,
+            )?),
+            None => None,
+        };
+
+        Ok(Melted {
+            paid: melt_response.paid,
+            preimage: melt_response.preimage,
+            change,
         })
     }
 
