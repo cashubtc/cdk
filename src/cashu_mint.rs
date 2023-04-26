@@ -10,7 +10,7 @@ use crate::{
     error::Error,
     types::{
         BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse,
-        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResposne, MintInfo,
+        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintInfo,
         MintKeySets, MintKeys, MintRequest, PostMintResponse, Proof, RequestMintResponse,
         SplitRequest, SplitResponse,
     },
@@ -98,7 +98,7 @@ impl CashuMint {
         proofs: Vec<Proof>,
         invoice: Invoice,
         outputs: Option<Vec<BlindedMessage>>,
-    ) -> Result<MeltResposne, Error> {
+    ) -> Result<MeltResponse, Error> {
         let url = self.url.join("melt")?;
 
         let request = MeltRequest {
@@ -110,7 +110,7 @@ impl CashuMint {
         Ok(minreq::post(url)
             .with_json(&request)?
             .send()?
-            .json::<MeltResposne>()?)
+            .json::<MeltResponse>()?)
     }
 
     /// Split Token [NUT-06]
@@ -123,7 +123,7 @@ impl CashuMint {
             .json::<Value>()?;
 
         // TODO: need to handle response error
-        // specfically token already spent
+        // specifically token already spent
         println!("{:?}", res);
 
         Ok(serde_json::from_value(res).unwrap())

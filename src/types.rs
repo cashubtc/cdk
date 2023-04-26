@@ -179,14 +179,14 @@ pub struct MeltRequest {
     /// bollt11
     pub pr: Invoice,
     /// Blinded Message that can be used to return change [NUT-08]
-    /// Amount feild of blindedMessages `SHOULD` be set to zero
+    /// Amount field of blindedMessages `SHOULD` be set to zero
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
 /// Melt Response [NUT-05]
 /// Lightning fee return [NUT-08] if change is defined
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltResposne {
+pub struct MeltResponse {
     pub paid: bool,
     pub preimage: String,
     pub change: Option<Promise>,
