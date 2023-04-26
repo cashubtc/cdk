@@ -1,3 +1,5 @@
+//! Client to connet to mint
+
 use std::collections::HashMap;
 
 use bitcoin::Amount;
@@ -17,18 +19,18 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct CashuMint {
-    pub url: Url,
+pub struct Client {
+    pub mint_url: Url,
 }
 
-impl CashuMint {
-    pub fn new(url: Url) -> Self {
-        Self { url }
+impl Client {
+    pub fn new(mint_url: Url) -> Self {
+        Self { mint_url }
     }
 
     /// Get Mint Keys [NUT-01]
     pub async fn get_keys(&self) -> Result<MintKeys, Error> {
-        let url = self.url.join("keys")?;
+        let url = self.mint_url.join("keys")?;
         let keys = minreq::get(url).send()?.json::<HashMap<u64, String>>()?;
 
         Ok(MintKeys(
@@ -45,13 +47,13 @@ impl CashuMint {
 
     /// Get Keysets [NUT-02]
     pub async fn get_keysets(&self) -> Result<MintKeySets, Error> {
-        let url = self.url.join("keysets")?;
+        let url = self.mint_url.join("keysets")?;
         Ok(minreq::get(url).send()?.json::<MintKeySets>()?)
     }
 
     /// Request Mint [NUT-03]
     pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
-        let mut url = self.url.join("mint")?;
+        let mut url = self.mint_url.join("mint")?;
         url.query_pairs_mut()
             .append_pair("amount", &amount.to_sat().to_string());
         println!("{url}");
@@ -65,7 +67,7 @@ impl CashuMint {
         blinded_messages: BlindedMessages,
         payment_hash: &str,
     ) -> Result<PostMintResponse, Error> {
-        let mut url = self.url.join("mint")?;
+        let mut url = self.mint_url.join("mint")?;
         url.query_pairs_mut()
             .append_pair("payment_hash", payment_hash);
 
@@ -81,7 +83,7 @@ impl CashuMint {
 
     /// Check Max expected fee [NUT-05]
     pub async fn check_fees(&self, invoice: Invoice) -> Result<CheckFeesResponse, Error> {
-        let url = self.url.join("checkfees")?;
+        let url = self.mint_url.join("checkfees")?;
 
         let request = CheckFeesRequest { pr: invoice };
 
@@ -99,7 +101,7 @@ impl CashuMint {
         invoice: Invoice,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> Result<MeltResponse, Error> {
-        let url = self.url.join("melt")?;
+        let url = self.mint_url.join("melt")?;
 
         let request = MeltRequest {
             proofs,
@@ -115,7 +117,7 @@ impl CashuMint {
 
     /// Split Token [NUT-06]
     pub async fn split(&self, split_request: SplitRequest) -> Result<SplitResponse, Error> {
-        let url = self.url.join("split")?;
+        let url = self.mint_url.join("split")?;
 
         let res = minreq::post(url)
             .with_json(&split_request)?
@@ -124,7 +126,7 @@ impl CashuMint {
 
         // TODO: need to handle response error
         // specifically token already spent
-        println!("{:?}", res);
+        // println!("{:?}", res);
 
         Ok(serde_json::from_value(res).unwrap())
     }
@@ -134,7 +136,7 @@ impl CashuMint {
         &self,
         proofs: &Vec<Proof>,
     ) -> Result<CheckSpendableResponse, Error> {
-        let url = self.url.join("check")?;
+        let url = self.mint_url.join("check")?;
         let request = CheckSpendableRequest {
             proofs: proofs.to_owned(),
         };
@@ -147,7 +149,7 @@ impl CashuMint {
 
     /// Get Mint Info [NUT-09]
     pub async fn get_info(&self) -> Result<MintInfo, Error> {
-        let url = self.url.join("info")?;
+        let url = self.mint_url.join("info")?;
         Ok(minreq::get(url).send()?.json::<MintInfo>()?)
     }
 }

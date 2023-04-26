@@ -1,3 +1,5 @@
+//! Utils
+
 use base64::{engine::general_purpose, Engine as _};
 use bitcoin::Amount;
 use rand::prelude::*;
@@ -15,6 +17,7 @@ pub fn split_amount(amount: Amount) -> Vec<Amount> {
     chunks
 }
 
+/// Generate Secret Message
 pub fn generate_secret() -> String {
     let mut rng = rand::thread_rng();
     let mut secret = [0u8; 32];
