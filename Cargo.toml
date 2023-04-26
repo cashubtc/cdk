@@ -8,6 +8,9 @@ readme = "README.md"
 repository = "https://github.com/thesimplekid/cashu-rs"
 description = "Cashu rust library"
 
+[workspace]
+members = ["integration_test"]
+
 
 [dependencies]
 base64 = "0.21.0"

@@ -125,8 +125,8 @@ pub struct Proof {
 }
 
 /// Mint Keys [NUT-01]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintKeys(pub HashMap<u64, String>);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintKeys(pub HashMap<u64, PublicKey>);
 
 /// Mint Keysets [UT-02]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +321,15 @@ impl FromStr for TokenData {
         Ok(token)
     }
 }
+
+impl ToString for TokenData {
+    fn to_string(&self) -> String {
+        let json_string = serde_json::to_string(self).unwrap();
+        let encoded = general_purpose::STANDARD.encode(json_string);
+        format!("cashuA{}", encoded)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,14 +343,20 @@ mod tests {
     }
 
     #[test]
-    fn test_token_from_str() {
-        let token = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJpZCI6IkRTQWw5bnZ2eWZ2YSIsImFtb3VudCI6Miwic2VjcmV0IjoiRWhwZW5uQzlxQjNpRmxXOEZaX3BadyIsIkMiOiIwMmMwMjAwNjdkYjcyN2Q1ODZiYzMxODNhZWNmOTdmY2I4MDBjM2Y0Y2M0NzU5ZjY5YzYyNmM5ZGI1ZDhmNWI1ZDQifSx7ImlkIjoiRFNBbDludnZ5ZnZhIiwiYW1vdW50Ijo4LCJzZWNyZXQiOiJUbVM2Q3YwWVQ1UFVfNUFUVktudWt3IiwiQyI6IjAyYWM5MTBiZWYyOGNiZTVkNzMyNTQxNWQ1YzI2MzAyNmYxNWY5Yjk2N2EwNzljYTk3NzlhYjZlNWMyZGIxMzNhNyJ9XX1dLCJtZW1vIjoiVGhhbmt5b3UuIn0=";
-        let token = TokenData::from_str(token).unwrap();
+    fn test_token_str_round_trip() {
+        let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJpZCI6IkRTQWw5bnZ2eWZ2YSIsImFtb3VudCI6Miwic2VjcmV0IjoiRWhwZW5uQzlxQjNpRmxXOEZaX3BadyIsIkMiOiIwMmMwMjAwNjdkYjcyN2Q1ODZiYzMxODNhZWNmOTdmY2I4MDBjM2Y0Y2M0NzU5ZjY5YzYyNmM5ZGI1ZDhmNWI1ZDQifSx7ImlkIjoiRFNBbDludnZ5ZnZhIiwiYW1vdW50Ijo4LCJzZWNyZXQiOiJUbVM2Q3YwWVQ1UFVfNUFUVktudWt3IiwiQyI6IjAyYWM5MTBiZWYyOGNiZTVkNzMyNTQxNWQ1YzI2MzAyNmYxNWY5Yjk2N2EwNzljYTk3NzlhYjZlNWMyZGIxMzNhNyJ9XX1dLCJtZW1vIjoiVGhhbmt5b3UuIn0=";
+        let token = TokenData::from_str(token_str).unwrap();
 
         assert_eq!(
             token.token[0].mint,
             Url::from_str("https://8333.space:3338").unwrap()
         );
         assert_eq!(token.token[0].proofs[0].clone().id.unwrap(), "DSAl9nvvyfva");
+
+        let encoded = &token.to_string();
+
+        let token_data = TokenData::from_str(encoded).unwrap();
+
+        assert_eq!(token_data, token);
     }
 }

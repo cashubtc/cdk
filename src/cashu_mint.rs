@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use bitcoin::Amount;
+use k256::PublicKey;
 use lightning_invoice::Invoice;
 use serde_json::Value;
 use url::Url;
@@ -26,7 +29,18 @@ impl CashuMint {
     /// Get Mint Keys [NUT-01]
     pub async fn get_keys(&self) -> Result<MintKeys, Error> {
         let url = self.url.join("keys")?;
-        Ok(minreq::get(url).send()?.json::<MintKeys>()?)
+        let keys = minreq::get(url).send()?.json::<HashMap<u64, String>>()?;
+
+        Ok(MintKeys(
+            keys.into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        PublicKey::from_sec1_bytes(&hex::decode(v).unwrap()).unwrap(),
+                    )
+                })
+                .collect(),
+        ))
     }
 
     /// Get Keysets [NUT-02]
