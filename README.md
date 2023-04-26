@@ -4,7 +4,7 @@
 Cashu Crab is a rust library for [Cashu](https://github.com/cashubtc) wallets written in Rust.
 Modeled after [Cashu-ts](https://github.com/cashubtc/cashu-ts.
 
-**ALPHA** This libary is in early development and should not be seen as stable, the api will change hopefully along with the name.
+**ALPHA** This library is in early development and should not be seen as stable, the api will change hopefully along with the name.
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 

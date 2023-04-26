@@ -49,7 +49,7 @@ async fn test_mint() {
     let mint_req = mint.request_mint(Amount::from_sat(21)).await.unwrap();
     println!("Mint Req: {:?}", mint_req.pr.to_string());
 
-    // Since before the mint happens the invoice in the mint req has to be payed this wait is here
+    // Since before the mint happens the invoice in the mint req has to be paid this wait is here
     // probally some way to simulate this in a better way
     // but for now pay it quick
     thread::sleep(Duration::from_secs(30));
@@ -80,9 +80,9 @@ async fn test_receive() {
     let mint_keys = mint.get_keys().await.unwrap();
 
     let wallet = CashuWallet::new(mint, mint_keys);
-    // FIXME: Have to manully paste an unspent token
+    // FIXME: Have to manually paste an unspent token
     let token = 
-    "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MiwiQyI6IjAyOTMwNTJhNWEwN2FjMTkxMDgyODQyZTExMDVkOTQ2MzliNWI5NmE3MTU3NTQzZTllMjdkOTg3MWU5YjE2NDJkNCIsInNlY3JldCI6IlQxZ0lYUWlpZnBNY21OMU9ENnV4Nk1rMS93bXIxU3VHU2tvVXIyTkpqZE09In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
+    "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MiwiQyI6IjAyOTMwNTJhNWEwN2FjMTkxMDgyODQyZTExMDVkOTQ2MzliNWI5NmE3MTU3NTQzZTllMjdkOTg3MWU5YjE2ANDJkNCIsInNlY3JldCI6IlQxZ0lYUWlpZnBNY21OMU9ENnV4Nk1rMS93bXIxU3VHU2tvVXIyTkpqZE09In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
 
     let prom = wallet.receive(token).await.unwrap();
     // println!("{:?}", prom);
@@ -96,7 +96,7 @@ async fn test_check_spendable() {
     let mint_keys = mint.get_keys().await.unwrap();
 
     let wallet = CashuWallet::new(mint, mint_keys);
-    // FIXME: Have to manully paste an unspent token
+    // FIXME: Have to manually paste an unspent token
     let token = 
         "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MiwiQyI6IjAyNGQ0ZDUxNWIxYzk2MWZkYzYxY2M5MDFmNzBkOGUwZDA0ZWIwYTI2MzBhNWYxYTdmM2I5ZmRhODdmMGJkNjNmNyIsInNlY3JldCI6IkVUc2pXSGJheXYyTUJQeXo1b0toay85dVdoaldIeXJkODdBQy9XY3VjbkE9In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
 
@@ -114,9 +114,9 @@ async fn test_split() {
     let mint_keys = mint.get_keys().await.unwrap();
 
     let wallet = CashuWallet::new(mint.clone(), mint_keys);
-    // FIXME: Have to manully paste an unspent token
+    // FIXME: Have to manually paste an unspent token
     let token = 
-    "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MiwiQyI6IjAyNDVjYjBhYzhlMWNmNGViMjk2ZjAyMTFiMDdjYTBjNTczOWM1MTMwMDEzMzM3MjczOTE1ZTVlMDY2NjZlOTBiZCIsInNlY3JldCI6ImRWNThLbU5VOWE0UU45c0QyVDd5bGkvam9qcWpwb3o0VVhkSGR6dkdRZ289In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
+    "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MiwiQyI6IjAyANDVjYjBhYzhlMWNmNGViMjk2ZjAyMTFiMDdjYTBjNTczOWM1MTMwMDEzMzM3MjczOTE1ZTVlMDY2NjZlOTBiZCIsInNlY3JldCI6ImRWNThLbU5VOWE0UU45c0QyVDd5bGkvam9qcWpwb3o0VVhkSGR6dkdRZ289In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
     let proofs = wallet.receive(token).await.unwrap();
 
     let split = wallet.create_split(Amount::ONE_SAT, Amount::ONE_SAT, proofs).await.unwrap();
@@ -137,7 +137,7 @@ async fn test_send() {
     let mint_keys = mint.get_keys().await.unwrap();
 
     let wallet = CashuWallet::new(mint, mint_keys);
-    // FIXME: Have to manully paste an unspent token
+    // FIXME: Have to manually paste an unspent token
     let token = 
     "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6Im9DV2NkWXJyeVRrUiIsImFtb3VudCI6MiwiQyI6IjAzMGI4NWFhYjI5MDY2MGRlNDk4NTEzODZmYTJhZWY2MTk3YzM2MzRkZDE4OGMzMjM2ZDI2YTFhNDdmODZlNzQxNCIsInNlY3JldCI6IjNET0c3eHM2T2RRYno1Nmk1c0lRQjhndHUzbjRMdjRGSU5TeEtLUkJ6UzA9In1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvU0t2SFJ1czlkbWpXSGhzdEhyc2F6VyJ9XX0=";
     let prom = wallet.receive(token).await.unwrap();

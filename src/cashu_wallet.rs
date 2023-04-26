@@ -26,7 +26,7 @@ impl CashuWallet {
     pub async fn check_proofs_spent(&self, proofs: Vec<Proof>) -> Result<ProofsStatus, Error> {
         let spendable = self.mint.check_spendable(&proofs).await?;
 
-        // Seperate proofs in spent and unspent based on mint response
+        // Separate proofs in spent and unspent based on mint response
         let (spendable, spent): (Vec<_>, Vec<_>) = proofs
             .iter()
             .zip(spendable.spendable.iter())
@@ -160,31 +160,31 @@ impl CashuWallet {
 
     /// Send
     pub async fn send(&self, amount: Amount, proofs: Vec<Proof>) -> Result<SendProofs, Error> {
-        let mut amount_avaliable = Amount::ZERO;
+        let mut amount_available = Amount::ZERO;
         let mut send_proofs = SendProofs::default();
 
         for proof in proofs {
-            if amount_avaliable > amount {
+            if amount_available > amount {
                 send_proofs.change_proofs.push(proof);
                 break;
             } else {
-                amount_avaliable += proof.amount;
+                amount_available += proof.amount;
                 send_proofs.send_proofs.push(proof);
             }
         }
 
-        if amount_avaliable.lt(&amount) {
+        if amount_available.lt(&amount) {
             println!("Not enough funds");
             return Err(Error::InsufficantFunds);
         }
 
-        // If amount avaliable is EQUAL to send amount no need to split
-        if amount_avaliable.eq(&amount) {
+        // If amount available is EQUAL to send amount no need to split
+        if amount_available.eq(&amount) {
             println!("Equal Proofs: {:#?}", send_proofs);
             return Ok(send_proofs);
         }
 
-        let amount_to_keep = amount_avaliable - amount;
+        let amount_to_keep = amount_available - amount;
         let amount_to_send = amount;
 
         let split_payload = self

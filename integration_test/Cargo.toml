@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 bitcoin = "0.30.0"
-cashu-rs = {path = ".."}
+cashu-crab = {path = ".."}
 tokio = { version = "1.28.0", features = ["full"] }
 url = "2.3.1"
 lightning-invoice = { version = "0.22.0", features=["serde"] }

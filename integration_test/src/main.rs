@@ -5,9 +5,9 @@ use std::thread;
 use std::time::Duration;
 
 use bitcoin::Amount;
-use cashu_rs::cashu_mint::CashuMint;
-use cashu_rs::cashu_wallet::CashuWallet;
-use cashu_rs::types::{BlindedMessages, MintKeys, ProofsStatus, Token, TokenData};
+use cashu_crab::cashu_mint::CashuMint;
+use cashu_crab::cashu_wallet::CashuWallet;
+use cashu_crab::types::{BlindedMessages, MintKeys, ProofsStatus, Token, TokenData};
 use lightning_invoice::Invoice;
 use url::Url;
 
@@ -56,7 +56,7 @@ async fn test_mint(wallet: &CashuWallet) -> String {
     let mint_req = wallet.request_mint(Amount::from_sat(21)).await.unwrap();
     println!("Mint Req: {:?}", mint_req.pr.to_string());
 
-    // Since before the mint happens the invoice in the mint req has to be payed this wait is here
+    // Since before the mint happens the invoice in the mint req has to be paid this wait is here
     // probally some way to simulate this in a better way
     // but for now pay it quick
     thread::sleep(Duration::from_secs(30));
