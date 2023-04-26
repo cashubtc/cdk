@@ -4,11 +4,11 @@ use bitcoin::Amount;
 
 use crate::{
     cashu_mint::CashuMint,
-    dhke::construct_proof,
+    dhke::{construct_proofs, unblind_message},
     error::Error,
     types::{
-        BlindedMessages, MintKeys, Proof, ProofsStatus, RequestMintResponse, SendProofs,
-        SplitPayload, SplitRequest, TokenData,
+        BlindedMessage, BlindedMessages, MintKeys, Proof, ProofsStatus, RequestMintResponse,
+        SendProofs, SplitPayload, SplitRequest, Token, TokenData,
     },
 };
 
@@ -41,6 +41,33 @@ impl CashuWallet {
     /// Request Mint
     pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
         self.mint.request_mint(amount).await
+    }
+
+    /// Mint Token
+    pub async fn mint_token(&self, amount: Amount, payment_hash: &str) -> Result<TokenData, Error> {
+        let blinded_messages = BlindedMessages::random(amount)?;
+
+        let mint_res = self
+            .mint
+            .mint(blinded_messages.clone(), payment_hash)
+            .await?;
+
+        let proofs = construct_proofs(
+            mint_res.promises,
+            blinded_messages.rs,
+            blinded_messages.secrets,
+            &self.keys,
+        )?;
+
+        let token = Token {
+            mint: self.mint.url.clone(),
+            proofs,
+        };
+
+        Ok(TokenData {
+            token: vec![token],
+            memo: None,
+        })
     }
 
     /// Check fee
@@ -80,7 +107,7 @@ impl CashuWallet {
             let split_response = self.mint.split(split_payload.split_payload).await?;
 
             // Proof to keep
-            let keep_proofs = construct_proof(
+            let keep_proofs = construct_proofs(
                 split_response.fst,
                 split_payload.keep_blinded_messages.rs,
                 split_payload.keep_blinded_messages.secrets,
@@ -88,7 +115,7 @@ impl CashuWallet {
             )?;
 
             // Proofs to send
-            let send_proofs = construct_proof(
+            let send_proofs = construct_proofs(
                 split_response.snd,
                 split_payload.send_blinded_messages.rs,
                 split_payload.send_blinded_messages.secrets,
@@ -167,7 +194,7 @@ impl CashuWallet {
         let split_response = self.mint.split(split_payload.split_payload).await?;
 
         // Proof to keep
-        let keep_proofs = construct_proof(
+        let keep_proofs = construct_proofs(
             split_response.fst,
             split_payload.keep_blinded_messages.rs,
             split_payload.keep_blinded_messages.secrets,
@@ -175,7 +202,7 @@ impl CashuWallet {
         )?;
 
         // Proofs to send
-        let send_proofs = construct_proof(
+        let send_proofs = construct_proofs(
             split_response.snd,
             split_payload.send_blinded_messages.rs,
             split_payload.send_blinded_messages.secrets,

@@ -8,7 +8,7 @@ pub mod serde_url {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(url.as_ref())
+        serializer.serialize_str(url.to_string().trim_end_matches('/'))
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Url, D::Error>

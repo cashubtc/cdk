@@ -94,7 +94,7 @@ fn _verify_message(a: SecretKey, unblinded_message: PublicKey, msg: &str) -> Res
 }
 
 /// Construct Proof
-pub fn construct_proof(
+pub fn construct_proofs(
     promises: Vec<Promise>,
     rs: Vec<SecretKey>,
     secrets: Vec<String>,
@@ -103,17 +103,9 @@ pub fn construct_proof(
     let mut proofs = vec![];
     for (i, promise) in promises.into_iter().enumerate() {
         let blinded_c = promise.c;
-        let a: PublicKey = PublicKey::from_sec1_bytes(
-            keys.0
-                .get(&promise.amount.to_sat())
-                .unwrap()
-                .to_owned()
-                .as_bytes(),
-        )
-        .unwrap();
+        let a: PublicKey = keys.0.get(&promise.amount.to_sat()).unwrap().to_owned();
         // println!("Construct proof Pub {:?}", serde_json::to_string(&a));
-        todo!();
-        let unblinded_signature = unblind_message(blinded_c, rs[i], a)?;
+        let unblinded_signature = unblind_message(blinded_c, rs[i].clone(), a)?;
 
         let proof = Proof {
             id: Some(promise.id),
