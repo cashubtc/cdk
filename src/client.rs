@@ -64,11 +64,10 @@ impl Client {
     pub async fn mint(
         &self,
         blinded_messages: BlindedMessages,
-        payment_hash: &str,
+        hash: &str,
     ) -> Result<PostMintResponse, Error> {
         let mut url = self.mint_url.join("mint")?;
-        url.query_pairs_mut()
-            .append_pair("payment_hash", payment_hash);
+        url.query_pairs_mut().append_pair("hash", hash);
 
         let request = MintRequest {
             outputs: blinded_messages.blinded_messages,

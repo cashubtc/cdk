@@ -45,17 +45,10 @@ impl CashuWallet {
     }
 
     /// Mint Token
-    pub async fn mint_token(
-        &self,
-        amount: Amount,
-        payment_hash: &str,
-    ) -> Result<Vec<Proof>, Error> {
+    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Vec<Proof>, Error> {
         let blinded_messages = BlindedMessages::random(amount)?;
 
-        let mint_res = self
-            .client
-            .mint(blinded_messages.clone(), payment_hash)
-            .await?;
+        let mint_res = self.client.mint(blinded_messages.clone(), hash).await?;
 
         let proofs = construct_proofs(
             mint_res.promises,
