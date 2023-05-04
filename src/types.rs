@@ -136,7 +136,7 @@ pub struct MintKeySets {
 pub struct RequestMintResponse {
     /// Bolt11 payment request
     pub pr: Invoice,
-    /// Hash of Invoice
+    /// Random Hash
     pub hash: String,
 }
 
