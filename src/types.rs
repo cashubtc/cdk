@@ -40,7 +40,7 @@ pub struct BlindedMessages {
 }
 
 impl BlindedMessages {
-    ///
+    /// Outputs for specfied amount with random secret
     pub fn random(amount: Amount) -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 
@@ -59,6 +59,7 @@ impl BlindedMessages {
         Ok(blinded_messages)
     }
 
+    /// Blank Outputs used for NUT-08 change
     pub fn blank() -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 
@@ -120,9 +121,21 @@ pub struct Proof {
     pub script: Option<String>,
 }
 
+/// List of proofs
+pub type Proofs = Vec<Proof>;
+
 /// Mint Keys [NUT-01]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintKeys(pub HashMap<u64, PublicKey>);
+
+impl MintKeys {
+    pub fn as_hashmap(&self) -> HashMap<u64, String> {
+        self.0
+            .iter()
+            .map(|(k, v)| (k.to_owned(), hex::encode(v.to_sec1_bytes())))
+            .collect()
+    }
+}
 
 /// Mint Keysets [UT-02]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +149,7 @@ pub struct MintKeySets {
 pub struct RequestMintResponse {
     /// Bolt11 payment request
     pub pr: Invoice,
-    /// Random Hash
+    /// Random hash MUST not be the hash of invoice
     pub hash: String,
 }
 
@@ -171,7 +184,7 @@ pub struct CheckFeesRequest {
 /// Melt Request [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltRequest {
-    pub proofs: Vec<Proof>,
+    pub proofs: Proofs,
     /// bollt11
     pub pr: Invoice,
     /// Blinded Message that can be used to return change [NUT-08]
@@ -192,7 +205,7 @@ pub struct MeltResponse {
 pub struct Melted {
     pub paid: bool,
     pub preimage: Option<String>,
-    pub change: Option<Vec<Proof>>,
+    pub change: Option<Proofs>,
 }
 
 /// Split Request [NUT-06]
@@ -200,7 +213,7 @@ pub struct Melted {
 pub struct SplitRequest {
     #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: Amount,
-    pub proofs: Vec<Proof>,
+    pub proofs: Proofs,
     pub outputs: Vec<BlindedMessage>,
 }
 
@@ -216,7 +229,7 @@ pub struct SplitResponse {
 /// Check spendabale request [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckSpendableRequest {
-    pub proofs: Vec<Proof>,
+    pub proofs: Proofs,
 }
 
 /// Check Spendable Response [NUT-07]
@@ -229,14 +242,14 @@ pub struct CheckSpendableResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {
-    pub spendable: Vec<Proof>,
-    pub spent: Vec<Proof>,
+    pub spendable: Proofs,
+    pub spent: Proofs,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendProofs {
-    pub change_proofs: Vec<Proof>,
-    pub send_proofs: Vec<Proof>,
+    pub change_proofs: Proofs,
+    pub send_proofs: Proofs,
 }
 
 /// Mint Version
@@ -296,14 +309,14 @@ pub struct MintInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Token {
+pub struct MintProofs {
     #[serde(with = "serde_url")]
     pub mint: Url,
-    pub proofs: Vec<Proof>,
+    pub proofs: Proofs,
 }
 
-impl Token {
-    fn new(mint_url: Url, proofs: Vec<Proof>) -> Self {
+impl MintProofs {
+    fn new(mint_url: Url, proofs: Proofs) -> Self {
         Self {
             mint: mint_url,
             proofs,
@@ -312,21 +325,33 @@ impl Token {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenData {
-    pub token: Vec<Token>,
+pub struct Token {
+    pub token: Vec<MintProofs>,
     pub memo: Option<String>,
 }
 
-impl TokenData {
-    pub fn new(mint_url: Url, proofs: Vec<Proof>, memo: Option<String>) -> Self {
+impl Token {
+    pub fn new(mint_url: Url, proofs: Proofs, memo: Option<String>) -> Self {
         Self {
-            token: vec![Token::new(mint_url, proofs)],
+            token: vec![MintProofs::new(mint_url, proofs)],
             memo,
         }
     }
+
+    pub fn token_info(&self) -> (u64, String) {
+        let mut amount = Amount::ZERO;
+
+        for proofs in &self.token {
+            for proof in &proofs.proofs {
+                amount += proof.amount;
+            }
+        }
+
+        (amount.to_sat(), self.token[0].mint.to_string())
+    }
 }
 
-impl FromStr for TokenData {
+impl FromStr for Token {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -338,12 +363,12 @@ impl FromStr for TokenData {
         let decoded = general_purpose::STANDARD.decode(s)?;
         let decoded_str = String::from_utf8(decoded)?;
         println!("decode: {:?}", decoded_str);
-        let token: TokenData = serde_json::from_str(&decoded_str)?;
+        let token: Token = serde_json::from_str(&decoded_str)?;
         Ok(token)
     }
 }
 
-impl ToString for TokenData {
+impl ToString for Token {
     fn to_string(&self) -> String {
         let json_string = serde_json::to_string(self).unwrap();
         let encoded = general_purpose::STANDARD.encode(json_string);
@@ -358,7 +383,7 @@ mod tests {
     #[test]
     fn test_proof_seralize() {
         let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
-        let proof: Vec<Proof> = serde_json::from_str(proof).unwrap();
+        let proof: Proofs = serde_json::from_str(proof).unwrap();
 
         assert_eq!(proof[0].clone().id.unwrap(), "DSAl9nvvyfva");
     }
@@ -366,7 +391,7 @@ mod tests {
     #[test]
     fn test_token_str_round_trip() {
         let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJpZCI6IkRTQWw5bnZ2eWZ2YSIsImFtb3VudCI6Miwic2VjcmV0IjoiRWhwZW5uQzlxQjNpRmxXOEZaX3BadyIsIkMiOiIwMmMwMjAwNjdkYjcyN2Q1ODZiYzMxODNhZWNmOTdmY2I4MDBjM2Y0Y2M0NzU5ZjY5YzYyNmM5ZGI1ZDhmNWI1ZDQifSx7ImlkIjoiRFNBbDludnZ5ZnZhIiwiYW1vdW50Ijo4LCJzZWNyZXQiOiJUbVM2Q3YwWVQ1UFVfNUFUVktudWt3IiwiQyI6IjAyYWM5MTBiZWYyOGNiZTVkNzMyNTQxNWQ1YzI2MzAyNmYxNWY5Yjk2N2EwNzljYTk3NzlhYjZlNWMyZGIxMzNhNyJ9XX1dLCJtZW1vIjoiVGhhbmt5b3UuIn0=";
-        let token = TokenData::from_str(token_str).unwrap();
+        let token = Token::from_str(token_str).unwrap();
 
         assert_eq!(
             token.token[0].mint,
@@ -376,7 +401,7 @@ mod tests {
 
         let encoded = &token.to_string();
 
-        let token_data = TokenData::from_str(encoded).unwrap();
+        let token_data = Token::from_str(encoded).unwrap();
 
         assert_eq!(token_data, token);
     }

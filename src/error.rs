@@ -23,4 +23,12 @@ pub enum Error {
     /// Insufficaint Funds
     #[error("Not enough funds")]
     InsufficantFunds,
+    #[error("Custom error: {0}")]
+    CustomError(String),
+    /// From hex error
+    #[error("From Hex Error: {0}")]
+    HexError(#[from] hex::FromHexError),
+    /// From elliptic curve
+    #[error("From Elliptic: {0}")]
+    EllipticError(#[from] k256::elliptic_curve::Error),
 }

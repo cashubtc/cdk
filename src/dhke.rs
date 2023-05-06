@@ -7,7 +7,7 @@ use bitcoin_hashes::Hash;
 use k256::{ProjectivePoint, PublicKey, Scalar, SecretKey};
 
 use crate::error::Error;
-use crate::types::{MintKeys, Promise, Proof};
+use crate::types::{MintKeys, Promise, Proof, Proofs};
 
 fn hash_to_curve(message: &[u8]) -> PublicKey {
     let mut msg_to_hash = message.to_vec();
@@ -68,7 +68,7 @@ pub fn construct_proofs(
     rs: Vec<SecretKey>,
     secrets: Vec<String>,
     keys: &MintKeys,
-) -> Result<Vec<Proof>, Error> {
+) -> Result<Proofs, Error> {
     let mut proofs = vec![];
     for (i, promise) in promises.into_iter().enumerate() {
         let blinded_c = promise.c;

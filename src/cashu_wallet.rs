@@ -8,23 +8,31 @@ use crate::{
     dhke::construct_proofs,
     error::Error,
     types::{
-        BlindedMessages, Melted, MintKeys, Proof, ProofsStatus, RequestMintResponse, SendProofs,
-        SplitPayload, SplitRequest, TokenData,
+        BlindedMessages, Melted, MintKeys, Proofs, ProofsStatus, RequestMintResponse, SendProofs,
+        SplitPayload, SplitRequest, Token,
     },
 };
 
+#[derive(Clone, Debug)]
 pub struct CashuWallet {
     pub client: Client,
     pub mint_keys: MintKeys,
+    pub balance: Amount,
 }
 
 impl CashuWallet {
     pub fn new(client: Client, mint_keys: MintKeys) -> Self {
-        Self { client, mint_keys }
+        Self {
+            client,
+            mint_keys,
+            balance: Amount::ZERO,
+        }
     }
 
+    // TODO: getter method for keys that if it cant get them try agian
+
     /// Check if a proof is spent
-    pub async fn check_proofs_spent(&self, proofs: Vec<Proof>) -> Result<ProofsStatus, Error> {
+    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<ProofsStatus, Error> {
         let spendable = self.client.check_spendable(&proofs).await?;
 
         // Separate proofs in spent and unspent based on mint response
@@ -45,7 +53,7 @@ impl CashuWallet {
     }
 
     /// Mint Token
-    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Vec<Proof>, Error> {
+    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
         let blinded_messages = BlindedMessages::random(amount)?;
 
         let mint_res = self.client.mint(blinded_messages.clone(), hash).await?;
@@ -66,8 +74,8 @@ impl CashuWallet {
     }
 
     /// Receive
-    pub async fn receive(&self, encoded_token: &str) -> Result<Vec<Proof>, Error> {
-        let token_data = TokenData::from_str(encoded_token)?;
+    pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, Error> {
+        let token_data = Token::from_str(encoded_token)?;
 
         let mut proofs = vec![];
         for token in token_data.token {
@@ -75,13 +83,12 @@ impl CashuWallet {
                 continue;
             }
 
-            let keys = if token.mint.eq(&self.client.mint_url) {
+            let keys = if token.mint.to_string().eq(&self.client.mint_url.to_string()) {
                 self.mint_keys.clone()
             } else {
-                // FIXME:
-                println!("No match");
-                self.mint_keys.clone()
-                // CashuMint::new(token.mint).get_keys().await.unwrap()
+                // println!("dd");
+                // self.mint_keys.clone()
+                Client::new(token.mint.as_str())?.get_keys().await.unwrap()
             };
 
             // Sum amount of all proofs
@@ -90,11 +97,13 @@ impl CashuWallet {
                 .iter()
                 .fold(Amount::ZERO, |acc, p| acc + p.amount);
 
-            let split_payload = self
-                .create_split(Amount::ZERO, amount, token.proofs)
-                .await?;
+            let split_payload = self.create_split(Amount::ZERO, amount, token.proofs)?;
 
-            let split_response = self.client.split(split_payload.split_payload).await?;
+            let split_response = self
+                .client
+                .split(split_payload.split_payload)
+                .await
+                .unwrap();
 
             // Proof to keep
             let keep_proofs = construct_proofs(
@@ -120,11 +129,11 @@ impl CashuWallet {
     }
 
     /// Create Split Payload
-    async fn create_split(
+    fn create_split(
         &self,
         keep_amount: Amount,
         send_amount: Amount,
-        proofs: Vec<Proof>,
+        proofs: Proofs,
     ) -> Result<SplitPayload, Error> {
         let keep_blinded_messages = BlindedMessages::random(keep_amount)?;
         let send_blinded_messages = BlindedMessages::random(send_amount)?;
@@ -148,7 +157,7 @@ impl CashuWallet {
     }
 
     /// Send
-    pub async fn send(&self, amount: Amount, proofs: Vec<Proof>) -> Result<SendProofs, Error> {
+    pub async fn send(&self, amount: Amount, proofs: Proofs) -> Result<SendProofs, Error> {
         let mut amount_available = Amount::ZERO;
         let mut send_proofs = SendProofs::default();
 
@@ -175,9 +184,8 @@ impl CashuWallet {
         let amount_to_keep = amount_available - amount;
         let amount_to_send = amount;
 
-        let split_payload = self
-            .create_split(amount_to_keep, amount_to_send, send_proofs.send_proofs)
-            .await?;
+        let split_payload =
+            self.create_split(amount_to_keep, amount_to_send, send_proofs.send_proofs)?;
 
         let split_response = self.client.split(split_payload.split_payload).await?;
 
@@ -209,7 +217,7 @@ impl CashuWallet {
     pub async fn melt(
         &self,
         invoice: lightning_invoice::Invoice,
-        proofs: Vec<Proof>,
+        proofs: Proofs,
     ) -> Result<Melted, Error> {
         let change = BlindedMessages::blank()?;
         let melt_response = self
@@ -234,7 +242,7 @@ impl CashuWallet {
         })
     }
 
-    pub fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> String {
-        TokenData::new(self.client.mint_url.clone(), proofs, memo).to_string()
+    pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> String {
+        Token::new(self.client.mint_url.clone(), proofs, memo).to_string()
     }
 }
