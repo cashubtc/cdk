@@ -301,7 +301,7 @@ pub struct MintInfo {
     /// long description
     pub description_long: String,
     /// contact methods to reach the mint operator
-    pub contact: HashMap<String, String>,
+    pub contact: Vec<Vec<String>>,
     /// shows which NUTs the mint supports
     pub nuts: Vec<String>,
     /// message of the day that the wallet must display to the user
