@@ -12,11 +12,11 @@ use lightning_invoice::Invoice;
 
 #[tokio::main]
 async fn main() {
-    let url = "https://legend.lnbits.com/cashu/api/v1/MWMnRmbewX92AHjcL55mRo/";
+    let url = "https:dev-cashu.thesimplekid.com";
     let client = Client::new(url).unwrap();
 
     // NUT-09
-    // test_get_mint_info(&mint).await;
+    test_get_mint_info(&client).await;
 
     let keys = test_get_mint_keys(&client).await;
     let wallet = CashuWallet::new(client.to_owned(), keys);
@@ -139,8 +139,8 @@ async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs) {
     println!("{:?}", res);
 }
 
-async fn _test_get_mint_info(mint: &Client) {
-    let _mint_info = mint.get_info().await.unwrap();
+async fn test_get_mint_info(mint: &Client) {
+    let mint_info = mint.get_info().await.unwrap();
 
     // println!("{:?}", mint_info);
 }

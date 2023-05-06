@@ -167,6 +167,8 @@ impl Client {
     /// Get Mint Info [NUT-09]
     pub async fn get_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join("info")?;
-        Ok(minreq::get(url).send()?.json::<MintInfo>()?)
+        let res = minreq::get(url).send()?.json::<Value>()?;
+
+        Ok(serde_json::from_value(res)?)
     }
 }
