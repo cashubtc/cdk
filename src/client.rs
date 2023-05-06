@@ -24,25 +24,42 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(mint_url: Url) -> Self {
-        Self { mint_url }
+    pub fn new(mint_url: &str) -> Result<Self, Error> {
+        // HACK
+        let mut mint_url = String::from(mint_url);
+        if !mint_url.ends_with('/') {
+            mint_url.push('/');
+        }
+        let mint_url = Url::parse(&mint_url).unwrap();
+        Ok(Self { mint_url })
     }
 
     /// Get Mint Keys [NUT-01]
     pub async fn get_keys(&self) -> Result<MintKeys, Error> {
         let url = self.mint_url.join("keys")?;
-        let keys = minreq::get(url).send()?.json::<HashMap<u64, String>>()?;
+        let keys = minreq::get(url.clone()).send()?.json::<Value>()?;
 
-        Ok(MintKeys(
-            keys.into_iter()
-                .map(|(k, v)| {
-                    (
-                        k,
-                        PublicKey::from_sec1_bytes(&hex::decode(v).unwrap()).unwrap(),
-                    )
-                })
-                .collect(),
-        ))
+        let keys: HashMap<u64, String> = match serde_json::from_value(keys.clone()) {
+            Ok(keys) => keys,
+            Err(_err) => {
+                return Err(Error::CustomError(format!(
+                    "url: {}, {}",
+                    url,
+                    serde_json::to_string(&keys)?
+                )))
+            }
+        };
+
+        let mint_keys: HashMap<u64, PublicKey> = keys
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let key = hex::decode(v).ok()?;
+                let public_key = PublicKey::from_sec1_bytes(&key).ok()?;
+                Some((k, public_key))
+            })
+            .collect();
+
+        Ok(MintKeys(mint_keys))
     }
 
     /// Get Keysets [NUT-02]
@@ -126,7 +143,7 @@ impl Client {
 
         // TODO: need to handle response error
         // specifically token already spent
-        // println!("{:?}", res);
+        println!("Split Res: {:?}", res);
 
         Ok(serde_json::from_value(res).unwrap())
     }

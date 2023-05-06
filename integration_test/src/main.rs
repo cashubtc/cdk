@@ -7,15 +7,13 @@ use std::time::Duration;
 use bitcoin::Amount;
 use cashu_crab::cashu_wallet::CashuWallet;
 use cashu_crab::client::Client;
-use cashu_crab::types::{MintKeys, Proof, Token, TokenData};
+use cashu_crab::types::{MintKeys, MintProofs, Proofs, Token};
 use lightning_invoice::Invoice;
-use url::Url;
 
 #[tokio::main]
 async fn main() {
-    let url =
-        Url::from_str("https://legend.lnbits.com/cashu/api/v1/SKvHRus9dmjWHhstHrsazW/").unwrap();
-    let client = Client::new(url);
+    let url = "https://legend.lnbits.com/cashu/api/v1/MWMnRmbewX92AHjcL55mRo/";
+    let client = Client::new(url).unwrap();
 
     // NUT-09
     // test_get_mint_info(&mint).await;
@@ -25,16 +23,14 @@ async fn main() {
     test_get_mint_keysets(&client).await;
     test_request_mint(&wallet).await;
     let proofs = test_mint(&wallet).await;
-    let token = TokenData::new(
+    let token = Token::new(
         client.mint_url.clone(),
         proofs,
         Some("Hello World".to_string()),
     );
     let new_token = test_receive(&wallet, &token.to_string()).await;
 
-    let proofs = TokenData::from_str(&new_token).unwrap().token[0]
-        .clone()
-        .proofs;
+    let proofs = Token::from_str(&new_token).unwrap().token[0].clone().proofs;
     test_send(&wallet, proofs.clone()).await;
 
     let spendable = test_check_spendable(&client, &new_token).await;
@@ -60,13 +56,13 @@ async fn test_get_mint_keysets(client: &Client) {
 }
 
 async fn test_request_mint(wallet: &CashuWallet) {
-    let mint = wallet.request_mint(Amount::from_sat(21)).await.unwrap();
+    let mint = wallet.request_mint(Amount::from_sat(5)).await.unwrap();
 
     assert!(mint.pr.check_signature().is_ok())
 }
 
-async fn test_mint(wallet: &CashuWallet) -> Vec<Proof> {
-    let mint_req = wallet.request_mint(Amount::from_sat(21)).await.unwrap();
+async fn test_mint(wallet: &CashuWallet) -> Proofs {
+    let mint_req = wallet.request_mint(Amount::from_sat(5)).await.unwrap();
     println!("Mint Req: {:?}", mint_req.pr.to_string());
 
     // Since before the mint happens the invoice in the mint req has to be paid this wait is here
@@ -75,7 +71,7 @@ async fn test_mint(wallet: &CashuWallet) -> Vec<Proof> {
     thread::sleep(Duration::from_secs(30));
 
     wallet
-        .mint_token(Amount::from_sat(21), &mint_req.hash)
+        .mint_token(Amount::from_sat(5), &mint_req.hash)
         .await
         .unwrap()
 
@@ -92,12 +88,12 @@ async fn test_check_fees(mint: &Client) {
 async fn test_receive(wallet: &CashuWallet, token: &str) -> String {
     let prom = wallet.receive(token).await.unwrap();
     println!("{:?}", prom);
-    let token = Token {
+    let token = MintProofs {
         mint: wallet.client.mint_url.clone(),
         proofs: prom,
     };
 
-    let token = TokenData {
+    let token = Token {
         token: vec![token],
         memo: Some("Hello world".to_string()),
     };
@@ -107,12 +103,12 @@ async fn test_receive(wallet: &CashuWallet, token: &str) -> String {
     s
 }
 
-async fn test_check_spendable(client: &Client, token: &str) -> Vec<Proof> {
+async fn test_check_spendable(client: &Client, token: &str) -> Proofs {
     let mint_keys = client.get_keys().await.unwrap();
 
     let wallet = CashuWallet::new(client.to_owned(), mint_keys);
 
-    let token_data = TokenData::from_str(token).unwrap();
+    let token_data = Token::from_str(token).unwrap();
     let spendable = wallet
         .check_proofs_spent(token_data.token[0].clone().proofs)
         .await
@@ -124,7 +120,7 @@ async fn test_check_spendable(client: &Client, token: &str) -> Vec<Proof> {
     spendable.spendable
 }
 
-async fn test_send(wallet: &CashuWallet, proofs: Vec<Proof>) {
+async fn test_send(wallet: &CashuWallet, proofs: Proofs) {
     let send = wallet.send(Amount::from_sat(2), proofs).await.unwrap();
 
     println!("{:?}", send);
@@ -137,7 +133,7 @@ async fn test_send(wallet: &CashuWallet, proofs: Vec<Proof>) {
     println!("Send Token: {send_token}");
 }
 
-async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Vec<Proof>) {
+async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs) {
     let res = wallet.melt(invoice, proofs).await.unwrap();
 
     println!("{:?}", res);
