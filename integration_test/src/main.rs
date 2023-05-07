@@ -10,10 +10,16 @@ use cashu_crab::client::Client;
 use cashu_crab::types::{MintKeys, MintProofs, Proofs, Token};
 use lightning_invoice::Invoice;
 
+const MINTURL: &str = "https:dev-cashu.thesimplekid.com";
+
+const MINTAMOUNT: u64 = 21;
+const SENDAMOUNT: u64 = 5;
+
+const MELTINVOICE: &str = "lnbc10n1pj9d299pp5dwz8y2xuk3yrrfuayclwpffgnd3htfzmxvd8xqa4hzcp58kdeq2sdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5hdjrv0gx59qy7m4a9xk66m0kvja9ljjzh6zp6wn8np8kky5xnqks9qyyssqd09y339sp53l0apkrt8klmrrvl7qmxd2237p8m8cz8xcl725ems8al55hkjl6c2sjx755s7m8rlmhwej9u8glv2ltwzfssddzpwk05cp4re0t3";
+
 #[tokio::main]
 async fn main() {
-    let url = "https:dev-cashu.thesimplekid.com";
-    let client = Client::new(url).unwrap();
+    let client = Client::new(MINTURL).unwrap();
 
     // NUT-09
     test_get_mint_info(&client).await;
@@ -30,13 +36,11 @@ async fn main() {
     );
     let new_token = test_receive(&wallet, &token.to_string()).await;
 
-    let proofs = Token::from_str(&new_token).unwrap().token[0].clone().proofs;
-    test_send(&wallet, proofs.clone()).await;
-
+    let _proofs = Token::from_str(&new_token).unwrap().token[0].clone().proofs;
     let spendable = test_check_spendable(&client, &new_token).await;
+    let proofs = test_send(&wallet, spendable).await;
 
-    let invoice = Invoice::from_str("lnbc20n1pjy3tp8pp5mmrp5vhzrmsz4d6sew77aw0wr7dfxptumxvstsl8peu8ypjhdmwsdq5g9kxy7fqd9h8vmmfvdjscqzpgxqyz5vqsp5aajwlqyxwwtk57tnxzgf9rk6mp0u3z33ksylqj6lu7et7dvlkdvs9qyyssq02rdva0hvamlgvfau0mqnknglk02v6d6x56xh5s8dtx9crtdrwf9hf6f87kk2n7tt0fsjg4xsyd50rqayxln5p9ygvetqtyrrtvy5ygpcjjwek").unwrap();
-    test_melt(&wallet, invoice, spendable).await;
+    test_melt(&wallet, Invoice::from_str(MELTINVOICE).unwrap(), proofs).await;
 
     test_check_fees(&client).await;
 }
@@ -56,13 +60,19 @@ async fn test_get_mint_keysets(client: &Client) {
 }
 
 async fn test_request_mint(wallet: &CashuWallet) {
-    let mint = wallet.request_mint(Amount::from_sat(5)).await.unwrap();
+    let mint = wallet
+        .request_mint(Amount::from_sat(MINTAMOUNT))
+        .await
+        .unwrap();
 
     assert!(mint.pr.check_signature().is_ok())
 }
 
 async fn test_mint(wallet: &CashuWallet) -> Proofs {
-    let mint_req = wallet.request_mint(Amount::from_sat(5)).await.unwrap();
+    let mint_req = wallet
+        .request_mint(Amount::from_sat(MINTAMOUNT))
+        .await
+        .unwrap();
     println!("Mint Req: {:?}", mint_req.pr.to_string());
 
     // Since before the mint happens the invoice in the mint req has to be paid this wait is here
@@ -71,7 +81,7 @@ async fn test_mint(wallet: &CashuWallet) -> Proofs {
     thread::sleep(Duration::from_secs(30));
 
     wallet
-        .mint_token(Amount::from_sat(5), &mint_req.hash)
+        .mint_token(Amount::from_sat(MINTAMOUNT), &mint_req.hash)
         .await
         .unwrap()
 
@@ -79,7 +89,7 @@ async fn test_mint(wallet: &CashuWallet) -> Proofs {
 }
 
 async fn test_check_fees(mint: &Client) {
-    let invoice = Invoice::from_str("lnbc10n1p3a6s0dsp5n55r506t2fv4r0mjcg30v569nk2u9s40ur4v3r3mgtscjvkvnrqqpp5lzfv8fmjzduelk74y9rsrxrayvhyzcdsh3zkdgv0g50napzalvqsdqhf9h8vmmfvdjn5gp58qengdqxq8p3aaymdcqpjrzjqwryaup9lh50kkranzgcdnn2fgvx390wgj5jd07rwr3vxeje0glc7z70cgqqg4sqqqqqqqlgqqqqrucqjq9qyysgqrjky5axsldzhqsjwsc38xa37k6t04le3ws4t26nqej62vst5xkz56qw85r6c4a3tr79588e0ceuuahwgfnkqc6n6269unlwqtvwr5vqqy0ncdq").unwrap();
+    let invoice = Invoice::from_str(MELTINVOICE).unwrap();
 
     let _fee = mint.check_fees(invoice).await.unwrap();
     // println!("{fee:?}");
@@ -99,7 +109,7 @@ async fn test_receive(wallet: &CashuWallet, token: &str) -> String {
     };
 
     let s = token.to_string();
-    println!("{s}");
+    // println!("{s}");
     s
 }
 
@@ -114,23 +124,29 @@ async fn test_check_spendable(client: &Client, token: &str) -> Proofs {
         .await
         .unwrap();
 
+    println!("Spendable: {:?}", spendable);
     assert!(!spendable.spendable.is_empty());
-    // println!("Spendable: {:?}", spendable);
 
     spendable.spendable
 }
 
-async fn test_send(wallet: &CashuWallet, proofs: Proofs) {
-    let send = wallet.send(Amount::from_sat(2), proofs).await.unwrap();
+async fn test_send(wallet: &CashuWallet, proofs: Proofs) -> Proofs {
+    let send = wallet
+        .send(Amount::from_sat(SENDAMOUNT), proofs)
+        .await
+        .unwrap();
 
     println!("{:?}", send);
 
     let keep_token = wallet.proofs_to_token(send.change_proofs, Some("Keeping these".to_string()));
 
-    let send_token = wallet.proofs_to_token(send.send_proofs, Some("Sending these".to_string()));
+    let send_token =
+        wallet.proofs_to_token(send.send_proofs.clone(), Some("Sending these".to_string()));
 
     println!("Keep Token: {keep_token}");
     println!("Send Token: {send_token}");
+
+    send.send_proofs
 }
 
 async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs) {
