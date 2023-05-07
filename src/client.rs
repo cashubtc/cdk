@@ -129,6 +129,8 @@ impl Client {
             .send()?
             .json::<Value>()?;
 
+        println!("{:?}", value);
+
         Ok(serde_json::from_value(value)?)
     }
 
