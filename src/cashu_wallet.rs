@@ -29,7 +29,7 @@ impl CashuWallet {
         }
     }
 
-    // TODO: getter method for keys that if it cant get them try agian
+    // TODO: getter method for keys that if it cant get them try again
 
     /// Check if a proof is spent
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<ProofsStatus, Error> {

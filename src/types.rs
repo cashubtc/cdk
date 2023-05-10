@@ -40,7 +40,7 @@ pub struct BlindedMessages {
 }
 
 impl BlindedMessages {
-    /// Outputs for specfied amount with random secret
+    /// Outputs for speceifed amount with random secret
     pub fn random(amount: Amount) -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 

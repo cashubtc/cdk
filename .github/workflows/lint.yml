@@ -18,6 +18,8 @@ jobs:
     - name: Set Toolchain
       # https://github.com/dtolnay/rust-toolchain
       uses: dtolnay/rust-toolchain@stable
+    - name: typos-action
+      uses: crate-ci/typos@v1.0.4
     - name: Run fmt
       run: cargo fmt --all --check 
     - name: Run clippy
