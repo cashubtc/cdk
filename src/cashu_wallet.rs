@@ -162,13 +162,13 @@ impl CashuWallet {
         let mut send_proofs = SendProofs::default();
 
         for proof in proofs {
+            let proof_value = proof.amount;
             if amount_available > amount {
                 send_proofs.change_proofs.push(proof);
-                break;
             } else {
-                amount_available += proof.amount;
                 send_proofs.send_proofs.push(proof);
             }
+            amount_available += proof_value;
         }
 
         if amount_available.lt(&amount) {
