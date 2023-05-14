@@ -90,10 +90,18 @@ impl Client {
             outputs: blinded_messages.blinded_messages,
         };
 
-        Ok(minreq::post(url)
+        let res = minreq::post(url)
             .with_json(&request)?
             .send()?
-            .json::<PostMintResponse>()?)
+            .json::<Value>()?;
+
+        let response: Result<PostMintResponse, serde_json::Error> =
+            serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(res.to_string())),
+        }
     }
 
     /// Check Max expected fee [NUT-05]
@@ -129,9 +137,13 @@ impl Client {
             .send()?
             .json::<Value>()?;
 
-        println!("{:?}", value);
+        let response: Result<MeltResponse, serde_json::Error> =
+            serde_json::from_value(value.clone());
 
-        Ok(serde_json::from_value(value)?)
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(value.to_string())),
+        }
     }
 
     /// Split Token [NUT-06]
