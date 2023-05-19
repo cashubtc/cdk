@@ -7,8 +7,7 @@ use std::time::Duration;
 use bitcoin::Amount;
 use cashu_crab::cashu_wallet::CashuWallet;
 use cashu_crab::client::Client;
-use cashu_crab::types::{MintKeys, MintProofs, Proofs, Token};
-use lightning_invoice::Invoice;
+use cashu_crab::types::{Invoice, MintKeys, MintProofs, Proofs, Token};
 
 const MINTURL: &str = "https:dev-cashu.thesimplekid.com";
 
@@ -34,7 +33,7 @@ async fn main() {
         proofs,
         Some("Hello World".to_string()),
     );
-    let new_token = test_receive(&wallet, &token.to_string()).await;
+    let new_token = test_receive(&wallet, &token.convert_to_string().unwrap()).await;
 
     let _proofs = Token::from_str(&new_token).unwrap().token[0].clone().proofs;
     let spendable = test_check_spendable(&client, &new_token).await;
@@ -108,9 +107,9 @@ async fn test_receive(wallet: &CashuWallet, token: &str) -> String {
         memo: Some("Hello world".to_string()),
     };
 
-    let s = token.to_string();
+    let s = token.convert_to_string();
     // println!("{s}");
-    s
+    s.unwrap()
 }
 
 async fn test_check_spendable(client: &Client, token: &str) -> Proofs {
@@ -138,10 +137,13 @@ async fn test_send(wallet: &CashuWallet, proofs: Proofs) -> Proofs {
 
     println!("{:?}", send);
 
-    let keep_token = wallet.proofs_to_token(send.change_proofs, Some("Keeping these".to_string()));
+    let keep_token = wallet
+        .proofs_to_token(send.change_proofs, Some("Keeping these".to_string()))
+        .unwrap();
 
-    let send_token =
-        wallet.proofs_to_token(send.send_proofs.clone(), Some("Sending these".to_string()));
+    let send_token = wallet
+        .proofs_to_token(send.send_proofs.clone(), Some("Sending these".to_string()))
+        .unwrap();
 
     println!("Keep Token: {keep_token}");
     println!("Send Token: {send_token}");

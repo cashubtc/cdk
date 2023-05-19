@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use bitcoin::Amount;
 use k256::PublicKey;
-use lightning_invoice::Invoice;
 use serde_json::Value;
 use url::Url;
 
+pub use crate::Invoice;
 use crate::{
     error::Error,
     types::{
@@ -30,7 +30,7 @@ impl Client {
         if !mint_url.ends_with('/') {
             mint_url.push('/');
         }
-        let mint_url = Url::parse(&mint_url).unwrap();
+        let mint_url = Url::parse(&mint_url)?;
         Ok(Self { mint_url })
     }
 
@@ -159,7 +159,7 @@ impl Client {
         // specifically token already spent
         println!("Split Res: {:?}", res);
 
-        Ok(serde_json::from_value(res).unwrap())
+        Ok(serde_json::from_value(res)?)
     }
 
     /// Spendable check [NUT-07]

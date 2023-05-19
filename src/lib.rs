@@ -5,3 +5,5 @@ pub mod error;
 pub mod serde_utils;
 pub mod types;
 pub mod utils;
+
+pub use lightning_invoice::Invoice;
