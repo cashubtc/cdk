@@ -41,7 +41,7 @@ pub fn blind_message(
 
     let b = ProjectivePoint::from(y) + ProjectivePoint::from(&r.public_key());
 
-    Ok((PublicKey::try_from(b).unwrap(), r))
+    Ok((PublicKey::try_from(b)?, r))
 }
 
 /// Unblind Message (Alice Step 3)
@@ -59,7 +59,7 @@ pub fn unblind_message(
             .as_affine()
             .mul(Scalar::from(r.as_scalar_primitive()));
 
-    Ok(PublicKey::try_from(c).unwrap())
+    Ok(PublicKey::try_from(c)?)
 }
 
 /// Construct Proof
@@ -72,7 +72,12 @@ pub fn construct_proofs(
     let mut proofs = vec![];
     for (i, promise) in promises.into_iter().enumerate() {
         let blinded_c = promise.c;
-        let a: PublicKey = keys.0.get(&promise.amount.to_sat()).unwrap().to_owned();
+        let a: PublicKey = keys
+            .0
+            .get(&promise.amount.to_sat())
+            .ok_or(Error::CustomError("Could not get proofs".to_string()))?
+            .to_owned();
+
         let unblinded_signature = unblind_message(blinded_c, rs[i].clone(), a)?;
 
         let proof = Proof {

@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use bitcoin::Amount;
 
+pub use crate::Invoice;
 use crate::{
     client::Client,
     dhke::construct_proofs,
@@ -69,7 +70,7 @@ impl CashuWallet {
     }
 
     /// Check fee
-    pub async fn check_fee(&self, invoice: lightning_invoice::Invoice) -> Result<Amount, Error> {
+    pub async fn check_fee(&self, invoice: Invoice) -> Result<Amount, Error> {
         Ok(self.client.check_fees(invoice).await?.fee)
     }
 
@@ -88,7 +89,7 @@ impl CashuWallet {
             } else {
                 // println!("dd");
                 // self.mint_keys.clone()
-                Client::new(token.mint.as_str())?.get_keys().await.unwrap()
+                Client::new(token.mint.as_str())?.get_keys().await?
             };
 
             // Sum amount of all proofs
@@ -99,11 +100,7 @@ impl CashuWallet {
 
             let split_payload = self.create_split(Amount::ZERO, amount, token.proofs)?;
 
-            let split_response = self
-                .client
-                .split(split_payload.split_payload)
-                .await
-                .unwrap();
+            let split_response = self.client.split(split_payload.split_payload).await?;
 
             // Proof to keep
             let keep_proofs = construct_proofs(
@@ -214,11 +211,7 @@ impl CashuWallet {
         })
     }
 
-    pub async fn melt(
-        &self,
-        invoice: lightning_invoice::Invoice,
-        proofs: Proofs,
-    ) -> Result<Melted, Error> {
+    pub async fn melt(&self, invoice: Invoice, proofs: Proofs) -> Result<Melted, Error> {
         let change = BlindedMessages::blank()?;
         let melt_response = self
             .client
@@ -242,7 +235,7 @@ impl CashuWallet {
         })
     }
 
-    pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> String {
-        Token::new(self.client.mint_url.clone(), proofs, memo).to_string()
+    pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
+        Token::new(self.client.mint_url.clone(), proofs, memo).convert_to_string()
     }
 }

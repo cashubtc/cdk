@@ -5,11 +5,11 @@ use std::{collections::HashMap, str::FromStr};
 use base64::{engine::general_purpose, Engine as _};
 use bitcoin::Amount;
 use k256::{PublicKey, SecretKey};
-use lightning_invoice::Invoice;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
 use crate::utils::generate_secret;
+pub use crate::Invoice;
 use crate::{
     dhke::blind_message, error::Error, serde_utils, serde_utils::serde_url, utils::split_amount,
 };
@@ -368,11 +368,11 @@ impl FromStr for Token {
     }
 }
 
-impl ToString for Token {
-    fn to_string(&self) -> String {
-        let json_string = serde_json::to_string(self).unwrap();
+impl Token {
+    pub fn convert_to_string(&self) -> Result<String, Error> {
+        let json_string = serde_json::to_string(self)?;
         let encoded = general_purpose::STANDARD.encode(json_string);
-        format!("cashuA{}", encoded)
+        Ok(format!("cashuA{}", encoded))
     }
 }
 
@@ -399,7 +399,7 @@ mod tests {
         );
         assert_eq!(token.token[0].proofs[0].clone().id.unwrap(), "DSAl9nvvyfva");
 
-        let encoded = &token.to_string();
+        let encoded = &token.convert_to_string().unwrap();
 
         let token_data = Token::from_str(encoded).unwrap();
 
