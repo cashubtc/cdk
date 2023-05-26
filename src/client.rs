@@ -1,20 +1,17 @@
 //! Client to connet to mint
 
-use std::collections::HashMap;
-
 use bitcoin::Amount;
-use k256::PublicKey;
 use serde_json::Value;
 use url::Url;
 
 pub use crate::Invoice;
 use crate::{
     error::Error,
+    keyset::{Keys, MintKeySets},
     types::{
         BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse,
         CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintInfo,
-        MintKeySets, MintKeys, MintRequest, PostMintResponse, Proof, RequestMintResponse,
-        SplitRequest, SplitResponse,
+        MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
     },
 };
 
@@ -35,31 +32,33 @@ impl Client {
     }
 
     /// Get Mint Keys [NUT-01]
-    pub async fn get_keys(&self) -> Result<MintKeys, Error> {
+    pub async fn get_keys(&self) -> Result<Keys, Error> {
         let url = self.mint_url.join("keys")?;
-        let keys = minreq::get(url.clone()).send()?.json::<Value>()?;
+        let keys = minreq::get(url).send()?.json::<Value>()?;
 
-        let keys: HashMap<u64, String> = match serde_json::from_value(keys.clone()) {
-            Ok(keys) => keys,
-            Err(_err) => {
-                return Err(Error::CustomError(format!(
-                    "url: {}, {}",
-                    url,
-                    serde_json::to_string(&keys)?
-                )))
-            }
-        };
+        let keys: Keys = serde_json::from_str(&keys.to_string())?;
+        /*
+                let keys: BTreeMap<u64, String> = match serde_json::from_value(keys.clone()) {
+                    Ok(keys) => keys,
+                    Err(_err) => {
+                        return Err(Error::CustomError(format!(
+                            "url: {}, {}",
+                            url,
+                            serde_json::to_string(&keys)?
+                        )))
+                    }
+                };
 
-        let mint_keys: HashMap<u64, PublicKey> = keys
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let key = hex::decode(v).ok()?;
-                let public_key = PublicKey::from_sec1_bytes(&key).ok()?;
-                Some((k, public_key))
-            })
-            .collect();
-
-        Ok(MintKeys(mint_keys))
+                let mint_keys: BTreeMap<u64, PublicKey> = keys
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        let key = hex::decode(v).ok()?;
+                        let public_key = PublicKey::from_sec1_bytes(&key).ok()?;
+                        Some((k, public_key))
+                    })
+                    .collect();
+        */
+        Ok(keys)
     }
 
     /// Get Keysets [NUT-02]

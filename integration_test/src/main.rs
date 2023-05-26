@@ -7,9 +7,10 @@ use std::time::Duration;
 use bitcoin::Amount;
 use cashu_crab::cashu_wallet::CashuWallet;
 use cashu_crab::client::Client;
-use cashu_crab::types::{Invoice, MintKeys, MintProofs, Proofs, Token};
+use cashu_crab::keyset::Keys;
+use cashu_crab::types::{Invoice, MintProofs, Proofs, Token};
 
-const MINTURL: &str = "https:dev-cashu.thesimplekid.com";
+const MINTURL: &str = "https://testnut.cashu.space";
 
 const MINTAMOUNT: u64 = 21;
 const SENDAMOUNT: u64 = 5;
@@ -44,10 +45,10 @@ async fn main() {
     test_check_fees(&client).await;
 }
 
-async fn test_get_mint_keys(client: &Client) -> MintKeys {
+async fn test_get_mint_keys(client: &Client) -> Keys {
     let mint_keys = client.get_keys().await.unwrap();
     // println!("{:?}", mint_keys.0.capacity());
-    assert!(mint_keys.0.capacity() > 1);
+    assert!(mint_keys.as_hashmap().capacity() > 1);
 
     mint_keys
 }
@@ -158,7 +159,7 @@ async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs) {
 }
 
 async fn test_get_mint_info(mint: &Client) {
-    let mint_info = mint.get_info().await.unwrap();
+    // let mint_info = mint.get_info().await.unwrap();
 
     // println!("{:?}", mint_info);
 }

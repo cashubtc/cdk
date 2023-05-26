@@ -8,8 +8,9 @@ use crate::{
     client::Client,
     dhke::construct_proofs,
     error::Error,
+    keyset::Keys,
     types::{
-        BlindedMessages, Melted, MintKeys, Proofs, ProofsStatus, RequestMintResponse, SendProofs,
+        BlindedMessages, Melted, Proofs, ProofsStatus, RequestMintResponse, SendProofs,
         SplitPayload, SplitRequest, Token,
     },
 };
@@ -17,12 +18,12 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct CashuWallet {
     pub client: Client,
-    pub mint_keys: MintKeys,
+    pub mint_keys: Keys,
     pub balance: Amount,
 }
 
 impl CashuWallet {
-    pub fn new(client: Client, mint_keys: MintKeys) -> Self {
+    pub fn new(client: Client, mint_keys: Keys) -> Self {
         Self {
             client,
             mint_keys,
