@@ -1,6 +1,6 @@
 //! Types for `cashu-rs`
 
-use std::{collections::HashMap, str::FromStr};
+use std::str::FromStr;
 
 use base64::{engine::general_purpose, Engine as _};
 use bitcoin::Amount;
@@ -123,26 +123,6 @@ pub struct Proof {
 
 /// List of proofs
 pub type Proofs = Vec<Proof>;
-
-/// Mint Keys [NUT-01]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MintKeys(pub HashMap<u64, PublicKey>);
-
-impl MintKeys {
-    pub fn as_hashmap(&self) -> HashMap<u64, String> {
-        self.0
-            .iter()
-            .map(|(k, v)| (k.to_owned(), hex::encode(v.to_sec1_bytes())))
-            .collect()
-    }
-}
-
-/// Mint Keysets [UT-02]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintKeySets {
-    /// set of public keys that the mint generates
-    pub keysets: Vec<String>,
-}
 
 /// Mint request response [NUT-03]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
