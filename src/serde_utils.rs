@@ -64,4 +64,39 @@ pub mod serde_public_key {
         let decoded = hex::decode(encoded).map_err(serde::de::Error::custom)?;
         PublicKey::from_sec1_bytes(&decoded).map_err(serde::de::Error::custom)
     }
+
+    pub mod opt {
+        use k256::PublicKey;
+        use serde::{Deserialize, Deserializer};
+
+        pub fn serialize<S>(pubkey: &Option<PublicKey>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            match pubkey {
+                Some(pubkey) => {
+                    let encoded = hex::encode(pubkey.to_sec1_bytes());
+                    serializer.serialize_str(&encoded)
+                }
+                None => serializer.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<PublicKey>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let option_str: Option<String> = Option::deserialize(deserializer)?;
+
+            match option_str {
+                Some(encoded) => {
+                    let bytes = hex::decode(encoded).map_err(serde::de::Error::custom)?;
+                    let pubkey =
+                        PublicKey::from_sec1_bytes(&bytes).map_err(serde::de::Error::custom)?;
+                    Ok(Some(pubkey))
+                }
+                None => Ok(None),
+            }
+        }
+    }
 }
