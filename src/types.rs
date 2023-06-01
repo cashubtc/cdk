@@ -270,22 +270,22 @@ impl<'de> Deserialize<'de> for MintVersion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
-    pub name: String,
+    pub name: Option<String>,
     /// hex pubkey of the mint
-    #[serde(with = "serde_utils::serde_public_key")]
-    pub pubkey: PublicKey,
+    #[serde(with = "serde_utils::serde_public_key::opt")]
+    pub pubkey: Option<PublicKey>,
     /// implementation name and the version running
-    pub version: MintVersion,
+    pub version: Option<MintVersion>,
     /// short description of the mint
-    pub description: String,
+    pub description: Option<String>,
     /// long description
-    pub description_long: String,
+    pub description_long: Option<String>,
     /// contact methods to reach the mint operator
     pub contact: Vec<Vec<String>>,
     /// shows which NUTs the mint supports
     pub nuts: Vec<String>,
     /// message of the day that the wallet must display to the user
-    pub motd: String,
+    pub motd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
