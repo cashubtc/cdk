@@ -81,7 +81,7 @@ async fn test_mint(wallet: &CashuWallet) -> Proofs {
     thread::sleep(Duration::from_secs(30));
 
     wallet
-        .mint_token(Amount::from_sat(MINTAMOUNT), &mint_req.hash)
+        .mint(Amount::from_sat(MINTAMOUNT), &mint_req.hash)
         .await
         .unwrap()
 
@@ -120,7 +120,7 @@ async fn test_check_spendable(client: &Client, token: &str) -> Proofs {
 
     let token_data = Token::from_str(token).unwrap();
     let spendable = wallet
-        .check_proofs_spent(token_data.token[0].clone().proofs)
+        .check_proofs_spent(&token_data.token[0].clone().proofs)
         .await
         .unwrap();
 
@@ -158,7 +158,7 @@ async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs) {
     println!("{:?}", res);
 }
 
-async fn test_get_mint_info(mint: &Client) {
+async fn test_get_mint_info(_mint: &Client) {
     // let mint_info = mint.get_info().await.unwrap();
 
     // println!("{:?}", mint_info);
