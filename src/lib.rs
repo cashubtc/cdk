@@ -7,4 +7,5 @@ pub mod serde_utils;
 pub mod types;
 pub mod utils;
 
+pub use bitcoin::Amount;
 pub use lightning_invoice::Invoice;
