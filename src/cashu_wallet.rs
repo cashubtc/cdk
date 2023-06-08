@@ -34,8 +34,8 @@ impl CashuWallet {
     // TODO: getter method for keys that if it cant get them try again
 
     /// Check if a proof is spent
-    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<ProofsStatus, Error> {
-        let spendable = self.client.check_spendable(&proofs).await?;
+    pub async fn check_proofs_spent(&self, proofs: &Proofs) -> Result<ProofsStatus, Error> {
+        let spendable = self.client.check_spendable(proofs).await?;
 
         // Separate proofs in spent and unspent based on mint response
         let (spendable, spent): (Vec<_>, Vec<_>) = proofs
@@ -55,7 +55,15 @@ impl CashuWallet {
     }
 
     /// Mint Token
-    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
+    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
+        let proofs = self.mint(amount, hash).await?;
+
+        let token = Token::new(self.client.mint_url.clone(), proofs, None);
+        Ok(token)
+    }
+
+    /// Mint Proofs
+    pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
         let blinded_messages = BlindedMessages::random(amount)?;
 
         let mint_res = self.client.mint(blinded_messages.clone(), hash).await?;
