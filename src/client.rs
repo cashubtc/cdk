@@ -64,7 +64,14 @@ impl Client {
     /// Get Keysets [NUT-02]
     pub async fn get_keysets(&self) -> Result<MintKeySets, Error> {
         let url = self.mint_url.join("keysets")?;
-        Ok(minreq::get(url).send()?.json::<MintKeySets>()?)
+        let res = minreq::get(url).send()?.json::<Value>()?;
+
+        let response: Result<MintKeySets, serde_json::Error> = serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(res.to_string())),
+        }
     }
 
     /// Request Mint [NUT-03]
@@ -73,7 +80,15 @@ impl Client {
         url.query_pairs_mut()
             .append_pair("amount", &amount.to_sat().to_string());
 
-        Ok(minreq::get(url).send()?.json::<RequestMintResponse>()?)
+        let res = minreq::get(url).send()?.json::<Value>()?;
+
+        let response: Result<RequestMintResponse, serde_json::Error> =
+            serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(res.to_string())),
+        }
     }
 
     /// Mint Tokens [NUT-04]
@@ -109,10 +124,18 @@ impl Client {
 
         let request = CheckFeesRequest { pr: invoice };
 
-        Ok(minreq::post(url)
+        let res = minreq::post(url)
             .with_json(&request)?
             .send()?
-            .json::<CheckFeesResponse>()?)
+            .json::<Value>()?;
+
+        let response: Result<CheckFeesResponse, serde_json::Error> =
+            serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(res.to_string())),
+        }
     }
 
     /// Melt [NUT-05]
@@ -154,11 +177,13 @@ impl Client {
             .send()?
             .json::<Value>()?;
 
-        // TODO: need to handle response error
-        // specifically token already spent
-        println!("Split Res: {:?}", res);
+        let response: Result<SplitResponse, serde_json::Error> =
+            serde_json::from_value(res.clone());
 
-        Ok(serde_json::from_value(res)?)
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(res.to_string())),
+        }
     }
 
     /// Spendable check [NUT-07]
@@ -171,10 +196,18 @@ impl Client {
             proofs: proofs.to_owned(),
         };
 
-        Ok(minreq::post(url)
+        let res = minreq::post(url)
             .with_json(&request)?
             .send()?
-            .json::<CheckSpendableResponse>()?)
+            .json::<Value>()?;
+
+        let response: Result<CheckSpendableResponse, serde_json::Error> =
+            serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(res.to_string())),
+        }
     }
 
     /// Get Mint Info [NUT-09]
@@ -182,6 +215,11 @@ impl Client {
         let url = self.mint_url.join("info")?;
         let res = minreq::get(url).send()?.json::<Value>()?;
 
-        Ok(serde_json::from_value(res)?)
+        let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::CustomError(res.to_string())),
+        }
     }
 }
