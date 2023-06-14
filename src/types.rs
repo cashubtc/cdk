@@ -1,5 +1,7 @@
-//! Types for `cashu-rs`
+//! Types for `cashu-crab`
 
+use std::error::Error as StdError;
+use std::fmt;
 use std::str::FromStr;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -13,6 +15,41 @@ pub use crate::Invoice;
 use crate::{
     dhke::blind_message, error::Error, serde_utils, serde_utils::serde_url, utils::split_amount,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MintError {
+    InvoiceNotPaid,
+    Custom(String),
+}
+
+impl StdError for MintError {}
+
+impl fmt::Display for MintError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MintError::InvoiceNotPaid => write!(f, "Invoice not paid"),
+            MintError::Custom(message) => write!(f, "{}", message),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintErrorResponse {
+    code: u32,
+    error: String,
+}
+
+impl MintError {
+    pub fn from_json(json: &str) -> Result<Self, Error> {
+        let mint_res: MintErrorResponse = serde_json::from_str(json)?;
+
+        let mint_error = match mint_res.error.as_str() {
+            "Lightning invoice not paid yet." => MintError::InvoiceNotPaid,
+            _ => MintError::Custom(mint_res.error),
+        };
+        Ok(mint_error)
+    }
+}
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
