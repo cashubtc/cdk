@@ -10,8 +10,9 @@ use crate::{
     keyset::{Keys, MintKeySets},
     types::{
         BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse,
-        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintInfo,
-        MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
+        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintError,
+        MintInfo, MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest,
+        SplitResponse,
     },
 };
 
@@ -114,7 +115,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(res.to_string())),
+            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -134,7 +135,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(res.to_string())),
+            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -164,7 +165,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(value.to_string())),
+            Err(_) => Err(MintError::from_json(&value.to_string())?.into()),
         }
     }
 
@@ -182,7 +183,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(res.to_string())),
+            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -206,7 +207,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(res.to_string())),
+            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -219,7 +220,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(res.to_string())),
+            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
         }
     }
 }

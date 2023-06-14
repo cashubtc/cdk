@@ -1,5 +1,7 @@
 use std::string::FromUtf8Error;
 
+use crate::types::MintError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     ///  Min req error
@@ -31,4 +33,6 @@ pub enum Error {
     /// From elliptic curve
     #[error("From Elliptic: {0}")]
     EllipticError(#[from] k256::elliptic_curve::Error),
+    #[error("Mint Error: {0}")]
+    MintError(#[from] MintError),
 }
