@@ -224,7 +224,7 @@ impl CashuWallet {
         &self,
         invoice: Invoice,
         proofs: Proofs,
-        fee_reserve: u64,
+        fee_reserve: Amount,
     ) -> Result<Melted, Error> {
         let change = BlindedMessages::blank(fee_reserve)?;
         let melt_response = self

@@ -45,7 +45,7 @@ async fn main() {
         Invoice::from_str(MELTINVOICE).unwrap(),
         proofs,
         // TODO:
-        10,
+        Amount::from_sat(10),
     )
     .await;
 
@@ -159,7 +159,7 @@ async fn test_send(wallet: &CashuWallet, proofs: Proofs) -> Proofs {
     send.send_proofs
 }
 
-async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs, fee_reserve: u64) {
+async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs, fee_reserve: Amount) {
     let res = wallet.melt(invoice, proofs, fee_reserve).await.unwrap();
 
     println!("{:?}", res);
