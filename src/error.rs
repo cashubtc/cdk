@@ -1,6 +1,6 @@
+use std::error::Error as StdError;
+use std::fmt;
 use std::string::FromUtf8Error;
-
-use crate::types::MintError;
 
 #[derive(Debug)]
 pub enum Error {
@@ -23,8 +23,28 @@ pub enum Error {
     HexError(hex::FromHexError),
     /// From elliptic curve
     EllipticError(k256::elliptic_curve::Error),
-    CrabMintError(MintError),
+    CrabMintError(crate::client::Error),
 }
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::MinReqError(err) => write!(f, "{}", err),
+            Error::UrlParseError(err) => write!(f, "{}", err),
+            Error::UnsupportedToken => write!(f, "Unsuppported Token"),
+            Error::Utf8ParseError(err) => write!(f, "{}", err),
+            Error::SerdeJsonError(err) => write!(f, "{}", err),
+            Error::Base64Error(err) => write!(f, "{}", err),
+            Error::InsufficantFunds => write!(f, "Insufficant Funds"),
+            Error::CustomError(err) => write!(f, "{}", err),
+            Error::HexError(err) => write!(f, "{}", err),
+            Error::EllipticError(err) => write!(f, "{}", err),
+            Error::CrabMintError(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl StdError for Error {}
 
 impl From<minreq::Error> for Error {
     fn from(err: minreq::Error) -> Error {
@@ -68,8 +88,8 @@ impl From<k256::elliptic_curve::Error> for Error {
     }
 }
 
-impl From<MintError> for Error {
-    fn from(err: MintError) -> Error {
+impl From<crate::client::Error> for Error {
+    fn from(err: crate::client::Error) -> Error {
         Error::CrabMintError(err)
     }
 }

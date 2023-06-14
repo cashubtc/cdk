@@ -1,4 +1,5 @@
 //! Client to connet to mint
+use std::fmt;
 
 use bitcoin::Amount;
 use serde_json::Value;
@@ -6,15 +7,77 @@ use url::Url;
 
 pub use crate::Invoice;
 use crate::{
-    error::Error,
     keyset::{Keys, MintKeySets},
     types::{
         BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse,
-        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintError,
-        MintInfo, MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest,
-        SplitResponse,
+        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintInfo,
+        MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
     },
 };
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+pub enum Error {
+    InvoiceNotPaid,
+    /// Parse Url Error
+    UrlParseError(url::ParseError),
+    /// Serde Json error
+    SerdeJsonError(serde_json::Error),
+    ///  Min req error
+    MinReqError(minreq::Error),
+    /// Custom Error
+    Custom(String),
+}
+
+impl From<url::ParseError> for Error {
+    fn from(err: url::ParseError) -> Error {
+        Error::UrlParseError(err)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Error {
+        Error::SerdeJsonError(err)
+    }
+}
+
+impl From<minreq::Error> for Error {
+    fn from(err: minreq::Error) -> Error {
+        Error::MinReqError(err)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::InvoiceNotPaid => write!(f, "Invoice not paid"),
+            Error::UrlParseError(err) => write!(f, "{}", err),
+            Error::SerdeJsonError(err) => write!(f, "{}", err),
+            Error::MinReqError(err) => write!(f, "{}", err),
+            Error::Custom(message) => write!(f, "{}", message),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintErrorResponse {
+    code: u32,
+    error: String,
+}
+
+impl Error {
+    pub fn from_json(json: &str) -> Result<Self, Error> {
+        let mint_res: MintErrorResponse = serde_json::from_str(json)?;
+
+        let mint_error = match mint_res.error.as_str() {
+            "Lightning invoice not paid yet." => Error::InvoiceNotPaid,
+            _ => Error::Custom(mint_res.error),
+        };
+        Ok(mint_error)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -71,7 +134,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 
@@ -88,7 +151,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 
@@ -115,7 +178,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 
@@ -135,7 +198,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 
@@ -165,7 +228,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&value.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&value.to_string())?),
         }
     }
 
@@ -183,7 +246,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 
@@ -207,7 +270,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 
@@ -220,7 +283,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 }

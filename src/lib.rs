@@ -9,3 +9,5 @@ pub mod utils;
 
 pub use bitcoin::Amount;
 pub use lightning_invoice::Invoice;
+
+pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;

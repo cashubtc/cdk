@@ -51,7 +51,7 @@ impl CashuWallet {
 
     /// Request Token Mint
     pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
-        self.client.request_mint(amount).await
+        Ok(self.client.request_mint(amount).await?)
     }
 
     /// Mint Token
