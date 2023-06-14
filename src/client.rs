@@ -13,12 +13,14 @@ use crate::{
         CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintInfo,
         MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
     },
+    utils,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum Error {
     InvoiceNotPaid,
+    LightingWalletNotResponding(Option<String>),
     /// Parse Url Error
     UrlParseError(url::ParseError),
     /// Serde Json error
@@ -53,6 +55,13 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvoiceNotPaid => write!(f, "Invoice not paid"),
+            Error::LightingWalletNotResponding(mint) => {
+                write!(
+                    f,
+                    "Lightning Wallet not responding: {}",
+                    mint.clone().unwrap_or("".to_string())
+                )
+            }
             Error::UrlParseError(err) => write!(f, "{}", err),
             Error::SerdeJsonError(err) => write!(f, "{}", err),
             Error::MinReqError(err) => write!(f, "{}", err),
@@ -71,9 +80,13 @@ impl Error {
     pub fn from_json(json: &str) -> Result<Self, Error> {
         let mint_res: MintErrorResponse = serde_json::from_str(json)?;
 
-        let mint_error = match mint_res.error.as_str() {
-            "Lightning invoice not paid yet." => Error::InvoiceNotPaid,
-            _ => Error::Custom(mint_res.error),
+        let mint_error = match mint_res.error {
+            error if error.starts_with("Lightning invoice not paid yet.") => Error::InvoiceNotPaid,
+            error if error.starts_with("Lightning wallet not responding") => {
+                let mint = utils::extract_url_from_error(&error);
+                Error::LightingWalletNotResponding(mint)
+            }
+            error => Error::Custom(error),
         };
         Ok(mint_error)
     }
@@ -304,6 +317,13 @@ mod tests {
             _ => panic!("Wrong error"),
         }
 
-        // assert_eq!(error, Error::InvoiceNotPaid);
+        let err = r#"{"code": 0, "error": "Lightning wallet not responding: Failed to connect to https://legend.lnbits.com due to: All connection attempts failed"}"#;
+        let error = Error::from_json(err).unwrap();
+        match error {
+            Error::LightingWalletNotResponding(mint) => {
+                assert_eq!(mint, Some("https://legend.lnbits.com".to_string()));
+            }
+            _ => panic!("Wrong error"),
+        }
     }
 }

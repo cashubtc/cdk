@@ -3,6 +3,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use bitcoin::Amount;
 use rand::prelude::*;
+use regex::Regex;
 
 /// Split amount into cashu denominations (powers of 2)
 pub fn split_amount(amount: Amount) -> Vec<Amount> {
@@ -15,6 +16,14 @@ pub fn split_amount(amount: Amount) -> Vec<Amount> {
         }
     }
     chunks
+}
+
+pub fn extract_url_from_error(error: &str) -> Option<String> {
+    let regex = Regex::new(r"https?://[^\s]+").unwrap();
+    if let Some(capture) = regex.captures(error) {
+        return Some(capture[0].to_owned());
+    }
+    None
 }
 
 /// Generate Secret Message
