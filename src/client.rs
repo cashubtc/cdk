@@ -287,3 +287,23 @@ impl Client {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_decode_error() {
+        let err = r#"{"code":0,"error":"Lightning invoice not paid yet."}"#;
+
+        let error = Error::from_json(err).unwrap();
+
+        match error {
+            Error::InvoiceNotPaid => {}
+            _ => panic!("Wrong error"),
+        }
+
+        // assert_eq!(error, Error::InvoiceNotPaid);
+    }
+}
