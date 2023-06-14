@@ -71,7 +71,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(res.to_string())),
+            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -88,7 +88,7 @@ impl Client {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::CustomError(res.to_string())),
+            Err(_) => Err(MintError::from_json(&res.to_string())?.into()),
         }
     }
 
