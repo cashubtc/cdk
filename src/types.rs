@@ -60,10 +60,12 @@ impl BlindedMessages {
     }
 
     /// Blank Outputs used for NUT-08 change
-    pub fn blank() -> Result<Self, Error> {
+    pub fn blank(fee_reserve: u64) -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
 
-        for _i in 0..4 {
+        let count = ((fee_reserve as f64).log2().ceil() as u64).max(1);
+
+        for _i in 0..count {
             let secret = generate_secret();
             let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
@@ -384,5 +386,14 @@ mod tests {
         let token_data = Token::from_str(encoded).unwrap();
 
         assert_eq!(token_data, token);
+    }
+
+    #[test]
+    fn test_blank_blinded_messages() {
+        let b = BlindedMessages::blank(1000).unwrap();
+        assert_eq!(b.blinded_messages.len(), 10);
+
+        let b = BlindedMessages::blank(1).unwrap();
+        assert_eq!(b.blinded_messages.len(), 1);
     }
 }

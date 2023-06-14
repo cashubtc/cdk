@@ -220,8 +220,13 @@ impl CashuWallet {
         })
     }
 
-    pub async fn melt(&self, invoice: Invoice, proofs: Proofs) -> Result<Melted, Error> {
-        let change = BlindedMessages::blank()?;
+    pub async fn melt(
+        &self,
+        invoice: Invoice,
+        proofs: Proofs,
+        fee_reserve: u64,
+    ) -> Result<Melted, Error> {
+        let change = BlindedMessages::blank(fee_reserve)?;
         let melt_response = self
             .client
             .melt(proofs, invoice, Some(change.blinded_messages))
