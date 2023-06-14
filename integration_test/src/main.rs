@@ -40,7 +40,14 @@ async fn main() {
     let spendable = test_check_spendable(&client, &new_token).await;
     let proofs = test_send(&wallet, spendable).await;
 
-    test_melt(&wallet, Invoice::from_str(MELTINVOICE).unwrap(), proofs).await;
+    test_melt(
+        &wallet,
+        Invoice::from_str(MELTINVOICE).unwrap(),
+        proofs,
+        // TODO:
+        10,
+    )
+    .await;
 
     test_check_fees(&client).await;
 }
@@ -152,8 +159,8 @@ async fn test_send(wallet: &CashuWallet, proofs: Proofs) -> Proofs {
     send.send_proofs
 }
 
-async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs) {
-    let res = wallet.melt(invoice, proofs).await.unwrap();
+async fn test_melt(wallet: &CashuWallet, invoice: Invoice, proofs: Proofs, fee_reserve: u64) {
+    let res = wallet.melt(invoice, proofs, fee_reserve).await.unwrap();
 
     println!("{:?}", res);
 }
