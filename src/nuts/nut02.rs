@@ -1,7 +1,6 @@
-//! Keysets
+//! Keysets and keyset ID
+// https://github.com/cashubtc/nuts/blob/main/02.md
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::collections::HashSet;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -9,77 +8,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct PublicKey(#[serde(with = "crate::serde_utils::serde_public_key")] k256::PublicKey);
-
-impl From<PublicKey> for k256::PublicKey {
-    fn from(value: PublicKey) -> k256::PublicKey {
-        value.0
-    }
-}
-
-impl From<k256::PublicKey> for PublicKey {
-    fn from(value: k256::PublicKey) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretKey(#[serde(with = "crate::serde_utils::serde_secret_key")] k256::SecretKey);
-
-impl From<SecretKey> for k256::SecretKey {
-    fn from(value: SecretKey) -> k256::SecretKey {
-        value.0
-    }
-}
-
-impl From<k256::SecretKey> for SecretKey {
-    fn from(value: k256::SecretKey) -> Self {
-        Self(value)
-    }
-}
-
-/// Mint Keys [NUT-01]
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Keys(BTreeMap<u64, PublicKey>);
-
-impl Keys {
-    pub fn new(keys: BTreeMap<u64, PublicKey>) -> Self {
-        Self(keys)
-    }
-
-    pub fn amount_key(&self, amount: &u64) -> Option<PublicKey> {
-        self.0.get(amount).cloned()
-    }
-
-    pub fn as_hashmap(&self) -> HashMap<u64, String> {
-        self.0
-            .iter()
-            .map(|(k, v)| (k.to_owned(), hex::encode(v.0.to_sec1_bytes())))
-            .collect()
-    }
-
-    pub fn id(&self) -> String {
-        /* 1 - sort keyset by amount
-         * 2 - concatenate all (sorted) public keys to one string
-         * 3 - HASH_SHA256 the concatenated public keys
-         * 4 - take the first 12 characters of the hash
-         */
-
-        let pubkeys_concat = self
-            .0
-            .values()
-            .map(|pubkey| hex::encode(&pubkey.0.to_sec1_bytes()))
-            .collect::<Vec<String>>()
-            .join("");
-
-        let hash = general_purpose::STANDARD.encode(Sha256::hash(pubkeys_concat.as_bytes()));
-
-        hash[0..12].to_string()
-    }
-}
+use super::nut01::Keys;
 
 /// Mint Keysets [NUT-02]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,23 +23,33 @@ pub struct KeySet {
     pub keys: Keys,
 }
 
-impl From<mint::Keys> for Keys {
-    fn from(keys: mint::Keys) -> Self {
-        Self(
-            keys.0
-                .iter()
-                .map(|(amount, keypair)| (*amount, keypair.public_key.clone()))
-                .collect(),
-        )
-    }
-}
-
 impl From<mint::KeySet> for KeySet {
     fn from(keyset: mint::KeySet) -> Self {
         Self {
             id: keyset.id,
             keys: Keys::from(keyset.keys),
         }
+    }
+}
+
+impl Keys {
+    pub fn id(&self) -> String {
+        /* 1 - sort keyset by amount
+         * 2 - concatenate all (sorted) public keys to one string
+         * 3 - HASH_SHA256 the concatenated public keys
+         * 4 - take the first 12 characters of the hash
+         */
+
+        let pubkeys_concat = self
+            .keys()
+            .values()
+            .map(|pubkey| hex::encode(k256::PublicKey::from(pubkey).to_sec1_bytes()))
+            .collect::<Vec<String>>()
+            .join("");
+
+        let hash = general_purpose::STANDARD.encode(Sha256::hash(pubkeys_concat.as_bytes()));
+
+        hash[0..12].to_string()
     }
 }
 
@@ -125,11 +64,7 @@ pub mod mint {
     use serde::Deserialize;
     use serde::Serialize;
 
-    use super::PublicKey;
-    use crate::serde_utils;
-
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Keys(pub BTreeMap<u64, KeyPair>);
+    use crate::nuts::nut01::mint::{KeyPair, Keys};
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct KeySet {
@@ -184,29 +119,15 @@ pub mod mint {
 
             let pubkeys_concat = map
                 .values()
-                .map(|keypair| hex::encode(&keypair.public_key.0.to_sec1_bytes()))
+                .map(|keypair| {
+                    hex::encode(k256::PublicKey::from(&keypair.public_key).to_sec1_bytes())
+                })
                 .collect::<Vec<String>>()
                 .join("");
 
             let hash = general_purpose::STANDARD.encode(Sha256::hash(pubkeys_concat.as_bytes()));
 
             hash[0..12].to_string()
-        }
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct KeyPair {
-        pub public_key: PublicKey,
-        #[serde(with = "serde_utils::serde_secret_key")]
-        pub secret_key: SecretKey,
-    }
-
-    impl KeyPair {
-        fn from_secret_key(secret_key: SecretKey) -> Self {
-            Self {
-                public_key: secret_key.public_key().into(),
-                secret_key,
-            }
         }
     }
 }

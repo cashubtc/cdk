@@ -1,22 +1,23 @@
 //! Client to connet to mint
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
 use crate::amount::Amount;
+use crate::nuts::nut00::{BlindedMessage, BlindedMessages, Proof};
+use crate::nuts::nut01::Keys;
+use crate::nuts::nut03::RequestMintResponse;
+use crate::nuts::nut04::{MintRequest, PostMintResponse};
+use crate::nuts::nut05::{CheckFeesRequest, CheckFeesResponse};
+use crate::nuts::nut06::{SplitRequest, SplitResponse};
+use crate::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
+use crate::nuts::nut08::{MeltRequest, MeltResponse};
+use crate::nuts::nut09::MintInfo;
+use crate::nuts::*;
+use crate::utils;
 pub use crate::Invoice;
-use crate::{
-    keyset::{self, Keys},
-    mint,
-    types::{
-        BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse,
-        CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintInfo,
-        MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
-    },
-    utils,
-};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum Error {
@@ -140,11 +141,11 @@ impl Client {
     }
 
     /// Get Keysets [NUT-02]
-    pub async fn get_keysets(&self) -> Result<keyset::Response, Error> {
+    pub async fn get_keysets(&self) -> Result<nut02::Response, Error> {
         let url = self.mint_url.join("keysets")?;
         let res = minreq::get(url).send()?.json::<Value>()?;
 
-        let response: Result<keyset::Response, serde_json::Error> =
+        let response: Result<nut02::Response, serde_json::Error> =
             serde_json::from_value(res.clone());
 
         match response {
@@ -268,7 +269,7 @@ impl Client {
     /// Spendable check [NUT-07]
     pub async fn check_spendable(
         &self,
-        proofs: &Vec<mint::Proof>,
+        proofs: &Vec<nut00::mint::Proof>,
     ) -> Result<CheckSpendableResponse, Error> {
         let url = self.mint_url.join("check")?;
         let request = CheckSpendableRequest {
