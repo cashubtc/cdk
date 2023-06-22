@@ -1,27 +1,23 @@
 use std::collections::{HashMap, HashSet};
 
-use serde::{Deserialize, Serialize};
-
+use crate::dhke::sign_message;
 use crate::dhke::verify_message;
 use crate::error::Error;
-use crate::types::{
-    self, BlindedMessage, CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse,
-    PostMintResponse, Promise, SplitRequest, SplitResponse,
-};
+use crate::nuts::nut00::BlindedMessage;
+use crate::nuts::nut00::BlindedSignature;
+use crate::nuts::nut00::Proof;
+use crate::nuts::nut06::SplitRequest;
+use crate::nuts::nut06::SplitResponse;
+use crate::nuts::nut07::CheckSpendableRequest;
+use crate::nuts::nut07::CheckSpendableResponse;
+use crate::nuts::nut08::MeltRequest;
+use crate::nuts::nut08::MeltResponse;
+use crate::nuts::*;
 use crate::Amount;
-use crate::{
-    dhke::sign_message,
-    keyset::{
-        self,
-        mint::{self, KeySet},
-        PublicKey,
-    },
-    types::MintRequest,
-};
 
 pub struct Mint {
-    pub active_keyset: KeySet,
-    pub inactive_keysets: HashMap<String, mint::KeySet>,
+    pub active_keyset: nut02::mint::KeySet,
+    pub inactive_keysets: HashMap<String, nut02::mint::KeySet>,
     pub spent_secrets: HashSet<String>,
 }
 
@@ -29,12 +25,12 @@ impl Mint {
     pub fn new(
         secret: &str,
         derivation_path: &str,
-        inactive_keysets: HashMap<String, mint::KeySet>,
+        inactive_keysets: HashMap<String, nut02::mint::KeySet>,
         spent_secrets: HashSet<String>,
         max_order: u8,
     ) -> Self {
         Self {
-            active_keyset: keyset::mint::KeySet::generate(secret, derivation_path, max_order),
+            active_keyset: nut02::mint::KeySet::generate(secret, derivation_path, max_order),
             inactive_keysets,
             spent_secrets,
         }
@@ -42,23 +38,23 @@ impl Mint {
 
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
-    pub fn active_keyset_pubkeys(&self) -> keyset::KeySet {
-        keyset::KeySet::from(self.active_keyset.clone())
+    pub fn active_keyset_pubkeys(&self) -> nut02::KeySet {
+        nut02::KeySet::from(self.active_keyset.clone())
     }
 
     /// Return a list of all supported keysets
-    pub fn keysets(&self) -> keyset::Response {
+    pub fn keysets(&self) -> nut02::Response {
         let mut keysets: HashSet<_> = self.inactive_keysets.keys().cloned().collect();
         keysets.insert(self.active_keyset.id.clone());
-        keyset::Response { keysets }
+        nut02::Response { keysets }
     }
 
-    pub fn active_keyset(&self) -> keyset::mint::KeySet {
+    pub fn active_keyset(&self) -> nut02::mint::KeySet {
         self.active_keyset.clone()
     }
 
-    pub fn keyset(&self, id: &str) -> Option<keyset::KeySet> {
-        if &self.active_keyset.id == id {
+    pub fn keyset(&self, id: &str) -> Option<nut02::KeySet> {
+        if self.active_keyset.id == id {
             return Some(self.active_keyset.clone().into());
         }
 
@@ -67,20 +63,20 @@ impl Mint {
 
     pub fn process_mint_request(
         &mut self,
-        mint_request: MintRequest,
-    ) -> Result<PostMintResponse, Error> {
+        mint_request: nut04::MintRequest,
+    ) -> Result<nut04::PostMintResponse, Error> {
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
         for blinded_message in mint_request.outputs {
             blind_signatures.push(self.blind_sign(&blinded_message)?);
         }
 
-        Ok(PostMintResponse {
+        Ok(nut04::PostMintResponse {
             promises: blind_signatures,
         })
     }
 
-    fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<Promise, Error> {
+    fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindedSignature, Error> {
         let BlindedMessage { amount, b } = blinded_message;
 
         let Some(key_pair) = self.active_keyset.keys.0.get(&amount.to_sat()) else {
@@ -90,8 +86,8 @@ impl Mint {
 
         let c = sign_message(key_pair.secret_key.clone(), b.clone().into())?;
 
-        Ok(Promise {
-            amount: amount.clone(),
+        Ok(BlindedSignature {
+            amount: *amount,
             c: c.into(),
             id: self.active_keyset.id.clone(),
         })
@@ -111,7 +107,7 @@ impl Mint {
         // in the outputs (blind messages). As we loop, take from those sets,
         // target amount first.
         for output in outputs {
-            let signed = self.blind_sign(&output)?;
+            let signed = self.blind_sign(output)?;
 
             // Accumulate outputs into the target (send) list
             if target_total + signed.amount <= amount {
@@ -172,7 +168,7 @@ impl Mint {
         Ok(split_response)
     }
 
-    fn verify_proof(&self, proof: &types::Proof) -> Result<String, Error> {
+    fn verify_proof(&self, proof: &Proof) -> Result<String, Error> {
         if self.spent_secrets.contains(&proof.secret) {
             return Err(Error::TokenSpent);
         }
@@ -223,7 +219,7 @@ impl Mint {
 
         let mut secrets = Vec::with_capacity(melt_request.proofs.len());
         for proof in &melt_request.proofs {
-            secrets.push(self.verify_proof(&proof)?);
+            secrets.push(self.verify_proof(proof)?);
         }
 
         Ok(())
@@ -248,7 +244,7 @@ impl Mint {
             for (i, amount) in amounts.iter().enumerate() {
                 let mut message = outputs[i].clone();
 
-                message.amount = amount.clone();
+                message.amount = *amount;
 
                 let signature = self.blind_sign(&message)?;
                 change.push(signature)
@@ -262,24 +258,3 @@ impl Mint {
         })
     }
 }
-
-/// Proofs [NUT-00]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Proof {
-    /// Amount in satoshi
-    pub amount: Option<Amount>,
-    /// Secret message
-    // #[serde(with = "crate::serde_utils::bytes_base64")]
-    pub secret: String,
-    /// Unblinded signature
-    #[serde(rename = "C")]
-    pub c: Option<PublicKey>,
-    /// `Keyset id`
-    pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// P2SHScript that specifies the spending condition for this Proof
-    pub script: Option<String>,
-}
-
-/// List of proofs
-pub type Proofs = Vec<Proof>;

@@ -13,7 +13,6 @@ impl Amount {
     pub fn split(&self) -> Vec<Self> {
         let sats = self.0.to_sat();
         (0_u64..64)
-            .into_iter()
             .rev()
             .filter_map(|bit| {
                 let part = 1 << bit;
