@@ -15,3 +15,11 @@ pub struct SendProofs {
     pub change_proofs: Proofs,
     pub send_proofs: Proofs,
 }
+
+/// Melt response with proofs
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Melted {
+    pub paid: bool,
+    pub preimage: Option<String>,
+    pub change: Option<Proofs>,
+}
