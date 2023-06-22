@@ -118,6 +118,22 @@ pub struct Proof {
 /// List of proofs
 pub type Proofs = Vec<Proof>;
 
+impl From<Proof> for mint::Proof {
+    fn from(proof: Proof) -> Self {
+        Self {
+            amount: Some(proof.amount),
+            secret: proof.secret,
+            c: Some(proof.c),
+            id: proof.id,
+            script: proof.script,
+        }
+    }
+}
+
+pub fn mint_proofs_from_proofs(proofs: Proofs) -> mint::Proofs {
+    proofs.iter().map(|p| p.to_owned().into()).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintProofs {
     #[serde(with = "serde_url")]
