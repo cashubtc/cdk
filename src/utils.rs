@@ -1,9 +1,12 @@
 //! Utils
 
 use base64::{engine::general_purpose, Engine as _};
-use bitcoin::Amount;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
 use rand::prelude::*;
 use regex::Regex;
+
+use crate::amount::Amount;
 
 /// Split amount into cashu denominations (powers of 2)
 pub fn split_amount(amount: Amount) -> Vec<Amount> {
@@ -32,6 +35,14 @@ pub fn generate_secret() -> String {
     let mut secret = [0u8; 32];
     rng.fill_bytes(&mut secret);
     general_purpose::STANDARD.encode(secret)
+}
+
+pub fn random_hash() -> Vec<u8> {
+    let mut rng = rand::thread_rng();
+    let mut random_bytes = [0u8; Sha256::LEN];
+    rng.fill_bytes(&mut random_bytes);
+    let hash = Sha256::hash(&random_bytes);
+    hash.to_byte_array().to_vec()
 }
 
 #[cfg(test)]

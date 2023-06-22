@@ -3,38 +3,34 @@
 use std::str::FromStr;
 
 use base64::{engine::general_purpose, Engine as _};
-use bitcoin::Amount;
-use k256::{PublicKey, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
+use crate::keyset::{self, PublicKey};
 use crate::utils::generate_secret;
+use crate::Amount;
 pub use crate::Invoice;
-use crate::{
-    dhke::blind_message, error::Error, serde_utils, serde_utils::serde_url, utils::split_amount,
-};
+use crate::{dhke::blind_message, error::Error, mint, serde_utils::serde_url, utils::split_amount};
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindedMessage {
     /// Amount in satoshi
-    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: Amount,
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
-    #[serde(with = "serde_utils::serde_public_key")]
     pub b: PublicKey,
 }
 
 /// Blinded Messages [NUT-00]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindedMessages {
     /// Blinded messages
     pub blinded_messages: Vec<BlindedMessage>,
     /// Secrets
     pub secrets: Vec<String>,
     /// Rs
-    pub rs: Vec<SecretKey>,
+    pub rs: Vec<keyset::SecretKey>,
     /// Amounts
     pub amounts: Vec<Amount>,
 }
@@ -52,7 +48,7 @@ impl BlindedMessages {
 
             blinded_messages.secrets.push(secret);
             blinded_messages.blinded_messages.push(blinded_message);
-            blinded_messages.rs.push(r);
+            blinded_messages.rs.push(r.into());
             blinded_messages.amounts.push(amount);
         }
 
@@ -62,6 +58,8 @@ impl BlindedMessages {
     /// Blank Outputs used for NUT-08 change
     pub fn blank(fee_reserve: Amount) -> Result<Self, Error> {
         let mut blinded_messages = BlindedMessages::default();
+
+        let fee_reserve = bitcoin::Amount::from_sat(fee_reserve.to_sat());
 
         let count = (fee_reserve
             .to_float_in(bitcoin::Denomination::Satoshi)
@@ -80,7 +78,7 @@ impl BlindedMessages {
 
             blinded_messages.secrets.push(secret);
             blinded_messages.blinded_messages.push(blinded_message);
-            blinded_messages.rs.push(r);
+            blinded_messages.rs.push(r.into());
             blinded_messages.amounts.push(Amount::ZERO);
         }
 
@@ -88,7 +86,7 @@ impl BlindedMessages {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitPayload {
     pub keep_blinded_messages: BlindedMessages,
     pub send_blinded_messages: BlindedMessages,
@@ -99,11 +97,9 @@ pub struct SplitPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Promise {
     pub id: String,
-    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: Amount,
     /// blinded signature (C_) on the secret message `B_` of [BlindedMessage]
     #[serde(rename = "C_")]
-    #[serde(with = "serde_utils::serde_public_key")]
     pub c: PublicKey,
 }
 
@@ -111,14 +107,12 @@ pub struct Promise {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proof {
     /// Amount in satoshi
-    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: Amount,
     /// Secret message
     // #[serde(with = "crate::serde_utils::bytes_base64")]
     pub secret: String,
     /// Unblinded signature
     #[serde(rename = "C")]
-    #[serde(with = "serde_utils::serde_public_key")]
     pub c: PublicKey,
     /// `Keyset id`
     pub id: Option<String>,
@@ -145,6 +139,15 @@ pub struct MintRequest {
     pub outputs: Vec<BlindedMessage>,
 }
 
+impl MintRequest {
+    pub fn total_amount(&self) -> Amount {
+        self.outputs
+            .iter()
+            .map(|BlindedMessage { amount, .. }| *amount)
+            .sum()
+    }
+}
+
 /// Post Mint Response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostMintResponse {
@@ -152,11 +155,9 @@ pub struct PostMintResponse {
 }
 
 /// Check Fees Response [NUT-05]
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckFeesResponse {
     /// Expected Mac Fee in satoshis    
-    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub fee: Amount,
 }
 
@@ -178,6 +179,19 @@ pub struct MeltRequest {
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
+impl MeltRequest {
+    pub fn proofs_amount(&self) -> Amount {
+        self.proofs.iter().map(|proof| proof.amount).sum()
+    }
+
+    pub fn invoice_amount(&self) -> Result<Amount, Error> {
+        match self.pr.amount_milli_satoshis() {
+            Some(value) => Ok(Amount::from_sat(value)),
+            None => Err(Error::InvoiceAmountUndefined),
+        }
+    }
+}
+
 /// Melt Response [NUT-05]
 /// Lightning fee return [NUT-08] if change is defined
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,10 +211,18 @@ pub struct Melted {
 /// Split Request [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitRequest {
-    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: Amount,
     pub proofs: Proofs,
     pub outputs: Vec<BlindedMessage>,
+}
+
+impl SplitRequest {
+    pub fn proofs_amount(&self) -> Amount {
+        self.proofs.iter().map(|proof| proof.amount).sum()
+    }
+    pub fn output_amount(&self) -> Amount {
+        self.outputs.iter().map(|proof| proof.amount).sum()
+    }
 }
 
 /// Split Response [NUT-06]
@@ -212,10 +234,20 @@ pub struct SplitResponse {
     pub snd: Vec<Promise>,
 }
 
+impl SplitResponse {
+    pub fn change_amount(&self) -> Amount {
+        self.fst.iter().map(|Promise { amount, .. }| *amount).sum()
+    }
+
+    pub fn target_amount(&self) -> Amount {
+        self.snd.iter().map(|Promise { amount, .. }| *amount).sum()
+    }
+}
+
 /// Check spendabale request [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckSpendableRequest {
-    pub proofs: Proofs,
+    pub proofs: mint::Proofs,
 }
 
 /// Check Spendable Response [NUT-07]
@@ -228,8 +260,8 @@ pub struct CheckSpendableResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {
-    pub spendable: Proofs,
-    pub spent: Proofs,
+    pub spendable: mint::Proofs,
+    pub spent: mint::Proofs,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,7 +310,6 @@ pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: Option<String>,
     /// hex pubkey of the mint
-    #[serde(with = "serde_utils::serde_public_key::opt")]
     pub pubkey: Option<PublicKey>,
     /// implementation name and the version running
     pub version: Option<MintVersion>,

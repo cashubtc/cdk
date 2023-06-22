@@ -1,19 +1,20 @@
 //! Cashu Wallet
 use std::str::FromStr;
 
-use bitcoin::Amount;
-
 pub use crate::Invoice;
 use crate::{
     client::Client,
     dhke::construct_proofs,
     error::Error,
     keyset::Keys,
+    mint,
     types::{
         BlindedMessages, Melted, Proofs, ProofsStatus, RequestMintResponse, SendProofs,
         SplitPayload, SplitRequest, Token,
     },
 };
+
+use crate::amount::Amount;
 
 #[derive(Clone, Debug)]
 pub struct CashuWallet {
@@ -34,7 +35,7 @@ impl CashuWallet {
     // TODO: getter method for keys that if it cant get them try again
 
     /// Check if a proof is spent
-    pub async fn check_proofs_spent(&self, proofs: &Proofs) -> Result<ProofsStatus, Error> {
+    pub async fn check_proofs_spent(&self, proofs: &mint::Proofs) -> Result<ProofsStatus, Error> {
         let spendable = self.client.check_spendable(proofs).await?;
 
         // Separate proofs in spent and unspent based on mint response

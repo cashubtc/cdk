@@ -1,13 +1,14 @@
 //! Client to connet to mint
 use std::fmt;
 
-use bitcoin::Amount;
 use serde_json::Value;
 use url::Url;
 
+use crate::amount::Amount;
 pub use crate::Invoice;
 use crate::{
-    keyset::{Keys, MintKeySets},
+    keyset::{self, Keys},
+    mint,
     types::{
         BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse,
         CheckSpendableRequest, CheckSpendableResponse, MeltRequest, MeltResponse, MintInfo,
@@ -139,11 +140,12 @@ impl Client {
     }
 
     /// Get Keysets [NUT-02]
-    pub async fn get_keysets(&self) -> Result<MintKeySets, Error> {
+    pub async fn get_keysets(&self) -> Result<keyset::Response, Error> {
         let url = self.mint_url.join("keysets")?;
         let res = minreq::get(url).send()?.json::<Value>()?;
 
-        let response: Result<MintKeySets, serde_json::Error> = serde_json::from_value(res.clone());
+        let response: Result<keyset::Response, serde_json::Error> =
+            serde_json::from_value(res.clone());
 
         match response {
             Ok(res) => Ok(res),
@@ -266,7 +268,7 @@ impl Client {
     /// Spendable check [NUT-07]
     pub async fn check_spendable(
         &self,
-        proofs: &Vec<Proof>,
+        proofs: &Vec<mint::Proof>,
     ) -> Result<CheckSpendableResponse, Error> {
         let url = self.mint_url.join("check")?;
         let request = CheckSpendableRequest {

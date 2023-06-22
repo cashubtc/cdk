@@ -4,18 +4,19 @@ use std::ops::Mul;
 
 use bitcoin_hashes::sha256;
 use bitcoin_hashes::Hash;
-use k256::{ProjectivePoint, PublicKey, Scalar, SecretKey};
+use k256::{ProjectivePoint, Scalar, SecretKey};
 
 use crate::error::Error;
-use crate::keyset::Keys;
+use crate::keyset;
+use crate::keyset::{Keys, PublicKey};
 use crate::types::{Promise, Proof, Proofs};
 
-fn hash_to_curve(message: &[u8]) -> PublicKey {
+fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
     let mut msg_to_hash = message.to_vec();
 
     loop {
         let hash = sha256::Hash::hash(&msg_to_hash);
-        match PublicKey::from_sec1_bytes(
+        match k256::PublicKey::from_sec1_bytes(
             &[0x02u8]
                 .iter()
                 .chain(&hash.to_byte_array())
@@ -42,7 +43,7 @@ pub fn blind_message(
 
     let b = ProjectivePoint::from(y) + ProjectivePoint::from(&r.public_key());
 
-    Ok((PublicKey::try_from(b)?, r))
+    Ok((k256::PublicKey::try_from(b)?.into(), r))
 }
 
 /// Unblind Message (Alice Step 3)
@@ -55,18 +56,18 @@ pub fn unblind_message(
 ) -> Result<PublicKey, Error> {
     // C
     // Unblinded message
-    let c = ProjectivePoint::from(blinded_key.as_affine())
-        - mint_pubkey
+    let c = ProjectivePoint::from(Into::<k256::PublicKey>::into(blinded_key).as_affine())
+        - Into::<k256::PublicKey>::into(mint_pubkey)
             .as_affine()
             .mul(Scalar::from(r.as_scalar_primitive()));
 
-    Ok(PublicKey::try_from(c)?)
+    Ok(k256::PublicKey::try_from(c)?.into())
 }
 
 /// Construct Proof
 pub fn construct_proofs(
     promises: Vec<Promise>,
-    rs: Vec<SecretKey>,
+    rs: Vec<keyset::SecretKey>,
     secrets: Vec<String>,
     keys: &Keys,
 ) -> Result<Proofs, Error> {
@@ -78,7 +79,7 @@ pub fn construct_proofs(
             .ok_or(Error::CustomError("Could not get proofs".to_string()))?
             .to_owned();
 
-        let unblinded_signature = unblind_message(blinded_c, rs[i].clone(), a)?;
+        let unblinded_signature = unblind_message(blinded_c, rs[i].clone().into(), a)?;
 
         let proof = Proof {
             id: Some(promise.id),
@@ -92,6 +93,37 @@ pub fn construct_proofs(
     }
 
     Ok(proofs)
+}
+
+/// Sign Blinded Message (Step2 bob)
+pub fn sign_message(
+    a: SecretKey,
+    blinded_message: k256::PublicKey,
+) -> Result<k256::PublicKey, Error> {
+    Ok(k256::PublicKey::try_from(
+        blinded_message
+            .as_affine()
+            .mul(Scalar::from(a.as_scalar_primitive())),
+    )
+    .unwrap())
+}
+
+/// Verify Message
+pub fn verify_message(
+    a: SecretKey,
+    unblinded_message: k256::PublicKey,
+    msg: &str,
+) -> Result<(), Error> {
+    // Y
+    let y = hash_to_curve(msg.as_bytes());
+
+    if unblinded_message
+        == k256::PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive()))?
+    {
+        return Ok(());
+    }
+
+    Err(Error::TokenNotVerifed)
 }
 
 #[cfg(test)]
@@ -109,7 +141,7 @@ mod tests {
         let sec_hex = decode(secret).unwrap();
 
         let y = hash_to_curve(&sec_hex);
-        let expected_y = PublicKey::from_sec1_bytes(
+        let expected_y = k256::PublicKey::from_sec1_bytes(
             &hex::decode("0266687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925")
                 .unwrap(),
         )
@@ -119,7 +151,7 @@ mod tests {
         let secret = "0000000000000000000000000000000000000000000000000000000000000001";
         let sec_hex = decode(secret).unwrap();
         let y = hash_to_curve(&sec_hex);
-        let expected_y = PublicKey::from_sec1_bytes(
+        let expected_y = k256::PublicKey::from_sec1_bytes(
             &hex::decode("02ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5")
                 .unwrap(),
         )
@@ -136,11 +168,12 @@ mod tests {
 
         assert_eq!(
             b,
-            PublicKey::from_sec1_bytes(
+            k256::PublicKey::from_sec1_bytes(
                 &hex::decode("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2")
                     .unwrap()
             )
             .unwrap()
+            .into()
         );
 
         assert_eq!(r, sec);
@@ -157,11 +190,11 @@ mod tests {
         let bob_sec = SecretKey::new(ScalarPrimitive::ONE);
 
         // C_
-        let signed = sign_message(bob_sec, blinded_message).unwrap();
+        let signed = sign_message(bob_sec, blinded_message.into()).unwrap();
 
         assert_eq!(
             signed,
-            PublicKey::from_sec1_bytes(
+            k256::PublicKey::from_sec1_bytes(
                 &hex::decode("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2")
                     .unwrap()
             )
@@ -171,56 +204,33 @@ mod tests {
 
     #[test]
     fn test_unblind_message() {
-        let blinded_key = PublicKey::from_sec1_bytes(
+        let blinded_key = k256::PublicKey::from_sec1_bytes(
             &hex::decode("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2")
                 .unwrap(),
         )
         .unwrap();
 
         let r = SecretKey::new(ScalarPrimitive::ONE);
-        let a = PublicKey::from_sec1_bytes(
+        let a = k256::PublicKey::from_sec1_bytes(
             &hex::decode("020000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap(),
         )
         .unwrap();
 
-        let unblinded = unblind_message(blinded_key, r, a).unwrap();
+        let unblinded = unblind_message(blinded_key.into(), r, a.into()).unwrap();
 
         assert_eq!(
-            PublicKey::from_sec1_bytes(
-                &hex::decode("03c724d7e6a5443b39ac8acf11f40420adc4f99a02e7cc1b57703d9391f6d129cd")
+            Into::<PublicKey>::into(
+                k256::PublicKey::from_sec1_bytes(
+                    &hex::decode(
+                        "03c724d7e6a5443b39ac8acf11f40420adc4f99a02e7cc1b57703d9391f6d129cd"
+                    )
                     .unwrap()
-            )
-            .unwrap(),
+                )
+                .unwrap()
+            ),
             unblinded
         );
-    }
-
-    /// Sign Blinded Message (Step2 bob)
-    // Really only needed for mint
-    // Used here for testing
-    fn sign_message(a: SecretKey, blinded_message: PublicKey) -> Result<PublicKey, Error> {
-        Ok(PublicKey::try_from(
-            blinded_message
-                .as_affine()
-                .mul(Scalar::from(a.as_scalar_primitive())),
-        )
-        .unwrap())
-    }
-
-    /// Verify Message
-    // Really only needed for mint
-    // used for testing
-    fn verify_message(
-        a: SecretKey,
-        unblinded_message: PublicKey,
-        msg: &str,
-    ) -> Result<bool, Error> {
-        // Y
-        let y = hash_to_curve(msg.as_bytes());
-
-        Ok(unblinded_message
-            == PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive())).unwrap())
     }
 
     #[ignore]
@@ -243,11 +253,11 @@ mod tests {
         let blinded = blind_message(&y.to_sec1_bytes(), None).unwrap();
 
         // C_
-        let signed = sign_message(bob_sec.clone(), blinded.0).unwrap();
+        let signed = sign_message(bob_sec.clone(), blinded.0.into()).unwrap();
 
         // C
-        let c = unblind_message(signed, blinded.1, bob_pub).unwrap();
+        let c = unblind_message(signed.into(), blinded.1, bob_pub.into()).unwrap();
 
-        assert!(verify_message(bob_sec, c, &x).unwrap());
+        assert!(verify_message(bob_sec, c.into(), &x).is_ok());
     }
 }
