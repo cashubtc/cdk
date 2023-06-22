@@ -4,11 +4,12 @@ use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
 
-use bitcoin::Amount;
 use cashu_crab::cashu_wallet::CashuWallet;
 use cashu_crab::client::Client;
 use cashu_crab::keyset::Keys;
-use cashu_crab::types::{Invoice, MintProofs, Proofs, Token};
+use cashu_crab::mint;
+use cashu_crab::types::{self, Invoice, MintProofs, Proofs, Token};
+use cashu_crab::Amount;
 
 const MINTURL: &str = "https://testnut.cashu.space";
 
@@ -68,7 +69,7 @@ async fn test_get_mint_keysets(client: &Client) {
 
 async fn test_request_mint(wallet: &CashuWallet) {
     let mint = wallet
-        .request_mint(Amount::from_sat(MINTAMOUNT))
+        .request_mint(Amount::from_sat(MINTAMOUNT).into())
         .await
         .unwrap();
 
@@ -120,7 +121,7 @@ async fn test_receive(wallet: &CashuWallet, token: &str) -> String {
     s.unwrap()
 }
 
-async fn test_check_spendable(client: &Client, token: &str) -> Proofs {
+async fn test_check_spendable(client: &Client, token: &str) -> mint::Proofs {
     let mint_keys = client.get_keys().await.unwrap();
 
     let wallet = CashuWallet::new(client.to_owned(), mint_keys);

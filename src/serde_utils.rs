@@ -100,3 +100,25 @@ pub mod serde_public_key {
         }
     }
 }
+
+pub mod serde_secret_key {
+    use k256::SecretKey;
+    use serde::Deserialize;
+
+    pub fn serialize<S>(pubkey: &SecretKey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let encoded = hex::encode(pubkey.to_bytes());
+        serializer.serialize_str(&encoded)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SecretKey, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        let decoded = hex::decode(encoded).map_err(serde::de::Error::custom)?;
+        SecretKey::from_slice(&decoded).map_err(serde::de::Error::custom)
+    }
+}

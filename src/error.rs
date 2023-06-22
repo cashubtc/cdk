@@ -23,6 +23,12 @@ pub enum Error {
     HexError(hex::FromHexError),
     /// From elliptic curve
     EllipticError(k256::elliptic_curve::Error),
+    AmountKey,
+    Amount,
+    TokenSpent,
+    TokenNotVerifed,
+    OutputOrdering,
+    InvoiceAmountUndefined,
     CrabMintError(crate::client::Error),
 }
 
@@ -39,7 +45,13 @@ impl fmt::Display for Error {
             Error::CustomError(err) => write!(f, "{}", err),
             Error::HexError(err) => write!(f, "{}", err),
             Error::EllipticError(err) => write!(f, "{}", err),
+            Error::AmountKey => write!(f, "No Key for amount"),
+            Error::Amount => write!(f, "Amount miss match"),
+            Error::TokenSpent => write!(f, "Token Spent"),
+            Error::TokenNotVerifed => write!(f, "Token Not Verified"),
             Error::CrabMintError(err) => write!(f, "{}", err),
+            Error::OutputOrdering => write!(f, "Output ordering"),
+            Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
         }
     }
 }
