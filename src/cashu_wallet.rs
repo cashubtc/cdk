@@ -5,8 +5,7 @@ use crate::nuts::nut00::{mint, BlindedMessages, Proofs, Token};
 use crate::nuts::nut01::Keys;
 use crate::nuts::nut03::RequestMintResponse;
 use crate::nuts::nut06::{SplitPayload, SplitRequest};
-use crate::nuts::nut08::MeltResponse;
-use crate::types::{ProofsStatus, SendProofs};
+use crate::types::{Melted, ProofsStatus, SendProofs};
 pub use crate::Invoice;
 use crate::{client::Client, dhke::construct_proofs, error::Error};
 
@@ -222,14 +221,30 @@ impl CashuWallet {
         invoice: Invoice,
         proofs: Proofs,
         fee_reserve: Amount,
-    ) -> Result<MeltResponse, Error> {
-        let change = BlindedMessages::blank(fee_reserve)?;
+    ) -> Result<Melted, Error> {
+        let blinded = BlindedMessages::blank(fee_reserve)?;
         let melt_response = self
             .client
-            .melt(proofs, invoice, Some(change.blinded_messages))
+            .melt(proofs, invoice, Some(blinded.blinded_messages))
             .await?;
 
-        Ok(melt_response)
+        let change_proofs = match melt_response.change {
+            Some(change) => Some(construct_proofs(
+                change,
+                blinded.rs,
+                blinded.secrets,
+                &self.mint_keys,
+            )?),
+            None => None,
+        };
+
+        let melted = Melted {
+            paid: true,
+            preimage: melt_response.preimage,
+            change: change_proofs,
+        };
+
+        Ok(melted)
     }
 
     pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
