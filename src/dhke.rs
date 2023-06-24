@@ -78,7 +78,7 @@ pub fn construct_proofs(
     for (i, promise) in promises.into_iter().enumerate() {
         let blinded_c = promise.c;
         let a: PublicKey = keys
-            .amount_key(&promise.amount.to_sat())
+            .amount_key(promise.amount)
             .ok_or(Error::CustomError("Could not get proofs".to_string()))?
             .to_owned();
 
@@ -107,8 +107,7 @@ pub fn sign_message(
         blinded_message
             .as_affine()
             .mul(Scalar::from(a.as_scalar_primitive())),
-    )
-    .unwrap())
+    )?)
 }
 
 /// Verify Message

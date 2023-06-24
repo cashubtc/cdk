@@ -1,5 +1,4 @@
 pub mod amount;
-pub mod cashu_wallet;
 pub mod client;
 pub mod dhke;
 pub mod error;
@@ -8,6 +7,7 @@ pub mod nuts;
 pub mod serde_utils;
 pub mod types;
 pub mod utils;
+pub mod wallet;
 
 pub use amount::Amount;
 pub use bitcoin::hashes::sha256::Hash as Sha256;
