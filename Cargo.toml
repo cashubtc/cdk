@@ -7,10 +7,10 @@ license = "BSD-3-Clause"
 readme = "README.md"
 repository = "https://github.com/thesimplekid/cashu-crab"
 description = "Cashu rust wallet library"
-exclude = ["integration_test"]
+# exclude = ["integration_test"]
 
-[workspace]
-members = ["integration_test"]
+#[workspace]
+#members = ["integration_test"]
 
 
 [dependencies]
