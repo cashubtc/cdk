@@ -1,7 +1,8 @@
 //! Cashu Wallet
 use std::str::FromStr;
 
-use crate::nuts::nut00::{mint, BlindedMessages, Proofs, Token};
+use crate::dhke::unblind_message;
+use crate::nuts::nut00::{mint, BlindedMessages, BlindedSignature, Proof, Proofs, Token};
 use crate::nuts::nut01::Keys;
 use crate::nuts::nut03::RequestMintResponse;
 use crate::nuts::nut06::{SplitPayload, SplitRequest};
@@ -12,13 +13,13 @@ use crate::{client::Client, dhke::construct_proofs, error::Error};
 use crate::amount::Amount;
 
 #[derive(Clone, Debug)]
-pub struct CashuWallet {
+pub struct Wallet {
     pub client: Client,
     pub mint_keys: Keys,
     pub balance: Amount,
 }
 
-impl CashuWallet {
+impl Wallet {
     pub fn new(client: Client, mint_keys: Keys) -> Self {
         Self {
             client,
@@ -151,11 +152,68 @@ impl CashuWallet {
             outputs,
         };
 
+        println!(
+            "Keep blinded: {:?}",
+            serde_json::to_string(&keep_blinded_messages)
+        );
+        println!(
+            "Send blinded: {:?}",
+            serde_json::to_string(&send_blinded_messages)
+        );
+
         Ok(SplitPayload {
             keep_blinded_messages,
             send_blinded_messages,
             split_payload,
         })
+    }
+
+    pub fn process_split_response(
+        &self,
+        blinded_messages: BlindedMessages,
+        promisses: Vec<BlindedSignature>,
+    ) -> Result<Proofs, Error> {
+        let BlindedMessages {
+            blinded_messages,
+            secrets,
+            rs,
+            amounts,
+        } = blinded_messages;
+
+        println!(
+            "b: {:?}",
+            blinded_messages
+                .iter()
+                .map(|b| b.amount)
+                .collect::<Vec<_>>()
+        );
+
+        println!("a: {:?}", amounts);
+        let secrets: Vec<_> = secrets.iter().collect();
+        let mut proofs = vec![];
+
+        for (i, promise) in promisses.iter().enumerate() {
+            let a = self
+                .mint_keys
+                .amount_key(promise.amount)
+                .unwrap()
+                .to_owned();
+
+            let blinded_c = promise.c.clone();
+
+            let unblinded_sig = unblind_message(blinded_c, rs[i].clone().into(), a).unwrap();
+            let proof = Proof {
+                id: Some(promise.id.clone()),
+                amount: promise.amount,
+                secret: secrets[i].clone(),
+                c: unblinded_sig,
+                script: None,
+            };
+
+            proofs.push(proof);
+        }
+
+        Ok(proofs)
     }
 
     /// Send
@@ -249,5 +307,91 @@ impl CashuWallet {
 
     pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
         Token::new(self.client.mint_url.clone(), proofs, memo).convert_to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::collections::{HashMap, HashSet};
+
+    use super::*;
+
+    use crate::client::Client;
+    use crate::mint::Mint;
+    use crate::nuts::nut04;
+
+    #[test]
+    fn test_wallet() {
+        let mut mint = Mint::new(
+            "supersecretsecret",
+            "0/0/0/0",
+            HashMap::new(),
+            HashSet::new(),
+            32,
+        );
+
+        let keys = mint.active_keyset_pubkeys();
+
+        let client = Client::new("https://cashu-rs.thesimplekid.space/").unwrap();
+
+        let wallet = Wallet::new(client, keys.keys);
+
+        let blinded_messages = BlindedMessages::random(Amount::from_sat(100)).unwrap();
+
+        let mint_request = nut04::MintRequest {
+            outputs: blinded_messages.blinded_messages.clone(),
+        };
+
+        let res = mint.process_mint_request(mint_request).unwrap();
+        /*
+                let proofs = construct_proofs(
+                    res.promises,
+                    blinded_messages.rs,
+                    blinded_messages.secrets,
+                    &mint.active_keyset_pubkeys().keys,
+                )
+                .unwrap();
+        */
+
+        let proofs = wallet
+            .process_split_response(blinded_messages, res.promises)
+            .unwrap();
+        for proof in &proofs {
+            mint.verify_proof(proof).unwrap();
+        }
+
+        let split = wallet
+            .create_split(Amount::from_sat(33), Amount::from_sat(67), proofs.clone())
+            .unwrap();
+
+        let split_request = split.split_payload;
+        let split_response = mint.process_split_request(split_request).unwrap();
+        let mut p = split_response.snd;
+        p.reverse();
+
+        let snd_proofs = wallet
+            .process_split_response(split.send_blinded_messages, p)
+            .unwrap();
+        /*
+        let snd_proofs = construct_proofs(
+            split_response.snd,
+            split.send_blinded_messages.rs,
+            split.send_blinded_messages.secrets,
+            &mint.active_keyset_pubkeys().keys,
+        )
+        .unwrap();
+        */
+        let mut error = false;
+        for proof in &snd_proofs {
+            if let Err(err) = mint.verify_proof(proof) {
+                println!("{err}{:?}", serde_json::to_string(proof));
+                error = true;
+            }
+        }
+
+        if error {
+            panic!()
+        }
     }
 }

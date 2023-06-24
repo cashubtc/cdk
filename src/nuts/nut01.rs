@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Amount;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PublicKey(#[serde(with = "crate::serde_utils::serde_public_key")] k256::PublicKey);
@@ -57,8 +59,8 @@ impl Keys {
         self.0.clone()
     }
 
-    pub fn amount_key(&self, amount: &u64) -> Option<PublicKey> {
-        self.0.get(amount).cloned()
+    pub fn amount_key(&self, amount: Amount) -> Option<PublicKey> {
+        self.0.get(&amount.to_sat()).cloned()
     }
 
     pub fn as_hashmap(&self) -> HashMap<u64, String> {

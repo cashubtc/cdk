@@ -98,6 +98,8 @@ impl Mint {
         amount: Amount,
         outputs: &[BlindedMessage],
     ) -> Result<SplitResponse, Error> {
+        let mut outputs = outputs.to_vec();
+        outputs.reverse();
         let mut target_total = Amount::ZERO;
         let mut change_total = Amount::ZERO;
         let mut target = Vec::with_capacity(outputs.len());
@@ -107,7 +109,7 @@ impl Mint {
         // in the outputs (blind messages). As we loop, take from those sets,
         // target amount first.
         for output in outputs {
-            let signed = self.blind_sign(output)?;
+            let signed = self.blind_sign(&output)?;
 
             // Accumulate outputs into the target (send) list
             if target_total + signed.amount <= amount {
@@ -118,6 +120,9 @@ impl Mint {
                 change.push(signed);
             }
         }
+
+        println!("change: {:?}", serde_json::to_string(&change));
+        println!("send: {:?}", serde_json::to_string(&target));
 
         Ok(SplitResponse {
             fst: change,
@@ -168,7 +173,7 @@ impl Mint {
         Ok(split_response)
     }
 
-    fn verify_proof(&self, proof: &Proof) -> Result<String, Error> {
+    pub fn verify_proof(&self, proof: &Proof) -> Result<String, Error> {
         if self.spent_secrets.contains(&proof.secret) {
             return Err(Error::TokenSpent);
         }
