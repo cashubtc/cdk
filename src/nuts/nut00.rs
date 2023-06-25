@@ -188,7 +188,6 @@ impl FromStr for Token {
         let s = s.replace("cashuA", "");
         let decoded = general_purpose::STANDARD.decode(s)?;
         let decoded_str = String::from_utf8(decoded)?;
-        println!("decode: {:?}", decoded_str);
         let token: Token = serde_json::from_str(&decoded_str)?;
         Ok(token)
     }
