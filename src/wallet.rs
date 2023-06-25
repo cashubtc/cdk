@@ -139,6 +139,12 @@ impl Wallet {
         proofs: Proofs,
     ) -> Result<SplitPayload, Error> {
         let keep_blinded_messages = BlindedMessages::random(keep_amount)?;
+        let out_amounts: Vec<Amount> = keep_blinded_messages
+            .blinded_messages
+            .iter()
+            .map(|o| o.amount)
+            .collect();
+        println!("keep outs: {:?}", out_amounts);
         let send_blinded_messages = BlindedMessages::random(send_amount)?;
 
         let outputs = {
@@ -146,6 +152,9 @@ impl Wallet {
             outputs.extend(send_blinded_messages.blinded_messages.clone());
             outputs
         };
+
+        let out_amounts: Vec<Amount> = outputs.iter().map(|o| o.amount).collect();
+        println!("outs: {:?}", out_amounts);
         let split_payload = SplitRequest {
             amount: send_amount,
             proofs,
@@ -337,22 +346,13 @@ mod tests {
 
         let wallet = Wallet::new(client, keys.keys);
 
-        let blinded_messages = BlindedMessages::random(Amount::from_sat(100)).unwrap();
+        let blinded_messages = BlindedMessages::random(Amount::from_sat(64)).unwrap();
 
         let mint_request = nut04::MintRequest {
             outputs: blinded_messages.blinded_messages.clone(),
         };
 
         let res = mint.process_mint_request(mint_request).unwrap();
-        /*
-                let proofs = construct_proofs(
-                    res.promises,
-                    blinded_messages.rs,
-                    blinded_messages.secrets,
-                    &mint.active_keyset_pubkeys().keys,
-                )
-                .unwrap();
-        */
 
         let proofs = wallet
             .process_split_response(blinded_messages, res.promises)
@@ -362,26 +362,18 @@ mod tests {
         }
 
         let split = wallet
-            .create_split(Amount::from_sat(33), Amount::from_sat(67), proofs.clone())
+            .create_split(Amount::from_sat(24), Amount::from_sat(40), proofs.clone())
             .unwrap();
 
         let split_request = split.split_payload;
+
         let split_response = mint.process_split_request(split_request).unwrap();
-        let mut p = split_response.snd;
-        p.reverse();
+        let p = split_response.snd;
 
         let snd_proofs = wallet
             .process_split_response(split.send_blinded_messages, p)
             .unwrap();
-        /*
-        let snd_proofs = construct_proofs(
-            split_response.snd,
-            split.send_blinded_messages.rs,
-            split.send_blinded_messages.secrets,
-            &mint.active_keyset_pubkeys().keys,
-        )
-        .unwrap();
-        */
+
         let mut error = false;
         for proof in &snd_proofs {
             if let Err(err) = mint.verify_proof(proof) {
