@@ -93,8 +93,6 @@ impl Wallet {
             let keys = if token.mint.to_string().eq(&self.client.mint_url.to_string()) {
                 self.mint_keys.clone()
             } else {
-                // println!("dd");
-                // self.mint_keys.clone()
                 Client::new(token.mint.as_str())?.get_keys().await?
             };
 
@@ -139,12 +137,6 @@ impl Wallet {
         proofs: Proofs,
     ) -> Result<SplitPayload, Error> {
         let keep_blinded_messages = BlindedMessages::random(keep_amount)?;
-        let out_amounts: Vec<Amount> = keep_blinded_messages
-            .blinded_messages
-            .iter()
-            .map(|o| o.amount)
-            .collect();
-        println!("keep outs: {:?}", out_amounts);
         let send_blinded_messages = BlindedMessages::random(send_amount)?;
 
         let outputs = {
@@ -153,22 +145,11 @@ impl Wallet {
             outputs
         };
 
-        let out_amounts: Vec<Amount> = outputs.iter().map(|o| o.amount).collect();
-        println!("outs: {:?}", out_amounts);
         let split_payload = SplitRequest {
             amount: send_amount,
             proofs,
             outputs,
         };
-
-        println!(
-            "Keep blinded: {:?}",
-            serde_json::to_string(&keep_blinded_messages)
-        );
-        println!(
-            "Send blinded: {:?}",
-            serde_json::to_string(&send_blinded_messages)
-        );
 
         Ok(SplitPayload {
             keep_blinded_messages,
@@ -183,21 +164,12 @@ impl Wallet {
         promisses: Vec<BlindedSignature>,
     ) -> Result<Proofs, Error> {
         let BlindedMessages {
-            blinded_messages,
+            blinded_messages: _,
             secrets,
             rs,
-            amounts,
+            amounts: _,
         } = blinded_messages;
 
-        println!(
-            "b: {:?}",
-            blinded_messages
-                .iter()
-                .map(|b| b.amount)
-                .collect::<Vec<_>>()
-        );
-
-        println!("a: {:?}", amounts);
         let secrets: Vec<_> = secrets.iter().collect();
         let mut proofs = vec![];
 
