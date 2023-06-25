@@ -99,46 +99,55 @@ impl Mint {
     ) -> Result<SplitResponse, Error> {
         let proofs_total = split_request.proofs_amount();
 
-        if proofs_total < split_request.amount {
-            return Err(Error::Amount);
-        }
-
         let output_total = split_request.output_amount();
-        if output_total < split_request.amount {
-            return Err(Error::Amount);
-        }
-
         if proofs_total != output_total {
             return Err(Error::Amount);
         }
 
         let mut secrets = Vec::with_capacity(split_request.proofs.len());
         for proof in &split_request.proofs {
-            secrets.push(self.verify_proof(proof)?);
+            secrets.push(self.verify_proof(&proof)?);
+            self.spent_secrets.insert(proof.secret.clone());
         }
 
-        let outs_fst = (proofs_total - split_request.amount).split();
+        match &split_request.amount {
+            None => {
+                let promises: Vec<BlindedSignature> = split_request
+                    .outputs
+                    .iter()
+                    .map(|b| self.blind_sign(b).unwrap())
+                    .collect();
 
-        // Blinded change messages
-        let b_fst = split_request.outputs[0..outs_fst.len()].to_vec();
-        let b_snd = split_request.outputs[outs_fst.len()..].to_vec();
+                Ok(SplitResponse::new(promises))
+            }
+            Some(amount) => {
+                if proofs_total.le(amount) {
+                    return Err(Error::Amount);
+                }
 
-        let fst: Vec<BlindedSignature> =
-            b_fst.iter().map(|b| self.blind_sign(b).unwrap()).collect();
-        let snd: Vec<BlindedSignature> =
-            b_snd.iter().map(|b| self.blind_sign(b).unwrap()).collect();
+                if output_total.gt(amount) {
+                    return Err(Error::Amount);
+                }
 
-        let split_response = SplitResponse { snd, fst };
+                let outs_fst = (proofs_total.to_owned() - amount.to_owned()).split();
 
-        if split_response.target_amount() != split_request.amount {
-            return Err(Error::OutputOrdering);
+                // Blinded change messages
+                let b_fst = split_request.outputs[0..outs_fst.len()].to_vec();
+                let b_snd = split_request.outputs[outs_fst.len()..].to_vec();
+                let fst: Vec<BlindedSignature> =
+                    b_fst.iter().map(|b| self.blind_sign(b).unwrap()).collect();
+                let snd: Vec<BlindedSignature> =
+                    b_snd.iter().map(|b| self.blind_sign(b).unwrap()).collect();
+
+                let split_response = SplitResponse::new_from_amount(snd, fst);
+
+                if split_response.target_amount() != split_request.amount {
+                    return Err(Error::OutputOrdering);
+                }
+
+                Ok(split_response)
+            }
         }
-
-        for proof in split_request.proofs {
-            self.spent_secrets.insert(proof.secret);
-        }
-
-        Ok(split_response)
     }
 
     pub fn verify_proof(&self, proof: &Proof) -> Result<String, Error> {
