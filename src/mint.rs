@@ -93,48 +93,12 @@ impl Mint {
         })
     }
 
-    fn create_split_response(
-        &self,
-        amount: Amount,
-        outputs: &[BlindedMessage],
-    ) -> Result<SplitResponse, Error> {
-        let mut outputs = outputs.to_vec();
-        outputs.reverse();
-        let mut target_total = Amount::ZERO;
-        let mut change_total = Amount::ZERO;
-        let mut target = Vec::with_capacity(outputs.len());
-        let mut change = Vec::with_capacity(outputs.len());
-
-        // Create sets of target and change amounts that we're looking for
-        // in the outputs (blind messages). As we loop, take from those sets,
-        // target amount first.
-        for output in outputs {
-            let signed = self.blind_sign(&output)?;
-
-            // Accumulate outputs into the target (send) list
-            if target_total + signed.amount <= amount {
-                target_total += signed.amount;
-                target.push(signed);
-            } else {
-                change_total += signed.amount;
-                change.push(signed);
-            }
-        }
-
-        println!("change: {:?}", serde_json::to_string(&change));
-        println!("send: {:?}", serde_json::to_string(&target));
-
-        Ok(SplitResponse {
-            fst: change,
-            snd: target,
-        })
-    }
-
     pub fn process_split_request(
         &mut self,
         split_request: SplitRequest,
     ) -> Result<SplitResponse, Error> {
         let proofs_total = split_request.proofs_amount();
+
         if proofs_total < split_request.amount {
             return Err(Error::Amount);
         }
@@ -153,21 +117,25 @@ impl Mint {
             secrets.push(self.verify_proof(proof)?);
         }
 
-        let mut split_response =
-            self.create_split_response(split_request.amount, &split_request.outputs)?;
+        let outs_fst = (proofs_total - split_request.amount).split();
 
-        if split_response.target_amount() != split_request.amount {
-            let mut outputs = split_request.outputs;
-            outputs.reverse();
-            split_response = self.create_split_response(split_request.amount, &outputs)?;
-        }
+        // Blinded change messages
+        let b_fst = split_request.outputs[0..outs_fst.len()].to_vec();
+        let b_snd = split_request.outputs[outs_fst.len()..].to_vec();
+
+        let fst: Vec<BlindedSignature> =
+            b_fst.iter().map(|b| self.blind_sign(b).unwrap()).collect();
+        let snd: Vec<BlindedSignature> =
+            b_snd.iter().map(|b| self.blind_sign(b).unwrap()).collect();
+
+        let split_response = SplitResponse { snd, fst };
 
         if split_response.target_amount() != split_request.amount {
             return Err(Error::OutputOrdering);
         }
 
-        for secret in secrets {
-            self.spent_secrets.insert(secret);
+        for proof in split_request.proofs {
+            self.spent_secrets.insert(proof.secret);
         }
 
         Ok(split_response)
@@ -208,7 +176,7 @@ impl Mint {
     ) -> Result<CheckSpendableResponse, Error> {
         let mut spendable = vec![];
         for proof in &check_spendable.proofs {
-            spendable.push(self.spent_secrets.contains(&proof.secret))
+            spendable.push(!self.spent_secrets.contains(&proof.secret))
         }
 
         Ok(CheckSpendableResponse { spendable })
