@@ -40,3 +40,12 @@ pub struct MeltResponse {
     pub preimage: Option<String>,
     pub change: Option<Vec<BlindedSignature>>,
 }
+
+impl MeltResponse {
+    pub fn change_amount(&self) -> Amount {
+        match &self.change {
+            Some(change) => change.iter().map(|c| c.amount).sum(),
+            None => Amount::ZERO,
+        }
+    }
+}
