@@ -19,6 +19,7 @@ pub struct Mint {
     pub active_keyset: nut02::mint::KeySet,
     pub inactive_keysets: HashMap<String, nut02::mint::KeySet>,
     pub spent_secrets: HashSet<String>,
+    pub pending_secrets: HashSet<String>,
 }
 
 impl Mint {
@@ -33,6 +34,7 @@ impl Mint {
             active_keyset: nut02::mint::KeySet::generate(secret, derivation_path, max_order),
             inactive_keysets,
             spent_secrets,
+            pending_secrets: HashSet::new(),
         }
     }
 
@@ -183,12 +185,15 @@ impl Mint {
         &self,
         check_spendable: &CheckSpendableRequest,
     ) -> Result<CheckSpendableResponse, Error> {
-        let mut spendable = vec![];
+        let mut spendable = Vec::with_capacity(check_spendable.proofs.len());
+        let mut pending = Vec::with_capacity(check_spendable.proofs.len());
+
         for proof in &check_spendable.proofs {
-            spendable.push(!self.spent_secrets.contains(&proof.secret))
+            spendable.push(!self.spent_secrets.contains(&proof.secret));
+            pending.push(!self.pending_secrets.contains(&proof.secret));
         }
 
-        Ok(CheckSpendableResponse { spendable })
+        Ok(CheckSpendableResponse { spendable, pending })
     }
 
     pub fn verify_melt_request(&mut self, melt_request: &MeltRequest) -> Result<(), Error> {

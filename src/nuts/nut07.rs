@@ -17,4 +17,5 @@ pub struct CheckSpendableResponse {
     /// booleans indicating whether the provided Proof is still spendable.
     /// In same order as provided proofs
     pub spendable: Vec<bool>,
+    pub pending: Vec<bool>,
 }
