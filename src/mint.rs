@@ -127,10 +127,6 @@ impl Mint {
                     return Err(Error::Amount);
                 }
 
-                if output_total.gt(amount) {
-                    return Err(Error::Amount);
-                }
-
                 let outs_fst = (proofs_total.to_owned() - amount.to_owned()).split();
 
                 // Blinded change messages
@@ -141,7 +137,7 @@ impl Mint {
                 let snd: Vec<BlindedSignature> =
                     b_snd.iter().map(|b| self.blind_sign(b).unwrap()).collect();
 
-                let split_response = SplitResponse::new_from_amount(snd, fst);
+                let split_response = SplitResponse::new_from_amount(fst, snd);
 
                 if split_response.target_amount() != split_request.amount {
                     return Err(Error::OutputOrdering);
