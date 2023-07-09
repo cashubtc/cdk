@@ -17,7 +17,7 @@ pub struct SplitPayload {
 /// Split Request [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitRequest {
-    #[deprecated(since = "0.1.1", note = "mint does not need amount")]
+    #[deprecated(since = "0.1.5", note = "mint does not need amount")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<Amount>,
     pub proofs: Proofs,
@@ -38,14 +38,14 @@ impl SplitRequest {
 pub struct SplitResponse {
     /// Promises to keep
     #[deprecated(
-        since = "0.1.1",
+        since = "0.1.5",
         note = "mint only response with one list of all promises"
     )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fst: Option<Vec<BlindedSignature>>,
     /// Promises to send
     #[deprecated(
-        since = "0.1.1",
+        since = "0.1.5",
         note = "mint only response with one list of all promises"
     )]
     #[serde(skip_serializing_if = "Option::is_none")]

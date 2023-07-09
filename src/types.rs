@@ -23,3 +23,12 @@ pub struct Melted {
     pub preimage: Option<String>,
     pub change: Option<Proofs>,
 }
+
+/// Possible states of an invoice
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub enum InvoiceStatus {
+    Unpaid,
+    Paid,
+    Expired,
+    InFlight,
+}
