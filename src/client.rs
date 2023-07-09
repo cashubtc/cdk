@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
-use crate::amount::Amount;
 use crate::nuts::nut00::{BlindedMessage, BlindedMessages, Proof};
 use crate::nuts::nut01::Keys;
 use crate::nuts::nut03::RequestMintResponse;
@@ -17,6 +16,7 @@ use crate::nuts::nut08::{MeltRequest, MeltResponse};
 use crate::nuts::nut09::MintInfo;
 use crate::nuts::*;
 use crate::utils;
+use crate::Amount;
 pub use crate::Invoice;
 
 #[derive(Debug)]

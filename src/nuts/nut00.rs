@@ -204,7 +204,7 @@ impl Token {
 pub mod mint {
     use serde::{Deserialize, Serialize};
 
-    use crate::amount::Amount;
+    use crate::Amount;
 
     use super::PublicKey;
 

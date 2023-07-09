@@ -3,13 +3,13 @@ use std::str::FromStr;
 
 use log::warn;
 
-use crate::amount::Amount;
 use crate::dhke::unblind_message;
 use crate::nuts::nut00::{mint, BlindedMessages, BlindedSignature, Proof, Proofs, Token};
 use crate::nuts::nut01::Keys;
 use crate::nuts::nut03::RequestMintResponse;
 use crate::nuts::nut06::{SplitPayload, SplitRequest};
 use crate::types::{Melted, ProofsStatus, SendProofs};
+use crate::Amount;
 pub use crate::Invoice;
 use crate::{client::Client, dhke::construct_proofs, error::Error};
 
