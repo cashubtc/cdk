@@ -9,8 +9,7 @@ use super::nut00::BlindedSignature;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitPayload {
-    pub keep_blinded_messages: BlindedMessages,
-    pub send_blinded_messages: BlindedMessages,
+    pub blinded_messages: BlindedMessages,
     pub split_payload: SplitRequest,
 }
 
