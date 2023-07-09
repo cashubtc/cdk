@@ -2,8 +2,8 @@
 // https://github.com/cashubtc/nuts/blob/main/06.md
 use serde::{Deserialize, Serialize};
 
-use crate::amount::Amount;
 use crate::nuts::nut00::{BlindedMessage, BlindedMessages, Proofs};
+use crate::Amount;
 
 use super::nut00::BlindedSignature;
 
@@ -16,7 +16,7 @@ pub struct SplitPayload {
 /// Split Request [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitRequest {
-    #[deprecated(since = "0.1.5", note = "mint does not need amount")]
+    #[deprecated(since = "0.3.0", note = "mint does not need amount")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<Amount>,
     pub proofs: Proofs,
@@ -37,14 +37,14 @@ impl SplitRequest {
 pub struct SplitResponse {
     /// Promises to keep
     #[deprecated(
-        since = "0.1.5",
+        since = "0.3.0",
         note = "mint only response with one list of all promises"
     )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fst: Option<Vec<BlindedSignature>>,
     /// Promises to send
     #[deprecated(
-        since = "0.1.5",
+        since = "0.3.0",
         note = "mint only response with one list of all promises"
     )]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,7 +63,7 @@ impl SplitResponse {
     }
 
     #[deprecated(
-        since = "0.1.1",
+        since = "0.3.0",
         note = "mint only response with one list of all promises"
     )]
     pub fn new_from_amount(
@@ -78,7 +78,7 @@ impl SplitResponse {
     }
 
     #[deprecated(
-        since = "0.1.1",
+        since = "0.3.0",
         note = "mint only response with one list of all promises"
     )]
     pub fn change_amount(&self) -> Option<Amount> {
@@ -93,7 +93,7 @@ impl SplitResponse {
     }
 
     #[deprecated(
-        since = "0.1.1",
+        since = "0.3.0",
         note = "mint only response with one list of all promises"
     )]
     pub fn target_amount(&self) -> Option<Amount> {

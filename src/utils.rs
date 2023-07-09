@@ -6,7 +6,7 @@ use bitcoin::hashes::Hash;
 use rand::prelude::*;
 use regex::Regex;
 
-use crate::amount::Amount;
+use crate::Amount;
 
 /// Split amount into cashu denominations (powers of 2)
 pub fn split_amount(amount: Amount) -> Vec<Amount> {

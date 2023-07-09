@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::nut00::Proofs;
-use crate::amount::Amount;
 use crate::error::Error;
+use crate::Amount;
 use crate::Invoice;
 
 /// Check Fees Response [NUT-05]
