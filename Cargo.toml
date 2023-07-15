@@ -1,12 +1,12 @@
 [package]
 name = "cashu-crab"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["thesimplekid"]
 license = "BSD-3-Clause"
 readme = "README.md"
 repository = "https://github.com/thesimplekid/cashu-crab"
-description = "Cashu rust wallet library"
+description = "Cashu rust wallet and mint library"
 # exclude = ["integration_test"]
 
 #[workspace]
