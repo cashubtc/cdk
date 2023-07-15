@@ -1,12 +1,15 @@
 pub mod amount;
+#[cfg(feature = "wallet")]
 pub mod client;
 pub mod dhke;
 pub mod error;
+#[cfg(feature = "mint")]
 pub mod mint;
 pub mod nuts;
 pub mod serde_utils;
 pub mod types;
 pub mod utils;
+#[cfg(feature = "wallet")]
 pub mod wallet;
 
 pub use amount::Amount;

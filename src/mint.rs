@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::dhke::sign_message;
 use crate::dhke::verify_message;
-use crate::error::Error;
+use crate::error::mint::Error;
 use crate::nuts::nut00::BlindedMessage;
 use crate::nuts::nut00::BlindedSignature;
 use crate::nuts::nut00::Proof;
@@ -169,7 +169,11 @@ impl Mint {
         let proofs_total = melt_request.proofs_amount();
 
         // TODO: Fee reserve
-        if proofs_total < melt_request.invoice_amount()? {
+        if proofs_total
+            < melt_request
+                .invoice_amount()
+                .map_err(|_| Error::InvoiceAmountUndefined)?
+        {
             return Err(Error::Amount);
         }
 

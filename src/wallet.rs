@@ -2,14 +2,16 @@
 use std::str::FromStr;
 
 use crate::dhke::unblind_message;
-use crate::nuts::nut00::{mint, BlindedMessages, BlindedSignature, Proof, Proofs, Token};
+use crate::nuts::nut00::{
+    mint, wallet::BlindedMessages, wallet::Token, BlindedSignature, Proof, Proofs,
+};
 use crate::nuts::nut01::Keys;
 use crate::nuts::nut03::RequestMintResponse;
 use crate::nuts::nut06::{SplitPayload, SplitRequest};
 use crate::types::{Melted, ProofsStatus, SendProofs};
 use crate::Amount;
 pub use crate::Invoice;
-use crate::{client::Client, dhke::construct_proofs, error::Error};
+use crate::{client::Client, dhke::construct_proofs, error};
 
 #[derive(Clone, Debug)]
 pub struct Wallet {
@@ -30,7 +32,10 @@ impl Wallet {
     // TODO: getter method for keys that if it cant get them try again
 
     /// Check if a proof is spent
-    pub async fn check_proofs_spent(&self, proofs: &mint::Proofs) -> Result<ProofsStatus, Error> {
+    pub async fn check_proofs_spent(
+        &self,
+        proofs: &mint::Proofs,
+    ) -> Result<ProofsStatus, error::wallet::Error> {
         let spendable = self.client.check_spendable(proofs).await?;
 
         // Separate proofs in spent and unspent based on mint response
@@ -46,12 +51,19 @@ impl Wallet {
     }
 
     /// Request Token Mint
-    pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
+    pub async fn request_mint(
+        &self,
+        amount: Amount,
+    ) -> Result<RequestMintResponse, error::wallet::Error> {
         Ok(self.client.request_mint(amount).await?)
     }
 
     /// Mint Token
-    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
+    pub async fn mint_token(
+        &self,
+        amount: Amount,
+        hash: &str,
+    ) -> Result<Token, error::wallet::Error> {
         let proofs = self.mint(amount, hash).await?;
 
         let token = Token::new(self.client.mint_url.clone(), proofs, None);
@@ -59,7 +71,7 @@ impl Wallet {
     }
 
     /// Mint Proofs
-    pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
+    pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, error::wallet::Error> {
         let blinded_messages = BlindedMessages::random(amount)?;
 
         let mint_res = self.client.mint(blinded_messages.clone(), hash).await?;
@@ -75,12 +87,12 @@ impl Wallet {
     }
 
     /// Check fee
-    pub async fn check_fee(&self, invoice: Invoice) -> Result<Amount, Error> {
+    pub async fn check_fee(&self, invoice: Invoice) -> Result<Amount, error::wallet::Error> {
         Ok(self.client.check_fees(invoice).await?.fee)
     }
 
     /// Receive
-    pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, Error> {
+    pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, error::wallet::Error> {
         let token_data = Token::from_str(encoded_token)?;
 
         let mut proofs: Vec<Proofs> = vec![vec![]];
@@ -113,7 +125,7 @@ impl Wallet {
     }
 
     /// Create Split Payload
-    fn create_split(&self, proofs: Proofs) -> Result<SplitPayload, Error> {
+    fn create_split(&self, proofs: Proofs) -> Result<SplitPayload, error::wallet::Error> {
         let value = proofs.iter().map(|p| p.amount).sum();
 
         let blinded_messages = BlindedMessages::random(value)?;
@@ -133,7 +145,7 @@ impl Wallet {
         &self,
         blinded_messages: BlindedMessages,
         promises: Vec<BlindedSignature>,
-    ) -> Result<Proofs, Error> {
+    ) -> Result<Proofs, error::wallet::Error> {
         let BlindedMessages {
             blinded_messages: _,
             secrets,
@@ -169,7 +181,11 @@ impl Wallet {
     }
 
     /// Send
-    pub async fn send(&self, amount: Amount, proofs: Proofs) -> Result<SendProofs, Error> {
+    pub async fn send(
+        &self,
+        amount: Amount,
+        proofs: Proofs,
+    ) -> Result<SendProofs, error::wallet::Error> {
         let mut amount_available = Amount::ZERO;
         let mut send_proofs = SendProofs::default();
 
@@ -185,7 +201,7 @@ impl Wallet {
 
         if amount_available.lt(&amount) {
             println!("Not enough funds");
-            return Err(Error::InsufficantFunds);
+            return Err(error::wallet::Error::InsufficantFunds);
         }
 
         // If amount available is EQUAL to send amount no need to split
@@ -227,7 +243,7 @@ impl Wallet {
         invoice: Invoice,
         proofs: Proofs,
         fee_reserve: Amount,
-    ) -> Result<Melted, Error> {
+    ) -> Result<Melted, error::wallet::Error> {
         let blinded = BlindedMessages::blank(fee_reserve)?;
         let melt_response = self
             .client
@@ -253,7 +269,11 @@ impl Wallet {
         Ok(melted)
     }
 
-    pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
+    pub fn proofs_to_token(
+        &self,
+        proofs: Proofs,
+        memo: Option<String>,
+    ) -> Result<String, error::wallet::Error> {
         Token::new(self.client.mint_url.clone(), proofs, memo).convert_to_string()
     }
 }

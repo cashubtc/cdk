@@ -1,17 +1,13 @@
 //! Notation and Models
 // https://github.com/cashubtc/nuts/blob/main/00.md
 
-use std::str::FromStr;
-
-use base64::{engine::general_purpose, Engine as _};
-use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::utils::generate_secret;
+use crate::serde_utils::serde_url;
 use crate::Amount;
-use crate::{dhke::blind_message, error::Error, serde_utils::serde_url, utils::split_amount};
+use serde::{Deserialize, Serialize};
 
-use super::nut01::{self, PublicKey};
+use super::nut01::PublicKey;
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,67 +19,155 @@ pub struct BlindedMessage {
     pub b: PublicKey,
 }
 
-/// Blinded Messages [NUT-00]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlindedMessages {
-    /// Blinded messages
-    pub blinded_messages: Vec<BlindedMessage>,
-    /// Secrets
-    pub secrets: Vec<String>,
-    /// Rs
-    pub rs: Vec<nut01::SecretKey>,
-    /// Amounts
-    pub amounts: Vec<Amount>,
-}
+#[cfg(feature = "wallet")]
+pub mod wallet {
+    use std::str::FromStr;
 
-impl BlindedMessages {
-    /// Outputs for speceifed amount with random secret
-    pub fn random(amount: Amount) -> Result<Self, Error> {
-        let mut blinded_messages = BlindedMessages::default();
+    use base64::{engine::general_purpose, Engine as _};
+    use serde::{Deserialize, Serialize};
+    use url::Url;
 
-        for amount in split_amount(amount) {
-            let secret = generate_secret();
-            let (blinded, r) = blind_message(secret.as_bytes(), None)?;
+    use crate::error;
+    use crate::error::wallet;
+    use crate::nuts::nut00::BlindedMessage;
+    use crate::nuts::nut00::Proofs;
+    use crate::nuts::nut01;
+    use crate::utils::generate_secret;
+    use crate::Amount;
+    use crate::{dhke::blind_message, utils::split_amount};
 
-            let blinded_message = BlindedMessage { amount, b: blinded };
+    use super::MintProofs;
 
-            blinded_messages.secrets.push(secret);
-            blinded_messages.blinded_messages.push(blinded_message);
-            blinded_messages.rs.push(r.into());
-            blinded_messages.amounts.push(amount);
-        }
-
-        Ok(blinded_messages)
+    /// Blinded Messages [NUT-00]
+    #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct BlindedMessages {
+        /// Blinded messages
+        pub blinded_messages: Vec<BlindedMessage>,
+        /// Secrets
+        pub secrets: Vec<String>,
+        /// Rs
+        pub rs: Vec<nut01::SecretKey>,
+        /// Amounts
+        pub amounts: Vec<Amount>,
     }
 
-    /// Blank Outputs used for NUT-08 change
-    pub fn blank(fee_reserve: Amount) -> Result<Self, Error> {
-        let mut blinded_messages = BlindedMessages::default();
+    impl BlindedMessages {
+        /// Outputs for speceifed amount with random secret
+        pub fn random(amount: Amount) -> Result<Self, wallet::Error> {
+            let mut blinded_messages = BlindedMessages::default();
 
-        let fee_reserve = bitcoin::Amount::from_sat(fee_reserve.to_sat());
+            for amount in split_amount(amount) {
+                let secret = generate_secret();
+                let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
-        let count = (fee_reserve
-            .to_float_in(bitcoin::Denomination::Satoshi)
-            .log2()
-            .ceil() as u64)
-            .max(1);
+                let blinded_message = BlindedMessage { amount, b: blinded };
 
-        for _i in 0..count {
-            let secret = generate_secret();
-            let (blinded, r) = blind_message(secret.as_bytes(), None)?;
+                blinded_messages.secrets.push(secret);
+                blinded_messages.blinded_messages.push(blinded_message);
+                blinded_messages.rs.push(r.into());
+                blinded_messages.amounts.push(amount);
+            }
 
-            let blinded_message = BlindedMessage {
-                amount: Amount::ZERO,
-                b: blinded,
-            };
-
-            blinded_messages.secrets.push(secret);
-            blinded_messages.blinded_messages.push(blinded_message);
-            blinded_messages.rs.push(r.into());
-            blinded_messages.amounts.push(Amount::ZERO);
+            Ok(blinded_messages)
         }
 
-        Ok(blinded_messages)
+        /// Blank Outputs used for NUT-08 change
+        pub fn blank(fee_reserve: Amount) -> Result<Self, wallet::Error> {
+            let mut blinded_messages = BlindedMessages::default();
+
+            let fee_reserve = bitcoin::Amount::from_sat(fee_reserve.to_sat());
+
+            let count = (fee_reserve
+                .to_float_in(bitcoin::Denomination::Satoshi)
+                .log2()
+                .ceil() as u64)
+                .max(1);
+
+            for _i in 0..count {
+                let secret = generate_secret();
+                let (blinded, r) = blind_message(secret.as_bytes(), None)?;
+
+                let blinded_message = BlindedMessage {
+                    amount: Amount::ZERO,
+                    b: blinded,
+                };
+
+                blinded_messages.secrets.push(secret);
+                blinded_messages.blinded_messages.push(blinded_message);
+                blinded_messages.rs.push(r.into());
+                blinded_messages.amounts.push(Amount::ZERO);
+            }
+
+            Ok(blinded_messages)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Token {
+        pub token: Vec<MintProofs>,
+        pub memo: Option<String>,
+    }
+
+    impl Token {
+        pub fn new(mint_url: Url, proofs: Proofs, memo: Option<String>) -> Self {
+            Self {
+                token: vec![MintProofs::new(mint_url, proofs)],
+                memo,
+            }
+        }
+
+        pub fn token_info(&self) -> (u64, String) {
+            let mut amount = Amount::ZERO;
+
+            for proofs in &self.token {
+                for proof in &proofs.proofs {
+                    amount += proof.amount;
+                }
+            }
+
+            (amount.to_sat(), self.token[0].mint.to_string())
+        }
+    }
+
+    impl FromStr for Token {
+        type Err = error::wallet::Error;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            if !s.starts_with("cashuA") {
+                return Err(wallet::Error::UnsupportedToken);
+            }
+
+            let s = s.replace("cashuA", "");
+            let decoded = general_purpose::STANDARD.decode(s)?;
+            let decoded_str = String::from_utf8(decoded)?;
+            let token: Token = serde_json::from_str(&decoded_str)?;
+            Ok(token)
+        }
+    }
+
+    impl Token {
+        pub fn convert_to_string(&self) -> Result<String, wallet::Error> {
+            let json_string = serde_json::to_string(self)?;
+            let encoded = general_purpose::STANDARD.encode(json_string);
+            Ok(format!("cashuA{}", encoded))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintProofs {
+    #[serde(with = "serde_url")]
+    pub mint: Url,
+    pub proofs: Proofs,
+}
+
+#[cfg(feature = "wallet")]
+impl MintProofs {
+    fn new(mint_url: Url, proofs: Proofs) -> Self {
+        Self {
+            mint: mint_url,
+            proofs,
+        }
     }
 }
 
@@ -130,77 +214,6 @@ impl From<Proof> for mint::Proof {
     }
 }
 
-pub fn mint_proofs_from_proofs(proofs: Proofs) -> mint::Proofs {
-    proofs.iter().map(|p| p.to_owned().into()).collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintProofs {
-    #[serde(with = "serde_url")]
-    pub mint: Url,
-    pub proofs: Proofs,
-}
-
-impl MintProofs {
-    fn new(mint_url: Url, proofs: Proofs) -> Self {
-        Self {
-            mint: mint_url,
-            proofs,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Token {
-    pub token: Vec<MintProofs>,
-    pub memo: Option<String>,
-}
-
-impl Token {
-    pub fn new(mint_url: Url, proofs: Proofs, memo: Option<String>) -> Self {
-        Self {
-            token: vec![MintProofs::new(mint_url, proofs)],
-            memo,
-        }
-    }
-
-    pub fn token_info(&self) -> (u64, String) {
-        let mut amount = Amount::ZERO;
-
-        for proofs in &self.token {
-            for proof in &proofs.proofs {
-                amount += proof.amount;
-            }
-        }
-
-        (amount.to_sat(), self.token[0].mint.to_string())
-    }
-}
-
-impl FromStr for Token {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if !s.starts_with("cashuA") {
-            return Err(Error::UnsupportedToken);
-        }
-
-        let s = s.replace("cashuA", "");
-        let decoded = general_purpose::STANDARD.decode(s)?;
-        let decoded_str = String::from_utf8(decoded)?;
-        let token: Token = serde_json::from_str(&decoded_str)?;
-        Ok(token)
-    }
-}
-
-impl Token {
-    pub fn convert_to_string(&self) -> Result<String, Error> {
-        let json_string = serde_json::to_string(self)?;
-        let encoded = general_purpose::STANDARD.encode(json_string);
-        Ok(format!("cashuA{}", encoded))
-    }
-}
-
 pub mod mint {
     use serde::{Deserialize, Serialize};
 
@@ -228,10 +241,18 @@ pub mod mint {
 
     /// List of proofs
     pub type Proofs = Vec<Proof>;
+
+    pub fn mint_proofs_from_proofs(proofs: super::Proofs) -> Proofs {
+        proofs.iter().map(|p| p.to_owned().into()).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+    use url::Url;
+
+    use super::wallet::*;
     use super::*;
 
     #[test]

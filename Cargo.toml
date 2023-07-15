@@ -5,6 +5,7 @@ edition = "2021"
 authors = ["thesimplekid"]
 license = "BSD-3-Clause"
 readme = "README.md"
+documentation = "https://docs.rs/crate/cashu-crab"
 repository = "https://github.com/thesimplekid/cashu-crab"
 description = "Cashu rust wallet and mint library"
 # exclude = ["integration_test"]
@@ -12,6 +13,10 @@ description = "Cashu rust wallet and mint library"
 #[workspace]
 #members = ["integration_test"]
 
+[features]
+default = ["mint", "wallet"]
+mint = []
+wallet = []
 
 [dependencies]
 base64 = "0.21.0"
