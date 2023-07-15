@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
-use crate::nuts::nut00::{BlindedMessage, BlindedMessages, Proof};
+use crate::nuts::nut00::{wallet::BlindedMessages, BlindedMessage, Proof};
 use crate::nuts::nut01::Keys;
 use crate::nuts::nut03::RequestMintResponse;
 use crate::nuts::nut04::{MintRequest, PostMintResponse};

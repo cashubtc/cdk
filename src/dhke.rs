@@ -4,14 +4,21 @@ use std::ops::Mul;
 
 use bitcoin_hashes::sha256;
 use bitcoin_hashes::Hash;
-use k256::{ProjectivePoint, Scalar, SecretKey};
 
-use crate::error::Error;
-use crate::nuts::nut00::BlindedSignature;
-use crate::nuts::nut00::Proof;
-use crate::nuts::nut00::Proofs;
-use crate::nuts::nut01::Keys;
-use crate::nuts::nut01::PublicKey;
+#[cfg(feature = "wallet")]
+use k256::ProjectivePoint;
+
+use k256::{Scalar, SecretKey};
+
+use crate::error;
+
+#[cfg(feature = "wallet")]
+use crate::nuts::nut00::{BlindedSignature, Proof, Proofs};
+
+#[cfg(feature = "wallet")]
+use crate::nuts::nut01::{Keys, PublicKey};
+
+#[cfg(feature = "wallet")]
 use crate::nuts::*;
 
 fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
@@ -32,11 +39,12 @@ fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
     }
 }
 
+#[cfg(feature = "wallet")]
 /// Blind Message Alice Step one
 pub fn blind_message(
     secret: &[u8],
     blinding_factor: Option<SecretKey>,
-) -> Result<(PublicKey, SecretKey), Error> {
+) -> Result<(PublicKey, SecretKey), error::wallet::Error> {
     let y = hash_to_curve(secret);
 
     let r: SecretKey = match blinding_factor {
@@ -49,6 +57,7 @@ pub fn blind_message(
     Ok((k256::PublicKey::try_from(b)?.into(), r))
 }
 
+#[cfg(feature = "wallet")]
 /// Unblind Message (Alice Step 3)
 pub fn unblind_message(
     // C_
@@ -56,7 +65,7 @@ pub fn unblind_message(
     r: SecretKey,
     // A
     mint_pubkey: PublicKey,
-) -> Result<PublicKey, Error> {
+) -> Result<PublicKey, error::wallet::Error> {
     // C
     // Unblinded message
     let c = ProjectivePoint::from(Into::<k256::PublicKey>::into(blinded_key).as_affine())
@@ -67,19 +76,22 @@ pub fn unblind_message(
     Ok(k256::PublicKey::try_from(c)?.into())
 }
 
+#[cfg(feature = "wallet")]
 /// Construct Proof
 pub fn construct_proofs(
     promises: Vec<BlindedSignature>,
     rs: Vec<nut01::SecretKey>,
     secrets: Vec<String>,
     keys: &Keys,
-) -> Result<Proofs, Error> {
+) -> Result<Proofs, error::wallet::Error> {
     let mut proofs = vec![];
     for (i, promise) in promises.into_iter().enumerate() {
         let blinded_c = promise.c;
         let a: PublicKey = keys
             .amount_key(promise.amount)
-            .ok_or(Error::CustomError("Could not get proofs".to_string()))?
+            .ok_or(error::wallet::Error::CustomError(
+                "Could not get proofs".to_string(),
+            ))?
             .to_owned();
 
         let unblinded_signature = unblind_message(blinded_c, rs[i].clone().into(), a)?;
@@ -98,11 +110,12 @@ pub fn construct_proofs(
     Ok(proofs)
 }
 
+#[cfg(feature = "mint")]
 /// Sign Blinded Message (Step2 bob)
 pub fn sign_message(
     a: SecretKey,
     blinded_message: k256::PublicKey,
-) -> Result<k256::PublicKey, Error> {
+) -> Result<k256::PublicKey, error::mint::Error> {
     Ok(k256::PublicKey::try_from(
         blinded_message
             .as_affine()
@@ -110,12 +123,13 @@ pub fn sign_message(
     )?)
 }
 
+#[cfg(feature = "mint")]
 /// Verify Message
 pub fn verify_message(
     a: SecretKey,
     unblinded_message: k256::PublicKey,
     msg: &str,
-) -> Result<(), Error> {
+) -> Result<(), error::mint::Error> {
     // Y
     let y = hash_to_curve(msg.as_bytes());
 
@@ -125,7 +139,7 @@ pub fn verify_message(
         return Ok(());
     }
 
-    Err(Error::TokenNotVerifed)
+    Err(error::mint::Error::TokenNotVerifed)
 }
 
 #[cfg(test)]

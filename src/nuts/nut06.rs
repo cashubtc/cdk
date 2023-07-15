@@ -2,11 +2,15 @@
 // https://github.com/cashubtc/nuts/blob/main/06.md
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut00::{BlindedMessage, BlindedMessages, Proofs};
+use crate::nuts::nut00::{BlindedMessage, Proofs};
 use crate::Amount;
+
+#[cfg(feature = "wallet")]
+use crate::nuts::nut00::wallet::BlindedMessages;
 
 use super::nut00::BlindedSignature;
 
+#[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitPayload {
     pub blinded_messages: BlindedMessages,
