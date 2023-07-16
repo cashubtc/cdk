@@ -171,7 +171,6 @@ impl Wallet {
                 amount: promise.amount,
                 secret: secrets[i].clone(),
                 c: unblinded_sig,
-                script: None,
             };
 
             proofs.push(proof);

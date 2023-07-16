@@ -194,9 +194,6 @@ pub struct Proof {
     pub c: PublicKey,
     /// `Keyset id`
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// P2SHScript that specifies the spending condition for this Proof
-    pub script: Option<String>,
 }
 
 /// List of proofs
@@ -209,7 +206,6 @@ impl From<Proof> for mint::Proof {
             secret: proof.secret,
             c: Some(proof.c),
             id: proof.id,
-            script: proof.script,
         }
     }
 }
@@ -234,9 +230,6 @@ pub mod mint {
         pub c: Option<PublicKey>,
         /// `Keyset id`
         pub id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        /// P2SHScript that specifies the spending condition for this Proof
-        pub script: Option<String>,
     }
 
     /// List of proofs
