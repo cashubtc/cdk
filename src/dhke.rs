@@ -101,7 +101,6 @@ pub fn construct_proofs(
             amount: promise.amount,
             secret: secrets[i].clone(),
             c: unblinded_signature,
-            script: None,
         };
 
         proofs.push(proof);
