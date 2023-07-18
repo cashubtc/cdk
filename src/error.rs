@@ -158,6 +158,7 @@ pub mod mint {
         EllipticError(k256::elliptic_curve::Error),
         TokenNotVerifed,
         InvoiceAmountUndefined,
+        CustomError(String),
     }
 
     impl StdError for Error {}
@@ -169,6 +170,7 @@ pub mod mint {
                 Error::Amount => write!(f, "Amount miss match"),
                 Error::TokenSpent => write!(f, "Token Spent"),
                 Error::EllipticError(err) => write!(f, "{}", err),
+                Error::CustomError(err) => write!(f, "{}", err),
                 Error::TokenNotVerifed => write!(f, "Token Not Verified"),
                 Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
             }

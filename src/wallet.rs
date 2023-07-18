@@ -13,7 +13,11 @@ use crate::nuts::nut06::{SplitPayload, SplitRequest};
 use crate::types::{Melted, ProofsStatus, SendProofs};
 use crate::Amount;
 pub use crate::Invoice;
-use crate::{client::Client, dhke::construct_proofs, error};
+use crate::{
+    client::Client,
+    dhke::construct_proofs,
+    error::{self, wallet::Error},
+};
 
 #[derive(Clone, Debug)]
 pub struct Wallet {

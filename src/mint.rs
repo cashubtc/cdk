@@ -103,6 +103,7 @@ impl Mint {
         let proofs_total = split_request.proofs_amount();
 
         let output_total = split_request.output_amount();
+
         if proofs_total != output_total {
             return Err(Error::Amount);
         }
@@ -124,10 +125,6 @@ impl Mint {
                 Ok(SplitResponse::new(promises))
             }
             Some(amount) => {
-                if proofs_total.le(amount) {
-                    return Err(Error::Amount);
-                }
-
                 let outs_fst = (proofs_total.to_owned() - amount.to_owned()).split();
 
                 // Blinded change messages
@@ -141,7 +138,7 @@ impl Mint {
                 let split_response = SplitResponse::new_from_amount(fst, snd);
 
                 if split_response.target_amount() != split_request.amount {
-                    return Err(Error::OutputOrdering);
+                    return Err(Error::CustomError("Output order".to_string()));
                 }
 
                 Ok(split_response)
