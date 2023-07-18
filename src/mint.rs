@@ -16,6 +16,7 @@ use crate::nuts::*;
 use crate::Amount;
 
 pub struct Mint {
+    //    pub pubkey: PublicKey,
     pub active_keyset: nut02::mint::KeySet,
     pub inactive_keysets: HashMap<String, nut02::mint::KeySet>,
     pub spent_secrets: HashSet<String>,

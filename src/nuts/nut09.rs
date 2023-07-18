@@ -43,19 +43,27 @@ impl<'de> Deserialize<'de> for MintVersion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// hex pubkey of the mint
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<PublicKey>,
     /// implementation name and the version running
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<MintVersion>,
     /// short description of the mint
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// long description
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description_long: Option<String>,
     /// contact methods to reach the mint operator
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub contact: Vec<Vec<String>>,
     /// shows which NUTs the mint supports
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub nuts: Vec<String>,
     /// message of the day that the wallet must display to the user
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
 }
