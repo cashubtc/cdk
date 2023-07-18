@@ -1,6 +1,8 @@
 //! Cashu Wallet
 use std::str::FromStr;
 
+use log::warn;
+
 use crate::dhke::unblind_message;
 use crate::nuts::nut00::{
     mint, wallet::BlindedMessages, wallet::Token, BlindedSignature, Proof, Proofs,
@@ -107,19 +109,28 @@ impl Wallet {
                 Client::new(token.mint.as_str())?.get_keys().await?
             };
 
+            // Sum amount of all proofs
+            let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
+
             let split_payload = self.create_split(token.proofs)?;
 
             let split_response = self.client.split(split_payload.split_payload).await?;
 
-            let promises = &split_response.promises;
-            // Proof to keep
-            let p = construct_proofs(
-                promises.to_owned(),
-                split_payload.blinded_messages.rs,
-                split_payload.blinded_messages.secrets,
-                &keys,
-            )?;
-            proofs.push(p);
+            if let Some(promises) = &split_response.promises {
+                // Proof to keep
+                let p = construct_proofs(
+                    promises.to_owned(),
+                    split_payload.blinded_messages.rs,
+                    split_payload.blinded_messages.secrets,
+                    &keys,
+                )?;
+                proofs.push(p);
+            } else {
+                warn!("Response missing promises");
+                return Err(Error::CustomError(
+                    "Split response missing promises".to_string(),
+                ));
+            }
         }
         Ok(proofs.iter().flatten().cloned().collect())
     }
@@ -131,6 +142,7 @@ impl Wallet {
         let blinded_messages = BlindedMessages::random(value)?;
 
         let split_payload = SplitRequest {
+            amount: None,
             proofs,
             outputs: blinded_messages.blinded_messages.clone(),
         };
@@ -208,25 +220,32 @@ impl Wallet {
             return Ok(send_proofs);
         }
 
+        let amount_to_keep = amount_available - amount;
         let amount_to_send = amount;
 
         let split_payload = self.create_split(send_proofs.send_proofs)?;
 
         let split_response = self.client.split(split_payload.split_payload).await?;
 
-        let promises = split_response.promises;
+        // If only promises assemble proofs needed for amount
+        let keep_proofs;
+        let send_proofs;
 
-        let proofs = construct_proofs(
-            promises,
-            split_payload.blinded_messages.rs,
-            split_payload.blinded_messages.secrets,
-            &self.mint_keys,
-        )?;
+        if let Some(promises) = split_response.promises {
+            let proofs = construct_proofs(
+                promises,
+                split_payload.blinded_messages.rs,
+                split_payload.blinded_messages.secrets,
+                &self.mint_keys,
+            )?;
 
-        let split = amount_to_send.split();
+            let split = amount_to_send.split();
 
-        let keep_proofs = proofs[0..split.len()].to_vec();
-        let send_proofs = proofs[split.len()..].to_vec();
+            keep_proofs = proofs[0..split.len()].to_vec();
+            send_proofs = proofs[split.len()..].to_vec();
+        } else {
+            return Err(Error::CustomError("Invalid split response".to_string()));
+        }
 
         // println!("Send Proofs: {:#?}", send_proofs);
         // println!("Keep Proofs: {:#?}", keep_proofs);
@@ -327,7 +346,7 @@ mod tests {
         let p = split_response.promises;
 
         let snd_proofs = wallet
-            .process_split_response(split.blinded_messages, p)
+            .process_split_response(split.blinded_messages, p.unwrap())
             .unwrap();
 
         let mut error = false;
