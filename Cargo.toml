@@ -25,7 +25,6 @@ bitcoin_hashes = "0.12.0"
 hex = "0.4.3"
 k256 = { version = "0.13.1", features=["arithmetic"] }
 lightning-invoice = { version = "0.23.0", features=["serde"] }
-minreq = { version = "2.7.0", optional = true, features = ["json-using-serde", "https"] } 
 rand = "0.8.5"
 getrandom = { version = "0.2", features = ["js"] }
 serde = { version = "1.0.160", features = ["derive"]}
@@ -33,6 +32,14 @@ serde_json = "1.0.96"
 url = "2.3.1"
 regex = "1.8.4"
 log = "0.4.19"
+
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo = { version = "0.8.1", features = ["net"]}
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+minreq = { version = "2.7.0", optional = true, features = ["json-using-serde", "https"] }
+
 
 [dev-dependencies]
 tokio = {version = "1.27.0", features = ["rt", "macros"] }

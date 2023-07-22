@@ -14,10 +14,15 @@ use crate::types::{Melted, ProofsStatus, SendProofs};
 use crate::Amount;
 pub use crate::Invoice;
 use crate::{
-    client::Client,
     dhke::construct_proofs,
     error::{self, wallet::Error},
 };
+
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_client::Client;
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::client::Client;
 
 #[derive(Clone, Debug)]
 pub struct Wallet {
