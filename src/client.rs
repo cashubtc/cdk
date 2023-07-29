@@ -17,7 +17,7 @@ use crate::nuts::nut09::MintInfo;
 use crate::nuts::*;
 use crate::utils;
 use crate::Amount;
-pub use crate::Invoice;
+pub use crate::Bolt11Invoice;
 
 #[derive(Debug)]
 pub enum Error {
@@ -199,7 +199,7 @@ impl Client {
     }
 
     /// Check Max expected fee [NUT-05]
-    pub async fn check_fees(&self, invoice: Invoice) -> Result<CheckFeesResponse, Error> {
+    pub async fn check_fees(&self, invoice: Bolt11Invoice) -> Result<CheckFeesResponse, Error> {
         let url = self.mint_url.join("checkfees")?;
 
         let request = CheckFeesRequest { pr: invoice };
@@ -223,7 +223,7 @@ impl Client {
     pub async fn melt(
         &self,
         proofs: Vec<Proof>,
-        invoice: Invoice,
+        invoice: Bolt11Invoice,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> Result<MeltResponse, Error> {
         let url = self.mint_url.join("melt")?;

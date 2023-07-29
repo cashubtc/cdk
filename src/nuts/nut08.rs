@@ -1,7 +1,7 @@
 //! Lightning fee return
 // https://github.com/cashubtc/nuts/blob/main/08.md
 
-use lightning_invoice::Invoice;
+use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 
 use crate::{error::Error, Amount};
@@ -13,7 +13,7 @@ use super::nut00::{BlindedMessage, BlindedSignature, Proofs};
 pub struct MeltRequest {
     pub proofs: Proofs,
     /// bollt11
-    pub pr: Invoice,
+    pub pr: Bolt11Invoice,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of blindedMessages `SHOULD` be set to zero
     pub outputs: Option<Vec<BlindedMessage>>,
