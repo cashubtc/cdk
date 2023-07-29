@@ -12,7 +12,7 @@ use crate::nuts::nut03::RequestMintResponse;
 use crate::nuts::nut06::{SplitPayload, SplitRequest};
 use crate::types::{Melted, ProofsStatus, SendProofs};
 use crate::Amount;
-pub use crate::Invoice;
+pub use crate::Bolt11Invoice;
 use crate::{
     dhke::construct_proofs,
     error::{self, wallet::Error},
@@ -98,7 +98,7 @@ impl Wallet {
     }
 
     /// Check fee
-    pub async fn check_fee(&self, invoice: Invoice) -> Result<Amount, error::wallet::Error> {
+    pub async fn check_fee(&self, invoice: Bolt11Invoice) -> Result<Amount, error::wallet::Error> {
         Ok(self.client.check_fees(invoice).await?.fee)
     }
 
@@ -267,7 +267,7 @@ impl Wallet {
 
     pub async fn melt(
         &self,
-        invoice: Invoice,
+        invoice: Bolt11Invoice,
         proofs: Proofs,
         fee_reserve: Amount,
     ) -> Result<Melted, error::wallet::Error> {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::nut00::Proofs;
 use crate::error::Error;
 use crate::Amount;
-use crate::Invoice;
+use crate::Bolt11Invoice;
 
 /// Check Fees Response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,7 +19,7 @@ pub struct CheckFeesResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckFeesRequest {
     /// Lighting Invoice
-    pub pr: Invoice,
+    pub pr: Bolt11Invoice,
 }
 
 /// Melt Request [NUT-05]
@@ -27,7 +27,7 @@ pub struct CheckFeesRequest {
 pub struct MeltRequest {
     pub proofs: Proofs,
     /// bollt11
-    pub pr: Invoice,
+    pub pr: Bolt11Invoice,
 }
 
 impl MeltRequest {
