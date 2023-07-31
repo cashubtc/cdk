@@ -8,23 +8,23 @@ Modeled after [Cashu-ts](https://github.com/cashubtc/cashu-ts).
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
-- ✅ [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
-- ✅ [NUT-01](https://github.com/cashubtc/nuts/blob/main/01.md)
-- ✅ [NUT-02](https://github.com/cashubtc/nuts/blob/main/02.md)
-- ✅ [NUT-03](https://github.com/cashubtc/nuts/blob/main/03.md)
-- ✅ [NUT-04](https://github.com/cashubtc/nuts/blob/main/04.md)
-- ✅ [NUT-05](https://github.com/cashubtc/nuts/blob/main/05.md)
-- ✅ [NUT-06](https://github.com/cashubtc/nuts/blob/main/06.md)
-- ✅ [NUT-07](https://github.com/cashubtc/nuts/blob/main/07.md)
-- ✅ [NUT-08](https://github.com/cashubtc/nuts/blob/main/08.md)
-- ✅ [NUT-09](https://github.com/cashubtc/nuts/blob/main/09.md)
+- :heavy_check_mark: [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
+- :heavy_check_mark: [NUT-01](https://github.com/cashubtc/nuts/blob/main/01.md)
+- :heavy_check_mark: [NUT-02](https://github.com/cashubtc/nuts/blob/main/02.md)
+- :heavy_check_mark: [NUT-03](https://github.com/cashubtc/nuts/blob/main/03.md)
+- :heavy_check_mark: [NUT-04](https://github.com/cashubtc/nuts/blob/main/04.md)
+- :heavy_check_mark: [NUT-05](https://github.com/cashubtc/nuts/blob/main/05.md)
+- :heavy_check_mark: [NUT-06](https://github.com/cashubtc/nuts/blob/main/06.md)
+- :heavy_check_mark: [NUT-07](https://github.com/cashubtc/nuts/blob/main/07.md)
+- :heavy_check_mark: [NUT-08](https://github.com/cashubtc/nuts/blob/main/08.md)
+- :heavy_check_mark: [NUT-09](https://github.com/cashubtc/nuts/blob/main/09.md)
 
 
 ## Supported token formats:
 
 - ❌ v1 read (deprecated)
 - ❌ v2 read (deprecated)
-- ✅ [v3](https://github.com/cashubtc/nuts/blob/main/00.md#023---v3-tokens) read/write
+- :heavy_check_mark: [v3](https://github.com/cashubtc/nuts/blob/main/00.md#023---v3-tokens) read/write
 
 
 ## License
