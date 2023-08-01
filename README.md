@@ -22,8 +22,8 @@ Modeled after [Cashu-ts](https://github.com/cashubtc/cashu-ts).
 
 ## Supported token formats:
 
-- ❌ v1 read (deprecated)
-- ❌ v2 read (deprecated)
+- :x: v1 read (deprecated)
+- :x: v2 read (deprecated)
 - :heavy_check_mark: [v3](https://github.com/cashubtc/nuts/blob/main/00.md#023---v3-tokens) read/write
 
 
