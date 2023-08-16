@@ -1,0 +1,35 @@
+[package]
+name = "cashu"
+version = "0.4.1-ALPHA"
+edition = "2021"
+authors = ["thesimplekid"]
+readme = "README.md"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Cashu rust wallet and mint library"
+
+
+[features]
+default = ["mint", "wallet"]
+mint = []
+wallet = []
+
+[dependencies]
+base64 = "0.21.0"
+bitcoin = { version = "0.30.0", features=["serde",  "rand", "no-std"] }
+bitcoin_hashes = "0.12.0"
+hex = "0.4.3"
+k256 = { version = "0.13.1", features=["arithmetic"] }
+lightning-invoice = { version = "0.24.0", features=["serde"] }
+rand = "0.8.5"
+getrandom = { version = "0.2", features = ["js"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+regex = "1.8.4"
+log = "0.4.19"
+
+
+[dev-dependencies]
+tokio = {version = "1.27.0", features = ["rt", "macros"] }

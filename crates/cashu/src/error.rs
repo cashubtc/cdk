@@ -80,10 +80,6 @@ pub mod wallet {
 
     #[derive(Debug)]
     pub enum Error {
-        #[cfg(not(target_arch = "wasm32"))]
-        CrabMintError(crate::client::Error),
-        #[cfg(target_arch = "wasm32")]
-        CrabMintError(crate::wasm_client::Error),
         /// Serde Json error
         SerdeJsonError(serde_json::Error),
         /// From elliptic curve
@@ -104,7 +100,6 @@ pub mod wallet {
     impl fmt::Display for Error {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                Error::CrabMintError(err) => write!(f, "{}", err),
                 Error::CustomError(err) => write!(f, "{}", err),
                 Error::InsufficantFunds => write!(f, "Insufficant Funds"),
                 Error::Utf8ParseError(err) => write!(f, "{}", err),
@@ -113,20 +108,6 @@ pub mod wallet {
                 Error::EllipticError(err) => write!(f, "{}", err),
                 Error::SerdeJsonError(err) => write!(f, "{}", err),
             }
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    impl From<crate::client::Error> for Error {
-        fn from(err: crate::client::Error) -> Error {
-            Error::CrabMintError(err)
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    impl From<crate::wasm_client::Error> for Error {
-        fn from(err: crate::wasm_client::Error) -> Error {
-            Error::CrabMintError(err)
         }
     }
 

@@ -1,28 +1,56 @@
 //! Cashu Wallet
+use std::error::Error as StdError;
+use std::fmt;
 use std::str::FromStr;
 
-use log::warn;
-
-use crate::dhke::unblind_message;
-use crate::nuts::nut00::{
+use cashu::dhke::construct_proofs;
+use cashu::dhke::unblind_message;
+use cashu::nuts::nut00::{
     mint, wallet::BlindedMessages, wallet::Token, BlindedSignature, Proof, Proofs,
 };
-use crate::nuts::nut01::Keys;
-use crate::nuts::nut03::RequestMintResponse;
-use crate::nuts::nut06::{SplitPayload, SplitRequest};
-use crate::types::{Melted, ProofsStatus, SendProofs};
-use crate::Amount;
-pub use crate::Bolt11Invoice;
-use crate::{
-    dhke::construct_proofs,
-    error::{self, wallet::Error},
-};
+use cashu::nuts::nut01::Keys;
+use cashu::nuts::nut03::RequestMintResponse;
+use cashu::nuts::nut06::{SplitPayload, SplitRequest};
+use cashu::types::{Melted, ProofsStatus, SendProofs};
+use cashu::Amount;
+pub use cashu::Bolt11Invoice;
+use tracing::warn;
 
-#[cfg(target_arch = "wasm32")]
-use crate::wasm_client::Client;
-
-#[cfg(not(target_arch = "wasm32"))]
 use crate::client::Client;
+
+#[derive(Debug)]
+pub enum Error {
+    /// Insufficaint Funds
+    InsufficantFunds,
+    CashuError(cashu::error::wallet::Error),
+    ClientError(crate::client::Error),
+    CustomError(String),
+}
+
+impl StdError for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::InsufficantFunds => write!(f, "Insufficant Funds"),
+            Error::CashuError(err) => write!(f, "{}", err),
+            Error::ClientError(err) => write!(f, "{}", err),
+            Error::CustomError(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl From<cashu::error::wallet::Error> for Error {
+    fn from(err: cashu::error::wallet::Error) -> Self {
+        Self::CashuError(err)
+    }
+}
+
+impl From<crate::client::Error> for Error {
+    fn from(err: crate::client::Error) -> Error {
+        Error::ClientError(err)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Wallet {
@@ -43,10 +71,7 @@ impl Wallet {
     // TODO: getter method for keys that if it cant get them try again
 
     /// Check if a proof is spent
-    pub async fn check_proofs_spent(
-        &self,
-        proofs: &mint::Proofs,
-    ) -> Result<ProofsStatus, error::wallet::Error> {
+    pub async fn check_proofs_spent(&self, proofs: &mint::Proofs) -> Result<ProofsStatus, Error> {
         let spendable = self.client.check_spendable(proofs).await?;
 
         // Separate proofs in spent and unspent based on mint response
@@ -62,19 +87,12 @@ impl Wallet {
     }
 
     /// Request Token Mint
-    pub async fn request_mint(
-        &self,
-        amount: Amount,
-    ) -> Result<RequestMintResponse, error::wallet::Error> {
+    pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
         Ok(self.client.request_mint(amount).await?)
     }
 
     /// Mint Token
-    pub async fn mint_token(
-        &self,
-        amount: Amount,
-        hash: &str,
-    ) -> Result<Token, error::wallet::Error> {
+    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
         let proofs = self.mint(amount, hash).await?;
 
         let token = Token::new(self.client.mint_url.clone(), proofs, None);
@@ -82,7 +100,7 @@ impl Wallet {
     }
 
     /// Mint Proofs
-    pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, error::wallet::Error> {
+    pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
         let blinded_messages = BlindedMessages::random(amount)?;
 
         let mint_res = self.client.mint(blinded_messages.clone(), hash).await?;
@@ -98,12 +116,12 @@ impl Wallet {
     }
 
     /// Check fee
-    pub async fn check_fee(&self, invoice: Bolt11Invoice) -> Result<Amount, error::wallet::Error> {
+    pub async fn check_fee(&self, invoice: Bolt11Invoice) -> Result<Amount, Error> {
         Ok(self.client.check_fees(invoice).await?.fee)
     }
 
     /// Receive
-    pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, error::wallet::Error> {
+    pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, Error> {
         let token_data = Token::from_str(encoded_token)?;
 
         let mut proofs: Vec<Proofs> = vec![vec![]];
@@ -119,7 +137,7 @@ impl Wallet {
             };
 
             // Sum amount of all proofs
-            let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
+            let _amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
 
             let split_payload = self.create_split(token.proofs)?;
 
@@ -145,7 +163,7 @@ impl Wallet {
     }
 
     /// Create Split Payload
-    fn create_split(&self, proofs: Proofs) -> Result<SplitPayload, error::wallet::Error> {
+    fn create_split(&self, proofs: Proofs) -> Result<SplitPayload, Error> {
         let value = proofs.iter().map(|p| p.amount).sum();
 
         let blinded_messages = BlindedMessages::random(value)?;
@@ -166,7 +184,7 @@ impl Wallet {
         &self,
         blinded_messages: BlindedMessages,
         promises: Vec<BlindedSignature>,
-    ) -> Result<Proofs, error::wallet::Error> {
+    ) -> Result<Proofs, Error> {
         let BlindedMessages {
             blinded_messages: _,
             secrets,
@@ -201,11 +219,7 @@ impl Wallet {
     }
 
     /// Send
-    pub async fn send(
-        &self,
-        amount: Amount,
-        proofs: Proofs,
-    ) -> Result<SendProofs, error::wallet::Error> {
+    pub async fn send(&self, amount: Amount, proofs: Proofs) -> Result<SendProofs, Error> {
         let mut amount_available = Amount::ZERO;
         let mut send_proofs = SendProofs::default();
 
@@ -221,7 +235,7 @@ impl Wallet {
 
         if amount_available.lt(&amount) {
             println!("Not enough funds");
-            return Err(error::wallet::Error::InsufficantFunds);
+            return Err(Error::InsufficantFunds);
         }
 
         // If amount available is EQUAL to send amount no need to split
@@ -229,7 +243,7 @@ impl Wallet {
             return Ok(send_proofs);
         }
 
-        let amount_to_keep = amount_available - amount;
+        let _amount_to_keep = amount_available - amount;
         let amount_to_send = amount;
 
         let split_payload = self.create_split(send_proofs.send_proofs)?;
@@ -270,7 +284,7 @@ impl Wallet {
         invoice: Bolt11Invoice,
         proofs: Proofs,
         fee_reserve: Amount,
-    ) -> Result<Melted, error::wallet::Error> {
+    ) -> Result<Melted, Error> {
         let blinded = BlindedMessages::blank(fee_reserve)?;
         let melt_response = self
             .client
@@ -296,12 +310,8 @@ impl Wallet {
         Ok(melted)
     }
 
-    pub fn proofs_to_token(
-        &self,
-        proofs: Proofs,
-        memo: Option<String>,
-    ) -> Result<String, error::wallet::Error> {
-        Token::new(self.client.mint_url.clone(), proofs, memo).convert_to_string()
+    pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
+        Ok(Token::new(self.client.mint_url.clone(), proofs, memo).convert_to_string()?)
     }
 }
 
@@ -314,7 +324,7 @@ mod tests {
 
     use crate::client::Client;
     use crate::mint::Mint;
-    use crate::nuts::nut04;
+    use cashu::nuts::nut04;
 
     #[test]
     fn test_wallet() {

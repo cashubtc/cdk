@@ -1,0 +1,28 @@
+[package]
+name = "cashu-sdk"
+version = "0.1.0"
+edition = "2021"
+authors = ["thesimplekid"]
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+
+
+[features]
+default = ["mint", "wallet"]
+mint = []
+# Fix: Should be minreq or gloo
+wallet = ["minreq"]
+
+[dependencies]
+cashu = { path = "../cashu" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo = { version = "0.9.0", features = ["net"]}
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+minreq = { version = "2.7.0", optional = true, features = ["json-using-serde", "https"] }
