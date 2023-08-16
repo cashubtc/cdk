@@ -11,7 +11,7 @@ description = "Cashu rust wallet and mint library"
 # exclude = ["integration_test"]
 
 #[workspace]
-#members = ["integration_test"]
+#members = ["bindings"]
 
 [features]
 default = ["mint", "wallet"]
@@ -33,6 +33,8 @@ url = "2.3.1"
 regex = "1.8.4"
 log = "0.4.19"
 
+[workspace.dependencies]
+uniffi = "0.24"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo = { version = "0.9.0", features = ["net"]}
