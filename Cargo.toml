@@ -1,47 +1,27 @@
-[package]
-name = "cashu-crab"
-version = "0.4.1-ALPHA"
-edition = "2021"
-authors = ["thesimplekid"]
+[workspace]
+
+members = [
+    "crates/cashu",
+    "crates/cashu-sdk"
+]
+
+[workspace.package]
 license = "BSD-3-Clause"
+homepage = "https://github.com/thesimplekid/cashu-crab"
+repository = "https://github.com/thesimplekid/cashu-crab.git"
+
+[workspace.metadata]
+authors = ["thesimplekid"]
+edition = "2021"
+description = "cashu-crab"
 readme = "README.md"
-documentation = "https://docs.rs/crate/cashu-crab"
-repository = "https://github.com/thesimplekid/cashu-crab"
-description = "Cashu rust wallet and mint library"
-# exclude = ["integration_test"]
+repository = "https://github.com/thesimplekid/cashu-rs-mint"
+license-file = "LICENSE"
+keywords = ["bitcoin", "e-cash", "cashu"]
 
-#[workspace]
-#members = ["bindings"]
-
-[features]
-default = ["mint", "wallet"]
-mint = []
-wallet = ["minreq"]
-
-[dependencies]
-base64 = "0.21.0"
-bitcoin = { version = "0.30.0", features=["serde",  "rand", "no-std"] }
-bitcoin_hashes = "0.12.0"
-hex = "0.4.3"
-k256 = { version = "0.13.1", features=["arithmetic"] }
-lightning-invoice = { version = "0.24.0", features=["serde"] }
-rand = "0.8.5"
-getrandom = { version = "0.2", features = ["js"] }
+[workspace.dependencies]
 serde = { version = "1.0.160", features = ["derive"]}
 serde_json = "1.0.96"
 url = "2.3.1"
-regex = "1.8.4"
-log = "0.4.19"
-
-[workspace.dependencies]
-uniffi = "0.24"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-gloo = { version = "0.9.0", features = ["net"]}
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-minreq = { version = "2.7.0", optional = true, features = ["json-using-serde", "https"] }
-
-
-[dev-dependencies]
-tokio = {version = "1.27.0", features = ["rt", "macros"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
