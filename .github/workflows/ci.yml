@@ -24,7 +24,6 @@ jobs:
       matrix:
         rust:
           - version: stable
-          - version: 1.64.0 #MSRV
         build-args:
           [
             -p cashu,
@@ -64,7 +63,6 @@ jobs:
       matrix:
         rust:
           - version: stable
-          - version: 1.64.0 #MSRV
         build-args:
           [
             -p cashu,
