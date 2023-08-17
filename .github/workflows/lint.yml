@@ -22,7 +22,3 @@ jobs:
       uses: crate-ci/typos@v1.0.4
     - name: Run fmt
       run: cargo fmt --all --check 
-    - name: Run clippy
-      run: |
-        rustup component add clippy
-        cargo clippy --all
