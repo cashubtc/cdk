@@ -86,14 +86,11 @@ impl SplitResponse {
         note = "mint only response with one list of all promises"
     )]
     pub fn change_amount(&self) -> Option<Amount> {
-        match &self.fst {
-            Some(fst) => Some(
-                fst.iter()
-                    .map(|BlindedSignature { amount, .. }| *amount)
-                    .sum(),
-            ),
-            None => None,
-        }
+        self.fst.as_ref().map(|fst| {
+            fst.iter()
+                .map(|BlindedSignature { amount, .. }| *amount)
+                .sum()
+        })
     }
 
     #[deprecated(
@@ -101,25 +98,19 @@ impl SplitResponse {
         note = "mint only response with one list of all promises"
     )]
     pub fn target_amount(&self) -> Option<Amount> {
-        match &self.snd {
-            Some(snd) => Some(
-                snd.iter()
-                    .map(|BlindedSignature { amount, .. }| *amount)
-                    .sum(),
-            ),
-            None => None,
-        }
+        self.snd.as_ref().map(|snd| {
+            snd.iter()
+                .map(|BlindedSignature { amount, .. }| *amount)
+                .sum()
+        })
     }
 
     pub fn promises_amount(&self) -> Option<Amount> {
-        match &self.promises {
-            Some(promises) => Some(
-                promises
-                    .iter()
-                    .map(|BlindedSignature { amount, .. }| *amount)
-                    .sum(),
-            ),
-            None => None,
-        }
+        self.promises.as_ref().map(|promises| {
+            promises
+                .iter()
+                .map(|BlindedSignature { amount, .. }| *amount)
+                .sum()
+        })
     }
 }

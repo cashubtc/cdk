@@ -28,34 +28,34 @@ pub enum Error {
     InvoiceNotPaid,
     LightingWalletNotResponding(Option<String>),
     /// Parse Url Error
-    UrlParseError(url::ParseError),
+    UrlParse(url::ParseError),
     /// Serde Json error
-    SerdeJsonError(serde_json::Error),
+    SerdeJson(serde_json::Error),
     ///  Min req error
     #[cfg(not(target_arch = "wasm32"))]
-    MinReqError(minreq::Error),
+    MinReq(minreq::Error),
     #[cfg(target_arch = "wasm32")]
-    GlooError(String),
+    Gloo(String),
     /// Custom Error
     Custom(String),
 }
 
 impl From<url::ParseError> for Error {
     fn from(err: url::ParseError) -> Error {
-        Error::UrlParseError(err)
+        Error::UrlParse(err)
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Error {
-        Error::SerdeJsonError(err)
+        Error::SerdeJson(err)
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl From<minreq::Error> for Error {
     fn from(err: minreq::Error) -> Error {
-        Error::MinReqError(err)
+        Error::MinReq(err)
     }
 }
 
@@ -72,12 +72,12 @@ impl fmt::Display for Error {
                     mint.clone().unwrap_or("".to_string())
                 )
             }
-            Error::UrlParseError(err) => write!(f, "{}", err),
-            Error::SerdeJsonError(err) => write!(f, "{}", err),
+            Error::UrlParse(err) => write!(f, "{}", err),
+            Error::SerdeJson(err) => write!(f, "{}", err),
             #[cfg(not(target_arch = "wasm32"))]
-            Error::MinReqError(err) => write!(f, "{}", err),
+            Error::MinReq(err) => write!(f, "{}", err),
             #[cfg(target_arch = "wasm32")]
-            Error::GlooError(err) => write!(f, "{}", err),
+            Error::Gloo(err) => write!(f, "{}", err),
             Error::Custom(message) => write!(f, "{}", message),
         }
     }
@@ -159,10 +159,10 @@ impl Client {
         let keys = Request::get(url.as_str())
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let keys: Keys = serde_json::from_str(&keys.to_string())?;
         /*
@@ -211,10 +211,10 @@ impl Client {
         let res = Request::get(url.as_str())
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<nut02::Response, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -253,10 +253,10 @@ impl Client {
         let res = Request::get(url.as_str())
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<RequestMintResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -311,13 +311,13 @@ impl Client {
 
         let res = Request::post(url.as_str())
             .json(&request)
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<PostMintResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -358,13 +358,13 @@ impl Client {
 
         let res = Request::post(url.as_str())
             .json(&request)
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<CheckFeesResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -425,13 +425,13 @@ impl Client {
 
         let value = Request::post(url.as_str())
             .json(&request)
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<MeltResponse, serde_json::Error> =
             serde_json::from_value(value.clone());
@@ -468,13 +468,13 @@ impl Client {
 
         let res = Request::post(url.as_str())
             .json(&split_request)
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<SplitResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -523,13 +523,13 @@ impl Client {
 
         let res = Request::post(url.as_str())
             .json(&request)
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<CheckSpendableResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -561,10 +561,10 @@ impl Client {
         let res = Request::get(url.as_str())
             .send()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?
+            .map_err(|err| Error::Gloo(err.to_string()))?
             .json::<Value>()
             .await
-            .map_err(|err| Error::GlooError(err.to_string()))?;
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
 

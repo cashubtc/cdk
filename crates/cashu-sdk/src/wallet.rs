@@ -22,9 +22,9 @@ use crate::client::Client;
 pub enum Error {
     /// Insufficaint Funds
     InsufficantFunds,
-    CashuError(cashu::error::wallet::Error),
-    ClientError(crate::client::Error),
-    CustomError(String),
+    Cashu(cashu::error::wallet::Error),
+    Client(crate::client::Error),
+    Custom(String),
 }
 
 impl StdError for Error {}
@@ -33,22 +33,22 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InsufficantFunds => write!(f, "Insufficant Funds"),
-            Error::CashuError(err) => write!(f, "{}", err),
-            Error::ClientError(err) => write!(f, "{}", err),
-            Error::CustomError(err) => write!(f, "{}", err),
+            Error::Cashu(err) => write!(f, "{}", err),
+            Error::Client(err) => write!(f, "{}", err),
+            Error::Custom(err) => write!(f, "{}", err),
         }
     }
 }
 
 impl From<cashu::error::wallet::Error> for Error {
     fn from(err: cashu::error::wallet::Error) -> Self {
-        Self::CashuError(err)
+        Self::Cashu(err)
     }
 }
 
 impl From<crate::client::Error> for Error {
     fn from(err: crate::client::Error) -> Error {
-        Error::ClientError(err)
+        Error::Client(err)
     }
 }
 
@@ -154,9 +154,7 @@ impl Wallet {
                 proofs.push(p);
             } else {
                 warn!("Response missing promises");
-                return Err(Error::CustomError(
-                    "Split response missing promises".to_string(),
-                ));
+                return Err(Error::Custom("Split response missing promises".to_string()));
             }
         }
         Ok(proofs.iter().flatten().cloned().collect())
@@ -267,7 +265,7 @@ impl Wallet {
             keep_proofs = proofs[0..split.len()].to_vec();
             send_proofs = proofs[split.len()..].to_vec();
         } else {
-            return Err(Error::CustomError("Invalid split response".to_string()));
+            return Err(Error::Custom("Invalid split response".to_string()));
         }
 
         // println!("Send Proofs: {:#?}", send_proofs);
