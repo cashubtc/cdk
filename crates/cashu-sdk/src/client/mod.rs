@@ -21,6 +21,9 @@ use cashu::Amount;
 #[cfg(target_arch = "wasm32")]
 use gloo::net::http::Request;
 
+#[cfg(feature = "blocking")]
+pub mod blocking;
+
 pub use cashu::Bolt11Invoice;
 
 #[derive(Debug)]

@@ -23,5 +23,6 @@ keywords = ["bitcoin", "e-cash", "cashu"]
 serde = { version = "1.0.160", features = ["derive"]}
 serde_json = "1.0.96"
 url = "2.3.1"
+tokio = { version = "1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = "0.3"

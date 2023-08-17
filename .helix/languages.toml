@@ -1,0 +1,4 @@
+[[language]]
+name = "rust"
+config = { cargo = { features = [ "blocking", "wallet" ] } }
+
