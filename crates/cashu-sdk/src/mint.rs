@@ -110,7 +110,7 @@ impl Mint {
 
         let mut secrets = Vec::with_capacity(split_request.proofs.len());
         for proof in &split_request.proofs {
-            secrets.push(self.verify_proof(&proof)?);
+            secrets.push(self.verify_proof(proof)?);
             self.spent_secrets.insert(proof.secret.clone());
         }
 
