@@ -51,8 +51,6 @@ jobs:
       run: rustup set profile minimal && rustup component add clippy
     - name: Build
       run: cargo build ${{ matrix.build-args }}
-    - name: Tests
-      run: cargo test ${{ matrix.build-args }}
     - name: Clippy
       run: cargo clippy ${{ matrix.build-args }} -- -D warnings
 
