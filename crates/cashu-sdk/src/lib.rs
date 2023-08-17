@@ -6,7 +6,7 @@ use tokio::runtime::Runtime;
 #[cfg(feature = "blocking")]
 use futures_util::Future;
 
-// #[cfg(feature = "wallet")]
+#[cfg(feature = "wallet")]
 pub(crate) mod client;
 
 #[cfg(feature = "mint")]
