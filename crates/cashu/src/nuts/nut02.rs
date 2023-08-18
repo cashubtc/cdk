@@ -137,6 +137,16 @@ mod test {
 
     use super::Keys;
 
+    const SHORT_KEYSET_ID: &str = "esom3oyNLLit";
+    const SHORT_KEYSET: &str = r#"
+        {
+            "1":"03a40f20667ed53513075dc51e715ff2046cad64eb68960632269ba7f0210e38bc",
+            "2":"03fd4ce5a16b65576145949e6f99f445f8249fee17c606b688b504a849cdc452de",
+            "4":"02648eccfa4c026960966276fa5a4cae46ce0fd432211a4f449bf84f13aa5f8303",
+            "8":"02fdfd6796bfeac490cbee12f778f867f0a2c68f6508d17c649759ea0dc3547528"
+        }
+    "#;
+
     const KEYSET_ID: &str = "I2yN+iRYfkzT";
     const KEYSET: &str = r#"
         {
@@ -209,6 +219,12 @@ mod test {
 
     #[test]
     fn deserialization_and_id_generation() {
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+
+        let id = keys.id();
+
+        assert_eq!(id, SHORT_KEYSET_ID);
+
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
 
         let id = keys.id();
