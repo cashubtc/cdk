@@ -89,20 +89,27 @@ impl fmt::Display for Error {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintErrorResponse {
     code: u32,
-    error: String,
+    error: Option<String>,
+    detail: Option<String>,
 }
 
 impl Error {
     pub fn from_json(json: &str) -> Result<Self, Error> {
         let mint_res: MintErrorResponse = serde_json::from_str(json)?;
 
-        let mint_error = match mint_res.error {
+        let err = mint_res
+            .error
+            .as_deref()
+            .or_else(|| mint_res.detail.as_deref())
+            .unwrap_or_default();
+
+        let mint_error = match err {
             error if error.starts_with("Lightning invoice not paid yet.") => Error::InvoiceNotPaid,
             error if error.starts_with("Lightning wallet not responding") => {
                 let mint = utils::extract_url_from_error(&error);
                 Error::LightingWalletNotResponding(mint)
             }
-            error => Error::Custom(error),
+            error => Error::Custom(error.to_owned()),
         };
         Ok(mint_error)
     }
@@ -459,8 +466,8 @@ impl Client {
             serde_json::from_value(res.clone());
 
         match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&res.to_string())?),
+            Ok(res) if res.promises.is_some() => Ok(res),
+            _ => Err(Error::from_json(&res.to_string())?),
         }
     }
 
