@@ -7,7 +7,7 @@ use tokio::runtime::Runtime;
 use futures_util::Future;
 
 #[cfg(feature = "wallet")]
-pub(crate) mod client;
+pub mod client;
 
 #[cfg(feature = "mint")]
 pub mod mint;
