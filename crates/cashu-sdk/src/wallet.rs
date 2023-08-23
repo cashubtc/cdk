@@ -288,6 +288,42 @@ impl Wallet {
         })
     }
 
+    /// Create Split Payload with amount
+    fn create_split_with_amount(
+        &self,
+        proofs: Proofs,
+        amount: Amount,
+    ) -> Result<SplitPayload, Error> {
+        let value: Amount = proofs.iter().map(|p| p.amount).sum();
+
+        let mut blinded_messages_keep = BlindedMessages::random(value - amount)?;
+
+        let blinded_messages_send = BlindedMessages::random(amount)?;
+        let BlindedMessages {
+            blinded_messages,
+            secrets,
+            rs,
+            amounts,
+        } = blinded_messages_send;
+        blinded_messages_keep
+            .blinded_messages
+            .extend(blinded_messages);
+        blinded_messages_keep.secrets.extend(secrets);
+        blinded_messages_keep.rs.extend(rs);
+        blinded_messages_keep.amounts.extend(amounts);
+
+        let split_payload = SplitRequest {
+            amount: None,
+            proofs,
+            outputs: blinded_messages_keep.blinded_messages.clone(),
+        };
+
+        Ok(SplitPayload {
+            blinded_messages: blinded_messages_keep,
+            split_payload,
+        })
+    }
+
     pub fn process_split_response(
         &self,
         blinded_messages: BlindedMessages,
@@ -332,14 +368,8 @@ impl Wallet {
         let mut amount_available = Amount::ZERO;
         let mut send_proofs = SendProofs::default();
 
-        for proof in proofs {
-            let proof_value = proof.amount;
-            if amount_available > amount {
-                send_proofs.change_proofs.push(proof);
-            } else {
-                send_proofs.send_proofs.push(proof);
-            }
-            amount_available += proof_value;
+        for proof in &proofs {
+            amount_available += proof.amount;
         }
 
         if amount_available.lt(&amount) {
@@ -347,15 +377,16 @@ impl Wallet {
             return Err(Error::InsufficantFunds);
         }
 
+        send_proofs.send_proofs = proofs;
+
         // If amount available is EQUAL to send amount no need to split
         if amount_available.eq(&amount) {
             return Ok(send_proofs);
         }
 
-        let _amount_to_keep = amount_available - amount;
-        let amount_to_send = amount;
+        let amount_to_keep = amount_available - amount;
 
-        let split_payload = self.create_split(send_proofs.send_proofs)?;
+        let split_payload = self.create_split_with_amount(send_proofs.send_proofs, amount)?;
 
         let split_response = self.client.split(split_payload.split_payload).await?;
 
@@ -371,7 +402,7 @@ impl Wallet {
                 &self.mint_keys,
             )?;
 
-            let split = amount_to_send.split();
+            let split = amount_to_keep.split();
 
             keep_proofs = proofs[0..split.len()].to_vec();
             send_proofs = proofs[split.len()..].to_vec();
@@ -379,8 +410,18 @@ impl Wallet {
             return Err(Error::Custom("Invalid split response".to_string()));
         }
 
-        // println!("Send Proofs: {:#?}", send_proofs);
-        // println!("Keep Proofs: {:#?}", keep_proofs);
+        // println!(
+        //     "Send Proofs: {}/{} {:#?}",
+        //     send_proofs.iter().fold(0, |s, i| s + i.amount.to_sat()),
+        //     amount.to_sat(),
+        //     send_proofs
+        // );
+        // println!(
+        //     "Keep Proofs: {}/{} {:#?}",
+        //     keep_proofs.iter().fold(0, |s, i| s + i.amount.to_sat()),
+        //     amount_available.to_sat(),
+        //     keep_proofs
+        // );
 
         Ok(SendProofs {
             change_proofs: keep_proofs,
@@ -394,14 +435,8 @@ impl Wallet {
         let mut amount_available = Amount::ZERO;
         let mut send_proofs = SendProofs::default();
 
-        for proof in proofs {
-            let proof_value = proof.amount;
-            if amount_available > amount {
-                send_proofs.change_proofs.push(proof);
-            } else {
-                send_proofs.send_proofs.push(proof);
-            }
-            amount_available += proof_value;
+        for proof in &proofs {
+            amount_available += proof.amount;
         }
 
         if amount_available.lt(&amount) {
@@ -409,15 +444,16 @@ impl Wallet {
             return Err(Error::InsufficantFunds);
         }
 
+        send_proofs.send_proofs = proofs;
+
         // If amount available is EQUAL to send amount no need to split
         if amount_available.eq(&amount) {
             return Ok(send_proofs);
         }
 
-        let _amount_to_keep = amount_available - amount;
-        let amount_to_send = amount;
+        let amount_to_keep = amount_available - amount;
 
-        let split_payload = self.create_split(send_proofs.send_proofs)?;
+        let split_payload = self.create_split_with_amount(send_proofs.send_proofs, amount)?;
 
         let split_response = self.client.split(split_payload.split_payload)?;
 
@@ -433,7 +469,7 @@ impl Wallet {
                 &self.mint_keys,
             )?;
 
-            let split = amount_to_send.split();
+            let split = amount_to_keep.split();
 
             keep_proofs = proofs[0..split.len()].to_vec();
             send_proofs = proofs[split.len()..].to_vec();
@@ -441,8 +477,18 @@ impl Wallet {
             return Err(Error::Custom("Invalid split response".to_string()));
         }
 
-        // println!("Send Proofs: {:#?}", send_proofs);
-        // println!("Keep Proofs: {:#?}", keep_proofs);
+        // println!(
+        //     "Send Proofs: {}/{} {:#?}",
+        //     send_proofs.iter().fold(0, |s, i| s + i.amount.to_sat()),
+        //     amount.to_sat(),
+        //     send_proofs
+        // );
+        // println!(
+        //     "Keep Proofs: {}/{} {:#?}",
+        //     keep_proofs.iter().fold(0, |s, i| s + i.amount.to_sat()),
+        //     amount_available.to_sat(),
+        //     keep_proofs
+        // );
 
         Ok(SendProofs {
             change_proofs: keep_proofs,
