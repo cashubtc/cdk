@@ -2,7 +2,9 @@
 
 members = [
     "crates/cashu",
-    "crates/cashu-sdk"
+    "crates/cashu-sdk",
+    "bindings/uniffi-bindgen",
+    "bindings/cashu-ffi",
 ]
 
 [workspace.package]
@@ -26,3 +28,4 @@ url = "2.3.1"
 tokio = { version = "1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+uniffi = "0.24"

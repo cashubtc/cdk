@@ -100,7 +100,7 @@ pub mod mint {
                 e.input(i.to_string().as_bytes());
                 let hash = Sha256::from_engine(e);
                 let secret_key = SecretKey::from_slice(&hash.to_byte_array()).unwrap();
-                let keypair = KeyPair::from_secret_key(secret_key);
+                let keypair = KeyPair::from_secret_key(secret_key.into());
                 map.insert(amount, keypair);
             }
 

@@ -1,0 +1,16 @@
+.tox/
+dist/
+cashu_protocol.egg-info/
+__pycache__/
+libcashu_ffi.dylib
+.idea/
+.DS_Store
+
+*.swp
+
+src/cashu/cashu.py
+src/cashu/*.so
+*.whl
+build/
+
+testing-setup-py-simple-example.py
