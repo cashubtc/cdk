@@ -1,0 +1,129 @@
+use std::{ops::Deref, sync::Arc};
+
+use cashu::nuts::nut00::Proof as ProofSdk;
+
+use crate::{Amount, PublicKey};
+
+pub struct Proof {
+    inner: ProofSdk,
+}
+
+impl Deref for Proof {
+    type Target = ProofSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl Proof {
+    pub fn new(amount: Arc<Amount>, secret: String, c: Arc<PublicKey>, id: Option<String>) -> Self {
+        Self {
+            inner: ProofSdk {
+                amount: *amount.as_ref().deref(),
+                secret,
+                c: c.as_ref().deref().clone(),
+                id,
+            },
+        }
+    }
+
+    pub fn amount(&self) -> Arc<Amount> {
+        Arc::new(self.inner.amount.into())
+    }
+
+    pub fn secret(&self) -> String {
+        self.inner.secret.clone()
+    }
+
+    pub fn c(&self) -> Arc<PublicKey> {
+        Arc::new(self.inner.c.clone().into())
+    }
+
+    pub fn id(&self) -> Option<String> {
+        self.inner.id.clone()
+    }
+}
+
+impl From<&Proof> for ProofSdk {
+    fn from(proof: &Proof) -> ProofSdk {
+        ProofSdk {
+            amount: *proof.amount().as_ref().deref(),
+            secret: proof.secret(),
+            c: proof.c().deref().into(),
+            id: proof.id(),
+        }
+    }
+}
+
+impl From<ProofSdk> for Proof {
+    fn from(inner: ProofSdk) -> Proof {
+        Proof { inner }
+    }
+}
+
+pub mod mint {
+    use std::ops::Deref;
+    use std::sync::Arc;
+
+    use cashu::nuts::nut00::mint::Proof as ProofSdk;
+
+    use crate::Amount;
+    use crate::PublicKey;
+
+    pub struct Proof {
+        inner: ProofSdk,
+    }
+
+    impl Deref for Proof {
+        type Target = ProofSdk;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+
+    impl Proof {
+        pub fn new(
+            amount: Option<Arc<Amount>>,
+            secret: String,
+            c: Option<Arc<PublicKey>>,
+            id: Option<String>,
+        ) -> Self {
+            Self {
+                inner: ProofSdk {
+                    amount: amount.map(|a| *a.as_ref().deref()),
+                    secret,
+                    c: c.map(|c| c.as_ref().into()),
+                    id,
+                },
+            }
+        }
+
+        pub fn amount(&self) -> Option<Arc<Amount>> {
+            self.inner.amount.map(|a| Arc::new(a.into()))
+        }
+
+        pub fn secret(&self) -> String {
+            self.inner.secret.clone()
+        }
+
+        pub fn c(&self) -> Option<Arc<PublicKey>> {
+            self.inner.c.clone().map(|c| Arc::new(c.into()))
+        }
+
+        pub fn id(&self) -> Option<String> {
+            self.inner.id.clone()
+        }
+    }
+
+    impl From<ProofSdk> for Proof {
+        fn from(proof: ProofSdk) -> Proof {
+            Proof { inner: proof }
+        }
+    }
+
+    impl From<&Proof> for ProofSdk {
+        fn from(proof: &Proof) -> ProofSdk {
+            proof.inner.clone()
+        }
+    }
+}

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
 use crate::Amount;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +31,16 @@ impl From<k256::PublicKey> for PublicKey {
     }
 }
 
+impl PublicKey {
+    pub fn from_hex(hex: String) -> Result<Self, Error> {
+        Ok(serde_json::from_str(&hex)?)
+    }
+
+    pub fn to_hex(&self) -> Result<String, Error> {
+        Ok(serde_json::to_string(&self)?)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretKey(#[serde(with = "crate::serde_utils::serde_secret_key")] k256::SecretKey);
@@ -43,6 +54,20 @@ impl From<SecretKey> for k256::SecretKey {
 impl From<k256::SecretKey> for SecretKey {
     fn from(value: k256::SecretKey) -> Self {
         Self(value)
+    }
+}
+
+impl SecretKey {
+    pub fn from_hex(hex: String) -> Result<Self, Error> {
+        Ok(serde_json::from_str(&hex)?)
+    }
+
+    pub fn to_hex(&self) -> Result<String, Error> {
+        Ok(serde_json::to_string(&self)?)
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        self.0.public_key().into()
     }
 }
 
@@ -63,6 +88,7 @@ impl Keys {
         self.0.get(&amount.to_sat()).cloned()
     }
 
+    /// As seralized hashmap
     pub fn as_hashmap(&self) -> HashMap<u64, String> {
         self.0
             .iter()
@@ -85,12 +111,11 @@ impl From<mint::Keys> for Keys {
 pub mod mint {
     use std::collections::BTreeMap;
 
-    use k256::SecretKey;
-    use serde::Deserialize;
     use serde::Serialize;
 
     use super::PublicKey;
-    use crate::serde_utils;
+    use super::SecretKey;
+    use serde::Deserialize;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Keys(pub BTreeMap<u64, KeyPair>);
@@ -98,7 +123,6 @@ pub mod mint {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct KeyPair {
         pub public_key: PublicKey,
-        #[serde(with = "serde_utils::serde_secret_key")]
         pub secret_key: SecretKey,
     }
 

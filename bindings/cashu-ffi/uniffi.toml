@@ -1,0 +1,10 @@
+[bindings.kotlin]
+package_name = "cashu"
+cdylib_name = "cashu_ffi"
+
+[bindings.swift]
+ffi_module_filename = "cashuFFI"
+cdylib_name = "cashu_ffi"
+
+[bindings.python]
+cdylib_name = "cashu_ffi"

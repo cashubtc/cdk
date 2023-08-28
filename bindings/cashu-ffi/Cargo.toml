@@ -1,0 +1,19 @@
+[package]
+name = "cashu-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+
+[lib]
+name = "cashu_ffi"
+crate-type = ["lib", "cdylib", "staticlib"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cashu  = { path = "../../crates/cashu", featues = ["wallet", "mint"] }
+url = { workspace = true }
+uniffi = { workspace = true }
+
+[build-dependencies]
+uniffi = { workspace = true, features = ["build"] }

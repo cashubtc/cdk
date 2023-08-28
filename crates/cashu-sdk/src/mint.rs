@@ -87,7 +87,7 @@ impl Mint {
             return Err(Error::AmountKey);
         };
 
-        let c = sign_message(key_pair.secret_key.clone(), b.clone().into())?;
+        let c = sign_message(key_pair.secret_key.clone().into(), b.clone().into())?;
 
         Ok(BlindedSignature {
             amount: *amount,
@@ -167,7 +167,7 @@ impl Mint {
         };
 
         verify_message(
-            keypair.secret_key.to_owned(),
+            keypair.secret_key.to_owned().into(),
             proof.c.clone().into(),
             &proof.secret,
         )?;
