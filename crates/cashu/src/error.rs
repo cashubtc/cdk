@@ -92,6 +92,9 @@ pub mod wallet {
         Base64Error(base64::DecodeError),
         /// Unsupported Token
         UnsupportedToken,
+        /// Token Requires proofs
+        ProofsRequired,
+        /// Custom Error message
         CustomError(String),
     }
 
@@ -107,6 +110,7 @@ pub mod wallet {
                 Error::UnsupportedToken => write!(f, "Unsuppported Token"),
                 Error::EllipticError(err) => write!(f, "{}", err),
                 Error::SerdeJsonError(err) => write!(f, "{}", err),
+                Error::ProofsRequired => write!(f, "Token must have at least one proof",),
             }
         }
     }

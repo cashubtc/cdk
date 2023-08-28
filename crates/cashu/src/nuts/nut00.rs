@@ -109,11 +109,19 @@ pub mod wallet {
     }
 
     impl Token {
-        pub fn new(mint_url: Url, proofs: Proofs, memo: Option<String>) -> Self {
-            Self {
+        pub fn new(
+            mint_url: Url,
+            proofs: Proofs,
+            memo: Option<String>,
+        ) -> Result<Self, wallet::Error> {
+            if proofs.is_empty() {
+                return Err(wallet::Error::ProofsRequired);
+            }
+
+            Ok(Self {
                 token: vec![MintProofs::new(mint_url, proofs)],
                 memo,
-            }
+            })
         }
 
         pub fn token_info(&self) -> (u64, String) {

@@ -126,7 +126,7 @@ impl Wallet {
         let proofs = self.mint(amount, hash).await?;
 
         let token = Token::new(self.client.mint_url.clone(), proofs, None);
-        Ok(token)
+        Ok(token?)
     }
 
     /// Blocking Mint Token
@@ -135,7 +135,7 @@ impl Wallet {
         let proofs = self.mint(amount, hash)?;
 
         let token = Token::new(self.client.client.mint_url.clone(), proofs, None);
-        Ok(token)
+        Ok(token?)
     }
 
     /// Mint Proofs
@@ -515,12 +515,12 @@ impl Wallet {
 
     #[cfg(not(feature = "blocking"))]
     pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
-        Ok(Token::new(self.client.mint_url.clone(), proofs, memo).convert_to_string()?)
+        Ok(Token::new(self.client.mint_url.clone(), proofs, memo)?.convert_to_string()?)
     }
 
     #[cfg(feature = "blocking")]
     pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
-        Ok(Token::new(self.client.client.mint_url.clone(), proofs, memo).convert_to_string()?)
+        Ok(Token::new(self.client.client.mint_url.clone(), proofs, memo)?.convert_to_string()?)
     }
 }
 
