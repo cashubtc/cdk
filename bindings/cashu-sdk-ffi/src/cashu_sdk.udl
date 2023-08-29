@@ -1,0 +1,219 @@
+namespace cashu_sdk {};
+
+// Cashu
+
+[Error]
+interface CashuError {
+    Generic(string err);
+};
+
+interface Amount {
+	u64 to_sat();	
+	u64 to_msat();
+	[Name = from_sat]
+	constructor(u64 sat);
+	[Name = from_msat]
+	constructor(u64 msat);
+ 	sequence<Amount> split();
+};
+
+
+interface PublicKey {
+    [Throws=CashuError, Name=from_hex]
+    constructor(string hex);
+    [Throws=CashuError]
+    string to_hex();
+};
+
+
+interface SecretKey {
+    [Throws=CashuError, Name=from_hex]
+    constructor(string hex);
+    [Throws=CashuError]
+    string to_hex();
+};
+
+interface BlindedMessage {
+	constructor(Amount amount, PublicKey b);
+	Amount amount();
+	PublicKey b();	
+};
+
+interface Proof {
+	constructor(Amount amount, string secret, PublicKey c, string? id);
+	Amount amount();
+	string secret();
+	PublicKey c();
+	string? id();
+};
+
+interface BlindedSignature {
+	constructor(string id, Amount amount, PublicKey c);
+	string id();
+	Amount amount();
+	PublicKey c();
+};
+
+interface MintProof {
+	constructor(Amount? amount, string secret, PublicKey? c, string? id);
+	Amount? amount();
+	string secret();
+	PublicKey? c();
+	string? id();
+	
+};
+
+interface MintProofs {
+    [Throws=CashuError]
+	constructor(string mint, sequence<Proof> proofs);
+	string url();
+	sequence<Proof> proofs();
+};
+
+interface Token {
+    [Throws=CashuError]
+	constructor(string mint, sequence<Proof> token, string? memo);
+	sequence<MintProofs> token();
+	string? memo();
+    [Throws=CashuError]
+	string as_string();
+    [Throws=CashuError, Name=from_string]
+	constructor(string token);
+	
+};
+
+interface BlindedMessages {
+    [Throws=CashuError, Name=random]
+	constructor(Amount amount);
+    [Throws=CashuError, Name=blank]
+	constructor(Amount fee_reserve);
+	sequence<BlindedMessage> blinded_messages();
+	sequence<string> secrets();
+	sequence<SecretKey> rs();
+	sequence<Amount> amounts();
+};
+
+interface KeyPair {
+	[Name=from_secret_key]
+	constructor(SecretKey secret_key);
+	SecretKey secret_key();
+	PublicKey public_key();	
+};
+
+interface Keys {
+	constructor(record<string, PublicKey> keys);
+	record<string, PublicKey> keys();
+	record<string, string> as_hashmap();
+	PublicKey? amount_key(Amount amount);
+};
+
+interface KeySet {
+	constructor(string id, Keys keys);
+	string id();
+	Keys keys();
+};
+
+interface KeySetResponse {
+	constructor(sequence<string> keyset_ids);
+	sequence<string> keyset_ids();
+};
+
+interface RequestMintResponse {
+    [Throws=CashuError]
+	constructor(string invoice, string hash);
+	string invoice();
+	string hash();
+};
+
+interface MintRequest {
+	constructor(sequence<BlindedMessage> outputs);
+	sequence<BlindedMessage> outputs();
+	Amount total_amount();
+};
+
+interface PostMintResponse {
+	constructor(sequence<BlindedSignature> promises);
+	sequence<BlindedSignature> promises();
+};
+
+interface CheckFeesRequest {
+    [Throws=CashuError]
+	constructor(string invoice);
+	string invoice();
+};
+
+interface CheckFeesResponse {
+	constructor(Amount amount);
+	Amount amount();
+};
+
+interface Nut05MeltRequest {
+    [Throws=CashuError]
+	constructor(sequence<Proof> proofs, string Invoice);
+	sequence<Proof> proofs();
+	string invoice();
+};
+
+interface Nut05MeltResponse {
+	constructor(boolean paid, string? preimage);
+	boolean paid();
+	string? preimage();
+};
+
+interface SplitRequest {
+	constructor(sequence<Proof> proofs, sequence<BlindedMessage> outputs);
+	sequence<Proof> proofs();
+	sequence<BlindedMessage> outputs();
+	Amount proofs_amount();
+	Amount output_amount();
+};
+
+interface SplitResponse {
+	constructor(sequence<BlindedSignature> promises);
+	sequence<BlindedSignature> promises();
+	Amount? promises_amount();
+
+};
+
+interface CheckSpendableRequest {
+	constructor(sequence<MintProof> proofs);
+	sequence<MintProof> proofs();
+};
+
+interface CheckSpendableResponse {
+	constructor(sequence<boolean> spendable, sequence<boolean> pending);
+	sequence<boolean> spendable();
+	sequence<boolean> pending();	
+};
+
+interface MeltRequest {
+    [Throws=CashuError]
+	constructor(sequence<Proof> proofs, string Invoice, sequence<BlindedMessage>? outputs);
+	sequence<Proof> proofs();
+	string invoice();
+	sequence<BlindedMessage>? outputs();
+};
+
+interface MeltResponse {
+	constructor(boolean paid, string? preimage, sequence<BlindedSignature>? change);
+	boolean paid();
+	string? preimage();
+	sequence<BlindedSignature>? change();
+};
+
+interface MintVersion {
+	constructor(string name, string version);
+	string name();
+	string version();
+};
+
+interface MintInfo {
+	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>> contact, sequence<string> nuts, string? motd);
+};
+
+enum InvoiceStatus {
+	"Unpaid",
+	"Paid",
+	"Expired",
+	"InFlight"
+};
