@@ -1,0 +1,16 @@
+init:
+	rustup target add aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim
+	rustup target add aarch64-apple-darwin x86_64-apple-darwin
+	rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+	cargo install cbindgen
+	cargo install cargo-ndk
+
+python:
+	rm -rf dist
+	pip install -r bindings-python/requirements.txt
+	cargo build --release
+	cargo run -p uniffi-bindgen generate src/cashu_sdk.udl --language python --no-format -o bindings-python/src/cashu-sdk/
+	cp ../../target/release/libcashu_sdk_ffi.so bindings-python/src/cashu-sdk/
+	cp ../../target/release/libcashu_sdk_ffi.dylib bindings-python/src/cashu-sdk/ | true
+	cd bindings-python && pip wheel --no-deps -w dist .
+	pip install ./bindings-python/dist/cashu_sdk*.whl --force-reinstall

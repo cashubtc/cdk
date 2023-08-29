@@ -5,6 +5,7 @@ members = [
     "crates/cashu-sdk",
     "bindings/uniffi-bindgen",
     "bindings/cashu-ffi",
+    "bindings/cashu-sdk-ffi"
 ]
 
 [workspace.package]

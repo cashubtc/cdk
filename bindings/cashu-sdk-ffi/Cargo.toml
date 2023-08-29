@@ -1,0 +1,21 @@
+[package]
+name = "cashu-sdk-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "cashu_sdk_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+
+[dependencies]
+cashu-ffi = { path = "../cashu-ffi" }
+cashu-sdk = { path = "../../crates/cashu-sdk", default-features = false, features = ["wallet", "mint", "blocking"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uniffi = { workspace = true }
+
+[build-dependencies]
+uniffi = { workspace = true, features = ["build"] }
+
