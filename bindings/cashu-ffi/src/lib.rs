@@ -26,6 +26,7 @@ mod ffi {
     pub use crate::nuts::nut08::{MeltRequest, MeltResponse};
     pub use crate::nuts::nut09::{MintInfo, MintVersion};
     pub use crate::types::amount::Amount;
+    pub use crate::types::Bolt11Invoice;
     pub use cashu::types::InvoiceStatus;
 
     // UDL
