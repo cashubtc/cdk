@@ -5,6 +5,13 @@ interface CashuError {
     Generic(string err);
 };
 
+interface Bolt11Invoice {
+    [Throws=CashuError]
+    constructor(string bolt11);
+	string as_string();
+	Amount? amount();
+};
+
 interface Amount {
 	u64 to_sat();	
 	u64 to_msat();
