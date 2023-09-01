@@ -32,8 +32,12 @@ impl From<k256::PublicKey> for PublicKey {
 }
 
 impl PublicKey {
+    // HACK: Fix the from_hex and to_hex
+    // just leaving this hack for now as this pr is big enough
     pub fn from_hex(hex: String) -> Result<Self, Error> {
-        Ok(serde_json::from_str(&hex)?)
+        let hex = hex::decode(hex)?;
+
+        Ok(PublicKey(k256::PublicKey::from_sec1_bytes(&hex).unwrap()))
     }
 
     pub fn to_hex(&self) -> Result<String, Error> {
@@ -57,6 +61,7 @@ impl From<k256::SecretKey> for SecretKey {
     }
 }
 
+// REVIEW: Guessing this is broken as well since its the same as pubkey
 impl SecretKey {
     pub fn from_hex(hex: String) -> Result<Self, Error> {
         Ok(serde_json::from_str(&hex)?)
@@ -133,5 +138,19 @@ pub mod mint {
                 secret_key,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::PublicKey;
+
+    #[test]
+    fn pubkey() {
+        let pubkey = PublicKey::from_hex(
+            "02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4".to_string(),
+        )
+        .unwrap();
     }
 }
