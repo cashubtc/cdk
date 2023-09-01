@@ -32,14 +32,12 @@ impl MintProofs {
     }
 
     pub fn proofs(&self) -> Vec<Arc<Proof>> {
-        let proofs = self
-            .inner
+        self.inner
             .proofs
             .clone()
             .into_iter()
             .map(|p| Arc::new(p.into()))
-            .collect();
-        proofs
+            .collect()
     }
 }
 

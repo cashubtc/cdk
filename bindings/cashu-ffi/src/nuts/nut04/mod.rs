@@ -56,3 +56,9 @@ impl PostMintResponse {
             .collect()
     }
 }
+
+impl From<cashu::nuts::nut04::PostMintResponse> for PostMintResponse {
+    fn from(inner: cashu::nuts::nut04::PostMintResponse) -> PostMintResponse {
+        PostMintResponse { inner }
+    }
+}

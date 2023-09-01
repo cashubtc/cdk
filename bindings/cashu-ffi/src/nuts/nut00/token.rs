@@ -8,7 +8,7 @@ use crate::MintProofs;
 use crate::Proof;
 
 pub struct Token {
-    token: TokenSdk,
+    inner: TokenSdk,
 }
 
 impl Token {
@@ -16,12 +16,12 @@ impl Token {
         let mint = url::Url::from_str(&mint)?;
         let proofs = proofs.into_iter().map(|p| p.as_ref().into()).collect();
         Ok(Self {
-            token: TokenSdk::new(mint, proofs, memo)?,
+            inner: TokenSdk::new(mint, proofs, memo)?,
         })
     }
 
     pub fn token(&self) -> Vec<Arc<MintProofs>> {
-        self.token
+        self.inner
             .token
             .clone()
             .into_iter()
@@ -30,16 +30,22 @@ impl Token {
     }
 
     pub fn memo(&self) -> Option<String> {
-        self.token.memo.clone()
+        self.inner.memo.clone()
     }
 
     pub fn from_string(token: String) -> Result<Self> {
         Ok(Self {
-            token: TokenSdk::from_str(&token)?,
+            inner: TokenSdk::from_str(&token)?,
         })
     }
 
     pub fn as_string(&self) -> Result<String> {
-        Ok(self.token.convert_to_string()?)
+        Ok(self.inner.convert_to_string()?)
+    }
+}
+
+impl From<cashu::nuts::nut00::wallet::Token> for Token {
+    fn from(inner: cashu::nuts::nut00::wallet::Token) -> Token {
+        Token { inner }
     }
 }

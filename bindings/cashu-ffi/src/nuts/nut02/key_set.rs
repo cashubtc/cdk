@@ -53,3 +53,9 @@ impl KeySetResponse {
         self.inner.clone().keysets.into_iter().collect()
     }
 }
+
+impl From<cashu::nuts::nut02::Response> for KeySetResponse {
+    fn from(inner: Response) -> KeySetResponse {
+        KeySetResponse { inner }
+    }
+}

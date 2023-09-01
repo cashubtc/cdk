@@ -7,6 +7,14 @@ interface CashuError {
     Generic(string err);
 };
 
+
+interface Bolt11Invoice {
+    [Throws=CashuError]
+    constructor(string bolt11);
+	string as_string();
+	Amount? amount();
+};
+
 interface Amount {
 	u64 to_sat();	
 	u64 to_msat();
@@ -216,4 +224,73 @@ enum InvoiceStatus {
 	"Paid",
 	"Expired",
 	"InFlight"
+};
+
+// Cashu Sdk
+
+
+[Error]
+interface CashuSdkError {
+    Generic(string err);
+};
+
+interface SendProofs {
+	constructor(sequence<Proof> change_proofs, sequence<Proof> send_proofs);
+	sequence<Proof> send_proofs();
+	sequence<Proof> change_proofs();
+};
+
+interface Melted {
+	constructor(boolean paid, string? preimage, sequence<Proof>? change);
+	string? preimage();
+	boolean paid();
+	sequence<Proof>? change();
+};
+
+interface Client {
+    [Throws=CashuSdkError]
+	constructor(string mint_url);
+	[Throws=CashuSdkError]
+	Keys get_keys();
+    [Throws=CashuSdkError]
+	KeySetResponse get_keysets();
+    [Throws=CashuSdkError]
+    RequestMintResponse request_mint(Amount amount);
+    [Throws=CashuSdkError]
+	PostMintResponse mint(BlindedMessages blinded_messages, string hash);
+    [Throws=CashuSdkError]
+    CheckFeesResponse check_fees(Bolt11Invoice invoice);
+    [Throws=CashuSdkError]
+	MeltResponse melt(sequence<Proof> proofs, Bolt11Invoice invoice, sequence<BlindedMessage>? outputs);
+    [Throws=CashuSdkError]
+    SplitResponse split(SplitRequest split_request);
+    [Throws=CashuSdkError]
+	CheckSpendableResponse check_spendable(sequence<MintProof> proofs);
+    [Throws=CashuSdkError]
+    MintInfo get_info();
+};
+
+interface Wallet {
+	constructor(Client client, Keys mint_keys);
+    // TODO: ProofStatus type
+	// [Throws=CashuSdkError]
+	// ProofsStatus check_proofs_spent(sequence<MintProof> proofs);
+    [Throws=CashuSdkError]
+	RequestMintResponse request_mint(Amount amount);
+    [Throws=CashuSdkError]
+	Token mint_token(Amount amount, string hash);
+    [Throws=CashuSdkError]
+	sequence<Proof> mint(Amount amount, string hash);
+    [Throws=CashuSdkError]
+	Amount check_fee(Bolt11Invoice invoice);
+    [Throws=CashuSdkError]
+	sequence<Proof> receive(string encoded_token);
+    [Throws=CashuSdkError]
+	sequence<Proof> process_split_response(BlindedMessages blinded_messages, sequence<BlindedSignature> promises);
+    [Throws=CashuSdkError]
+	SendProofs send(Amount amount, sequence<Proof> proofs);
+    [Throws=CashuSdkError]
+	Melted melt(Bolt11Invoice invoice, sequence<Proof> proofs, Amount fee_reserve);
+    [Throws=CashuSdkError]
+	string proof_to_token(sequence<Proof> proof, string? memo);
 };

@@ -25,3 +25,11 @@ impl RequestMintResponse {
         self.inner.hash.to_string()
     }
 }
+
+impl From<cashu::nuts::nut03::RequestMintResponse> for RequestMintResponse {
+    fn from(mint_response: cashu::nuts::nut03::RequestMintResponse) -> RequestMintResponse {
+        RequestMintResponse {
+            inner: mint_response,
+        }
+    }
+}

@@ -88,7 +88,7 @@ impl Keys {
         self.0.get(&amount.to_sat()).cloned()
     }
 
-    /// As seralized hashmap
+    /// As serialized hashmap
     pub fn as_hashmap(&self) -> HashMap<u64, String> {
         self.0
             .iter()

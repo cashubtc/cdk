@@ -6,56 +6,6 @@ init:
 	cargo install cbindgen
 	cargo install cargo-ndk
 
-
-kotlin:
-	$(JUST) ffi-kotlin-clean
-	$(JUST) ffi-kotlin-generate
-
-ffi-kotlin-clean:
-	find ./ffi/kotlin/jniLibs -name libcashu_sdk_ffi.so -type f -delete
-
-ffi-kotlin-generate:
-	cargo run -p uniffi-bindgen generate src/cashu.udl --language kotlin --no-format -o ffi/kotlin
-
-android: aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
-
-aarch64-linux-android:
-	cargo ndk -t aarch64-linux-android -o ffi/kotlin/jniLibs build --release
-
-armv7-linux-androideabi:
-	$(JUST) ffi-ndk-build TARGET=armv7-linux-androideabi
-
-i686-linux-android:
-	$(JUST) ffi-ndk-build TARGET=i686-linux-android
-
-x86_64-linux-android:
-	$(JUST) ffi-ndk-build TARGET=x86_64-linux-android
-
-ffi-ndk-build:
-	cargo ndk -t $(TARGET) -o ffi/kotlin/jniLibs build --release
-
-bindings-android:
-	$(JUST) bindings-android-clean
-	$(JUST) bindings-android-copy
-	cd bindings-android && ./gradlew assemble
-	$(JUST) bindings-android-package
-
-bindings-android-clean:
-	rm -rf bindings-android/lib/src/main/jniLibs
-	rm -rf bindings-android/lib/src/main/kotlin
-
-bindings-android-copy:
-	cp -r ffi/kotlin/jniLibs bindings-android/lib/src/main
-	cp -r ffi/kotlin/cashu bindings-android/lib/src/main/kotlin/
-
-bindings-android-package:
-	mkdir -p ffi/android
-	cp bindings-android/lib/build/outputs/aar/lib-release.aar ffi/android
-
-publish-android:
-	cd bindings-android && ./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository
-
-
 python:
 	rm -rf dist
 	pip install -r bindings-python/requirements.txt
