@@ -46,6 +46,18 @@ impl CheckFeesResponse {
     }
 }
 
+impl From<cashu::nuts::nut05::CheckFeesResponse> for CheckFeesResponse {
+    fn from(inner: cashu::nuts::nut05::CheckFeesResponse) -> CheckFeesResponse {
+        Self { inner }
+    }
+}
+
+impl From<CheckFeesResponse> for cashu::nuts::nut05::CheckFeesResponse {
+    fn from(res: CheckFeesResponse) -> cashu::nuts::nut05::CheckFeesResponse {
+        res.inner
+    }
+}
+
 pub struct MeltRequest {
     inner: MeltRequestSdk,
 }

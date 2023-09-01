@@ -44,10 +44,10 @@ impl Client {
 
     pub fn mint(
         &self,
-        blinded_mssages: BlindedMessages,
+        blinded_messages: BlindedMessages,
         hash: &str,
     ) -> Result<PostMintResponse, Error> {
-        RUNTIME.block_on(async { self.client.mint(blinded_mssages, hash).await })
+        RUNTIME.block_on(async { self.client.mint(blinded_messages, hash).await })
     }
 
     pub fn check_fees(&self, invoice: Bolt11Invoice) -> Result<CheckFeesResponse, Error> {

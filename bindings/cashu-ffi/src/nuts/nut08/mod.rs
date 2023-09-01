@@ -85,3 +85,15 @@ impl MeltResponse {
             .map(|change| change.into_iter().map(|bs| Arc::new(bs.into())).collect())
     }
 }
+
+impl From<cashu::nuts::nut08::MeltResponse> for MeltResponse {
+    fn from(inner: cashu::nuts::nut08::MeltResponse) -> MeltResponse {
+        MeltResponse { inner }
+    }
+}
+
+impl From<MeltResponse> for cashu::nuts::nut08::MeltResponse {
+    fn from(res: MeltResponse) -> cashu::nuts::nut08::MeltResponse {
+        res.inner
+    }
+}

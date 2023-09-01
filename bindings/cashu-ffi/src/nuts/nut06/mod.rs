@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use cashu::nuts::nut06::{SplitRequest as SplitRequestSdk, SplitResponse as SplitResponseSdk};
 
@@ -6,6 +6,13 @@ use crate::{Amount, BlindedMessage, BlindedMessages, BlindedSignature, Proof};
 
 pub struct SplitRequest {
     inner: SplitRequestSdk,
+}
+
+impl Deref for SplitRequest {
+    type Target = SplitRequestSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl SplitRequest {
@@ -77,5 +84,11 @@ impl SplitResponse {
 
     pub fn promises_amount(&self) -> Option<Arc<Amount>> {
         self.inner.promises_amount().map(|a| Arc::new(a.into()))
+    }
+}
+
+impl From<cashu::nuts::nut06::SplitResponse> for SplitResponse {
+    fn from(inner: cashu::nuts::nut06::SplitResponse) -> SplitResponse {
+        SplitResponse { inner }
     }
 }

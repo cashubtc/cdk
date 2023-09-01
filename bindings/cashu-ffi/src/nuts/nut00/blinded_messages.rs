@@ -59,3 +59,15 @@ impl BlindedMessages {
             .collect()
     }
 }
+
+impl From<cashu::nuts::nut00::wallet::BlindedMessages> for BlindedMessages {
+    fn from(inner: cashu::nuts::nut00::wallet::BlindedMessages) -> BlindedMessages {
+        BlindedMessages { inner }
+    }
+}
+
+impl From<BlindedMessages> for cashu::nuts::nut00::wallet::BlindedMessages {
+    fn from(blinded_messages: BlindedMessages) -> cashu::nuts::nut00::wallet::BlindedMessages {
+        blinded_messages.inner
+    }
+}

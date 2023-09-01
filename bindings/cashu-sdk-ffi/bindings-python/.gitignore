@@ -13,5 +13,4 @@ src/cashu-sdk/*.so
 *.whl
 build/
 
-testing-setup-py-simple-example.py
 

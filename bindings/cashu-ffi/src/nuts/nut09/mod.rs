@@ -74,3 +74,9 @@ impl MintInfo {
         }
     }
 }
+
+impl From<cashu::nuts::nut09::MintInfo> for MintInfo {
+    fn from(inner: cashu::nuts::nut09::MintInfo) -> MintInfo {
+        MintInfo { inner }
+    }
+}

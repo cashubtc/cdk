@@ -49,3 +49,9 @@ impl CheckSpendableResponse {
         self.inner.pending.clone()
     }
 }
+
+impl From<cashu::nuts::nut07::CheckSpendableResponse> for CheckSpendableResponse {
+    fn from(inner: cashu::nuts::nut07::CheckSpendableResponse) -> CheckSpendableResponse {
+        CheckSpendableResponse { inner }
+    }
+}
