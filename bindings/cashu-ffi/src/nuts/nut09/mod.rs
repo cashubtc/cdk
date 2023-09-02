@@ -73,6 +73,38 @@ impl MintInfo {
             },
         }
     }
+
+    pub fn name(&self) -> Option<String> {
+        self.inner.name.clone()
+    }
+
+    pub fn pubkey(&self) -> Option<Arc<PublicKey>> {
+        self.inner.pubkey.clone().map(|p| Arc::new(p.into()))
+    }
+
+    pub fn version(&self) -> Option<Arc<MintVersion>> {
+        self.inner.version.clone().map(|v| Arc::new(v.into()))
+    }
+
+    pub fn description(&self) -> Option<String> {
+        self.inner.description.clone()
+    }
+
+    pub fn description_long(&self) -> Option<String> {
+        self.inner.description_long.clone()
+    }
+
+    pub fn contact(&self) -> Option<Vec<Vec<String>>> {
+        self.inner.contact.clone()
+    }
+
+    pub fn nuts(&self) -> Vec<String> {
+        self.inner.nuts.clone()
+    }
+
+    pub fn motd(&self) -> Option<String> {
+        self.inner.motd.clone()
+    }
 }
 
 impl From<cashu::nuts::nut09::MintInfo> for MintInfo {
