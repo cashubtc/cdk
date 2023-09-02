@@ -15,7 +15,7 @@ just python
 
 ## Getting Started
 
-For now this is not published as a package as it is still in early devlopment. So you will have to build it as above. In the future this will be pulished and pip can be used to install. 
+For now this is not published as a package as it is still in early development. So you will have to build it as above. In the future this will be pulished and pip can be used to install. 
 
 ```python
 from cashu_protocol import Token, Proof, PublicKey, Amount

@@ -25,5 +25,5 @@ print(new_token.as_string())
 
 # This is failing because of the url serialization.
 # https://github.com/thesimplekid/cashu-crab/issues/13
-# It is still a valid token, just does not match the referance
+# It is still a valid token, just does not match the reference
 print(new_token.as_string == token_str)
