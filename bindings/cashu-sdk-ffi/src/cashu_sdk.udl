@@ -317,7 +317,6 @@ interface Wallet {
 
 interface Mint {
 	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<string> spent_secrets, u8 max_order);
-
 	KeySet active_keyset_pubkeys();
 	KeySetResponse keysets();
 	MintKeySet active_keyset();
@@ -332,5 +331,4 @@ interface Mint {
 	void verify_melt_request(MeltRequest melt_request);
     [Throws=CashuSdkError]
 	MeltResponse process_melt_request(MeltRequest melt_request, string preimage, Amount totoal_spent);
-	
 };
