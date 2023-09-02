@@ -20,3 +20,9 @@ impl MintKeySet {
         }
     }
 }
+
+impl From<cashu::nuts::nut02::mint::KeySet> for MintKeySet {
+    fn from(inner: cashu::nuts::nut02::mint::KeySet) -> MintKeySet {
+        MintKeySet { inner }
+    }
+}

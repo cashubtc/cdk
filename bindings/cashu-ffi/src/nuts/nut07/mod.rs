@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use cashu::nuts::nut07::{
     CheckSpendableRequest as CheckSpendableRequestSdk,
@@ -9,6 +9,13 @@ use crate::nuts::nut00::proof::mint::Proof;
 
 pub struct CheckSpendableRequest {
     inner: CheckSpendableRequestSdk,
+}
+
+impl Deref for CheckSpendableRequest {
+    type Target = CheckSpendableRequestSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl CheckSpendableRequest {

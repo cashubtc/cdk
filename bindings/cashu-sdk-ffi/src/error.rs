@@ -30,3 +30,11 @@ impl From<cashu_sdk::wallet::Error> for CashuSdkError {
         }
     }
 }
+
+impl From<cashu_sdk::mint::Error> for CashuSdkError {
+    fn from(err: cashu_sdk::mint::Error) -> CashuSdkError {
+        Self::Generic {
+            err: err.to_string(),
+        }
+    }
+}
