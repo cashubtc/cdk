@@ -8,6 +8,13 @@ pub struct MintRequest {
     inner: MintRequestSdk,
 }
 
+impl Deref for MintRequest {
+    type Target = MintRequestSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl MintRequest {
     pub fn new(outputs: Vec<Arc<BlindedMessage>>) -> Self {
         Self {
@@ -34,8 +41,21 @@ impl MintRequest {
     }
 }
 
+impl From<cashu::nuts::nut04::MintRequest> for MintRequest {
+    fn from(inner: cashu::nuts::nut04::MintRequest) -> MintRequest {
+        MintRequest { inner }
+    }
+}
+
 pub struct PostMintResponse {
     inner: PostMintResponseSdk,
+}
+
+impl Deref for PostMintResponse {
+    type Target = PostMintResponseSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl PostMintResponse {

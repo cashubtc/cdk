@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -9,6 +10,13 @@ use crate::{BlindedMessage, BlindedSignature, Proof};
 
 pub struct MeltRequest {
     inner: MeltRequestSdk,
+}
+
+impl Deref for MeltRequest {
+    type Target = MeltRequestSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl MeltRequest {

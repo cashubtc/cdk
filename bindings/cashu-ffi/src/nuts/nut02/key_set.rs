@@ -37,6 +37,12 @@ impl KeySet {
     }
 }
 
+impl From<cashu::nuts::nut02::KeySet> for KeySet {
+    fn from(inner: cashu::nuts::nut02::KeySet) -> KeySet {
+        KeySet { inner }
+    }
+}
+
 pub struct KeySetResponse {
     inner: Response,
 }

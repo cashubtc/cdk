@@ -313,3 +313,24 @@ interface Wallet {
     [Throws=CashuSdkError]
 	string proof_to_token(sequence<Proof> proof, string? memo);
 };
+
+
+interface Mint {
+	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<string> spent_secrets, u8 max_order);
+
+	KeySet active_keyset_pubkeys();
+	KeySetResponse keysets();
+	MintKeySet active_keyset();
+	KeySet? keyset(string id);
+    [Throws=CashuSdkError]
+	PostMintResponse process_mint_request(MintRequest mint_request);
+    [Throws=CashuSdkError]
+	SplitResponse proccess_split_request(SplitRequest split_request);
+    [Throws=CashuSdkError]
+	string verify_proof(Proof proof);
+    [Throws=CashuSdkError]
+	void verify_melt_request(MeltRequest melt_request);
+    [Throws=CashuSdkError]
+	MeltResponse process_melt_request(MeltRequest melt_request, string preimage, Amount totoal_spent);
+	
+};
