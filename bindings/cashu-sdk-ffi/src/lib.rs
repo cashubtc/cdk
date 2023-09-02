@@ -15,7 +15,7 @@ mod ffi {
 
     pub use crate::client::Client;
     pub use crate::error::CashuSdkError;
-    pub use crate::types::{Melted, SendProofs};
+    pub use crate::types::{Melted, ProofsStatus, SendProofs};
     pub use crate::wallet::Wallet;
 
     // UDL

@@ -216,7 +216,7 @@ interface MintVersion {
 };
 
 interface MintInfo {
-	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>> contact, sequence<string> nuts, string? motd);
+	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, sequence<string> nuts, string? motd);
 };
 
 enum InvoiceStatus {
@@ -224,6 +224,12 @@ enum InvoiceStatus {
 	"Paid",
 	"Expired",
 	"InFlight"
+};
+
+interface ProofsStatus {
+	constructor(sequence<MintProof> spendable, sequence<MintProof> spent);
+	sequence<MintProof> spendable();
+	sequence<MintProof> spent();
 };
 
 // Cashu Sdk
@@ -272,7 +278,6 @@ interface Client {
 
 interface Wallet {
 	constructor(Client client, Keys mint_keys);
-    // TODO: ProofStatus type
 	// [Throws=CashuSdkError]
 	// ProofsStatus check_proofs_spent(sequence<MintProof> proofs);
     [Throws=CashuSdkError]

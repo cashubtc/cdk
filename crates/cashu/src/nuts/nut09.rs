@@ -58,8 +58,8 @@ pub struct MintInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description_long: Option<String>,
     /// contact methods to reach the mint operator
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub contact: Vec<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact: Option<Vec<Vec<String>>>,
     /// shows which NUTs the mint supports
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub nuts: Vec<String>,
