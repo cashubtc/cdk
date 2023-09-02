@@ -134,7 +134,7 @@ pub mod mint {
     impl KeyPair {
         pub fn from_secret_key(secret_key: SecretKey) -> Self {
             Self {
-                public_key: secret_key.public_key().into(),
+                public_key: secret_key.public_key(),
                 secret_key,
             }
         }

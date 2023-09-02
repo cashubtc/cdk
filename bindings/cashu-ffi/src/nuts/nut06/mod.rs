@@ -2,7 +2,7 @@ use std::{ops::Deref, sync::Arc};
 
 use cashu::nuts::nut06::{SplitRequest as SplitRequestSdk, SplitResponse as SplitResponseSdk};
 
-use crate::{Amount, BlindedMessage, BlindedMessages, BlindedSignature, Proof};
+use crate::{Amount, BlindedMessage, BlindedSignature, Proof};
 
 pub struct SplitRequest {
     inner: SplitRequestSdk,
