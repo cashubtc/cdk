@@ -1,5 +1,6 @@
 mod client;
 mod error;
+mod mint;
 mod types;
 mod wallet;
 
@@ -8,13 +9,14 @@ mod ffi {
         Amount, BlindedMessage, BlindedMessages, BlindedSignature, Bolt11Invoice, CashuError,
         CheckFeesRequest, CheckFeesResponse, CheckSpendableRequest, CheckSpendableResponse,
         InvoiceStatus, KeyPair, KeySet, KeySetResponse, Keys, MeltRequest, MeltResponse, MintInfo,
-        MintProof, MintProofs, MintRequest, MintVersion, Nut05MeltRequest, Nut05MeltResponse,
-        PostMintResponse, Proof, PublicKey, RequestMintResponse, SecretKey, SplitRequest,
-        SplitResponse, Token,
+        MintKeySet, MintProof, MintProofs, MintRequest, MintVersion, Nut05MeltRequest,
+        Nut05MeltResponse, PostMintResponse, Proof, PublicKey, RequestMintResponse, SecretKey,
+        SplitRequest, SplitResponse, Token,
     };
 
     pub use crate::client::Client;
     pub use crate::error::CashuSdkError;
+    pub use crate::mint::Mint;
     pub use crate::types::{Melted, ProofsStatus, SendProofs};
     pub use crate::wallet::Wallet;
 

@@ -118,6 +118,11 @@ interface KeySet {
 	Keys keys();
 };
 
+interface MintKeySet {
+	[Name=generate]
+	constructor(string secret, string derivation_path, u8 max_order);
+};
+
 interface KeySetResponse {
 	constructor(sequence<string> keyset_ids);
 	sequence<string> keyset_ids();
