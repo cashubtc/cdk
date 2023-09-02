@@ -54,7 +54,7 @@ impl MintInfo {
         version: Option<Arc<MintVersion>>,
         description: Option<String>,
         description_long: Option<String>,
-        contact: Vec<Vec<String>>,
+        contact: Option<Vec<Vec<String>>>,
         nuts: Vec<String>,
         motd: Option<String>,
     ) -> Self {

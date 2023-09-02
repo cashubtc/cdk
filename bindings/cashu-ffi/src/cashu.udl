@@ -213,7 +213,7 @@ interface MintVersion {
 };
 
 interface MintInfo {
-	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>> contact, sequence<string> nuts, string? motd);
+	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, sequence<string> nuts, string? motd);
 };
 
 enum InvoiceStatus {
@@ -222,3 +222,4 @@ enum InvoiceStatus {
 	"Expired",
 	"InFlight"
 };
+
