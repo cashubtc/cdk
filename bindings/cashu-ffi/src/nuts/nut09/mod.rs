@@ -48,6 +48,7 @@ pub struct MintInfo {
 }
 
 impl MintInfo {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: Option<String>,
         pubkey: Option<Arc<PublicKey>>,

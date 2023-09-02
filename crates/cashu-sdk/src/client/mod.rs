@@ -100,13 +100,13 @@ impl Error {
         let err = mint_res
             .error
             .as_deref()
-            .or_else(|| mint_res.detail.as_deref())
+            .or(mint_res.detail.as_deref())
             .unwrap_or_default();
 
         let mint_error = match err {
             error if error.starts_with("Lightning invoice not paid yet.") => Error::InvoiceNotPaid,
             error if error.starts_with("Lightning wallet not responding") => {
-                let mint = utils::extract_url_from_error(&error);
+                let mint = utils::extract_url_from_error(error);
                 Error::LightingWalletNotResponding(mint)
             }
             error => Error::Custom(error.to_owned()),
