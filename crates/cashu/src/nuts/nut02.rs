@@ -66,7 +66,7 @@ pub mod mint {
 
     use crate::nuts::nut01::mint::{KeyPair, Keys};
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct KeySet {
         pub id: String,
         pub keys: Keys,

@@ -39,7 +39,7 @@ pub mod wallet {
     use super::MintProofs;
 
     /// Blinded Messages [NUT-00]
-    #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
     pub struct BlindedMessages {
         /// Blinded messages
         pub blinded_messages: Vec<BlindedMessage>,

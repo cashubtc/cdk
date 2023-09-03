@@ -15,6 +15,7 @@ pub enum Error {
     CustomError(String),
     /// From hex error
     HexError(hex::FromHexError),
+    EllipticCurve(k256::elliptic_curve::Error),
     AmountKey,
     Amount,
     TokenSpent,
@@ -36,6 +37,7 @@ impl fmt::Display for Error {
             Error::TokenSpent => write!(f, "Token Spent"),
             Error::TokenNotVerifed => write!(f, "Token Not Verified"),
             Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
+            Error::EllipticCurve(err) => write!(f, "{}", err.to_string()),
         }
     }
 }
@@ -69,6 +71,12 @@ impl From<base64::DecodeError> for Error {
 impl From<hex::FromHexError> for Error {
     fn from(err: hex::FromHexError) -> Error {
         Error::HexError(err)
+    }
+}
+
+impl From<k256::elliptic_curve::Error> for Error {
+    fn from(err: k256::elliptic_curve::Error) -> Error {
+        Error::EllipticCurve(err)
     }
 }
 

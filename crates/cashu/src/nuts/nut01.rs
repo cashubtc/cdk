@@ -32,20 +32,18 @@ impl From<k256::PublicKey> for PublicKey {
 }
 
 impl PublicKey {
-    // HACK: Fix the from_hex and to_hex
-    // just leaving this hack for now as this pr is big enough
     pub fn from_hex(hex: String) -> Result<Self, Error> {
         let hex = hex::decode(hex)?;
-
-        Ok(PublicKey(k256::PublicKey::from_sec1_bytes(&hex).unwrap()))
+        Ok(PublicKey(k256::PublicKey::from_sec1_bytes(&hex)?))
     }
 
-    pub fn to_hex(&self) -> Result<String, Error> {
-        Ok(serde_json::to_string(&self)?)
+    pub fn to_hex(&self) -> String {
+        let bytes = self.0.to_sec1_bytes();
+        hex::encode(bytes)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct SecretKey(#[serde(with = "crate::serde_utils::serde_secret_key")] k256::SecretKey);
 
@@ -61,14 +59,11 @@ impl From<k256::SecretKey> for SecretKey {
     }
 }
 
-// REVIEW: Guessing this is broken as well since its the same as pubkey
 impl SecretKey {
-    pub fn from_hex(hex: String) -> Result<Self, Error> {
-        Ok(serde_json::from_str(&hex)?)
-    }
+    pub fn to_hex(&self) -> String {
+        let bytes = self.0.to_bytes();
 
-    pub fn to_hex(&self) -> Result<String, Error> {
-        Ok(serde_json::to_string(&self)?)
+        hex::encode(bytes)
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -120,12 +115,11 @@ pub mod mint {
 
     use super::PublicKey;
     use super::SecretKey;
-    use serde::Deserialize;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct Keys(pub BTreeMap<u64, KeyPair>);
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct KeyPair {
         pub public_key: PublicKey,
         pub secret_key: SecretKey,
@@ -148,9 +142,9 @@ mod tests {
 
     #[test]
     fn pubkey() {
-        let pubkey = PublicKey::from_hex(
-            "02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4".to_string(),
-        )
-        .unwrap();
+        let pubkey_str = "02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4";
+        let pubkey = PublicKey::from_hex(pubkey_str.to_string()).unwrap();
+
+        assert_eq!(pubkey_str, pubkey.to_hex())
     }
 }

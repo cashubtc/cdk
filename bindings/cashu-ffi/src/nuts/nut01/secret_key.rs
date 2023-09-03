@@ -28,13 +28,7 @@ impl From<SecretKey> for SecretKeySdk {
 }
 
 impl SecretKey {
-    pub fn from_hex(hex: String) -> Result<Self> {
-        Ok(Self {
-            inner: SecretKeySdk::from_hex(hex)?,
-        })
-    }
-
     pub fn to_hex(&self) -> Result<String> {
-        Ok(self.inner.to_hex()?)
+        Ok(self.inner.to_hex())
     }
 }
