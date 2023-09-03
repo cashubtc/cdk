@@ -32,8 +32,6 @@ interface PublicKey {
 
 
 interface SecretKey {
-    [Throws=CashuError, Name=from_hex]
-    constructor(string hex);
     [Throws=CashuError]
     string to_hex();
 };

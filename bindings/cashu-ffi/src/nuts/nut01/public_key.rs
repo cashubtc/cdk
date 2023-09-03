@@ -35,6 +35,6 @@ impl PublicKey {
     }
 
     pub fn to_hex(&self) -> Result<String> {
-        Ok(self.inner.to_hex()?)
+        Ok(self.inner.to_hex())
     }
 }

@@ -11,7 +11,7 @@ use crate::nuts::nut00::wallet::BlindedMessages;
 use super::nut00::BlindedSignature;
 
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SplitPayload {
     pub blinded_messages: BlindedMessages,
     pub split_payload: SplitRequest,
