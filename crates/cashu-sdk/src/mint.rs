@@ -108,10 +108,17 @@ impl Mint {
             return Err(Error::Amount);
         }
 
-        let mut secrets = Vec::with_capacity(split_request.proofs.len());
-        for proof in &split_request.proofs {
-            secrets.push(self.verify_proof(proof)?);
-            self.spent_secrets.insert(proof.secret.clone());
+        let proof_count = split_request.proofs.len();
+
+        let secrets: HashSet<String> = split_request.proofs.into_iter().map(|p| p.secret).collect();
+
+        // Check that there are no duplicate proofs in request
+        if secrets.len().ne(&proof_count) {
+            return Err(Error::DuplicateProofs);
+        }
+
+        for secret in secrets {
+            self.spent_secrets.insert(secret);
         }
 
         match &split_request.amount {
@@ -146,7 +153,7 @@ impl Mint {
         }
     }
 
-    pub fn verify_proof(&self, proof: &Proof) -> Result<String, Error> {
+    pub fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         if self.spent_secrets.contains(&proof.secret) {
             return Err(Error::TokenSpent);
         }
@@ -172,7 +179,7 @@ impl Mint {
             &proof.secret,
         )?;
 
-        Ok(proof.secret.clone())
+        Ok(())
     }
 
     pub fn check_spendable(
@@ -202,9 +209,15 @@ impl Mint {
             return Err(Error::Amount);
         }
 
-        let mut secrets = Vec::with_capacity(melt_request.proofs.len());
-        for proof in &melt_request.proofs {
-            secrets.push(self.verify_proof(proof)?);
+        let secrets: HashSet<&str> = melt_request
+            .proofs
+            .iter()
+            .map(|p| p.secret.as_str())
+            .collect();
+
+        // Ensure proofs are unique and not being double spent
+        if melt_request.proofs.len().ne(&secrets.len()) {
+            return Err(Error::DuplicateProofs);
         }
 
         Ok(())

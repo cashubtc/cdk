@@ -162,6 +162,8 @@ pub mod mint {
         EllipticError(k256::elliptic_curve::Error),
         TokenNotVerifed,
         InvoiceAmountUndefined,
+        /// Duplicate Proofs sent in request
+        DuplicateProofs,
         CustomError(String),
     }
 
@@ -177,6 +179,7 @@ pub mod mint {
                 Error::CustomError(err) => write!(f, "{}", err),
                 Error::TokenNotVerifed => write!(f, "Token Not Verified"),
                 Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
+                Error::DuplicateProofs => write!(f, "Request has duplicate proofs"),
             }
         }
     }
