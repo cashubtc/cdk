@@ -6,6 +6,7 @@ pub use cashu::error::mint::Error;
 use cashu::nuts::nut00::BlindedMessage;
 use cashu::nuts::nut00::BlindedSignature;
 use cashu::nuts::nut00::Proof;
+use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::nut06::SplitRequest;
 use cashu::nuts::nut06::SplitResponse;
 use cashu::nuts::nut07::CheckSpendableRequest;
@@ -62,6 +63,21 @@ impl Mint {
         }
 
         self.inactive_keysets.get(id).map(|k| k.clone().into())
+    }
+
+    /// Add current keyset to inactive keysets
+    /// Generate new keyset
+    pub fn rotate_keyset(
+        &mut self,
+        secret: impl Into<String>,
+        derivation_path: impl Into<String>,
+        max_order: u8,
+    ) {
+        // Add current set to inactive keysets
+        self.inactive_keysets
+            .insert(self.active_keyset.id.clone(), self.active_keyset.clone());
+
+        self.active_keyset = KeySet::generate(secret, derivation_path, max_order);
     }
 
     pub fn process_mint_request(
