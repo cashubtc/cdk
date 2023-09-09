@@ -27,6 +27,10 @@ interface Secret {
 	sequence<u8> as_bytes();	
 };
 
+interface Id {
+    [Throws=CashuError]
+	constructor(string id);
+};
 
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]
@@ -48,26 +52,26 @@ interface BlindedMessage {
 };
 
 interface Proof {
-	constructor(Amount amount, Secret secret, PublicKey c, string? id);
+	constructor(Amount amount, Secret secret, PublicKey c, Id? id);
 	Amount amount();
 	Secret secret();
 	PublicKey c();
-	string? id();
+ 	Id? id();
 };
 
 interface BlindedSignature {
-	constructor(string id, Amount amount, PublicKey c);
-	string id();
+	constructor(Id id, Amount amount, PublicKey c);
+	Id id();
 	Amount amount();
 	PublicKey c();
 };
 
 interface MintProof {
-	constructor(Amount? amount, Secret secret, PublicKey? c, string? id);
+	constructor(Amount? amount, Secret secret, PublicKey? c, Id? id);
 	Amount? amount();
 	Secret secret();
 	PublicKey? c();
-	string? id();
+	Id? id();
 	
 };
 
@@ -116,8 +120,8 @@ interface Keys {
 };
 
 interface KeySet {
-	constructor(string id, Keys keys);
-	string id();
+	constructor(Id id, Keys keys);
+	Id id();
 	Keys keys();
 };
 
@@ -127,8 +131,8 @@ interface MintKeySet {
 };
 
 interface KeySetResponse {
-	constructor(sequence<string> keyset_ids);
-	sequence<string> keyset_ids();
+	constructor(sequence<Id> keyset_ids);
+	sequence<Id> keyset_ids();
 };
 
 interface RequestMintResponse {

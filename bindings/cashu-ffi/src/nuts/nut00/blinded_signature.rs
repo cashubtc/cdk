@@ -4,6 +4,7 @@ use std::sync::Arc;
 use cashu::nuts::nut00::BlindedSignature as BlindedSignatureSdk;
 
 use crate::Amount;
+use crate::Id;
 use crate::PublicKey;
 
 pub struct BlindedSignature {
@@ -11,18 +12,18 @@ pub struct BlindedSignature {
 }
 
 impl BlindedSignature {
-    pub fn new(id: String, amount: Arc<Amount>, c: Arc<PublicKey>) -> Self {
+    pub fn new(id: Arc<Id>, amount: Arc<Amount>, c: Arc<PublicKey>) -> Self {
         Self {
             inner: BlindedSignatureSdk {
-                id,
+                id: *id.as_ref().deref(),
                 amount: *amount.as_ref().deref(),
                 c: c.as_ref().into(),
             },
         }
     }
 
-    pub fn id(&self) -> String {
-        self.inner.id.clone()
+    pub fn id(&self) -> Arc<Id> {
+        Arc::new(self.inner.id.clone().into())
     }
 
     pub fn amount(&self) -> Arc<Amount> {

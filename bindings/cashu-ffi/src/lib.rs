@@ -14,7 +14,7 @@ mod ffi {
     pub use crate::nuts::nut01::keys::Keys;
     pub use crate::nuts::nut01::public_key::PublicKey;
     pub use crate::nuts::nut01::secret_key::SecretKey;
-    pub use crate::nuts::nut02::{KeySet, KeySetResponse, MintKeySet};
+    pub use crate::nuts::nut02::{Id, KeySet, KeySetResponse, MintKeySet};
     pub use crate::nuts::nut03::RequestMintResponse;
     pub use crate::nuts::nut04::{MintRequest, PostMintResponse};
     pub use crate::nuts::nut05::{
