@@ -327,7 +327,7 @@ interface Mint {
     [Throws=CashuSdkError]
 	PostMintResponse process_mint_request(MintRequest mint_request);
     [Throws=CashuSdkError]
-	SplitResponse proccess_split_request(SplitRequest split_request);
+	SplitResponse process_split_request(SplitRequest split_request);
     [Throws=CashuSdkError]
 	void verify_proof(Proof proof);
     [Throws=CashuSdkError]
