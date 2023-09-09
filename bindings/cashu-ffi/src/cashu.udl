@@ -22,6 +22,11 @@ interface Amount {
  	sequence<Amount> split();
 };
 
+interface Secret {
+	constructor();
+	sequence<u8> as_bytes();	
+};
+
 
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]
@@ -43,9 +48,9 @@ interface BlindedMessage {
 };
 
 interface Proof {
-	constructor(Amount amount, string secret, PublicKey c, string? id);
+	constructor(Amount amount, Secret secret, PublicKey c, string? id);
 	Amount amount();
-	string secret();
+	Secret secret();
 	PublicKey c();
 	string? id();
 };
@@ -58,9 +63,9 @@ interface BlindedSignature {
 };
 
 interface MintProof {
-	constructor(Amount? amount, string secret, PublicKey? c, string? id);
+	constructor(Amount? amount, Secret secret, PublicKey? c, string? id);
 	Amount? amount();
-	string secret();
+	Secret secret();
 	PublicKey? c();
 	string? id();
 	
@@ -91,7 +96,7 @@ interface BlindedMessages {
     [Throws=CashuError, Name=blank]
 	constructor(Amount fee_reserve);
 	sequence<BlindedMessage> blinded_messages();
-	sequence<string> secrets();
+	sequence<Secret> secrets();
 	sequence<SecretKey> rs();
 	sequence<Amount> amounts();
 };

@@ -2,7 +2,7 @@ use std::{ops::Deref, sync::Arc};
 
 use cashu::nuts::nut00::Proof as ProofSdk;
 
-use crate::{Amount, PublicKey};
+use crate::{types::Secret, Amount, PublicKey};
 
 pub struct Proof {
     inner: ProofSdk,
@@ -16,11 +16,16 @@ impl Deref for Proof {
 }
 
 impl Proof {
-    pub fn new(amount: Arc<Amount>, secret: String, c: Arc<PublicKey>, id: Option<String>) -> Self {
+    pub fn new(
+        amount: Arc<Amount>,
+        secret: Arc<Secret>,
+        c: Arc<PublicKey>,
+        id: Option<String>,
+    ) -> Self {
         Self {
             inner: ProofSdk {
                 amount: *amount.as_ref().deref(),
-                secret,
+                secret: secret.as_ref().deref().clone(),
                 c: c.as_ref().deref().clone(),
                 id,
             },
@@ -31,8 +36,8 @@ impl Proof {
         Arc::new(self.inner.amount.into())
     }
 
-    pub fn secret(&self) -> String {
-        self.inner.secret.clone()
+    pub fn secret(&self) -> Arc<Secret> {
+        Arc::new(self.inner.secret.clone().into())
     }
 
     pub fn c(&self) -> Arc<PublicKey> {
@@ -48,7 +53,7 @@ impl From<&Proof> for ProofSdk {
     fn from(proof: &Proof) -> ProofSdk {
         ProofSdk {
             amount: *proof.amount().as_ref().deref(),
-            secret: proof.secret(),
+            secret: proof.secret().as_ref().deref().clone(),
             c: proof.c().deref().into(),
             id: proof.id(),
         }
@@ -67,6 +72,7 @@ pub mod mint {
 
     use cashu::nuts::nut00::mint::Proof as ProofSdk;
 
+    use crate::types::Secret;
     use crate::Amount;
     use crate::PublicKey;
 
@@ -84,14 +90,14 @@ pub mod mint {
     impl Proof {
         pub fn new(
             amount: Option<Arc<Amount>>,
-            secret: String,
+            secret: Arc<Secret>,
             c: Option<Arc<PublicKey>>,
             id: Option<String>,
         ) -> Self {
             Self {
                 inner: ProofSdk {
                     amount: amount.map(|a| *a.as_ref().deref()),
-                    secret,
+                    secret: secret.as_ref().deref().clone(),
                     c: c.map(|c| c.as_ref().into()),
                     id,
                 },
@@ -102,8 +108,8 @@ pub mod mint {
             self.inner.amount.map(|a| Arc::new(a.into()))
         }
 
-        pub fn secret(&self) -> String {
-            self.inner.secret.clone()
+        pub fn secret(&self) -> Arc<Secret> {
+            Arc::new(self.inner.secret.clone().into())
         }
 
         pub fn c(&self) -> Option<Arc<PublicKey>> {
