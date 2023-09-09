@@ -31,6 +31,11 @@ interface Secret {
 	sequence<u8> as_bytes();	
 };
 
+interface Id {
+    [Throws=CashuError]
+	constructor(string id);
+};
+
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]
     constructor(string hex);
@@ -51,26 +56,26 @@ interface BlindedMessage {
 };
 
 interface Proof {
-	constructor(Amount amount, Secret secret, PublicKey c, string? id);
+	constructor(Amount amount, Secret secret, PublicKey c, Id? id);
 	Amount amount();
 	Secret secret();
 	PublicKey c();
-	string? id();
+	Id? id();
 };
 
 interface BlindedSignature {
-	constructor(string id, Amount amount, PublicKey c);
-	string id();
+	constructor(Id id, Amount amount, PublicKey c);
+	Id id();
 	Amount amount();
 	PublicKey c();
 };
 
 interface MintProof {
-	constructor(Amount? amount, Secret secret, PublicKey? c, string? id);
+	constructor(Amount? amount, Secret secret, PublicKey? c, Id? id);
 	Amount? amount();
 	Secret secret();
 	PublicKey? c();
-	string? id();
+	Id? id();
 	
 };
 
@@ -119,8 +124,8 @@ interface Keys {
 };
 
 interface KeySet {
-	constructor(string id, Keys keys);
-	string id();
+	constructor(Id id, Keys keys);
+	Id id();
 	Keys keys();
 };
 
@@ -131,8 +136,8 @@ interface MintKeySet {
 };
 
 interface KeySetResponse {
-	constructor(sequence<string> keyset_ids);
-	sequence<string> keyset_ids();
+	constructor(sequence<Id> keyset_ids);
+	sequence<Id> keyset_ids();
 };
 
 interface RequestMintResponse {
@@ -319,11 +324,12 @@ interface Wallet {
 
 
 interface Mint {
+    [Throws=CashuSdkError]
 	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<Secret> spent_secrets, u8 max_order);
 	KeySet active_keyset_pubkeys();
 	KeySetResponse keysets();
 	MintKeySet active_keyset();
-	KeySet? keyset(string id);
+	KeySet? keyset(Id id);
     [Throws=CashuSdkError]
 	PostMintResponse process_mint_request(MintRequest mint_request);
     [Throws=CashuSdkError]

@@ -6,9 +6,11 @@ use std::{
 
 use cashu_sdk::mint::Mint as MintSdk;
 
+use cashu_sdk::nuts::nut02::Id as IdSdk;
+
 use crate::error::Result;
 use cashu_ffi::{
-    Amount, CheckSpendableRequest, CheckSpendableResponse, KeySet, KeySetResponse, MeltRequest,
+    Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse, MeltRequest,
     MeltResponse, MintKeySet, MintRequest, PostMintResponse, Proof, Secret, SplitRequest,
     SplitResponse,
 };
@@ -24,7 +26,7 @@ impl Mint {
         inactive_keysets: HashMap<String, Arc<MintKeySet>>,
         spent_secrets: Vec<Arc<Secret>>,
         max_order: u8,
-    ) -> Self {
+    ) -> Result<Self> {
         let spent_secrets = spent_secrets
             .into_iter()
             .map(|s| s.as_ref().deref().clone())
@@ -32,10 +34,13 @@ impl Mint {
 
         let inactive_keysets = inactive_keysets
             .into_iter()
-            .map(|(k, v)| (k, v.as_ref().deref().clone()))
+            .flat_map(|(k, v)| {
+                let id = IdSdk::try_from_base64(&k);
+                id.map(|id| (id, v.as_ref().deref().clone()))
+            })
             .collect();
 
-        Self {
+        Ok(Self {
             inner: MintSdk::new(
                 &secret,
                 &derivation_path,
@@ -44,7 +49,7 @@ impl Mint {
                 max_order,
             )
             .into(),
-        }
+        })
     }
 
     pub fn active_keyset_pubkeys(&self) -> Arc<KeySet> {
@@ -59,7 +64,7 @@ impl Mint {
         Arc::new(self.inner.read().unwrap().active_keyset.clone().into())
     }
 
-    pub fn keyset(&self, id: String) -> Option<Arc<KeySet>> {
+    pub fn keyset(&self, id: Arc<Id>) -> Option<Arc<KeySet>> {
         self.inner
             .read()
             .unwrap()
