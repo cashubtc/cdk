@@ -14,14 +14,15 @@ use cashu::nuts::nut07::CheckSpendableResponse;
 use cashu::nuts::nut08::MeltRequest;
 use cashu::nuts::nut08::MeltResponse;
 use cashu::nuts::*;
+use cashu::secret::Secret;
 use cashu::Amount;
 
 pub struct Mint {
     //    pub pubkey: PublicKey,
     pub active_keyset: nut02::mint::KeySet,
     pub inactive_keysets: HashMap<String, nut02::mint::KeySet>,
-    pub spent_secrets: HashSet<String>,
-    pub pending_secrets: HashSet<String>,
+    pub spent_secrets: HashSet<Secret>,
+    pub pending_secrets: HashSet<Secret>,
 }
 
 impl Mint {
@@ -29,7 +30,7 @@ impl Mint {
         secret: &str,
         derivation_path: &str,
         inactive_keysets: HashMap<String, nut02::mint::KeySet>,
-        spent_secrets: HashSet<String>,
+        spent_secrets: HashSet<Secret>,
         max_order: u8,
     ) -> Self {
         Self {
@@ -126,7 +127,7 @@ impl Mint {
 
         let proof_count = split_request.proofs.len();
 
-        let secrets: HashSet<String> = split_request.proofs.into_iter().map(|p| p.secret).collect();
+        let secrets: HashSet<Secret> = split_request.proofs.into_iter().map(|p| p.secret).collect();
 
         // Check that there are no duplicate proofs in request
         if secrets.len().ne(&proof_count) {
@@ -190,7 +191,7 @@ impl Mint {
         };
 
         verify_message(
-            keypair.secret_key.to_owned().into(),
+            keypair.secret_key.clone().into(),
             proof.c.clone().into(),
             &proof.secret,
         )?;
@@ -225,11 +226,7 @@ impl Mint {
             return Err(Error::Amount);
         }
 
-        let secrets: HashSet<&str> = melt_request
-            .proofs
-            .iter()
-            .map(|p| p.secret.as_str())
-            .collect();
+        let secrets: HashSet<&Secret> = melt_request.proofs.iter().map(|p| &p.secret).collect();
 
         // Ensure proofs are unique and not being double spent
         if melt_request.proofs.len().ne(&secrets.len()) {

@@ -26,6 +26,11 @@ interface Amount {
 };
 
 
+interface Secret {
+	constructor();
+	sequence<u8> as_bytes();	
+};
+
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]
     constructor(string hex);
@@ -46,9 +51,9 @@ interface BlindedMessage {
 };
 
 interface Proof {
-	constructor(Amount amount, string secret, PublicKey c, string? id);
+	constructor(Amount amount, Secret secret, PublicKey c, string? id);
 	Amount amount();
-	string secret();
+	Secret secret();
 	PublicKey c();
 	string? id();
 };
@@ -61,9 +66,9 @@ interface BlindedSignature {
 };
 
 interface MintProof {
-	constructor(Amount? amount, string secret, PublicKey? c, string? id);
+	constructor(Amount? amount, Secret secret, PublicKey? c, string? id);
 	Amount? amount();
-	string secret();
+	Secret secret();
 	PublicKey? c();
 	string? id();
 	
@@ -94,7 +99,7 @@ interface BlindedMessages {
     [Throws=CashuError, Name=blank]
 	constructor(Amount fee_reserve);
 	sequence<BlindedMessage> blinded_messages();
-	sequence<string> secrets();
+	sequence<Secret> secrets();
 	sequence<SecretKey> rs();
 	sequence<Amount> amounts();
 };
@@ -314,7 +319,7 @@ interface Wallet {
 
 
 interface Mint {
-	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<string> spent_secrets, u8 max_order);
+	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<Secret> spent_secrets, u8 max_order);
 	KeySet active_keyset_pubkeys();
 	KeySetResponse keysets();
 	MintKeySet active_keyset();
@@ -324,7 +329,7 @@ interface Mint {
     [Throws=CashuSdkError]
 	SplitResponse proccess_split_request(SplitRequest split_request);
     [Throws=CashuSdkError]
-	string verify_proof(Proof proof);
+	void verify_proof(Proof proof);
     [Throws=CashuSdkError]
 	void verify_melt_request(MeltRequest melt_request);
     [Throws=CashuSdkError]

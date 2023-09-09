@@ -128,7 +128,7 @@ pub fn sign_message(
 pub fn verify_message(
     a: SecretKey,
     unblinded_message: k256::PublicKey,
-    msg: Secret,
+    msg: &Secret,
 ) -> Result<(), error::mint::Error> {
     // Y
     let y = hash_to_curve(msg.as_bytes());
@@ -273,6 +273,6 @@ mod tests {
         // C
         let c = unblind_message(signed.into(), blinded.1, bob_pub.into()).unwrap();
 
-        assert!(verify_message(bob_sec, c.into(), x).is_ok());
+        assert!(verify_message(bob_sec, c.into(), &x).is_ok());
     }
 }
