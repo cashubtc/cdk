@@ -2,7 +2,7 @@ use std::{ops::Deref, sync::Arc};
 
 use cashu::nuts::nut00::Proof as ProofSdk;
 
-use crate::{types::Secret, Amount, PublicKey};
+use crate::{types::Secret, Amount, Id, PublicKey};
 
 pub struct Proof {
     inner: ProofSdk,
@@ -20,14 +20,14 @@ impl Proof {
         amount: Arc<Amount>,
         secret: Arc<Secret>,
         c: Arc<PublicKey>,
-        id: Option<String>,
+        id: Option<Arc<Id>>,
     ) -> Self {
         Self {
             inner: ProofSdk {
                 amount: *amount.as_ref().deref(),
                 secret: secret.as_ref().deref().clone(),
                 c: c.as_ref().deref().clone(),
-                id,
+                id: id.map(|id| id.as_ref().deref().clone()),
             },
         }
     }
@@ -44,8 +44,8 @@ impl Proof {
         Arc::new(self.inner.c.clone().into())
     }
 
-    pub fn id(&self) -> Option<String> {
-        self.inner.id.clone()
+    pub fn id(&self) -> Option<Arc<Id>> {
+        self.inner.id.clone().map(|id| Arc::new(id.into()))
     }
 }
 
@@ -55,7 +55,7 @@ impl From<&Proof> for ProofSdk {
             amount: *proof.amount().as_ref().deref(),
             secret: proof.secret().as_ref().deref().clone(),
             c: proof.c().deref().into(),
-            id: proof.id(),
+            id: proof.id().map(|id| id.as_ref().deref().clone()),
         }
     }
 }
@@ -74,6 +74,7 @@ pub mod mint {
 
     use crate::types::Secret;
     use crate::Amount;
+    use crate::Id;
     use crate::PublicKey;
 
     pub struct Proof {
@@ -92,14 +93,14 @@ pub mod mint {
             amount: Option<Arc<Amount>>,
             secret: Arc<Secret>,
             c: Option<Arc<PublicKey>>,
-            id: Option<String>,
+            id: Option<Arc<Id>>,
         ) -> Self {
             Self {
                 inner: ProofSdk {
                     amount: amount.map(|a| *a.as_ref().deref()),
                     secret: secret.as_ref().deref().clone(),
                     c: c.map(|c| c.as_ref().into()),
-                    id,
+                    id: id.map(|id| id.as_ref().deref().clone()),
                 },
             }
         }
@@ -116,8 +117,8 @@ pub mod mint {
             self.inner.c.clone().map(|c| Arc::new(c.into()))
         }
 
-        pub fn id(&self) -> Option<String> {
-            self.inner.id.clone()
+        pub fn id(&self) -> Option<Arc<Id>> {
+            self.inner.id.clone().map(|id| Arc::new(id.into()))
         }
     }
 
