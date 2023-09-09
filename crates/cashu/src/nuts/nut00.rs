@@ -3,8 +3,8 @@
 
 use url::Url;
 
-use crate::serde_utils::serde_url;
 use crate::Amount;
+use crate::{secret::Secret, serde_utils::serde_url};
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
@@ -32,7 +32,7 @@ pub mod wallet {
     use crate::nuts::nut00::BlindedMessage;
     use crate::nuts::nut00::Proofs;
     use crate::nuts::nut01;
-    use crate::utils::generate_secret;
+    use crate::secret::Secret;
     use crate::Amount;
     use crate::{dhke::blind_message, utils::split_amount};
 
@@ -44,7 +44,7 @@ pub mod wallet {
         /// Blinded messages
         pub blinded_messages: Vec<BlindedMessage>,
         /// Secrets
-        pub secrets: Vec<String>,
+        pub secrets: Vec<Secret>,
         /// Rs
         pub rs: Vec<nut01::SecretKey>,
         /// Amounts
@@ -57,7 +57,7 @@ pub mod wallet {
             let mut blinded_messages = BlindedMessages::default();
 
             for amount in split_amount(amount) {
-                let secret = generate_secret();
+                let secret = Secret::new();
                 let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
                 let blinded_message = BlindedMessage { amount, b: blinded };
@@ -84,7 +84,7 @@ pub mod wallet {
                 .max(1);
 
             for _i in 0..count {
-                let secret = generate_secret();
+                let secret = Secret::new();
                 let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
                 let blinded_message = BlindedMessage {
@@ -195,8 +195,7 @@ pub struct Proof {
     /// Amount in satoshi
     pub amount: Amount,
     /// Secret message
-    // #[serde(with = "crate::serde_utils::bytes_base64")]
-    pub secret: String,
+    pub secret: Secret,
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,
@@ -221,7 +220,7 @@ impl From<Proof> for mint::Proof {
 pub mod mint {
     use serde::{Deserialize, Serialize};
 
-    use crate::Amount;
+    use crate::{secret::Secret, Amount};
 
     use super::PublicKey;
 
@@ -231,8 +230,7 @@ pub mod mint {
         /// Amount in satoshi
         pub amount: Option<Amount>,
         /// Secret message
-        // #[serde(with = "crate::serde_utils::bytes_base64")]
-        pub secret: String,
+        pub secret: Secret,
         /// Unblinded signature
         #[serde(rename = "C")]
         pub c: Option<PublicKey>,

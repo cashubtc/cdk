@@ -1,6 +1,5 @@
 //! Utils
 
-use base64::{engine::general_purpose, Engine as _};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use rand::prelude::*;
@@ -27,14 +26,6 @@ pub fn extract_url_from_error(error: &str) -> Option<String> {
         return Some(capture[0].to_owned());
     }
     None
-}
-
-/// Generate Secret Message
-pub fn generate_secret() -> String {
-    let mut rng = rand::thread_rng();
-    let mut secret = [0u8; 32];
-    rng.fill_bytes(&mut secret);
-    general_purpose::STANDARD.encode(secret)
 }
 
 pub fn random_hash() -> Vec<u8> {
