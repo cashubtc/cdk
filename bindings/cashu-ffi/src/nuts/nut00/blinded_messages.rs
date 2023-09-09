@@ -2,7 +2,7 @@ use std::{ops::Deref, sync::Arc};
 
 use cashu::nuts::nut00::wallet::BlindedMessages as BlindedMessagesSdk;
 
-use crate::{error::Result, Amount, BlindedMessage, SecretKey};
+use crate::{error::Result, Amount, BlindedMessage, Secret, SecretKey};
 
 pub struct BlindedMessages {
     inner: BlindedMessagesSdk,
@@ -37,8 +37,13 @@ impl BlindedMessages {
             .collect()
     }
 
-    pub fn secrets(&self) -> Vec<String> {
-        self.inner.secrets.clone()
+    pub fn secrets(&self) -> Vec<Arc<Secret>> {
+        self.inner
+            .secrets
+            .clone()
+            .into_iter()
+            .map(|s| Arc::new(s.into()))
+            .collect()
     }
 
     pub fn rs(&self) -> Vec<Arc<SecretKey>> {
