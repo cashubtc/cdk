@@ -3,6 +3,7 @@ pub mod amount;
 pub mod dhke;
 pub mod error;
 pub mod nuts;
+pub mod secret;
 pub mod serde_utils;
 pub mod types;
 pub mod utils;

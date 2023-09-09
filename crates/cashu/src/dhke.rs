@@ -11,6 +11,7 @@ use k256::ProjectivePoint;
 use k256::{Scalar, SecretKey};
 
 use crate::error;
+use crate::secret::Secret;
 
 #[cfg(feature = "wallet")]
 use crate::nuts::nut00::{BlindedSignature, Proof, Proofs};
@@ -81,7 +82,7 @@ pub fn unblind_message(
 pub fn construct_proofs(
     promises: Vec<BlindedSignature>,
     rs: Vec<nut01::SecretKey>,
-    secrets: Vec<String>,
+    secrets: Vec<Secret>,
     keys: &Keys,
 ) -> Result<Proofs, error::wallet::Error> {
     let mut proofs = vec![];
@@ -127,7 +128,7 @@ pub fn sign_message(
 pub fn verify_message(
     a: SecretKey,
     unblinded_message: k256::PublicKey,
-    msg: &str,
+    msg: Secret,
 ) -> Result<(), error::mint::Error> {
     // Y
     let y = hash_to_curve(msg.as_bytes());
@@ -148,7 +149,6 @@ mod tests {
     use k256::elliptic_curve::scalar::ScalarPrimitive;
 
     use super::*;
-    use crate::utils::generate_secret;
 
     #[test]
     fn test_hash_to_curve() {
@@ -259,7 +259,7 @@ mod tests {
 
         // let alice_sec = SecretKey::random(&mut rand::thread_rng());
 
-        let x = generate_secret();
+        let x = Secret::new();
 
         // Y
         let y = hash_to_curve(x.as_bytes());
@@ -273,6 +273,6 @@ mod tests {
         // C
         let c = unblind_message(signed.into(), blinded.1, bob_pub.into()).unwrap();
 
-        assert!(verify_message(bob_sec, c.into(), &x).is_ok());
+        assert!(verify_message(bob_sec, c.into(), x).is_ok());
     }
 }
