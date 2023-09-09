@@ -7,7 +7,7 @@ mod wallet;
 mod ffi {
     pub use cashu_ffi::{
         Amount, BlindedMessage, BlindedMessages, BlindedSignature, Bolt11Invoice, CashuError,
-        CheckFeesRequest, CheckFeesResponse, CheckSpendableRequest, CheckSpendableResponse,
+        CheckFeesRequest, CheckFeesResponse, CheckSpendableRequest, CheckSpendableResponse, Id,
         InvoiceStatus, KeyPair, KeySet, KeySetResponse, Keys, MeltRequest, MeltResponse, MintInfo,
         MintKeySet, MintProof, MintProofs, MintRequest, MintVersion, Nut05MeltRequest,
         Nut05MeltResponse, PostMintResponse, Proof, PublicKey, RequestMintResponse, Secret,
