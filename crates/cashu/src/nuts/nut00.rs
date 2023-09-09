@@ -8,6 +8,7 @@ use crate::{secret::Secret, serde_utils::serde_url};
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
+use super::nut02::Id;
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,7 +183,7 @@ impl MintProofs {
 /// Promise (BlindedSignature) [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindedSignature {
-    pub id: String,
+    pub id: Id,
     pub amount: Amount,
     /// blinded signature (C_) on the secret message `B_` of [BlindedMessage]
     #[serde(rename = "C_")]
@@ -200,7 +201,7 @@ pub struct Proof {
     #[serde(rename = "C")]
     pub c: PublicKey,
     /// `Keyset id`
-    pub id: Option<String>,
+    pub id: Option<Id>,
 }
 
 /// List of proofs
@@ -220,7 +221,7 @@ impl From<Proof> for mint::Proof {
 pub mod mint {
     use serde::{Deserialize, Serialize};
 
-    use crate::{secret::Secret, Amount};
+    use crate::{nuts::nut02::Id, secret::Secret, Amount};
 
     use super::PublicKey;
 
@@ -235,7 +236,7 @@ pub mod mint {
         #[serde(rename = "C")]
         pub c: Option<PublicKey>,
         /// `Keyset id`
-        pub id: Option<String>,
+        pub id: Option<Id>,
     }
 
     /// List of proofs
@@ -259,7 +260,10 @@ mod tests {
         let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
         let proof: Proofs = serde_json::from_str(proof).unwrap();
 
-        assert_eq!(proof[0].clone().id.unwrap(), "DSAl9nvvyfva");
+        assert_eq!(
+            proof[0].clone().id.unwrap(),
+            Id::try_from_base64("DSAl9nvvyfva").unwrap()
+        );
     }
 
     #[test]
@@ -271,7 +275,10 @@ mod tests {
             token.token[0].mint,
             Url::from_str("https://8333.space:3338").unwrap()
         );
-        assert_eq!(token.token[0].proofs[0].clone().id.unwrap(), "DSAl9nvvyfva");
+        assert_eq!(
+            token.token[0].proofs[0].clone().id.unwrap(),
+            Id::try_from_base64("DSAl9nvvyfva").unwrap()
+        );
 
         let encoded = &token.convert_to_string().unwrap();
 

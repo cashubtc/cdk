@@ -7,6 +7,7 @@ use cashu::nuts::nut00::BlindedMessage;
 use cashu::nuts::nut00::BlindedSignature;
 use cashu::nuts::nut00::Proof;
 use cashu::nuts::nut02::mint::KeySet;
+use cashu::nuts::nut02::Id;
 use cashu::nuts::nut06::SplitRequest;
 use cashu::nuts::nut06::SplitResponse;
 use cashu::nuts::nut07::CheckSpendableRequest;
@@ -20,7 +21,7 @@ use cashu::Amount;
 pub struct Mint {
     //    pub pubkey: PublicKey,
     pub active_keyset: nut02::mint::KeySet,
-    pub inactive_keysets: HashMap<String, nut02::mint::KeySet>,
+    pub inactive_keysets: HashMap<Id, nut02::mint::KeySet>,
     pub spent_secrets: HashSet<Secret>,
     pub pending_secrets: HashSet<Secret>,
 }
@@ -29,7 +30,7 @@ impl Mint {
     pub fn new(
         secret: &str,
         derivation_path: &str,
-        inactive_keysets: HashMap<String, nut02::mint::KeySet>,
+        inactive_keysets: HashMap<Id, nut02::mint::KeySet>,
         spent_secrets: HashSet<Secret>,
         max_order: u8,
     ) -> Self {
@@ -58,8 +59,8 @@ impl Mint {
         self.active_keyset.clone()
     }
 
-    pub fn keyset(&self, id: &str) -> Option<nut02::KeySet> {
-        if self.active_keyset.id == id {
+    pub fn keyset(&self, id: &Id) -> Option<nut02::KeySet> {
+        if self.active_keyset.id.eq(id) {
             return Some(self.active_keyset.clone().into());
         }
 
