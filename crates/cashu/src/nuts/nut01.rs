@@ -43,6 +43,12 @@ impl PublicKey {
     }
 }
 
+impl std::fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct SecretKey(#[serde(with = "crate::serde_utils::serde_secret_key")] k256::SecretKey);
@@ -72,6 +78,7 @@ impl SecretKey {
 }
 
 /// Mint Keys [NUT-01]
+// TODO: CHange this to Amount type
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Keys(BTreeMap<u64, PublicKey>);
 
@@ -94,6 +101,11 @@ impl Keys {
             .iter()
             .map(|(k, v)| (k.to_owned(), hex::encode(v.0.to_sec1_bytes())))
             .collect()
+    }
+
+    /// Iterate through the (`Amount`, `PublicKey`) entries in the Map
+    pub fn iter(&self) -> impl Iterator<Item = (&u64, &PublicKey)> {
+        self.0.iter()
     }
 }
 
