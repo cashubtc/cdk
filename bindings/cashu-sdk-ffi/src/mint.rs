@@ -80,7 +80,7 @@ impl Mint {
         ))
     }
 
-    pub fn proccess_split_request(
+    pub fn process_split_request(
         &self,
         split_request: Arc<SplitRequest>,
     ) -> Result<Arc<SplitResponse>> {
