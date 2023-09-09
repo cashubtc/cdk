@@ -10,8 +10,8 @@ mod ffi {
         CheckFeesRequest, CheckFeesResponse, CheckSpendableRequest, CheckSpendableResponse,
         InvoiceStatus, KeyPair, KeySet, KeySetResponse, Keys, MeltRequest, MeltResponse, MintInfo,
         MintKeySet, MintProof, MintProofs, MintRequest, MintVersion, Nut05MeltRequest,
-        Nut05MeltResponse, PostMintResponse, Proof, PublicKey, RequestMintResponse, SecretKey,
-        SplitRequest, SplitResponse, Token,
+        Nut05MeltResponse, PostMintResponse, Proof, PublicKey, RequestMintResponse, Secret,
+        SecretKey, SplitRequest, SplitResponse, Token,
     };
 
     pub use crate::client::Client;

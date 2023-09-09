@@ -9,7 +9,8 @@ use cashu_sdk::mint::Mint as MintSdk;
 use crate::error::Result;
 use cashu_ffi::{
     Amount, CheckSpendableRequest, CheckSpendableResponse, KeySet, KeySetResponse, MeltRequest,
-    MeltResponse, MintKeySet, MintRequest, PostMintResponse, Proof, SplitRequest, SplitResponse,
+    MeltResponse, MintKeySet, MintRequest, PostMintResponse, Proof, Secret, SplitRequest,
+    SplitResponse,
 };
 
 pub struct Mint {
@@ -21,10 +22,13 @@ impl Mint {
         secret: String,
         derivation_path: String,
         inactive_keysets: HashMap<String, Arc<MintKeySet>>,
-        spent_secrets: Vec<String>,
+        spent_secrets: Vec<Arc<Secret>>,
         max_order: u8,
     ) -> Self {
-        let spent_secrets = spent_secrets.into_iter().collect();
+        let spent_secrets = spent_secrets
+            .into_iter()
+            .map(|s| s.as_ref().deref().clone())
+            .collect();
 
         let inactive_keysets = inactive_keysets
             .into_iter()
@@ -89,7 +93,7 @@ impl Mint {
         ))
     }
 
-    pub fn verify_proof(&self, proof: Arc<Proof>) -> Result<String> {
+    pub fn verify_proof(&self, proof: Arc<Proof>) -> Result<()> {
         Ok(self
             .inner
             .read()
