@@ -103,14 +103,6 @@ impl Mint {
         ))
     }
 
-    pub fn verify_proof(&self, proof: Arc<Proof>) -> Result<()> {
-        Ok(self
-            .inner
-            .read()
-            .unwrap()
-            .verify_proof(proof.as_ref().deref())?)
-    }
-
     pub fn check_spendable(
         &self,
         check_spendable: Arc<CheckSpendableRequest>,
