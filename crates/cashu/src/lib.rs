@@ -6,6 +6,7 @@ pub mod nuts;
 pub mod secret;
 pub mod serde_utils;
 pub mod types;
+pub mod url;
 pub mod utils;
 
 pub use amount::Amount;

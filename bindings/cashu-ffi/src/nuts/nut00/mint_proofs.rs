@@ -1,7 +1,9 @@
-use cashu::nuts::nut00::MintProofs as MintProofsSdk;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
+
+use cashu::nuts::nut00::MintProofs as MintProofsSdk;
+use cashu::url::UncheckedUrl;
 
 use crate::error::Result;
 use crate::Proof;
@@ -19,7 +21,7 @@ impl Deref for MintProofs {
 
 impl MintProofs {
     pub fn new(mint: String, proofs: Vec<Arc<Proof>>) -> Result<Self> {
-        let mint = url::Url::from_str(&mint)?;
+        let mint = UncheckedUrl::from_str(&mint)?;
         let proofs = proofs.iter().map(|p| p.as_ref().deref().clone()).collect();
 
         Ok(Self {

@@ -102,6 +102,8 @@ pub mod wallet {
         UnsupportedToken,
         /// Token Requires proofs
         ProofsRequired,
+        /// Url Parse error
+        UrlParse,
         /// Custom Error message
         CustomError(String),
     }
@@ -118,6 +120,7 @@ pub mod wallet {
                 Error::UnsupportedToken => write!(f, "Unsuppported Token"),
                 Error::EllipticError(err) => write!(f, "{}", err),
                 Error::SerdeJsonError(err) => write!(f, "{}", err),
+                Error::UrlParse => write!(f, "Could not parse url"),
                 Error::ProofsRequired => write!(f, "Token must have at least one proof",),
             }
         }
@@ -144,6 +147,12 @@ pub mod wallet {
     impl From<base64::DecodeError> for Error {
         fn from(err: base64::DecodeError) -> Error {
             Error::Base64Error(err)
+        }
+    }
+
+    impl From<crate::url::Error> for Error {
+        fn from(_err: crate::url::Error) -> Error {
+            Error::UrlParse
         }
     }
 }

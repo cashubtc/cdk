@@ -56,3 +56,11 @@ impl From<cashu::nuts::nut02::Error> for CashuError {
         }
     }
 }
+
+impl From<cashu::url::Error> for CashuError {
+    fn from(err: cashu::url::Error) -> Self {
+        Self::Generic {
+            err: err.to_string(),
+        }
+    }
+}
