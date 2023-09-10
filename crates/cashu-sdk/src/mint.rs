@@ -24,6 +24,7 @@ pub struct Mint {
     pub inactive_keysets: HashMap<Id, nut02::mint::KeySet>,
     pub spent_secrets: HashSet<Secret>,
     pub pending_secrets: HashSet<Secret>,
+    pub fee_reserve: FeeReserve,
 }
 
 impl Mint {
@@ -33,12 +34,18 @@ impl Mint {
         inactive_keysets: HashMap<Id, nut02::mint::KeySet>,
         spent_secrets: HashSet<Secret>,
         max_order: u8,
+        min_fee_reserve: Amount,
+        percent_fee_reserve: f32,
     ) -> Self {
         Self {
             active_keyset: nut02::mint::KeySet::generate(secret, derivation_path, max_order),
             inactive_keysets,
             spent_secrets,
             pending_secrets: HashSet::new(),
+            fee_reserve: FeeReserve {
+                min_fee_reserve,
+                percent_fee_reserve,
+            },
         }
     }
 
@@ -218,11 +225,21 @@ impl Mint {
     pub fn verify_melt_request(&mut self, melt_request: &MeltRequest) -> Result<(), Error> {
         let proofs_total = melt_request.proofs_amount();
 
-        // TODO: Fee reserve
+        let percent_fee_reserve = Amount::from_sat(
+            (proofs_total.to_sat() as f32 * self.fee_reserve.percent_fee_reserve) as u64,
+        );
+
+        let fee_reserve = if percent_fee_reserve > self.fee_reserve.min_fee_reserve {
+            percent_fee_reserve
+        } else {
+            self.fee_reserve.min_fee_reserve
+        };
+
         if proofs_total
             < melt_request
                 .invoice_amount()
                 .map_err(|_| Error::InvoiceAmountUndefined)?
+                + fee_reserve
         {
             return Err(Error::Amount);
         }
@@ -269,4 +286,9 @@ impl Mint {
             change: Some(change),
         })
     }
+}
+
+pub struct FeeReserve {
+    pub min_fee_reserve: Amount,
+    pub percent_fee_reserve: f32,
 }
