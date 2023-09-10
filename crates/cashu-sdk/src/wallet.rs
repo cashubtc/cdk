@@ -125,7 +125,7 @@ impl Wallet {
     pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
         let proofs = self.mint(amount, hash).await?;
 
-        let token = Token::new(self.client.mint_url.clone(), proofs, None);
+        let token = Token::new(self.client.mint_url.clone().into(), proofs, None);
         Ok(token?)
     }
 
@@ -198,7 +198,9 @@ impl Wallet {
             let keys = if token.mint.to_string().eq(&self.client.mint_url.to_string()) {
                 self.mint_keys.clone()
             } else {
-                Client::new(token.mint.as_str())?.get_keys().await?
+                Client::new(token.mint.to_string().as_str())?
+                    .get_keys()
+                    .await?
             };
 
             // Sum amount of all proofs
@@ -515,7 +517,7 @@ impl Wallet {
 
     #[cfg(not(feature = "blocking"))]
     pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
-        Ok(Token::new(self.client.mint_url.clone(), proofs, memo)?.convert_to_string()?)
+        Ok(Token::new(self.client.mint_url.clone().into(), proofs, memo)?.convert_to_string()?)
     }
 
     #[cfg(feature = "blocking")]
