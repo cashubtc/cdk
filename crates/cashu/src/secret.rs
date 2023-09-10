@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct Secret(String);
 
+impl Default for Secret {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Secret {
     const BIT_LENGTH: usize = 128;
 

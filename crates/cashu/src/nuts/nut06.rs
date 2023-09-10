@@ -41,14 +41,14 @@ impl SplitRequest {
 pub struct SplitResponse {
     /// Promises to keep
     #[deprecated(
-        since = "0.3.0",
+        since = "0.5.0",
         note = "mint only response with one list of all promises"
     )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fst: Option<Vec<BlindedSignature>>,
     /// Promises to send
     #[deprecated(
-        since = "0.3.0",
+        since = "0.5.0",
         note = "mint only response with one list of all promises"
     )]
     #[serde(skip_serializing_if = "Option::is_none")]

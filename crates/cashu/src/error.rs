@@ -37,7 +37,7 @@ impl fmt::Display for Error {
             Error::TokenSpent => write!(f, "Token Spent"),
             Error::TokenNotVerifed => write!(f, "Token Not Verified"),
             Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
-            Error::EllipticCurve(err) => write!(f, "{}", err.to_string()),
+            Error::EllipticCurve(err) => write!(f, "{}", err),
         }
     }
 }
