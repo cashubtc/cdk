@@ -13,6 +13,12 @@ impl Deref for Secret {
     }
 }
 
+impl Default for Secret {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Secret {
     pub fn new() -> Self {
         Self {

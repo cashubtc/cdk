@@ -53,14 +53,14 @@ impl KeySet {
     pub fn new(id: Arc<Id>, keys: Arc<Keys>) -> Self {
         Self {
             inner: KeySetSdk {
-                id: id.as_ref().deref().clone(),
+                id: *id.as_ref().deref(),
                 keys: keys.as_ref().deref().clone(),
             },
         }
     }
 
     pub fn id(&self) -> Arc<Id> {
-        Arc::new(self.inner.id.clone().into())
+        Arc::new(self.inner.id.into())
     }
 
     pub fn keys(&self) -> Arc<Keys> {

@@ -52,7 +52,7 @@ impl From<ParseOrSemanticError> for CashuError {
 impl From<cashu::nuts::nut02::Error> for CashuError {
     fn from(err: cashu::nuts::nut02::Error) -> Self {
         Self::Generic {
-            err: "Nut 2 error".to_string(),
+            err: err.to_string(),
         }
     }
 }

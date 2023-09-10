@@ -23,7 +23,7 @@ impl BlindedSignature {
     }
 
     pub fn id(&self) -> Arc<Id> {
-        Arc::new(self.inner.id.clone().into())
+        Arc::new(self.inner.id.into())
     }
 
     pub fn amount(&self) -> Arc<Amount> {
