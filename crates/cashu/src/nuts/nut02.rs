@@ -2,6 +2,7 @@
 // https://github.com/cashubtc/nuts/blob/main/02.md
 
 use std::collections::HashSet;
+use std::fmt;
 
 use base64::{engine::general_purpose, Engine as _};
 use bitcoin::hashes::sha256;
@@ -15,6 +16,15 @@ use super::nut01::Keys;
 pub enum Error {
     Base64(base64::DecodeError),
     Length,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Length => write!(f, "NUT02: Id invalid length"),
+            Self::Base64(err) => write!(f, "NUT02: {:?}", err),
+        }
+    }
 }
 
 /// A keyset ID is an identifier for a specific keyset. It can be derived by

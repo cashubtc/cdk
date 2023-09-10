@@ -27,7 +27,7 @@ impl Proof {
                 amount: *amount.as_ref().deref(),
                 secret: secret.as_ref().deref().clone(),
                 c: c.as_ref().deref().clone(),
-                id: id.map(|id| id.as_ref().deref().clone()),
+                id: id.map(|id| *id.as_ref().deref()),
             },
         }
     }
@@ -45,7 +45,7 @@ impl Proof {
     }
 
     pub fn id(&self) -> Option<Arc<Id>> {
-        self.inner.id.clone().map(|id| Arc::new(id.into()))
+        self.inner.id.map(|id| Arc::new(id.into()))
     }
 }
 
@@ -55,7 +55,7 @@ impl From<&Proof> for ProofSdk {
             amount: *proof.amount().as_ref().deref(),
             secret: proof.secret().as_ref().deref().clone(),
             c: proof.c().deref().into(),
-            id: proof.id().map(|id| id.as_ref().deref().clone()),
+            id: proof.id().map(|id| *id.as_ref().deref()),
         }
     }
 }
@@ -100,7 +100,7 @@ pub mod mint {
                     amount: amount.map(|a| *a.as_ref().deref()),
                     secret: secret.as_ref().deref().clone(),
                     c: c.map(|c| c.as_ref().into()),
-                    id: id.map(|id| id.as_ref().deref().clone()),
+                    id: id.map(|id| *id.as_ref().deref()),
                 },
             }
         }
@@ -118,7 +118,7 @@ pub mod mint {
         }
 
         pub fn id(&self) -> Option<Arc<Id>> {
-            self.inner.id.clone().map(|id| Arc::new(id.into()))
+            self.inner.id.map(|id| Arc::new(id.into()))
         }
     }
 

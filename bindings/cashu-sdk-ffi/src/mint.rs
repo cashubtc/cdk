@@ -4,17 +4,14 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use cashu_sdk::mint::Mint as MintSdk;
-
-use cashu_sdk::nuts::nut02::Id as IdSdk;
-use fee_reserve::FeeReserve;
-
-use crate::{error::Result, types::fee_reserve};
 use cashu_ffi::{
     Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse, MeltRequest,
-    MeltResponse, MintKeySet, MintRequest, PostMintResponse, Proof, Secret, SplitRequest,
-    SplitResponse,
+    MeltResponse, MintKeySet, MintRequest, PostMintResponse, Secret, SplitRequest, SplitResponse,
 };
+use cashu_sdk::mint::Mint as MintSdk;
+use cashu_sdk::nuts::nut02::Id as IdSdk;
+
+use crate::error::Result;
 
 pub struct Mint {
     inner: RwLock<MintSdk>,
