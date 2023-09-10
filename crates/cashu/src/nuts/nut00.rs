@@ -1,10 +1,7 @@
 //! Notation and Models
 // https://github.com/cashubtc/nuts/blob/main/00.md
 
-use url::Url;
-
-use crate::Amount;
-use crate::{secret::Secret, serde_utils::serde_url};
+use crate::{secret::Secret, url::UncheckedUrl, Amount};
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
@@ -34,6 +31,7 @@ pub mod wallet {
     use crate::nuts::nut00::Proofs;
     use crate::nuts::nut01;
     use crate::secret::Secret;
+    use crate::url::UncheckedUrl;
     use crate::Amount;
     use crate::{dhke::blind_message, utils::split_amount};
 
@@ -111,7 +109,7 @@ pub mod wallet {
 
     impl Token {
         pub fn new(
-            mint_url: Url,
+            mint_url: UncheckedUrl,
             proofs: Proofs,
             memo: Option<String>,
         ) -> Result<Self, wallet::Error> {
@@ -119,8 +117,11 @@ pub mod wallet {
                 return Err(wallet::Error::ProofsRequired);
             }
 
+            // Check Url is valid
+            let _: Url = (&mint_url).try_into()?;
+
             Ok(Self {
-                token: vec![MintProofs::new(mint_url, proofs)],
+                token: vec![MintProofs::new(mint_url.into(), proofs)],
                 memo,
             })
         }
@@ -165,14 +166,13 @@ pub mod wallet {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintProofs {
-    #[serde(with = "serde_url")]
-    pub mint: Url,
+    pub mint: UncheckedUrl,
     pub proofs: Proofs,
 }
 
 #[cfg(feature = "wallet")]
 impl MintProofs {
-    fn new(mint_url: Url, proofs: Proofs) -> Self {
+    fn new(mint_url: UncheckedUrl, proofs: Proofs) -> Self {
         Self {
             mint: mint_url,
             proofs,
@@ -250,7 +250,6 @@ pub mod mint {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
-    use url::Url;
 
     use super::wallet::*;
     use super::*;
@@ -268,12 +267,15 @@ mod tests {
 
     #[test]
     fn test_token_str_round_trip() {
-        let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJpZCI6IkRTQWw5bnZ2eWZ2YSIsImFtb3VudCI6Miwic2VjcmV0IjoiRWhwZW5uQzlxQjNpRmxXOEZaX3BadyIsIkMiOiIwMmMwMjAwNjdkYjcyN2Q1ODZiYzMxODNhZWNmOTdmY2I4MDBjM2Y0Y2M0NzU5ZjY5YzYyNmM5ZGI1ZDhmNWI1ZDQifSx7ImlkIjoiRFNBbDludnZ5ZnZhIiwiYW1vdW50Ijo4LCJzZWNyZXQiOiJUbVM2Q3YwWVQ1UFVfNUFUVktudWt3IiwiQyI6IjAyYWM5MTBiZWYyOGNiZTVkNzMyNTQxNWQ1YzI2MzAyNmYxNWY5Yjk2N2EwNzljYTk3NzlhYjZlNWMyZGIxMzNhNyJ9XX1dLCJtZW1vIjoiVGhhbmt5b3UuIn0=";
+        let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJpZCI6IkRTQWw5bnZ2eWZ2YSIsImFtb3VudCI6Miwic2VjcmV0IjoiRWhwZW5uQzlxQjNpRmxXOEZaX3BadyIsIkMiOiIwMmMwMjAwNjdkYjcyN2Q1ODZiYzMxODNhZWNmOTdmY2I4MDBjM2Y0Y2M0NzU5ZjY5YzYyNmM5ZGI1ZDhmNWI1ZDQifSx7ImlkIjoiRFNBbDludnZ5ZnZhIiwiYW1vdW50Ijo4LCJzZWNyZXQiOiJUbVM2Q3YwWVQ1UFVfNUFUVktudWt3IiwiQyI6IjAyYWM5MTBiZWYyOGNiZTVkNzMyNTQxNWQ1YzI2MzAyNmYxNWY5Yjk2N2EwNzljYTk3NzlhYjZlNWMyZGIxMzNhNyJ9XX1dLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
+
         let token = Token::from_str(token_str).unwrap();
 
         assert_eq!(
             token.token[0].mint,
-            Url::from_str("https://8333.space:3338").unwrap()
+            UncheckedUrl::from_str("https://8333.space:3338")
+                .unwrap()
+                .into()
         );
         assert_eq!(
             token.token[0].proofs[0].clone().id.unwrap(),

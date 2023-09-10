@@ -78,7 +78,6 @@ impl SecretKey {
 }
 
 /// Mint Keys [NUT-01]
-// TODO: CHange this to Amount type
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Keys(BTreeMap<Amount, PublicKey>);
 

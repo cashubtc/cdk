@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cashu::nuts::nut00::wallet::Token as TokenSdk;
+use cashu::url::UncheckedUrl;
 
 use crate::error::Result;
 use crate::MintProofs;
@@ -13,7 +14,7 @@ pub struct Token {
 
 impl Token {
     pub fn new(mint: String, proofs: Vec<Arc<Proof>>, memo: Option<String>) -> Result<Self> {
-        let mint = url::Url::from_str(&mint)?;
+        let mint = UncheckedUrl::from_str(&mint)?;
         let proofs = proofs.into_iter().map(|p| p.as_ref().into()).collect();
         Ok(Self {
             inner: TokenSdk::new(mint, proofs, memo)?,
