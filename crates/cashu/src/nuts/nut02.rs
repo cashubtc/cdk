@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use base64::{engine::general_purpose, Engine as _};
-use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256;
 use bitcoin::hashes::Hash;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -128,7 +128,7 @@ impl From<&Keys> for Id {
             .map(|(_, pubkey)| pubkey)
             .join("");
 
-        let hash = Sha256::hash(pubkeys_concat.as_bytes());
+        let hash = sha256::Hash::hash(pubkeys_concat.as_bytes());
         let bytes = hash.to_byte_array();
         // First 9 bytes of hash will encode as the first 12 Base64 characters later
         Self(<[u8; Self::BYTES]>::try_from(&bytes[0..Self::BYTES]).unwrap())
@@ -161,8 +161,8 @@ pub mod mint {
     use std::collections::BTreeMap;
 
     use bitcoin::hashes::sha256::Hash as Sha256;
-    use bitcoin_hashes::Hash;
-    use bitcoin_hashes::HashEngine;
+    use bitcoin::hashes::Hash;
+    use bitcoin::hashes::HashEngine;
     use itertools::Itertools;
     use k256::SecretKey;
     use serde::Serialize;

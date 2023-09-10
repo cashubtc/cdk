@@ -17,8 +17,7 @@ wallet = []
 
 [dependencies]
 base64 = "0.21.0"
-bitcoin = { version = "0.30.0", features=["serde",  "rand", "no-std"] }
-bitcoin_hashes = "0.12.0"
+bitcoin = { version = "0.30.0", features=["serde",  "rand"] }
 hex = "0.4.3"
 k256 = { version = "0.13.1", features=["arithmetic", "serde", "schnorr"] }
 lightning-invoice = { version = "0.24.0", features=["serde"] }

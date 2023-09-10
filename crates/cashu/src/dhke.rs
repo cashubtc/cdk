@@ -2,8 +2,8 @@
 
 use std::ops::Mul;
 
-use bitcoin_hashes::sha256;
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::sha256;
+use bitcoin::hashes::Hash;
 
 #[cfg(feature = "wallet")]
 use k256::ProjectivePoint;
