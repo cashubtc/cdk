@@ -121,7 +121,7 @@ pub mod wallet {
             let _: Url = (&mint_url).try_into()?;
 
             Ok(Self {
-                token: vec![MintProofs::new(mint_url.into(), proofs)],
+                token: vec![MintProofs::new(mint_url, proofs)],
                 memo,
             })
         }

@@ -59,7 +59,7 @@ impl Id {
 impl std::fmt::Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut output = String::with_capacity(Self::STRLEN);
-        general_purpose::STANDARD.encode_string(&self.0.as_slice(), &mut output);
+        general_purpose::STANDARD.encode_string(self.0.as_slice(), &mut output);
         f.write_str(&output)
     }
 }
