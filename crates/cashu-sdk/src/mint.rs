@@ -58,7 +58,7 @@ impl Mint {
     /// Return a list of all supported keysets
     pub fn keysets(&self) -> nut02::Response {
         let mut keysets: HashSet<_> = self.inactive_keysets.keys().cloned().collect();
-        keysets.insert(self.active_keyset.id.clone());
+        keysets.insert(self.active_keyset.id);
         nut02::Response { keysets }
     }
 
@@ -84,7 +84,7 @@ impl Mint {
     ) {
         // Add current set to inactive keysets
         self.inactive_keysets
-            .insert(self.active_keyset.id.clone(), self.active_keyset.clone());
+            .insert(self.active_keyset.id, self.active_keyset.clone());
 
         self.active_keyset = KeySet::generate(secret, derivation_path, max_order);
     }
@@ -107,7 +107,7 @@ impl Mint {
     fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindedSignature, Error> {
         let BlindedMessage { amount, b } = blinded_message;
 
-        let Some(key_pair) = self.active_keyset.keys.0.get(&amount) else {
+        let Some(key_pair) = self.active_keyset.keys.0.get(amount) else {
             // No key for amount
             return Err(Error::AmountKey);
         };
@@ -117,7 +117,7 @@ impl Mint {
         Ok(BlindedSignature {
             amount: *amount,
             c: c.into(),
-            id: self.active_keyset.id.clone(),
+            id: self.active_keyset.id,
         })
     }
 

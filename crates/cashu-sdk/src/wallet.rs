@@ -316,7 +316,7 @@ impl Wallet {
 
             let unblinded_sig = unblind_message(blinded_c, rs[i].clone().into(), a).unwrap();
             let proof = Proof {
-                id: Some(promise.id.clone()),
+                id: Some(promise.id),
                 amount: promise.amount,
                 secret: secrets[i].clone(),
                 c: unblinded_sig,
