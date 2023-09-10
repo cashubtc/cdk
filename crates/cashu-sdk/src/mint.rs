@@ -135,7 +135,11 @@ impl Mint {
 
         let proof_count = split_request.proofs.len();
 
-        let secrets: HashSet<Secret> = split_request.proofs.into_iter().map(|p| p.secret).collect();
+        let secrets: HashSet<Secret> = split_request
+            .proofs
+            .iter()
+            .map(|p| p.secret.clone())
+            .collect();
 
         // Check that there are no duplicate proofs in request
         if secrets.len().ne(&proof_count) {
@@ -144,6 +148,10 @@ impl Mint {
 
         for secret in secrets {
             self.spent_secrets.insert(secret);
+        }
+
+        for proof in &split_request.proofs {
+            self.verify_proof(proof)?
         }
 
         match &split_request.amount {
@@ -178,7 +186,7 @@ impl Mint {
         }
     }
 
-    pub fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+    fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         if self.spent_secrets.contains(&proof.secret) {
             return Err(Error::TokenSpent);
         }
@@ -249,6 +257,10 @@ impl Mint {
         // Ensure proofs are unique and not being double spent
         if melt_request.proofs.len().ne(&secrets.len()) {
             return Err(Error::DuplicateProofs);
+        }
+
+        for proof in &melt_request.proofs {
+            self.verify_proof(proof)?
         }
 
         Ok(())
