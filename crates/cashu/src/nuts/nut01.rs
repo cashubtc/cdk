@@ -80,23 +80,23 @@ impl SecretKey {
 /// Mint Keys [NUT-01]
 // TODO: CHange this to Amount type
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Keys(BTreeMap<u64, PublicKey>);
+pub struct Keys(BTreeMap<Amount, PublicKey>);
 
 impl Keys {
-    pub fn new(keys: BTreeMap<u64, PublicKey>) -> Self {
+    pub fn new(keys: BTreeMap<Amount, PublicKey>) -> Self {
         Self(keys)
     }
 
-    pub fn keys(&self) -> BTreeMap<u64, PublicKey> {
+    pub fn keys(&self) -> BTreeMap<Amount, PublicKey> {
         self.0.clone()
     }
 
     pub fn amount_key(&self, amount: Amount) -> Option<PublicKey> {
-        self.0.get(&amount.to_sat()).cloned()
+        self.0.get(&amount).cloned()
     }
 
     /// As serialized hashmap
-    pub fn as_hashmap(&self) -> HashMap<u64, String> {
+    pub fn as_hashmap(&self) -> HashMap<Amount, String> {
         self.0
             .iter()
             .map(|(k, v)| (k.to_owned(), hex::encode(v.0.to_sec1_bytes())))
@@ -104,7 +104,7 @@ impl Keys {
     }
 
     /// Iterate through the (`Amount`, `PublicKey`) entries in the Map
-    pub fn iter(&self) -> impl Iterator<Item = (&u64, &PublicKey)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Amount, &PublicKey)> {
         self.0.iter()
     }
 }
@@ -125,11 +125,13 @@ pub mod mint {
 
     use serde::Serialize;
 
+    use crate::Amount;
+
     use super::PublicKey;
     use super::SecretKey;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-    pub struct Keys(pub BTreeMap<u64, KeyPair>);
+    pub struct Keys(pub BTreeMap<Amount, KeyPair>);
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct KeyPair {

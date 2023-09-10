@@ -170,6 +170,7 @@ pub mod mint {
     use super::Id;
 
     use crate::nuts::nut01::mint::{KeyPair, Keys};
+    use crate::Amount;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct KeySet {
@@ -198,7 +199,7 @@ pub mod mint {
             engine.input(derivation_path.into().as_bytes());
 
             for i in 0..max_order {
-                let amount = 2_u64.pow(i as u32);
+                let amount = Amount::from_sat(2_u64.pow(i as u32));
 
                 // Reuse midstate
                 let mut e = engine.clone();
