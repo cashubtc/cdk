@@ -325,7 +325,7 @@ interface Wallet {
 
 interface Mint {
     [Throws=CashuSdkError]
-	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<Secret> spent_secrets, u8 max_order);
+	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<Secret> spent_secrets, u8 max_order, Amount min_fee_reserve, f32 percent_fee_reserve);
 	KeySet active_keyset_pubkeys();
 	KeySetResponse keysets();
 	MintKeySet active_keyset();

@@ -7,8 +7,9 @@ use std::{
 use cashu_sdk::mint::Mint as MintSdk;
 
 use cashu_sdk::nuts::nut02::Id as IdSdk;
+use fee_reserve::FeeReserve;
 
-use crate::error::Result;
+use crate::{error::Result, types::fee_reserve};
 use cashu_ffi::{
     Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse, MeltRequest,
     MeltResponse, MintKeySet, MintRequest, PostMintResponse, Proof, Secret, SplitRequest,
@@ -26,6 +27,8 @@ impl Mint {
         inactive_keysets: HashMap<String, Arc<MintKeySet>>,
         spent_secrets: Vec<Arc<Secret>>,
         max_order: u8,
+        min_fee_reserve: Arc<Amount>,
+        percent_fee_reserve: f32,
     ) -> Result<Self> {
         let spent_secrets = spent_secrets
             .into_iter()
@@ -47,6 +50,8 @@ impl Mint {
                 inactive_keysets,
                 spent_secrets,
                 max_order,
+                *min_fee_reserve.as_ref().deref(),
+                percent_fee_reserve,
             )
             .into(),
         })
