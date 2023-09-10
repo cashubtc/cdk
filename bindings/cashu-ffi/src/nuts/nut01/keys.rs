@@ -2,6 +2,7 @@ use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use crate::{Amount, PublicKey};
 use cashu::nuts::nut01::Keys as KeysSdk;
+use cashu::Amount as AmountSdk;
 
 pub struct Keys {
     inner: KeysSdk,
@@ -18,7 +19,12 @@ impl Keys {
     pub fn new(keys: HashMap<String, Arc<PublicKey>>) -> Self {
         let keys = keys
             .into_iter()
-            .map(|(amount, pk)| (amount.parse::<u64>().unwrap(), pk.as_ref().into()))
+            .map(|(amount, pk)| {
+                (
+                    AmountSdk::from_sat(amount.parse::<u64>().unwrap()),
+                    pk.as_ref().into(),
+                )
+            })
             .collect();
 
         Self {
@@ -30,7 +36,7 @@ impl Keys {
         self.inner
             .keys()
             .into_iter()
-            .map(|(amount, pk)| (amount.to_string(), Arc::new(pk.into())))
+            .map(|(amount, pk)| (amount.to_sat().to_string(), Arc::new(pk.into())))
             .collect()
     }
 
@@ -44,7 +50,7 @@ impl Keys {
         self.inner
             .as_hashmap()
             .into_iter()
-            .map(|(amount, pk)| (amount.to_string(), pk))
+            .map(|(amount, pk)| (amount.to_sat().to_string(), pk))
             .collect()
     }
 }
@@ -60,7 +66,7 @@ impl From<KeysSdk> for Keys {
         let keys = keys
             .keys()
             .into_iter()
-            .map(|(amount, pk)| (amount.to_string(), Arc::new(pk.into())))
+            .map(|(amount, pk)| (amount.to_sat().to_string(), Arc::new(pk.into())))
             .collect();
 
         Keys::new(keys)

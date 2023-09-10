@@ -100,7 +100,7 @@ impl Mint {
     fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindedSignature, Error> {
         let BlindedMessage { amount, b } = blinded_message;
 
-        let Some(key_pair) = self.active_keyset.keys.0.get(&amount.to_sat()) else {
+        let Some(key_pair) = self.active_keyset.keys.0.get(&amount) else {
             // No key for amount
             return Err(Error::AmountKey);
         };
@@ -187,7 +187,7 @@ impl Mint {
             },
         );
 
-        let Some(keypair) = keyset.keys.0.get(&proof.amount.to_sat()) else {
+        let Some(keypair) = keyset.keys.0.get(&proof.amount) else {
             return Err(Error::AmountKey);
         };
 
