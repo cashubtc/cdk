@@ -21,11 +21,7 @@ impl SplitRequest {
         let outputs = outputs.into_iter().map(|o| o.as_ref().into()).collect();
 
         Self {
-            inner: SplitRequestSdk {
-                amount: None,
-                proofs,
-                outputs,
-            },
+            inner: SplitRequestSdk::new(proofs, outputs),
         }
     }
 
@@ -64,11 +60,7 @@ impl SplitResponse {
     pub fn new(promises: Vec<Arc<BlindedSignature>>) -> Self {
         let promises = promises.into_iter().map(|p| p.as_ref().into()).collect();
         Self {
-            inner: SplitResponseSdk {
-                fst: None,
-                snd: None,
-                promises: Some(promises),
-            },
+            inner: SplitResponseSdk::new(promises),
         }
     }
 
