@@ -278,11 +278,7 @@ impl Wallet {
 
         let blinded_messages = BlindedMessages::random(value)?;
 
-        let split_payload = SplitRequest {
-            amount: None,
-            proofs,
-            outputs: blinded_messages.blinded_messages.clone(),
-        };
+        let split_payload = SplitRequest::new(proofs, blinded_messages.blinded_messages.clone());
 
         Ok(SplitPayload {
             blinded_messages,

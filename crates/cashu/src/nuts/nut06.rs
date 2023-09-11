@@ -20,17 +20,29 @@ pub struct SplitPayload {
 /// Split Request [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitRequest {
-    #[deprecated(since = "0.3.0", note = "mint does not need amount")]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // TODO: This should be deprecated
     pub amount: Option<Amount>,
+    /// Proofs that are to be spent in `Split`
     pub proofs: Proofs,
+    /// Blinded Messages for Mint to sign
     pub outputs: Vec<BlindedMessage>,
 }
 
 impl SplitRequest {
+    pub fn new(proofs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
+        Self {
+            amount: None,
+            proofs,
+            outputs,
+        }
+    }
+
+    /// Total value of proofs in `SplitRequest`
     pub fn proofs_amount(&self) -> Amount {
         self.proofs.iter().map(|proof| proof.amount).sum()
     }
+
+    /// Total value of outputs in `SplitRequest`
     pub fn output_amount(&self) -> Amount {
         self.outputs.iter().map(|proof| proof.amount).sum()
     }
@@ -40,17 +52,11 @@ impl SplitRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitResponse {
     /// Promises to keep
-    #[deprecated(
-        since = "0.3.0",
-        note = "mint only response with one list of all promises"
-    )]
+    // TODO: This should be deprecated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fst: Option<Vec<BlindedSignature>>,
     /// Promises to send
-    #[deprecated(
-        since = "0.3.0",
-        note = "mint only response with one list of all promises"
-    )]
+    // TODO: This should be deprecated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snd: Option<Vec<BlindedSignature>>,
     /// Promises
@@ -66,10 +72,7 @@ impl SplitResponse {
         }
     }
 
-    #[deprecated(
-        since = "0.3.0",
-        note = "mint only response with one list of all promises"
-    )]
+    // TODO: This should be deprecated
     pub fn new_from_amount(
         fst: Vec<BlindedSignature>,
         snd: Vec<BlindedSignature>,
@@ -81,10 +84,7 @@ impl SplitResponse {
         }
     }
 
-    #[deprecated(
-        since = "0.3.0",
-        note = "mint only response with one list of all promises"
-    )]
+    // TODO: This should be deprecated
     pub fn change_amount(&self) -> Option<Amount> {
         self.fst.as_ref().map(|fst| {
             fst.iter()
@@ -93,10 +93,7 @@ impl SplitResponse {
         })
     }
 
-    #[deprecated(
-        since = "0.3.0",
-        note = "mint only response with one list of all promises"
-    )]
+    // TODO: This should be deprecated
     pub fn target_amount(&self) -> Option<Amount> {
         self.snd.as_ref().map(|snd| {
             snd.iter()
