@@ -5,6 +5,7 @@ edition = "2021"
 authors = ["thesimplekid"]
 homepage.workspace = true
 repository.workspace = true
+rust-version = "1.67.0" # MSRV
 license.workspace = true
 
 

@@ -9,11 +9,11 @@ members = [
 ]
 resolver = "2"
 
-
 [workspace.package]
 license = "BSD-3-Clause"
 homepage = "https://github.com/thesimplekid/cashu-crab"
 repository = "https://github.com/thesimplekid/cashu-crab.git"
+rust-version = "1.70.0" # MSRV
 
 [workspace.metadata]
 authors = ["thesimplekid"]
