@@ -85,7 +85,7 @@ impl TryFrom<&UncheckedUrl> for Url {
 
 impl fmt::Display for UncheckedUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.0.strip_suffix("/").unwrap_or(&self.0))
     }
 }
 
