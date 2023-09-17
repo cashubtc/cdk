@@ -9,7 +9,7 @@ precommit:
 	cargo test -p cashu
 	cargo test -p cashu-sdk
 	cargo clippy
-	rustup default 1.67.0
+	rustup default 1.70.0
 	cargo check -p cashu
 	cargo check -p cashu-sdk --no-default-features --features mint
 	cargo check -p cashu-sdk --no-default-features --features wallet
