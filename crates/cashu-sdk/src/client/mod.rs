@@ -122,11 +122,6 @@ pub struct Client {
 
 impl Client {
     pub fn new(mint_url: &str) -> Result<Self, Error> {
-        // HACK
-        let mut mint_url = String::from(mint_url);
-        if !mint_url.ends_with('/') {
-            mint_url.push('/');
-        }
         let mint_url = Url::parse(&mint_url)?;
         Ok(Self { mint_url })
     }
