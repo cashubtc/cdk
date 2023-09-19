@@ -9,6 +9,8 @@ precommit:
 	cargo test -p cashu
 	cargo test -p cashu-sdk
 	cargo clippy
+	cargo clippy --target wasm32-unknown-unknown -p cashu
+	cargo clippy --target wasm32-unknown-unknown -p cashu-sdk
 	rustup default 1.70.0
 	cargo check -p cashu
 	cargo check -p cashu-sdk --no-default-features --features mint
