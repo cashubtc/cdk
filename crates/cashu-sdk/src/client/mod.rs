@@ -1,6 +1,8 @@
 //! Client to connet to mint
 use std::fmt;
+use std::str::FromStr;
 
+use cashu::url::UncheckedUrl;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
@@ -34,6 +36,8 @@ pub enum Error {
     UrlParse(url::ParseError),
     /// Serde Json error
     SerdeJson(serde_json::Error),
+    /// Cashu Url Error
+    CashuUrl(cashu::url::Error),
     ///  Min req error
     #[cfg(not(target_arch = "wasm32"))]
     MinReq(minreq::Error),
@@ -52,6 +56,12 @@ impl From<url::ParseError> for Error {
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Error {
         Error::SerdeJson(err)
+    }
+}
+
+impl From<cashu::url::Error> for Error {
+    fn from(err: cashu::url::Error) -> Error {
+        Error::CashuUrl(err)
     }
 }
 
@@ -79,6 +89,7 @@ impl fmt::Display for Error {
             Error::SerdeJson(err) => write!(f, "{}", err),
             #[cfg(not(target_arch = "wasm32"))]
             Error::MinReq(err) => write!(f, "{}", err),
+            Error::CashuUrl(err) => write!(f, "{}", err),
             #[cfg(target_arch = "wasm32")]
             Error::Gloo(err) => write!(f, "{}", err),
             Error::Custom(message) => write!(f, "{}", message),
@@ -117,12 +128,13 @@ impl Error {
 
 #[derive(Debug, Clone)]
 pub struct Client {
-    pub mint_url: Url,
+    pub mint_url: UncheckedUrl,
 }
 
 impl Client {
     pub fn new(mint_url: &str) -> Result<Self, Error> {
-        let mint_url = Url::parse(&mint_url)?;
+        let mint_url = UncheckedUrl::from_str(mint_url)?;
+        let _: Url = (&mint_url).try_into()?;
         Ok(Self { mint_url })
     }
 
