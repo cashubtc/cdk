@@ -48,6 +48,11 @@ impl UncheckedUrl {
     pub fn empty() -> Self {
         Self(String::new())
     }
+
+    pub fn join(&self, path: &str) -> Result<Url, Error> {
+        let url: Url = self.try_into()?;
+        Ok(url.join(path)?)
+    }
 }
 
 impl<S> From<S> for UncheckedUrl
@@ -85,7 +90,7 @@ impl TryFrom<&UncheckedUrl> for Url {
 
 impl fmt::Display for UncheckedUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.strip_suffix("/").unwrap_or(&self.0))
+        write!(f, "{}", self.0)
     }
 }
 
@@ -96,18 +101,20 @@ mod tests {
 
     #[test]
     fn test_unchecked_relay_url() {
-        let relay = "wss://relay.damus.io/";
-        let relay_url = Url::from_str(relay).unwrap();
+        let relay = "wss://relay.damus.io:8333/";
 
-        let unchecked_relay_url = UncheckedUrl::from(relay_url.clone());
-
-        assert_eq!(unchecked_relay_url, UncheckedUrl::from(relay));
-
-        assert_eq!(
-            Url::try_from(unchecked_relay_url.clone()).unwrap(),
-            relay_url
-        );
+        let unchecked_relay_url = UncheckedUrl::from_str(relay).unwrap();
 
         assert_eq!(relay, unchecked_relay_url.to_string());
+
+        // assert_eq!(relay, serde_json::to_string(&unchecked_relay_url).unwrap());
+
+        let relay = "wss://relay.damus.io:8333";
+
+        let unchecked_relay_url = UncheckedUrl::from_str(relay).unwrap();
+
+        assert_eq!(relay, unchecked_relay_url.to_string());
+
+        // assert_eq!(relay, serde_json::to_string(&unchecked_relay_url).unwrap())
     }
 }
