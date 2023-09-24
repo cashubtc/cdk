@@ -1,0 +1,54 @@
+use std::ops::Deref;
+
+use cashu::nuts::nut01::Keys;
+use wasm_bindgen::prelude::*;
+
+use crate::{
+    error::{into_err, Result},
+    types::JsAmount,
+};
+
+use super::JsPublicKey;
+
+#[wasm_bindgen(js_name = Keys)]
+pub struct JsKeys {
+    inner: Keys,
+}
+
+impl Deref for JsKeys {
+    type Target = Keys;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<Keys> for JsKeys {
+    fn from(inner: Keys) -> JsKeys {
+        JsKeys { inner }
+    }
+}
+
+#[wasm_bindgen(js_class = Keys)]
+impl JsKeys {
+    /// From Hex
+    #[wasm_bindgen(constructor)]
+    pub fn new(keys: String) -> Result<JsKeys> {
+        let keys = serde_json::from_str(&keys).map_err(into_err)?;
+
+        Ok(JsKeys {
+            inner: Keys::new(keys),
+        })
+    }
+
+    /// Keys
+    #[wasm_bindgen(js_name = keys)]
+    pub fn keys(&self) -> Result<String> {
+        Ok(serde_json::to_string(&self.inner.keys()).map_err(into_err)?)
+    }
+
+    /// Amount Key
+    #[wasm_bindgen(js_name = amountKey)]
+    pub fn amount_key(&self, amount: JsAmount) -> Option<JsPublicKey> {
+        self.inner.amount_key(*amount.deref()).map(|k| k.into())
+    }
+}
