@@ -109,8 +109,8 @@ impl JsKeyResponse {
     /// From Hex
     #[wasm_bindgen(constructor)]
     pub fn new(keysets: String) -> Result<JsKeyResponse> {
-        let reponse = serde_json::from_str(&keysets).map_err(into_err)?;
-        Ok(Self { inner: reponse })
+        let response = serde_json::from_str(&keysets).map_err(into_err)?;
+        Ok(Self { inner: response })
     }
 
     /// Get Keysets

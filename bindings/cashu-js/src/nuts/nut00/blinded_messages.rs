@@ -35,5 +35,5 @@ impl JsBlindedMessages {
         })
     }
 
-    // TODO: Gettters
+    // TODO: Getters
 }
