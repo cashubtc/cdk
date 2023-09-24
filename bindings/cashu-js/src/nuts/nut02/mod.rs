@@ -1,3 +1,6 @@
-pub mod id;
+mod keyset;
+mod mint_keyset;
 
-pub use id::JsId;
+pub use keyset::JsId;
+pub use keyset::JsKeySet;
+pub use mint_keyset::JsMintKeySet;
