@@ -25,7 +25,6 @@ impl From<Token> for JsToken {
 
 #[wasm_bindgen(js_class = Token)]
 impl JsToken {
-    // TODO: Simply passing a string for proofs is not ideal
     #[wasm_bindgen(constructor)]
     pub fn new(mint: String, proofs: JsValue, memo: Option<String>) -> Result<JsToken> {
         let mint = UncheckedUrl::from_str(&mint).map_err(into_err)?;
