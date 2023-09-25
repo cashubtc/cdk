@@ -35,5 +35,27 @@ impl JsBlindedMessages {
         })
     }
 
-    // TODO: Getters
+    /// Blinded Messages
+    #[wasm_bindgen(getter)]
+    pub fn blinded_messages(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.blinded_messages).map_err(into_err)
+    }
+
+    /// Secrets
+    #[wasm_bindgen(getter)]
+    pub fn secrets(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.secrets).map_err(into_err)
+    }
+
+    /// rs
+    #[wasm_bindgen(getter)]
+    pub fn rs(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.rs).map_err(into_err)
+    }
+
+    /// Amounts
+    #[wasm_bindgen(getter)]
+    pub fn amounts(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.amounts).map_err(into_err)
+    }
 }
