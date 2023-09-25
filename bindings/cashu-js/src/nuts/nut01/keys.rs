@@ -32,8 +32,8 @@ impl From<Keys> for JsKeys {
 impl JsKeys {
     /// From Hex
     #[wasm_bindgen(constructor)]
-    pub fn new(keys: String) -> Result<JsKeys> {
-        let keys = serde_json::from_str(&keys).map_err(into_err)?;
+    pub fn new(keys: JsValue) -> Result<JsKeys> {
+        let keys = serde_wasm_bindgen::from_value(keys).map_err(into_err)?;
 
         Ok(JsKeys {
             inner: Keys::new(keys),
@@ -42,8 +42,8 @@ impl JsKeys {
 
     /// Keys
     #[wasm_bindgen(js_name = keys)]
-    pub fn keys(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.keys()).map_err(into_err)
+    pub fn keys(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.keys()).map_err(into_err)
     }
 
     /// Amount Key
