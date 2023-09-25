@@ -29,7 +29,7 @@ impl JsProof {
     pub fn new(amount: JsAmount, secret: JsSecret, c: JsPublicKey, id: Option<JsId>) -> JsProof {
         Self {
             inner: Proof {
-                amount: amount.deref().clone(),
+                amount: *amount.deref(),
                 secret: secret.deref().clone(),
                 c: c.deref().clone(),
                 id: id.map(|i| *i.deref()),

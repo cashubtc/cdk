@@ -8,6 +8,12 @@ pub struct JsSecret {
     inner: Secret,
 }
 
+impl Default for JsSecret {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Deref for JsSecret {
     type Target = Secret;
     fn deref(&self) -> &Self::Target {

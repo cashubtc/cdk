@@ -31,7 +31,7 @@ impl JsBlindedMessage {
     pub fn new(amount: JsAmount, b: JsPublicKey) -> Self {
         Self {
             inner: BlindedMessage {
-                amount: amount.deref().clone(),
+                amount: *amount.deref(),
                 b: b.deref().clone(),
             },
         }

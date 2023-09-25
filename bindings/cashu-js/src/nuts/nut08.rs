@@ -56,7 +56,7 @@ impl JsMeltRequest {
     /// Get Proofs
     #[wasm_bindgen(getter)]
     pub fn proofs(&self) -> Result<JsValue> {
-        Ok(serde_wasm_bindgen::to_value(&self.inner.proofs).map_err(into_err)?)
+        serde_wasm_bindgen::to_value(&self.inner.proofs).map_err(into_err)
     }
 
     /// Get Invoice
@@ -68,7 +68,7 @@ impl JsMeltRequest {
     /// Get outputs
     #[wasm_bindgen(getter)]
     pub fn outputs(&self) -> Result<JsValue> {
-        Ok(serde_wasm_bindgen::to_value(&self.inner.outputs).map_err(into_err)?)
+        serde_wasm_bindgen::to_value(&self.inner.outputs).map_err(into_err)
     }
 }
 
@@ -124,11 +124,11 @@ impl JsMeltResponse {
     /// Get Change
     #[wasm_bindgen(getter)]
     pub fn change(&self) -> Result<JsValue> {
-        Ok(serde_wasm_bindgen::to_value(&self.inner.change).map_err(into_err)?)
+        serde_wasm_bindgen::to_value(&self.inner.change).map_err(into_err)
     }
 
     /// Change Amount
-    #[wasm_bindgen(js_name = "cahngeAmount")]
+    #[wasm_bindgen(js_name = "changeAmount")]
     pub fn change_amount(&self) -> JsAmount {
         self.inner.change_amount().into()
     }

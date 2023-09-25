@@ -43,7 +43,7 @@ impl JsKeys {
     /// Keys
     #[wasm_bindgen(js_name = keys)]
     pub fn keys(&self) -> Result<String> {
-        Ok(serde_json::to_string(&self.inner.keys()).map_err(into_err)?)
+        serde_json::to_string(&self.inner.keys()).map_err(into_err)
     }
 
     /// Amount Key

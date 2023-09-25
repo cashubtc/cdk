@@ -77,7 +77,7 @@ impl JsKeySet {
 
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> JsId {
-        self.inner.id.clone().into()
+        self.inner.id.into()
     }
 
     #[wasm_bindgen(getter)]

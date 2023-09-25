@@ -36,9 +36,7 @@ impl JsBolt11Invoice {
     /// Amount
     #[wasm_bindgen(getter)]
     pub fn amount(&self) -> Option<JsAmount> {
-        self.inner
-            .amount_milli_satoshis()
-            .map(|a| JsAmount::from_msat(a))
+        self.inner.amount_milli_satoshis().map(JsAmount::from_msat)
     }
 
     /// Invoice as string

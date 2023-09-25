@@ -52,7 +52,7 @@ impl JsToken {
     /// As String
     #[wasm_bindgen(js_name = asString)]
     pub fn as_string(&self) -> Result<String> {
-        Ok(self.inner.convert_to_string().map_err(into_err)?)
+        self.inner.convert_to_string().map_err(into_err)
     }
 
     // TODO: Getter mint proofs
