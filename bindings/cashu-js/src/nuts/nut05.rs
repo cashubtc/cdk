@@ -32,7 +32,7 @@ impl JsCheckFeesRequest {
     pub fn new(invoice: JsBolt11Invoice) -> Result<JsCheckFeesRequest> {
         Ok(JsCheckFeesRequest {
             inner: CheckFeesRequest {
-                pr: invoice.clone().into(),
+                pr: invoice.clone(),
             },
         })
     }
