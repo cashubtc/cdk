@@ -62,6 +62,25 @@ pub struct MeltResponse {
     inner: MeltResponseSdk,
 }
 
+impl Deref for MeltResponse {
+    type Target = MeltResponseSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<cashu::nuts::nut08::MeltResponse> for MeltResponse {
+    fn from(inner: cashu::nuts::nut08::MeltResponse) -> MeltResponse {
+        MeltResponse { inner }
+    }
+}
+
+impl From<MeltResponse> for cashu::nuts::nut08::MeltResponse {
+    fn from(res: MeltResponse) -> cashu::nuts::nut08::MeltResponse {
+        res.inner
+    }
+}
+
 impl MeltResponse {
     pub fn new(
         paid: bool,
@@ -91,17 +110,5 @@ impl MeltResponse {
             .change
             .clone()
             .map(|change| change.into_iter().map(|bs| Arc::new(bs.into())).collect())
-    }
-}
-
-impl From<cashu::nuts::nut08::MeltResponse> for MeltResponse {
-    fn from(inner: cashu::nuts::nut08::MeltResponse) -> MeltResponse {
-        MeltResponse { inner }
-    }
-}
-
-impl From<MeltResponse> for cashu::nuts::nut08::MeltResponse {
-    fn from(res: MeltResponse) -> cashu::nuts::nut08::MeltResponse {
-        res.inner
     }
 }

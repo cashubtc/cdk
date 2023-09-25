@@ -15,7 +15,8 @@ cashu = { path = "../../crates/cashu"}
 js-sys = "0.3.64"
 serde-wasm-bindgen = "0.6.0"
 serde_json.workspace = true
-wasm-bindgen = "0.2.87"
+serde.workspace = true
+wasm-bindgen = { version = "0.2.87", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4.37"
 
 [package.metadata.wasm-pack.profile.release]
