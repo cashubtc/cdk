@@ -39,7 +39,7 @@ impl JsMintRequest {
 
     #[wasm_bindgen(getter)]
     pub fn outputs(&self) -> Result<String> {
-        Ok(serde_json::to_string(&self.inner.outputs).map_err(into_err)?)
+        serde_json::to_string(&self.inner.outputs).map_err(into_err)
     }
 
     #[wasm_bindgen(js_name = totalAmount)]
@@ -79,6 +79,6 @@ impl JsPostMintResponse {
 
     #[wasm_bindgen(getter)]
     pub fn promises(&self) -> Result<String> {
-        Ok(serde_json::to_string(&self.inner.promises).map_err(into_err)?)
+        serde_json::to_string(&self.inner.promises).map_err(into_err)
     }
 }
