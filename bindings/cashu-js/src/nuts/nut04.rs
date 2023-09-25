@@ -30,16 +30,16 @@ impl From<MintRequest> for JsMintRequest {
 impl JsMintRequest {
     /// Try From Base 64 String
     #[wasm_bindgen(constructor)]
-    pub fn new(outputs: String) -> Result<JsMintRequest> {
-        let outputs = serde_json::from_str(&outputs).map_err(into_err)?;
+    pub fn new(outputs: JsValue) -> Result<JsMintRequest> {
+        let outputs = serde_wasm_bindgen::from_value(outputs).map_err(into_err)?;
         Ok(JsMintRequest {
             inner: MintRequest { outputs },
         })
     }
 
     #[wasm_bindgen(getter)]
-    pub fn outputs(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.outputs).map_err(into_err)
+    pub fn outputs(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.outputs).map_err(into_err)
     }
 
     #[wasm_bindgen(js_name = totalAmount)]
@@ -70,15 +70,15 @@ impl From<PostMintResponse> for JsPostMintResponse {
 impl JsPostMintResponse {
     /// Try From Base 64 String
     #[wasm_bindgen(constructor)]
-    pub fn new(promises: String) -> Result<JsPostMintResponse> {
-        let promises = serde_json::from_str(&promises).map_err(into_err)?;
+    pub fn new(promises: JsValue) -> Result<JsPostMintResponse> {
+        let promises = serde_wasm_bindgen::from_value(promises).map_err(into_err)?;
         Ok(JsPostMintResponse {
             inner: PostMintResponse { promises },
         })
     }
 
     #[wasm_bindgen(getter)]
-    pub fn promises(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.promises).map_err(into_err)
+    pub fn promises(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.promises).map_err(into_err)
     }
 }

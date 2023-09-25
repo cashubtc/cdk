@@ -29,9 +29,9 @@ impl From<SplitRequest> for JsSplitRequest {
 #[wasm_bindgen(js_class = SplitRequest)]
 impl JsSplitRequest {
     #[wasm_bindgen(constructor)]
-    pub fn new(proofs: String, outputs: String) -> Result<JsSplitRequest> {
-        let proofs = serde_json::from_str(&proofs).map_err(into_err)?;
-        let outputs = serde_json::from_str(&outputs).map_err(into_err)?;
+    pub fn new(proofs: JsValue, outputs: JsValue) -> Result<JsSplitRequest> {
+        let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
+        let outputs = serde_wasm_bindgen::from_value(outputs).map_err(into_err)?;
 
         Ok(JsSplitRequest {
             inner: SplitRequest {
@@ -44,14 +44,14 @@ impl JsSplitRequest {
 
     /// Get Proofs
     #[wasm_bindgen(getter)]
-    pub fn proofs(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.proofs).map_err(into_err)
+    pub fn proofs(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.proofs).map_err(into_err)
     }
 
     /// Get Outputs
     #[wasm_bindgen(getter)]
-    pub fn outputs(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.outputs).map_err(into_err)
+    pub fn outputs(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.outputs).map_err(into_err)
     }
 
     /// Proofs Amount
@@ -88,8 +88,8 @@ impl From<SplitResponse> for JsSplitResponse {
 #[wasm_bindgen(js_class = SplitResponse)]
 impl JsSplitResponse {
     #[wasm_bindgen(constructor)]
-    pub fn new(promises: String) -> Result<JsSplitResponse> {
-        let promises = serde_json::from_str(&promises).map_err(into_err)?;
+    pub fn new(promises: JsValue) -> Result<JsSplitResponse> {
+        let promises = serde_wasm_bindgen::from_value(promises).map_err(into_err)?;
 
         Ok(JsSplitResponse {
             inner: SplitResponse {
@@ -102,8 +102,8 @@ impl JsSplitResponse {
 
     /// Get Promises
     #[wasm_bindgen(getter)]
-    pub fn promises(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.promises).map_err(into_err)
+    pub fn promises(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.promises).map_err(into_err)
     }
 
     /// Promises Amount

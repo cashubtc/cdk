@@ -27,9 +27,9 @@ impl From<Token> for JsToken {
 impl JsToken {
     // TODO: Simply passing a string for proofs is not ideal
     #[wasm_bindgen(constructor)]
-    pub fn new(mint: String, proofs: String, memo: Option<String>) -> Result<JsToken> {
+    pub fn new(mint: String, proofs: JsValue, memo: Option<String>) -> Result<JsToken> {
         let mint = UncheckedUrl::from_str(&mint).map_err(into_err)?;
-        let proofs = serde_json::from_str(&proofs).map_err(into_err)?;
+        let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
         Ok(Self {
             inner: Token::new(mint, proofs, memo).map_err(into_err)?,
         })
@@ -54,6 +54,4 @@ impl JsToken {
     pub fn as_string(&self) -> Result<String> {
         self.inner.convert_to_string().map_err(into_err)
     }
-
-    // TODO: Getter mint proofs
 }
