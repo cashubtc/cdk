@@ -27,8 +27,8 @@ impl From<CheckSpendableRequest> for JsCheckSpendableRequest {
 impl JsCheckSpendableRequest {
     // REVIEW: Use into serde
     #[wasm_bindgen(constructor)]
-    pub fn new(proofs: String) -> Result<JsCheckSpendableRequest> {
-        let proofs = serde_json::from_str(&proofs).map_err(into_err)?;
+    pub fn new(proofs: JsValue) -> Result<JsCheckSpendableRequest> {
+        let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
         Ok(JsCheckSpendableRequest {
             inner: CheckSpendableRequest { proofs },
@@ -38,8 +38,8 @@ impl JsCheckSpendableRequest {
     /// Get Proofs
     #[wasm_bindgen(getter)]
     // REVIEW: INTO Serde
-    pub fn proofs(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.proofs).map_err(into_err)
+    pub fn proofs(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.proofs).map_err(into_err)
     }
 }
 
@@ -64,21 +64,10 @@ impl From<CheckSpendableResponse> for JsCheckSpendableResponse {
 #[wasm_bindgen(js_class = CheckSpendableResponse)]
 impl JsCheckSpendableResponse {
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        js_spendable: Box<[JsValue]>,
-        js_pending: Box<[JsValue]>,
-    ) -> Result<JsCheckSpendableResponse> {
-        let spendable: Vec<bool> = js_spendable.iter().flat_map(|s| s.as_bool()).collect();
+    pub fn new(spendable: JsValue, pending: JsValue) -> Result<JsCheckSpendableResponse> {
+        let spendable = serde_wasm_bindgen::from_value(spendable).map_err(into_err)?;
 
-        if spendable.len().ne(&js_spendable.len()) {
-            return Err(JsValue::from_str("Wrong value"));
-        }
-
-        let pending: Vec<bool> = js_pending.iter().flat_map(|p| p.as_bool()).collect();
-
-        if pending.len().ne(&js_pending.len()) {
-            return Err(JsValue::from_str("Wrong value"));
-        }
+        let pending = serde_wasm_bindgen::from_value(pending).map_err(into_err)?;
 
         Ok(JsCheckSpendableResponse {
             inner: CheckSpendableResponse { spendable, pending },
