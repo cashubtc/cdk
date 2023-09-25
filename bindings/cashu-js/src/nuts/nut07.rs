@@ -25,7 +25,6 @@ impl From<CheckSpendableRequest> for JsCheckSpendableRequest {
 
 #[wasm_bindgen(js_class = CheckSpendable)]
 impl JsCheckSpendableRequest {
-    // REVIEW: Use into serde
     #[wasm_bindgen(constructor)]
     pub fn new(proofs: JsValue) -> Result<JsCheckSpendableRequest> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
@@ -37,7 +36,6 @@ impl JsCheckSpendableRequest {
 
     /// Get Proofs
     #[wasm_bindgen(getter)]
-    // REVIEW: INTO Serde
     pub fn proofs(&self) -> Result<JsValue> {
         serde_wasm_bindgen::to_value(&self.inner.proofs).map_err(into_err)
     }

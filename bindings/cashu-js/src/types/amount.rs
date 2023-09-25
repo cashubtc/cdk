@@ -3,6 +3,8 @@ use std::ops::Deref;
 use cashu::Amount;
 use wasm_bindgen::prelude::*;
 
+use crate::error::{into_err, Result};
+
 #[wasm_bindgen(js_name = Amount)]
 pub struct JsAmount {
     inner: Amount,
@@ -59,10 +61,8 @@ impl JsAmount {
     }
 
     /// Split amount returns sat vec of sats
-    // REVIEW: https://github.com/rustwasm/wasm-bindgen/issues/111
     #[wasm_bindgen(js_name = split)]
-    pub fn split(&self) -> Vec<u64> {
-        let split = self.inner.split();
-        split.into_iter().map(|a| a.to_sat()).collect()
+    pub fn split(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.split()).map_err(into_err)
     }
 }
