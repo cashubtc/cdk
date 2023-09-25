@@ -45,13 +45,13 @@ impl JsSplitRequest {
     /// Get Proofs
     #[wasm_bindgen(getter)]
     pub fn proofs(&self) -> Result<String> {
-        Ok(serde_json::to_string(&self.inner.proofs).map_err(into_err)?)
+        serde_json::to_string(&self.inner.proofs).map_err(into_err)
     }
 
     /// Get Outputs
     #[wasm_bindgen(getter)]
     pub fn outputs(&self) -> Result<String> {
-        Ok(serde_json::to_string(&self.inner.outputs).map_err(into_err)?)
+        serde_json::to_string(&self.inner.outputs).map_err(into_err)
     }
 
     /// Proofs Amount
@@ -103,7 +103,7 @@ impl JsSplitResponse {
     /// Get Promises
     #[wasm_bindgen(getter)]
     pub fn promises(&self) -> Result<String> {
-        Ok(serde_json::to_string(&self.inner.promises).map_err(into_err)?)
+        serde_json::to_string(&self.inner.promises).map_err(into_err)
     }
 
     /// Promises Amount

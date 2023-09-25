@@ -24,8 +24,8 @@ impl JsBlindedSignature {
     pub fn new(id: JsId, amount: JsAmount, c: JsPublicKey) -> Self {
         Self {
             inner: BlindedSignature {
-                id: id.deref().clone(),
-                amount: amount.deref().clone(),
+                id: *id.deref(),
+                amount: *amount.deref(),
                 c: c.deref().clone(),
             },
         }

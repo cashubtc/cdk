@@ -39,7 +39,7 @@ impl JsCheckSpendableRequest {
     #[wasm_bindgen(getter)]
     // REVIEW: INTO Serde
     pub fn proofs(&self) -> Result<String> {
-        Ok(serde_json::to_string(&self.inner.proofs).map_err(into_err)?)
+        serde_json::to_string(&self.inner.proofs).map_err(into_err)
     }
 }
 
