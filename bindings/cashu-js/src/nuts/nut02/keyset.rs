@@ -108,14 +108,14 @@ impl From<Response> for JsKeyResponse {
 impl JsKeyResponse {
     /// From Hex
     #[wasm_bindgen(constructor)]
-    pub fn new(keysets: String) -> Result<JsKeyResponse> {
-        let response = serde_json::from_str(&keysets).map_err(into_err)?;
+    pub fn new(keysets: JsValue) -> Result<JsKeyResponse> {
+        let response = serde_wasm_bindgen::from_value(keysets).map_err(into_err)?;
         Ok(Self { inner: response })
     }
 
     /// Get Keysets
     #[wasm_bindgen(getter)]
-    pub fn keysets(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.keysets).map_err(into_err)
+    pub fn keysets(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.keysets).map_err(into_err)
     }
 }
