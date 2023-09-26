@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::{nuts::nut01::JsPublicKey, nuts::nut02::JsId, types::JsAmount, types::JsSecret};
 
-#[wasm_bindgen(js_name = Token)]
+#[wasm_bindgen(js_name = Proof)]
 pub struct JsProof {
     inner: Proof,
 }
