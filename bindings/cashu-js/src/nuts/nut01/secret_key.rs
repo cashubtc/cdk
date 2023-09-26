@@ -3,7 +3,7 @@ use std::ops::Deref;
 use cashu::nuts::nut01::SecretKey;
 use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen(js_name = PublicKey)]
+#[wasm_bindgen(js_name = SecretKey)]
 pub struct JsSecretKey {
     inner: SecretKey,
 }
