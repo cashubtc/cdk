@@ -47,7 +47,7 @@ impl JsMintVersion {
     }
 }
 
-#[wasm_bindgen(js_name = MintVersion)]
+#[wasm_bindgen(js_name = MintInfo)]
 pub struct JsMintInfo {
     inner: MintInfo,
 }
@@ -65,7 +65,7 @@ impl From<MintInfo> for JsMintInfo {
     }
 }
 
-#[wasm_bindgen(js_class = MintVersion)]
+#[wasm_bindgen(js_class = MintInfo)]
 impl JsMintInfo {
     #[wasm_bindgen(constructor)]
     #[allow(clippy::too_many_arguments)]
