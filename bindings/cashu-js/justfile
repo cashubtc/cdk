@@ -1,0 +1,5 @@
+build:
+	wasm-pack build
+
+build:
+	wasm-pack pack
