@@ -6,7 +6,8 @@ members = [
     "bindings/uniffi-bindgen",
     "bindings/cashu-ffi",
     "bindings/cashu-sdk-ffi",
-    "bindings/cashu-js"
+    "bindings/cashu-js",
+    "bindings/cashu-sdk-js"
 ]
 resolver = "2"
 

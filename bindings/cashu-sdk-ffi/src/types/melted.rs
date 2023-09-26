@@ -8,6 +8,14 @@ pub struct Melted {
     inner: MeltedSdk,
 }
 
+// TODO: Deref
+
+impl From<cashu_sdk::types::Melted> for Melted {
+    fn from(inner: cashu_sdk::types::Melted) -> Melted {
+        Melted { inner }
+    }
+}
+
 impl Melted {
     pub fn new(paid: bool, preimage: Option<String>, change: Option<Vec<Arc<Proof>>>) -> Self {
         Self {
@@ -32,11 +40,5 @@ impl Melted {
             .change
             .clone()
             .map(|c| c.into_iter().map(|p| Arc::new(p.into())).collect())
-    }
-}
-
-impl From<cashu_sdk::types::Melted> for Melted {
-    fn from(inner: cashu_sdk::types::Melted) -> Melted {
-        Melted { inner }
     }
 }

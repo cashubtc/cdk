@@ -8,6 +8,9 @@ pub struct ProofsStatus {
     inner: ProofsStatusSdk,
 }
 
+// TODO: Into
+// TODO: Deref
+
 impl ProofsStatus {
     pub fn new(spendable: Vec<Arc<MintProof>>, spent: Vec<Arc<MintProof>>) -> Self {
         Self {
