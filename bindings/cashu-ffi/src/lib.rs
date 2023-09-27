@@ -11,7 +11,7 @@ mod ffi {
     pub use crate::nuts::nut00::proof::{mint::Proof as MintProof, Proof};
     pub use crate::nuts::nut00::token::Token;
     pub use crate::nuts::nut01::key_pair::KeyPair;
-    pub use crate::nuts::nut01::keys::Keys;
+    pub use crate::nuts::nut01::keys::{Keys, KeysResponse};
     pub use crate::nuts::nut01::public_key::PublicKey;
     pub use crate::nuts::nut01::secret_key::SecretKey;
     pub use crate::nuts::nut02::{Id, KeySet, KeySetResponse, MintKeySet};

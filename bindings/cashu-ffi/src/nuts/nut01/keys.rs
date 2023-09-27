@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use crate::{Amount, PublicKey};
-use cashu::nuts::nut01::Keys as KeysSdk;
+use cashu::nuts::nut01::{Keys as KeysSdk, Response as KeysResponseSdk};
 use cashu::Amount as AmountSdk;
 
 pub struct Keys {
@@ -12,6 +12,24 @@ impl Deref for Keys {
     type Target = KeysSdk;
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+impl From<Keys> for KeysSdk {
+    fn from(keys: Keys) -> KeysSdk {
+        keys.inner
+    }
+}
+
+impl From<KeysSdk> for Keys {
+    fn from(keys: KeysSdk) -> Keys {
+        let keys = keys
+            .keys()
+            .into_iter()
+            .map(|(amount, pk)| (amount.to_sat().to_string(), Arc::new(pk.into())))
+            .collect();
+
+        Keys::new(keys)
     }
 }
 
@@ -55,20 +73,35 @@ impl Keys {
     }
 }
 
-impl From<Keys> for KeysSdk {
-    fn from(keys: Keys) -> KeysSdk {
+pub struct KeysResponse {
+    inner: KeysResponseSdk,
+}
+
+impl Deref for KeysResponse {
+    type Target = KeysResponseSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<KeysResponse> for KeysResponseSdk {
+    fn from(keys: KeysResponse) -> KeysResponseSdk {
         keys.inner
     }
 }
 
-impl From<KeysSdk> for Keys {
-    fn from(keys: KeysSdk) -> Keys {
-        let keys = keys
-            .keys()
-            .into_iter()
-            .map(|(amount, pk)| (amount.to_sat().to_string(), Arc::new(pk.into())))
-            .collect();
+impl From<KeysResponseSdk> for KeysResponse {
+    fn from(keys: KeysResponseSdk) -> KeysResponse {
+        KeysResponse { inner: keys }
+    }
+}
 
-        Keys::new(keys)
+impl KeysResponse {
+    pub fn new(keys: Arc<Keys>) -> Self {
+        Self {
+            inner: KeysResponseSdk {
+                keys: keys.as_ref().deref().clone(),
+            },
+        }
     }
 }

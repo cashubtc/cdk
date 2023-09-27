@@ -5,8 +5,9 @@ use std::{
 };
 
 use cashu_ffi::{
-    Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse, MeltRequest,
-    MeltResponse, MintKeySet, MintRequest, PostMintResponse, Secret, SplitRequest, SplitResponse,
+    Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse,
+    KeysResponse, MeltRequest, MeltResponse, MintKeySet, MintRequest, PostMintResponse, Secret,
+    SplitRequest, SplitResponse,
 };
 use cashu_sdk::mint::Mint as MintSdk;
 use cashu_sdk::nuts::nut02::Id as IdSdk;
@@ -54,7 +55,7 @@ impl Mint {
         })
     }
 
-    pub fn active_keyset_pubkeys(&self) -> Arc<KeySet> {
+    pub fn active_keyset_pubkeys(&self) -> Arc<KeysResponse> {
         Arc::new(self.inner.read().unwrap().active_keyset_pubkeys().into())
     }
 

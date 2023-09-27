@@ -130,6 +130,11 @@ interface MintKeySet {
 	constructor(string secret, string derivation_path, u8 max_order);
 };
 
+
+interface KeysResponse {
+	constructor(Keys keys);
+};
+
 interface KeySetResponse {
 	constructor(sequence<Id> keyset_ids);
 	sequence<Id> keyset_ids();

@@ -135,6 +135,11 @@ interface MintKeySet {
 	constructor(string secret, string derivation_path, u8 max_order);
 };
 
+
+interface KeysResponse {
+	constructor(Keys keys);
+};
+
 interface KeySetResponse {
 	constructor(sequence<Id> keyset_ids);
 	sequence<Id> keyset_ids();
@@ -326,7 +331,7 @@ interface Wallet {
 interface Mint {
     [Throws=CashuSdkError]
 	constructor(string secret, string derivation_path, record<string, MintKeySet> inactive_keysets, sequence<Secret> spent_secrets, u8 max_order, Amount min_fee_reserve, f32 percent_fee_reserve);
-	KeySet active_keyset_pubkeys();
+	KeysResponse active_keyset_pubkeys();
 	KeySetResponse keysets();
 	MintKeySet active_keyset();
 	KeySet? keyset(Id id);
