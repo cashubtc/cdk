@@ -51,8 +51,10 @@ impl Mint {
 
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
-    pub fn active_keyset_pubkeys(&self) -> nut02::KeySet {
-        nut02::KeySet::from(self.active_keyset.clone())
+    pub fn active_keyset_pubkeys(&self) -> nut01::Response {
+        nut01::Response {
+            keys: nut02::KeySet::from(self.active_keyset.clone()).keys,
+        }
     }
 
     /// Return a list of all supported keysets
