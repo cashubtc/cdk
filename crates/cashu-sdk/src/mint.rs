@@ -148,12 +148,12 @@ impl Mint {
             return Err(Error::DuplicateProofs);
         }
 
-        for secret in secrets {
-            self.spent_secrets.insert(secret);
-        }
-
         for proof in &split_request.proofs {
             self.verify_proof(proof)?
+        }
+
+        for secret in secrets {
+            self.spent_secrets.insert(secret);
         }
 
         match &split_request.amount {
