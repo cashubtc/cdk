@@ -26,7 +26,7 @@ impl MeltRequest {
 
     pub fn invoice_amount(&self) -> Result<Amount, Error> {
         match self.pr.amount_milli_satoshis() {
-            Some(value) => Ok(Amount::from_sat(value)),
+            Some(value) => Ok(Amount::from_msat(value)),
             None => Err(Error::InvoiceAmountUndefined),
         }
     }
