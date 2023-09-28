@@ -226,7 +226,7 @@ impl Mint {
 
         for proof in &check_spendable.proofs {
             spendable.push(!self.spent_secrets.contains(&proof.secret));
-            pending.push(!self.pending_secrets.contains(&proof.secret));
+            pending.push(self.pending_secrets.contains(&proof.secret));
         }
 
         Ok(CheckSpendableResponse { spendable, pending })
