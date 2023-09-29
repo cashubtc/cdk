@@ -33,7 +33,7 @@ impl fmt::Display for Error {
             Error::CustomError(err) => write!(f, "{}", err),
             Error::HexError(err) => write!(f, "{}", err),
             Error::AmountKey => write!(f, "No Key for amount"),
-            Error::Amount => write!(f, "Amount miss match"),
+            Error::Amount => write!(f, "Amount miss match."),
             Error::TokenSpent => write!(f, "Token Spent"),
             Error::TokenNotVerifed => write!(f, "Token Not Verified"),
             Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
