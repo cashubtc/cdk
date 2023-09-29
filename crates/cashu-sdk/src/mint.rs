@@ -17,6 +17,7 @@ use cashu::nuts::nut08::MeltResponse;
 use cashu::nuts::*;
 use cashu::secret::Secret;
 use cashu::Amount;
+use tracing::debug;
 
 pub struct Mint {
     //    pub pubkey: PublicKey,
@@ -245,12 +246,17 @@ impl Mint {
             self.fee_reserve.min_fee_reserve
         };
 
-        if proofs_total
-            < melt_request
-                .invoice_amount()
-                .map_err(|_| Error::InvoiceAmountUndefined)?
-                + fee_reserve
-        {
+        let required_total = melt_request
+            .invoice_amount()
+            .map_err(|_| Error::InvoiceAmountUndefined)?
+            + fee_reserve;
+
+        if proofs_total < required_total {
+            debug!(
+                "Insufficient Proofs: Got: {}, Required: {}",
+                proofs_total.to_sat().to_string(),
+                required_total.to_sat().to_string()
+            );
             return Err(Error::Amount);
         }
 
@@ -274,6 +280,8 @@ impl Mint {
         preimage: &str,
         total_spent: Amount,
     ) -> Result<MeltResponse, Error> {
+        self.verify_melt_request(melt_request)?;
+
         let secrets = Vec::with_capacity(melt_request.proofs.len());
         for secret in secrets {
             self.spent_secrets.insert(secret);
