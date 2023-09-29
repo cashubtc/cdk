@@ -340,5 +340,7 @@ interface Mint {
     [Throws=CashuSdkError]
 	SplitResponse process_split_request(SplitRequest split_request);
     [Throws=CashuSdkError]
+	void verify_melt_request(MeltRequest melt_request);
+    [Throws=CashuSdkError]
 	MeltResponse process_melt_request(MeltRequest melt_request, string preimage, Amount totoal_spent);
 };

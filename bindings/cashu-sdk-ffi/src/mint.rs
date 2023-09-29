@@ -114,6 +114,14 @@ impl Mint {
         ))
     }
 
+    pub fn verify_melt_request(&self, melt_request: Arc<MeltRequest>) -> Result<()> {
+        Ok(self
+            .inner
+            .write()
+            .unwrap()
+            .verify_melt_request(melt_request.as_ref().deref())?)
+    }
+
     pub fn process_melt_request(
         &self,
         melt_request: Arc<MeltRequest>,

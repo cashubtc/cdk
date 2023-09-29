@@ -232,7 +232,7 @@ impl Mint {
         Ok(CheckSpendableResponse { spendable, pending })
     }
 
-    fn verify_melt_request(&mut self, melt_request: &MeltRequest) -> Result<(), Error> {
+    pub fn verify_melt_request(&mut self, melt_request: &MeltRequest) -> Result<(), Error> {
         let proofs_total = melt_request.proofs_amount();
 
         let percent_fee_reserve = Amount::from_sat(
@@ -274,8 +274,6 @@ impl Mint {
         preimage: &str,
         total_spent: Amount,
     ) -> Result<MeltResponse, Error> {
-        self.verify_melt_request(melt_request)?;
-
         let secrets = Vec::with_capacity(melt_request.proofs.len());
         for secret in secrets {
             self.spent_secrets.insert(secret);
