@@ -16,13 +16,15 @@ use cashu::nuts::nut08::MeltRequest;
 use cashu::nuts::nut08::MeltResponse;
 use cashu::nuts::*;
 use cashu::secret::Secret;
+use cashu::types::KeysetInfo;
 use cashu::Amount;
 use tracing::debug;
 
 pub struct Mint {
     //    pub pubkey: PublicKey,
     pub active_keyset: nut02::mint::KeySet,
-    pub inactive_keysets: HashMap<Id, nut02::mint::KeySet>,
+    pub active_keyset_info: KeysetInfo,
+    pub inactive_keysets: HashMap<Id, KeysetInfo>,
     pub spent_secrets: HashSet<Secret>,
     pub pending_secrets: HashSet<Secret>,
     pub fee_reserve: FeeReserve,
@@ -32,15 +34,26 @@ impl Mint {
     pub fn new(
         secret: &str,
         derivation_path: &str,
-        inactive_keysets: HashMap<Id, nut02::mint::KeySet>,
+        inactive_keysets: HashSet<KeysetInfo>,
         spent_secrets: HashSet<Secret>,
         max_order: u8,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
     ) -> Self {
+        let active_keyset = nut02::mint::KeySet::generate(secret, derivation_path, max_order);
+        let id = active_keyset.id;
+
         Self {
-            active_keyset: nut02::mint::KeySet::generate(secret, derivation_path, max_order),
-            inactive_keysets,
+            active_keyset,
+            inactive_keysets: inactive_keysets.into_iter().map(|ks| (ks.id, ks)).collect(),
+            active_keyset_info: KeysetInfo {
+                id,
+                valid_from: 0,
+                valid_to: None,
+                secret: secret.to_string(),
+                derivation_path: derivation_path.to_string(),
+                max_order,
+            },
             spent_secrets,
             pending_secrets: HashSet::new(),
             fee_reserve: FeeReserve {
@@ -74,7 +87,9 @@ impl Mint {
             return Some(self.active_keyset.clone().into());
         }
 
-        self.inactive_keysets.get(id).map(|k| k.clone().into())
+        self.inactive_keysets.get(id).map(|k| {
+            nut02::mint::KeySet::generate(&k.secret, &k.derivation_path, k.max_order).into()
+        })
     }
 
     /// Add current keyset to inactive keysets
@@ -87,7 +102,7 @@ impl Mint {
     ) {
         // Add current set to inactive keysets
         self.inactive_keysets
-            .insert(self.active_keyset.id, self.active_keyset.clone());
+            .insert(self.active_keyset.id, self.active_keyset_info.clone());
 
         self.active_keyset = KeySet::generate(secret, derivation_path, max_order);
     }
@@ -195,12 +210,16 @@ impl Mint {
         }
 
         let keyset = proof.id.as_ref().map_or_else(
-            || &self.active_keyset,
+            || self.active_keyset.clone(),
             |id| {
                 if let Some(keyset) = self.inactive_keysets.get(id) {
-                    keyset
+                    nut02::mint::KeySet::generate(
+                        &keyset.secret,
+                        &keyset.derivation_path,
+                        keyset.max_order,
+                    )
                 } else {
-                    &self.active_keyset
+                    self.active_keyset.clone()
                 }
             },
         );

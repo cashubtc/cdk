@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
-use cashu::nuts::nut02::Id;
-use cashu::nuts::nut02::{KeySet, Response};
+use cashu::nuts::nut01::Response as KeysResponse;
+use cashu::nuts::nut02::{Id, KeySet, Response as KeySetsResponse};
 use wasm_bindgen::prelude::*;
 
 use crate::{
@@ -86,36 +86,68 @@ impl JsKeySet {
     }
 }
 
-#[wasm_bindgen(js_name = KeySetResponse)]
-pub struct JsKeyResponse {
-    inner: Response,
+#[wasm_bindgen(js_name = KeySetsResponse)]
+pub struct JsKeySetsResponse {
+    inner: KeySetsResponse,
 }
 
-impl Deref for JsKeyResponse {
-    type Target = Response;
+impl Deref for JsKeySetsResponse {
+    type Target = KeySetsResponse;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<Response> for JsKeyResponse {
-    fn from(inner: Response) -> JsKeyResponse {
-        JsKeyResponse { inner }
+impl From<KeySetsResponse> for JsKeySetsResponse {
+    fn from(inner: KeySetsResponse) -> JsKeySetsResponse {
+        JsKeySetsResponse { inner }
     }
 }
 
-#[wasm_bindgen(js_class = KeyResponse)]
-impl JsKeyResponse {
-    /// From Hex
+#[wasm_bindgen(js_class = KeySetsResponse)]
+impl JsKeySetsResponse {
     #[wasm_bindgen(constructor)]
-    pub fn new(keysets: JsValue) -> Result<JsKeyResponse> {
+    pub fn new(keysets: JsValue) -> Result<JsKeySetsResponse> {
         let response = serde_wasm_bindgen::from_value(keysets).map_err(into_err)?;
         Ok(Self { inner: response })
     }
 
-    /// Get Keysets
+    /// Get KeySets
     #[wasm_bindgen(getter)]
-    pub fn keysets(&self) -> Result<JsValue> {
+    pub fn keys(&self) -> Result<JsValue> {
         serde_wasm_bindgen::to_value(&self.inner.keysets).map_err(into_err)
+    }
+}
+
+#[wasm_bindgen(js_name = KeysResponse)]
+pub struct JsKeysResponse {
+    inner: KeysResponse,
+}
+
+impl Deref for JsKeysResponse {
+    type Target = KeysResponse;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<KeysResponse> for JsKeysResponse {
+    fn from(inner: KeysResponse) -> JsKeysResponse {
+        JsKeysResponse { inner }
+    }
+}
+
+#[wasm_bindgen(js_class = KeysResponse)]
+impl JsKeysResponse {
+    #[wasm_bindgen(constructor)]
+    pub fn new(keysets: JsValue) -> Result<JsKeysResponse> {
+        let response = serde_wasm_bindgen::from_value(keysets).map_err(into_err)?;
+        Ok(Self { inner: response })
+    }
+
+    /// Get Keys
+    #[wasm_bindgen(getter)]
+    pub fn keys(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.keys).map_err(into_err)
     }
 }

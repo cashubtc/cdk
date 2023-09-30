@@ -148,6 +148,7 @@ impl From<&Keys> for Id {
 }
 
 /// Mint Keysets [NUT-02]
+/// Ids of mints keyset ids
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Response {
     /// set of public key ids that the mint generates

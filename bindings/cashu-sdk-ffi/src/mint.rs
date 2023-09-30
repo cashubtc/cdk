@@ -1,16 +1,14 @@
 use std::{
-    collections::HashMap,
     ops::Deref,
     sync::{Arc, RwLock},
 };
 
 use cashu_ffi::{
-    Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse,
+    Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetInfo, KeySetResponse,
     KeysResponse, MeltRequest, MeltResponse, MintKeySet, MintRequest, PostMintResponse, Secret,
     SplitRequest, SplitResponse,
 };
 use cashu_sdk::mint::Mint as MintSdk;
-use cashu_sdk::nuts::nut02::Id as IdSdk;
 
 use crate::error::Result;
 
@@ -22,7 +20,7 @@ impl Mint {
     pub fn new(
         secret: String,
         derivation_path: String,
-        inactive_keysets: HashMap<String, Arc<MintKeySet>>,
+        inactive_keysets: Vec<Arc<KeySetInfo>>,
         spent_secrets: Vec<Arc<Secret>>,
         max_order: u8,
         min_fee_reserve: Arc<Amount>,
@@ -35,10 +33,7 @@ impl Mint {
 
         let inactive_keysets = inactive_keysets
             .into_iter()
-            .flat_map(|(k, v)| {
-                let id = IdSdk::try_from_base64(&k);
-                id.map(|id| (id, v.as_ref().deref().clone()))
-            })
+            .map(|ik| ik.as_ref().deref().clone())
             .collect();
 
         Ok(Self {
