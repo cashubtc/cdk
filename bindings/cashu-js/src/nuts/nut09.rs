@@ -40,7 +40,7 @@ impl JsMintVersion {
         self.inner.name.clone()
     }
 
-    /// Get Name
+    /// Get Version
     #[wasm_bindgen(getter)]
     pub fn version(&self) -> String {
         self.inner.version.clone()
@@ -105,7 +105,7 @@ impl JsMintInfo {
         self.inner.pubkey.clone().map(|p| p.into())
     }
 
-    /// Get Name
+    /// Get Version
     #[wasm_bindgen(getter)]
     pub fn version(&self) -> Option<JsMintVersion> {
         self.inner.version.clone().map(|v| v.into())

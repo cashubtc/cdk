@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut00::{mint, Proofs};
+use crate::nuts::{
+    nut00::{mint, Proofs},
+    nut02::Id,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {
@@ -31,4 +34,14 @@ pub enum InvoiceStatus {
     Paid,
     Expired,
     InFlight,
+}
+
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeysetInfo {
+    pub id: Id,
+    pub valid_from: u64,
+    pub valid_to: Option<u64>,
+    pub secret: String,
+    pub derivation_path: String,
+    pub max_order: u8,
 }

@@ -241,6 +241,11 @@ interface MintInfo {
 	string? motd();
 };
 
+interface KeySetInfo {
+	constructor(Id id, u64 valid_from, u64? valid_to, string secret, string derivation_path, u8 max_order);
+	
+};
+
 enum InvoiceStatus {
 	"Unpaid",
 	"Paid",
