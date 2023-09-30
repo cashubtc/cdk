@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+pub use cashu::error::mint::Error;
+
 use cashu::dhke::sign_message;
 use cashu::dhke::verify_message;
-pub use cashu::error::mint::Error;
 use cashu::nuts::nut00::BlindedMessage;
 use cashu::nuts::nut00::BlindedSignature;
 use cashu::nuts::nut00::Proof;
