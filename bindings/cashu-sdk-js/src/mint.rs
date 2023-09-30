@@ -133,11 +133,10 @@ impl JsMint {
 
     /// Check Verify Melt
     #[wasm_bindgen(js_name = VerifyMelt)]
-    pub fn verify_melt(
-        &mut self,
-        _melt_request: JsMeltRequest,
-    ) -> Result<JsCheckSpendableResponse> {
-        todo!()
+    pub fn verify_melt(&mut self, melt_request: JsMeltRequest) -> Result<()> {
+        self.inner
+            .verify_melt_request(melt_request.deref())
+            .map_err(into_err)
     }
 
     /// Process Melt Request
