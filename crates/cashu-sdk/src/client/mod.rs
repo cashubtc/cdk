@@ -145,27 +145,6 @@ impl Client {
         let keys = minreq::get(url).send()?.json::<Value>()?;
 
         let keys: Keys = serde_json::from_str(&keys.to_string())?;
-        /*
-                let keys: BTreeMap<u64, String> = match serde_json::from_value(keys.clone()) {
-                    Ok(keys) => keys,
-                    Err(_err) => {
-                        return Err(Error::CustomError(format!(
-                            "url: {}, {}",
-                            url,
-                            serde_json::to_string(&keys)?
-                        )))
-                    }
-                };
-
-                let mint_keys: BTreeMap<u64, PublicKey> = keys
-                    .into_iter()
-                    .filter_map(|(k, v)| {
-                        let key = hex::decode(v).ok()?;
-                        let public_key = PublicKey::from_sec1_bytes(&key).ok()?;
-                        Some((k, public_key))
-                    })
-                    .collect();
-        */
         Ok(keys)
     }
 
