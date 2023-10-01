@@ -3,3 +3,4 @@ build:
 
 pack:
 	wasm-pack pack
+
