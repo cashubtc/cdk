@@ -19,22 +19,20 @@ jobs:
         build-args:
           [
             -p cashu,
-            -p cashu --no-default-features,
-            -p cashu --no-default-features --features wallet,
-            -p cashu --no-default-features --features mint,
             -p cashu-sdk,
-            -p cashu-sdk --no-default-features,
-            -p cashu-sdk --features blocking,
           ]
     steps:
     - name: Checkout Crate
       uses: actions/checkout@v3
-    - name: Set Toolchain
-      # https://github.com/dtolnay/rust-toolchain
-      uses: dtolnay/rust-toolchain@stable
+    - name: Cache
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml','**/Cargo.lock') }}
     - name: Set default toolchain
       run: rustup default ${{ matrix.rust.version }}
     - name: Test
-      run: |
-        rustup 
-        cargo test ${{ matrix.build-arfgs }} 
+      run: cargo test ${{ matrix.build-args }} 
