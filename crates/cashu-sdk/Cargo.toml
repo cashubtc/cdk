@@ -16,13 +16,6 @@ blocking = ["dep:once_cell"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
 
 
-# Fix: Should be minreq or gloo
-# [target.'cfg(not(target_arch = "wasm32"))'.features]
-# wallet = ["cashu/wallet", "minreq", "once_cell"]
-
-# [target.'cfg(target_arch = "wasm32")'.features]
-# wallet = ["cashu/wallet", "gloo", "once_cell"]
-
 [dependencies]
 cashu = { path = "../cashu" }
 serde = { workspace = true }

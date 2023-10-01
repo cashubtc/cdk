@@ -12,13 +12,29 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - version: stable
+        build-args:
+          [
+            -p cashu,
+            -p cashu --no-default-features,
+            -p cashu --no-default-features --features wallet,
+            -p cashu --no-default-features --features mint,
+            -p cashu-sdk,
+            -p cashu-sdk --no-default-features,
+            -p cashu-sdk --features blocking,
+          ]
     steps:
     - name: Checkout Crate
       uses: actions/checkout@v3
     - name: Set Toolchain
       # https://github.com/dtolnay/rust-toolchain
       uses: dtolnay/rust-toolchain@stable
-    - name: Run tests
+    - name: Set default toolchain
+      run: rustup default ${{ matrix.rust.version }}
+    - name: Test
       run: |
-        rustup update
-        cargo test
+        rustup 
+        cargo test ${{ matrix.build-arfgs }} 

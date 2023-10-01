@@ -125,7 +125,7 @@ impl JsWallet {
     }
 
     /// Send
-    #[wasm_bindgen(js_name = processSplitResponse)]
+    #[wasm_bindgen(js_name = send)]
     pub async fn send(&self, amount: JsAmount, proofs: JsValue) -> Result<JsSendProofs> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
