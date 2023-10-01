@@ -1,3 +1,5 @@
 mod melted;
-mod proof_status;
 mod send_proofs;
+
+pub use melted::JsMelted;
+pub use send_proofs::JsSendProofs;
