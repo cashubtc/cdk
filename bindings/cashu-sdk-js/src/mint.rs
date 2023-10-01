@@ -69,7 +69,7 @@ impl JsMint {
     }
 
     /// Get Keysets
-    #[wasm_bindgen(js_name = KeySets)]
+    #[wasm_bindgen(js_name = keySets)]
     pub fn keysets(&self) -> JsKeySetsResponse {
         self.inner.keysets().into()
     }

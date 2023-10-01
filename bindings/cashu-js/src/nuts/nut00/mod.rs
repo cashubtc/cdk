@@ -8,3 +8,4 @@ pub use blinded_message::JsBlindedMessage;
 pub use blinded_messages::JsBlindedMessages;
 pub use blinded_signature::JsBlindedSignature;
 pub use proof::JsProof;
+pub use token::JsToken;
