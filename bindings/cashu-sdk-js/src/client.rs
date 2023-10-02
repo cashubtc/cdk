@@ -10,7 +10,7 @@ use cashu_js::nuts::nut06::{JsSplitRequest, JsSplitResponse};
 use cashu_js::nuts::nut07::JsCheckSpendableResponse;
 use cashu_js::nuts::nut08::JsMeltResponse;
 use cashu_js::nuts::nut09::JsMintInfo;
-use cashu_js::types::{JsAmount, JsBolt11Invoice};
+use cashu_js::{JsAmount, JsBolt11Invoice};
 use cashu_sdk::client::Client;
 use wasm_bindgen::prelude::*;
 
