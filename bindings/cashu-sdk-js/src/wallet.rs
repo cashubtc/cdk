@@ -2,8 +2,8 @@ use std::ops::Deref;
 
 use cashu_js::nuts::nut00::{JsBlindedMessages, JsToken};
 use cashu_js::nuts::nut03::JsRequestMintResponse;
-use cashu_js::types::{JsBolt11Invoice, JsProofsStatus};
-use cashu_js::{nuts::nut01::JsKeys, types::JsAmount};
+use cashu_js::{nuts::nut01::JsKeys, JsAmount};
+use cashu_js::{JsBolt11Invoice, JsProofsStatus};
 use cashu_sdk::wallet::Wallet;
 use wasm_bindgen::prelude::*;
 

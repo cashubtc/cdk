@@ -8,7 +8,7 @@ use cashu_js::{
         nut07::{JsCheckSpendableRequest, JsCheckSpendableResponse},
         nut08::{JsMeltRequest, JsMeltResponse},
     },
-    types::JsAmount,
+    JsAmount,
 };
 use cashu_sdk::{mint::Mint, nuts::nut01, nuts::nut02::KeySet};
 use wasm_bindgen::prelude::*;

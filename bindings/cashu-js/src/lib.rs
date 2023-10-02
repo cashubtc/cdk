@@ -2,9 +2,9 @@ use wasm_bindgen::prelude::*;
 
 pub mod error;
 pub mod nuts;
-pub mod types;
+mod types;
 
-pub use types::JsAmount;
+pub use self::types::{JsAmount, JsBolt11Invoice, JsProofsStatus, JsSecret};
 
 #[wasm_bindgen(start)]
 pub fn start() {
