@@ -2,4 +2,4 @@ build:
 	wasm-pack build
 
 pack:
-	wasm-pack pack
+	npm run package

@@ -1,5 +1,12 @@
-const Amount = require("../");
+const {Amount, loadWasmAsync, loadWasmSync } = require("..");
 
-let amount = Amount.fromSat(10);
 
-console.log(amount)
+function main() {
+  loadWasmSync();
+
+  let amount = Amount.fromSat(BigInt(10));
+
+  console.log(amount.toSat())
+}
+
+main();
