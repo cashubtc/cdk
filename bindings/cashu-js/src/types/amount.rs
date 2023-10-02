@@ -26,9 +26,9 @@ impl From<Amount> for JsAmount {
 #[wasm_bindgen(js_class = Amount)]
 impl JsAmount {
     #[wasm_bindgen(constructor)]
-    pub fn new(sats: u64) -> Self {
+    pub fn new(sats: u32) -> Self {
         Self {
-            inner: Amount::from_sat(sats),
+            inner: Amount::from_sat(sats as u64),
         }
     }
 

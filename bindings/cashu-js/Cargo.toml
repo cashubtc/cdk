@@ -20,6 +20,9 @@ serde_json.workspace = true
 serde.workspace = true
 wasm-bindgen = { version = "0.2.87", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4.37"
+console_error_panic_hook = "0.1"
+
+
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = true
