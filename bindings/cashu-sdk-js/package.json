@@ -1,0 +1,44 @@
+{
+  "name": "@rust-cashu/cashu-sdk",
+  "version": "0.0.1",
+  "description": "Cashu protocol implementation, for JavaScript",
+  "keywords": [
+    "cashu",
+    "protocol",
+    "rust",
+    "bindings"
+  ],
+  "license": "BSD-3-Clause",
+  "homepage": "https://github.com/thesimplekid/cashu-crab",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thesimplekid/cashu-crab"
+  },
+  "bugs": {
+    "url": "https://github.com/thesimplekid/cashu-crab/issues"
+  },
+  "author": {
+    "name": "thesimplekid",
+    "email": "tsk@thesimplekid.com",
+    "url": "https://github.com/thesimplekid"
+  },
+  "main": "pkg/cashu_sdk_js.js",
+  "types": "pkg/cashu_sdk_js.d.ts",
+  "files": [
+      "pkg/cashu_sdk_js_bg.wasm.js",
+      "pkg/cashu_sdk_js_bg.wasm.d.ts",
+      "pkg/cashu_sdk_js.js",
+      "pkg/cashu_sdk_js.d.ts"
+  ],
+  "devDependencies": {
+    "wasm-pack": "^0.10.2"
+  },
+  "engines": {
+    "node": ">= 10"
+  },
+  "scripts": {
+    "build": "WASM_PACK_ARGS=--release ./scripts/build.sh",
+    "build:dev": "WASM_PACK_ARGS=--dev ./scripts/build.sh",
+    "package": "npm run build && npm pack"
+  }
+}
