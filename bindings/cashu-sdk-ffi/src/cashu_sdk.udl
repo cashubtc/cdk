@@ -8,6 +8,8 @@ interface CashuError {
 };
 
 
+// Types 
+
 interface Bolt11Invoice {
     [Throws=CashuError]
     constructor(string bolt11);
@@ -30,6 +32,7 @@ interface Secret {
 	constructor();
 	sequence<u8> as_bytes();	
 };
+
 
 interface Id {
     [Throws=CashuError]

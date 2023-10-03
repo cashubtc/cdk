@@ -5,6 +5,8 @@ interface CashuError {
     Generic(string err);
 };
 
+// Types
+ 
 interface Bolt11Invoice {
     [Throws=CashuError]
     constructor(string bolt11);
@@ -26,6 +28,9 @@ interface Secret {
 	constructor();
 	sequence<u8> as_bytes();	
 };
+
+
+// NUT00
 
 interface Id {
     [Throws=CashuError]

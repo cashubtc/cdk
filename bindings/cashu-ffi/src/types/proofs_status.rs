@@ -8,6 +8,13 @@ pub struct ProofsStatus {
     inner: ProofsStatusSdk,
 }
 
+impl Deref for ProofsStatus {
+    type Target = ProofsStatusSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl ProofsStatus {
     pub fn new(spendable: Vec<Arc<MintProof>>, spent: Vec<Arc<MintProof>>) -> Self {
         Self {

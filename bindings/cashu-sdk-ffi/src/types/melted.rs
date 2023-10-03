@@ -8,7 +8,12 @@ pub struct Melted {
     inner: MeltedSdk,
 }
 
-// TODO: Deref
+impl Deref for Melted {
+    type Target = MeltedSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 
 impl From<cashu_sdk::types::Melted> for Melted {
     fn from(inner: cashu_sdk::types::Melted) -> Melted {
