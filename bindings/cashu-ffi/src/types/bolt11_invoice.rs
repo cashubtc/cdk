@@ -15,6 +15,12 @@ impl Deref for Bolt11Invoice {
     }
 }
 
+impl From<Bolt11InvoiceSdk> for Bolt11Invoice {
+    fn from(inner: Bolt11InvoiceSdk) -> Bolt11Invoice {
+        Bolt11Invoice { inner }
+    }
+}
+
 impl Bolt11Invoice {
     pub fn new(bolt11: String) -> Result<Self> {
         Ok(Self {
