@@ -28,7 +28,6 @@ mod ffi {
     pub use crate::types::amount::Amount;
     pub use crate::types::Bolt11Invoice;
     pub use crate::types::KeySetInfo;
-    pub use crate::types::ProofsStatus;
     pub use crate::types::Secret;
 
     pub use cashu::types::InvoiceStatus;
