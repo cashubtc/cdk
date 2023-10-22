@@ -1,8 +1,8 @@
-use std::{ops::Deref, sync::Arc};
-
-use cashu_sdk::types::Melted as MeltedSdk;
+use std::ops::Deref;
+use std::sync::Arc;
 
 use cashu_ffi::Proof;
+use cashu_sdk::types::Melted as MeltedSdk;
 
 pub struct Melted {
     inner: MeltedSdk,

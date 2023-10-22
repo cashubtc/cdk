@@ -3,9 +3,8 @@ use std::ops::Deref;
 use cashu::nuts::nut09::{MintInfo, MintVersion};
 use wasm_bindgen::prelude::*;
 
-use crate::error::{into_err, Result};
-
 use super::nut01::JsPublicKey;
+use crate::error::{into_err, Result};
 
 #[wasm_bindgen(js_name = MintVersion)]
 pub struct JsMintVersion {

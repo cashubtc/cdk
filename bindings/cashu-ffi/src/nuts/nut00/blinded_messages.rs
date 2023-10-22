@@ -1,8 +1,10 @@
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use cashu::nuts::nut00::wallet::BlindedMessages as BlindedMessagesSdk;
 
-use crate::{error::Result, Amount, BlindedMessage, Secret, SecretKey};
+use crate::error::Result;
+use crate::{Amount, BlindedMessage, Secret, SecretKey};
 
 pub struct BlindedMessages {
     inner: BlindedMessagesSdk,

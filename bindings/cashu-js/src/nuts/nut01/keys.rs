@@ -3,12 +3,9 @@ use std::ops::Deref;
 use cashu::nuts::nut01::Keys;
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    error::{into_err, Result},
-    types::JsAmount,
-};
-
 use super::JsPublicKey;
+use crate::error::{into_err, Result};
+use crate::types::JsAmount;
 
 #[wasm_bindgen(js_name = Keys)]
 pub struct JsKeys {

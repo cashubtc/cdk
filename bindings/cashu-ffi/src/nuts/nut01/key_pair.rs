@@ -1,7 +1,9 @@
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
+use std::sync::Arc;
+
+use cashu::nuts::nut01::mint::KeyPair as KeyPairSdk;
 
 use crate::{PublicKey, SecretKey};
-use cashu::nuts::nut01::mint::KeyPair as KeyPairSdk;
 
 pub struct KeyPair {
     inner: KeyPairSdk,

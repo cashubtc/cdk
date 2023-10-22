@@ -1,8 +1,8 @@
-use std::{ops::Deref, sync::Arc};
-
-use cashu_sdk::types::SendProofs as SendProofsSdk;
+use std::ops::Deref;
+use std::sync::Arc;
 
 use cashu_ffi::Proof;
+use cashu_sdk::types::SendProofs as SendProofsSdk;
 
 pub struct SendProofs {
     inner: SendProofsSdk,

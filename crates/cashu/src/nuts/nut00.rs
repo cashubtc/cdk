@@ -1,11 +1,13 @@
 //! Notation and Models
 // https://github.com/cashubtc/nuts/blob/main/00.md
 
-use crate::{secret::Secret, url::UncheckedUrl, Amount};
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
 use super::nut02::Id;
+use crate::secret::Secret;
+use crate::url::UncheckedUrl;
+use crate::Amount;
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,21 +23,20 @@ pub struct BlindedMessage {
 pub mod wallet {
     use std::str::FromStr;
 
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::engine::general_purpose;
+    use base64::Engine as _;
     use serde::{Deserialize, Serialize};
     use url::Url;
 
-    use crate::error;
+    use super::MintProofs;
+    use crate::dhke::blind_message;
     use crate::error::wallet;
-    use crate::nuts::nut00::BlindedMessage;
-    use crate::nuts::nut00::Proofs;
+    use crate::nuts::nut00::{BlindedMessage, Proofs};
     use crate::nuts::nut01;
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
-    use crate::Amount;
-    use crate::{dhke::blind_message, utils::split_amount};
-
-    use super::MintProofs;
+    use crate::utils::split_amount;
+    use crate::{error, Amount};
 
     /// Blinded Messages [NUT-00]
     #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -221,9 +222,10 @@ impl From<Proof> for mint::Proof {
 pub mod mint {
     use serde::{Deserialize, Serialize};
 
-    use crate::{nuts::nut02::Id, secret::Secret, Amount};
-
     use super::PublicKey;
+    use crate::nuts::nut02::Id;
+    use crate::secret::Secret;
+    use crate::Amount;
 
     /// Proofs [NUT-00]
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,9 +275,7 @@ mod tests {
 
         assert_eq!(
             token.token[0].mint,
-            UncheckedUrl::from_str("https://8333.space:3338")
-                .unwrap()
-                .into()
+            UncheckedUrl::from_str("https://8333.space:3338").unwrap()
         );
         assert_eq!(
             token.token[0].proofs[0].clone().id.unwrap(),

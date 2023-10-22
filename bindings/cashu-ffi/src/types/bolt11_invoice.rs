@@ -1,8 +1,11 @@
-use std::{ops::Deref, str::FromStr, sync::Arc};
+use std::ops::Deref;
+use std::str::FromStr;
+use std::sync::Arc;
 
 use cashu::Bolt11Invoice as Bolt11InvoiceSdk;
 
-use crate::{error::Result, Amount};
+use crate::error::Result;
+use crate::Amount;
 
 pub struct Bolt11Invoice {
     inner: Bolt11InvoiceSdk,

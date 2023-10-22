@@ -1,8 +1,7 @@
 //! Mint public key exchange
 // https://github.com/cashubtc/nuts/blob/main/01.md
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -156,7 +155,8 @@ impl<'de> serde::de::Deserialize<'de> for Response {
 
                         keys.insert(amount, pubkey);
                     }
-                    // TODO: Should return an error if an amount or key is invalid and not continue
+                    // TODO: Should return an error if an amount or key is
+                    // invalid and not continue
                 }
 
                 Ok(Response { keys: Keys(keys) })
@@ -172,10 +172,8 @@ pub mod mint {
 
     use serde::Serialize;
 
+    use super::{PublicKey, SecretKey};
     use crate::Amount;
-
-    use super::PublicKey;
-    use super::SecretKey;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct Keys(pub BTreeMap<Amount, KeyPair>);

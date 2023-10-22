@@ -1,7 +1,5 @@
-use std::{
-    ops::Deref,
-    sync::{Arc, RwLock},
-};
+use std::ops::Deref;
+use std::sync::{Arc, RwLock};
 
 use cashu_ffi::{
     Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetInfo, KeySetResponse,

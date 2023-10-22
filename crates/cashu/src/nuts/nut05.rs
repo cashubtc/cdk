@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::nut00::Proofs;
 use crate::error::Error;
-use crate::Amount;
-use crate::Bolt11Invoice;
+use crate::{Amount, Bolt11Invoice};
 
 /// Check Fees Response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

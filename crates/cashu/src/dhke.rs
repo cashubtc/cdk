@@ -2,25 +2,19 @@
 
 use std::ops::Mul;
 
-use bitcoin::hashes::sha256;
-use bitcoin::hashes::Hash;
-
+use bitcoin::hashes::{sha256, Hash};
 #[cfg(feature = "wallet")]
 use k256::ProjectivePoint;
-
 use k256::{Scalar, SecretKey};
 
 use crate::error;
-use crate::secret::Secret;
-
 #[cfg(feature = "wallet")]
 use crate::nuts::nut00::{BlindedSignature, Proof, Proofs};
-
 #[cfg(feature = "wallet")]
 use crate::nuts::nut01::{Keys, PublicKey};
-
 #[cfg(feature = "wallet")]
 use crate::nuts::*;
+use crate::secret::Secret;
 
 fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
     let mut msg_to_hash = message.to_vec();
@@ -145,7 +139,6 @@ pub fn verify_message(
 #[cfg(test)]
 mod tests {
     use hex::decode;
-
     use k256::elliptic_curve::scalar::ScalarPrimitive;
 
     use super::*;

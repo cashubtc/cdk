@@ -3,9 +3,7 @@ use std::sync::Arc;
 
 use cashu::nuts::nut00::BlindedSignature as BlindedSignatureSdk;
 
-use crate::Amount;
-use crate::Id;
-use crate::PublicKey;
+use crate::{Amount, Id, PublicKey};
 
 pub struct BlindedSignature {
     inner: BlindedSignatureSdk,

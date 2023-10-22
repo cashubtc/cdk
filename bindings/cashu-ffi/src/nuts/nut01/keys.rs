@@ -1,8 +1,11 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::Arc;
 
-use crate::{Amount, PublicKey};
 use cashu::nuts::nut01::{Keys as KeysSdk, Response as KeysResponseSdk};
 use cashu::Amount as AmountSdk;
+
+use crate::{Amount, PublicKey};
 
 pub struct Keys {
     inner: KeysSdk,

@@ -5,8 +5,7 @@ use cashu::nuts::nut00::wallet::Token as TokenSdk;
 use cashu::url::UncheckedUrl;
 
 use crate::error::Result;
-use crate::MintProofs;
-use crate::Proof;
+use crate::{MintProofs, Proof};
 
 pub struct Token {
     inner: TokenSdk,

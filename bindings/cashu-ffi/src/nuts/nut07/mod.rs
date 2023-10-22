@@ -1,4 +1,5 @@
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use cashu::nuts::nut07::{
     CheckSpendableRequest as CheckSpendableRequestSdk,

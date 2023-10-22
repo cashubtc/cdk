@@ -1,15 +1,11 @@
 use std::ops::Deref;
 
-use cashu::nuts::{
-    nut00::{BlindedMessage, BlindedSignature, Proof},
-    nut08::{MeltRequest, MeltResponse},
-};
+use cashu::nuts::nut00::{BlindedMessage, BlindedSignature, Proof};
+use cashu::nuts::nut08::{MeltRequest, MeltResponse};
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    error::{into_err, Result},
-    types::{JsAmount, JsBolt11Invoice},
-};
+use crate::error::{into_err, Result};
+use crate::types::{JsAmount, JsBolt11Invoice};
 
 #[wasm_bindgen(js_name = MeltRequest)]
 pub struct JsMeltRequest {

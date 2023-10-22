@@ -4,10 +4,8 @@ use cashu::nuts::nut01::Response as KeysResponse;
 use cashu::nuts::nut02::{Id, KeySet, Response as KeySetsResponse};
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    error::{into_err, Result},
-    nuts::nut01::JsKeys,
-};
+use crate::error::{into_err, Result};
+use crate::nuts::nut01::JsKeys;
 
 #[wasm_bindgen(js_name = Id)]
 pub struct JsId {

@@ -1,22 +1,18 @@
-use crate::RUNTIME;
-
-use cashu::{
-    nuts::{
-        nut00::{self, wallet::BlindedMessages, BlindedMessage, Proof},
-        nut01::Keys,
-        nut02,
-        nut03::RequestMintResponse,
-        nut04::PostMintResponse,
-        nut05::CheckFeesResponse,
-        nut06::{SplitRequest, SplitResponse},
-        nut07::CheckSpendableResponse,
-        nut08::MeltResponse,
-        nut09::MintInfo,
-    },
-    Amount, Bolt11Invoice,
-};
+use cashu::nuts::nut00::wallet::BlindedMessages;
+use cashu::nuts::nut00::{self, BlindedMessage, Proof};
+use cashu::nuts::nut01::Keys;
+use cashu::nuts::nut02;
+use cashu::nuts::nut03::RequestMintResponse;
+use cashu::nuts::nut04::PostMintResponse;
+use cashu::nuts::nut05::CheckFeesResponse;
+use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+use cashu::nuts::nut07::CheckSpendableResponse;
+use cashu::nuts::nut08::MeltResponse;
+use cashu::nuts::nut09::MintInfo;
+use cashu::{Amount, Bolt11Invoice};
 
 use super::Error;
+use crate::RUNTIME;
 
 #[derive(Debug, Clone)]
 pub struct Client {
