@@ -7,12 +7,10 @@ use cashu_ffi::{
 use cashu_sdk::types::ProofsStatus;
 use cashu_sdk::wallet::Wallet as WalletSdk;
 
-use crate::{
-    client::Client,
-    error::Result,
-    types::{Melted, SendProofs},
-    Amount, Keys, MintProof,
-};
+use crate::client::Client;
+use crate::error::Result;
+use crate::types::{Melted, SendProofs};
+use crate::{Amount, Keys, MintProof};
 
 pub struct Wallet {
     inner: WalletSdk,

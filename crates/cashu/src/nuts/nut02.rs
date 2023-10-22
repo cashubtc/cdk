@@ -4,9 +4,9 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use base64::{engine::general_purpose, Engine as _};
-use bitcoin::hashes::sha256;
-use bitcoin::hashes::Hash;
+use base64::engine::general_purpose;
+use base64::Engine as _;
+use bitcoin::hashes::{sha256, Hash};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
@@ -41,10 +41,8 @@ impl Id {
     const STRLEN: usize = 12;
 
     pub fn try_from_base64(b64: &str) -> Result<Self, Error> {
-        use base64::{
-            engine::general_purpose::{STANDARD, URL_SAFE},
-            Engine as _,
-        };
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE};
+        use base64::Engine as _;
 
         if b64.len() != Self::STRLEN {
             return Err(Error::Length);
@@ -174,14 +172,12 @@ pub mod mint {
     use std::collections::BTreeMap;
 
     use bitcoin::hashes::sha256::Hash as Sha256;
-    use bitcoin::hashes::Hash;
-    use bitcoin::hashes::HashEngine;
+    use bitcoin::hashes::{Hash, HashEngine};
     use itertools::Itertools;
     use k256::SecretKey;
     use serde::Serialize;
 
     use super::Id;
-
     use crate::nuts::nut01::mint::{KeyPair, Keys};
     use crate::Amount;
 
@@ -268,9 +264,8 @@ pub mod mint {
 #[cfg(test)]
 mod test {
 
-    use crate::nuts::nut02::Id;
-
     use super::Keys;
+    use crate::nuts::nut02::Id;
 
     const SHORT_KEYSET_ID: &str = "esom3oyNLLit";
     const SHORT_KEYSET: &str = r#"

@@ -3,10 +3,8 @@ use std::ops::Deref;
 use cashu::nuts::nut06::{SplitRequest, SplitResponse};
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    error::{into_err, Result},
-    types::JsAmount,
-};
+use crate::error::{into_err, Result};
+use crate::types::JsAmount;
 
 #[wasm_bindgen(js_name = SplitRequest)]
 pub struct JsSplitRequest {

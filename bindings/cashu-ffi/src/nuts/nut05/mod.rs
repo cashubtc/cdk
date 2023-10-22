@@ -1,14 +1,15 @@
-use std::{ops::Deref, str::FromStr, sync::Arc};
+use std::ops::Deref;
+use std::str::FromStr;
+use std::sync::Arc;
 
-use cashu::{
-    nuts::nut05::{
-        CheckFeesRequest as CheckFeesRequestSdk, CheckFeesResponse as CheckFeesResponseSdk,
-        MeltRequest as MeltRequestSdk, MeltResponse as MeltResponseSdk,
-    },
-    Bolt11Invoice,
+use cashu::nuts::nut05::{
+    CheckFeesRequest as CheckFeesRequestSdk, CheckFeesResponse as CheckFeesResponseSdk,
+    MeltRequest as MeltRequestSdk, MeltResponse as MeltResponseSdk,
 };
+use cashu::Bolt11Invoice;
 
-use crate::{error::Result, Amount, Proof};
+use crate::error::Result;
+use crate::{Amount, Proof};
 
 pub struct CheckFeesRequest {
     inner: CheckFeesRequestSdk,

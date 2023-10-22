@@ -2,13 +2,11 @@
 // https://github.com/cashubtc/nuts/blob/main/06.md
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut00::{BlindedMessage, Proofs};
-use crate::Amount;
-
+use super::nut00::BlindedSignature;
 #[cfg(feature = "wallet")]
 use crate::nuts::nut00::wallet::BlindedMessages;
-
-use super::nut00::BlindedSignature;
+use crate::nuts::nut00::{BlindedMessage, Proofs};
+use crate::Amount;
 
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

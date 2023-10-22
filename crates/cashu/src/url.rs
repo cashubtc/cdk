@@ -5,6 +5,7 @@
 
 use core::fmt;
 use core::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use url::{ParseError, Url};
 
@@ -115,6 +116,7 @@ mod tests {
 
         assert_eq!(relay, unchecked_relay_url.to_string());
 
-        // assert_eq!(relay, serde_json::to_string(&unchecked_relay_url).unwrap())
+        // assert_eq!(relay,
+        // serde_json::to_string(&unchecked_relay_url).unwrap())
     }
 }

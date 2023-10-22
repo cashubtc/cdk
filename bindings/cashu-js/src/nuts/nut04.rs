@@ -3,10 +3,8 @@ use std::ops::Deref;
 use cashu::nuts::nut04::{MintRequest, PostMintResponse};
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    error::{into_err, Result},
-    types::JsAmount,
-};
+use crate::error::{into_err, Result};
+use crate::types::JsAmount;
 
 #[wasm_bindgen(js_name = MintRequest)]
 pub struct JsMintRequest {

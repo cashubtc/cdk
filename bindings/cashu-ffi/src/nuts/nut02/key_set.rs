@@ -1,9 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::nuts::nut02::Id as IdSdk;
-use cashu::nuts::nut02::KeySet as KeySetSdk;
-use cashu::nuts::nut02::Response;
+use cashu::nuts::nut02::{Id as IdSdk, KeySet as KeySetSdk, Response};
 
 use crate::error::Result;
 use crate::nuts::nut01::keys::Keys;

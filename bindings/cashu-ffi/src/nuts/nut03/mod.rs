@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
-use cashu::{nuts::nut03::RequestMintResponse as RequestMintResponseSdk, Bolt11Invoice};
+use cashu::nuts::nut03::RequestMintResponse as RequestMintResponseSdk;
+use cashu::Bolt11Invoice;
 
 use crate::error::Result;
 

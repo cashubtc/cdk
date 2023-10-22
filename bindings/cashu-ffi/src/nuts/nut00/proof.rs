@@ -1,8 +1,10 @@
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use cashu::nuts::nut00::Proof as ProofSdk;
 
-use crate::{types::Secret, Amount, Id, PublicKey};
+use crate::types::Secret;
+use crate::{Amount, Id, PublicKey};
 
 pub struct Proof {
     inner: ProofSdk,
@@ -73,9 +75,7 @@ pub mod mint {
     use cashu::nuts::nut00::mint::Proof as ProofSdk;
 
     use crate::types::Secret;
-    use crate::Amount;
-    use crate::Id;
-    use crate::PublicKey;
+    use crate::{Amount, Id, PublicKey};
 
     pub struct Proof {
         inner: ProofSdk,

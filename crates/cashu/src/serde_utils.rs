@@ -21,7 +21,8 @@ pub mod serde_url {
 }
 
 pub mod bytes_base64 {
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::engine::general_purpose;
+    use base64::Engine as _;
     use serde::Deserialize;
 
     pub fn serialize<S>(my_bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>

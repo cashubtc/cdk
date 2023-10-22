@@ -3,10 +3,8 @@ use std::ops::Deref;
 use cashu::nuts::nut05::{CheckFeesRequest, CheckFeesResponse};
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    error::Result,
-    types::{JsAmount, JsBolt11Invoice},
-};
+use crate::error::Result;
+use crate::types::{JsAmount, JsBolt11Invoice};
 
 #[wasm_bindgen(js_name = CheckFeesRequest)]
 pub struct JsCheckFeesRequest {

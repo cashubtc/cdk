@@ -1,16 +1,14 @@
 use std::ops::Deref;
 
-use cashu_js::{
-    nuts::{
-        nut02::{JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMintKeySet},
-        nut04::{JsMintRequest, JsPostMintResponse},
-        nut06::{JsSplitRequest, JsSplitResponse},
-        nut07::{JsCheckSpendableRequest, JsCheckSpendableResponse},
-        nut08::{JsMeltRequest, JsMeltResponse},
-    },
-    JsAmount,
-};
-use cashu_sdk::{mint::Mint, nuts::nut01, nuts::nut02::KeySet};
+use cashu_js::nuts::nut02::{JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMintKeySet};
+use cashu_js::nuts::nut04::{JsMintRequest, JsPostMintResponse};
+use cashu_js::nuts::nut06::{JsSplitRequest, JsSplitResponse};
+use cashu_js::nuts::nut07::{JsCheckSpendableRequest, JsCheckSpendableResponse};
+use cashu_js::nuts::nut08::{JsMeltRequest, JsMeltResponse};
+use cashu_js::JsAmount;
+use cashu_sdk::mint::Mint;
+use cashu_sdk::nuts::nut01;
+use cashu_sdk::nuts::nut02::KeySet;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};

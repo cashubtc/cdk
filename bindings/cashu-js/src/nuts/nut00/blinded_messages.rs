@@ -1,8 +1,7 @@
 use std::ops::Deref;
 
-use wasm_bindgen::prelude::*;
-
 use cashu::nuts::nut00::wallet::BlindedMessages;
+use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
 use crate::types::JsAmount;

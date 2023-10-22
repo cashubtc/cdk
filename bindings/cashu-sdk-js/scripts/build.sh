@@ -14,7 +14,7 @@
 
 set -e
 
-cd $(dirname "$0")/..
+cd "$(dirname "$0")"/..
 
 WASM_BINDGEN_WEAKREF=1 wasm-pack build --target nodejs --scope rust-cashu --out-dir pkg "${WASM_PACK_ARGS[@]}"
 

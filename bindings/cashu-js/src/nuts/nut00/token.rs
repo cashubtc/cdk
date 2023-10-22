@@ -1,6 +1,8 @@
-use std::{ops::Deref, str::FromStr};
+use std::ops::Deref;
+use std::str::FromStr;
 
-use cashu::{nuts::nut00::wallet::Token, url::UncheckedUrl};
+use cashu::nuts::nut00::wallet::Token;
+use cashu::url::UncheckedUrl;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};

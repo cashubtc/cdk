@@ -1,20 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
+use cashu::dhke::{sign_message, verify_message};
 pub use cashu::error::mint::Error;
-
-use cashu::dhke::sign_message;
-use cashu::dhke::verify_message;
-use cashu::nuts::nut00::BlindedMessage;
-use cashu::nuts::nut00::BlindedSignature;
-use cashu::nuts::nut00::Proof;
+use cashu::nuts::nut00::{BlindedMessage, BlindedSignature, Proof};
 use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::nut02::Id;
-use cashu::nuts::nut06::SplitRequest;
-use cashu::nuts::nut06::SplitResponse;
-use cashu::nuts::nut07::CheckSpendableRequest;
-use cashu::nuts::nut07::CheckSpendableResponse;
-use cashu::nuts::nut08::MeltRequest;
-use cashu::nuts::nut08::MeltResponse;
+use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+use cashu::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
+use cashu::nuts::nut08::{MeltRequest, MeltResponse};
 use cashu::nuts::*;
 use cashu::secret::Secret;
 use cashu::types::KeysetInfo;

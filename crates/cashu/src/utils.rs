@@ -48,9 +48,9 @@ mod tests {
             split_amount(Amount::from_sat(3)),
             vec![Amount::from_sat(1), Amount::from_sat(2)]
         );
-        let amounts: Vec<Amount> = vec![1, 2, 8].iter().map(|a| Amount::from_sat(*a)).collect();
+        let amounts: Vec<Amount> = [1, 2, 8].iter().map(|a| Amount::from_sat(*a)).collect();
         assert_eq!(split_amount(Amount::from_sat(11)), amounts);
-        let amounts: Vec<Amount> = vec![1, 2, 4, 8, 16, 32, 64, 128]
+        let amounts: Vec<Amount> = [1, 2, 4, 8, 16, 32, 64, 128]
             .iter()
             .map(|a| Amount::from_sat(*a))
             .collect();

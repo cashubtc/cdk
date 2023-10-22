@@ -3,7 +3,9 @@ use std::ops::Deref;
 use cashu::nuts::nut00::Proof;
 use wasm_bindgen::prelude::*;
 
-use crate::{nuts::nut01::JsPublicKey, nuts::nut02::JsId, types::JsAmount, types::JsSecret};
+use crate::nuts::nut01::JsPublicKey;
+use crate::nuts::nut02::JsId;
+use crate::types::{JsAmount, JsSecret};
 
 #[wasm_bindgen(js_name = Proof)]
 pub struct JsProof {

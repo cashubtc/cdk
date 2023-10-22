@@ -3,7 +3,9 @@ use std::ops::Deref;
 use cashu::nuts::nut00::BlindedSignature;
 use wasm_bindgen::prelude::*;
 
-use crate::{nuts::nut01::JsPublicKey, nuts::nut02::JsId, types::JsAmount};
+use crate::nuts::nut01::JsPublicKey;
+use crate::nuts::nut02::JsId;
+use crate::types::JsAmount;
 
 #[wasm_bindgen(js_name = BlindedSignature)]
 pub struct JsBlindedSignature {

@@ -3,11 +3,9 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::str::FromStr;
 
-use cashu::dhke::construct_proofs;
-use cashu::dhke::unblind_message;
-use cashu::nuts::nut00::{
-    mint, wallet::BlindedMessages, wallet::Token, BlindedSignature, Proof, Proofs,
-};
+use cashu::dhke::{construct_proofs, unblind_message};
+use cashu::nuts::nut00::wallet::{BlindedMessages, Token};
+use cashu::nuts::nut00::{mint, BlindedSignature, Proof, Proofs};
 use cashu::nuts::nut01::Keys;
 use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut06::{SplitPayload, SplitRequest};
@@ -18,7 +16,6 @@ use tracing::warn;
 
 #[cfg(feature = "blocking")]
 use crate::client::blocking::Client;
-
 #[cfg(not(feature = "blocking"))]
 use crate::client::Client;
 

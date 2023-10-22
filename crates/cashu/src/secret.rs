@@ -26,7 +26,8 @@ impl Secret {
     const BIT_LENGTH: usize = 128;
     /// Create secret value
     pub fn new() -> Self {
-        use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+        use base64::engine::general_purpose::URL_SAFE;
+        use base64::Engine as _;
         use rand::RngCore;
 
         let mut rng = rand::thread_rng();
