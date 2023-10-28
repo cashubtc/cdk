@@ -38,6 +38,8 @@ pub mod nut12;
 
 #[cfg(feature = "nut12")]
 pub use nut12::{BlindedSignature, DleqProof, Proof};
+#[cfg(feature = "nut10")]
+pub mod nut10;
 
 /// List of proofs
 pub type Proofs = Vec<Proof>;
