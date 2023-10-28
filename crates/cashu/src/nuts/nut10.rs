@@ -3,27 +3,24 @@ use serde::{Deserialize, Serialize, Serializer};
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Kind {
+    /// NUT-11 P2PK
     #[default]
     P2PK,
 }
 
-impl ToString for Kind {
-    fn to_string(&self) -> String {
-        match self {
-            Self::P2PK => "P2PK".to_string(),
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SecretData {
+    /// Unique random string
     nonce: String,
+    /// Expresses the spending condition specific to each kind
     data: String,
+    /// Additional data committed to and can be used for feature extensions
     tags: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
 pub struct Secret {
+    ///  Kind of the spending condition
     kind: Kind,
     secret_data: SecretData,
 }
@@ -100,5 +97,14 @@ mod tests {
         let secret_str = r#"["P2PK",{"nonce":"5d11913ee0f92fefdc82a6764fd2457a","data":"026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198","tags":[["key","value1","value2"]]}]"#;
 
         assert_eq!(serde_json::to_string(&secret).unwrap(), secret_str);
+    }
+
+    #[test]
+    fn test_secret_roundtrip() {
+        let secret_str = r#"["P2PK",{"nonce":"5d11913ee0f92fefdc82a6764fd2457a","data":"026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198","tags":[["key","value1","value2"]]}]"#;
+
+        let secret_ser: Secret = serde_json::from_str(secret_str).unwrap();
+
+        assert_eq!(serde_json::to_string(&secret_ser).unwrap(), secret_str)
     }
 }
