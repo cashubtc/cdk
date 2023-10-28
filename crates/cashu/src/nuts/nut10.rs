@@ -15,6 +15,7 @@ pub struct SecretData {
     /// Expresses the spending condition specific to each kind
     data: String,
     /// Additional data committed to and can be used for feature extensions
+    #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Vec<Vec<String>>>,
 }
 
