@@ -14,10 +14,13 @@ default = ["mint", "wallet"]
 mint = ["cashu/mint"]
 blocking = ["dep:once_cell"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
+nut07 = ["cashu/nut07"]
+# nut08 = ["cashu/nut08"]
+nut09 = ["cashu/nut09"]
 
 
 [dependencies]
-cashu = { path = "../cashu" }
+cashu = { path = "../cashu", features = ["nut08"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }

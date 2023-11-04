@@ -3,6 +3,7 @@ use std::ops::Deref;
 use cashu_js::nuts::nut02::{JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMintKeySet};
 use cashu_js::nuts::nut04::{JsMintRequest, JsPostMintResponse};
 use cashu_js::nuts::nut06::{JsSplitRequest, JsSplitResponse};
+#[cfg(feature = "nut07")]
 use cashu_js::nuts::nut07::{JsCheckSpendableRequest, JsCheckSpendableResponse};
 use cashu_js::nuts::nut08::{JsMeltRequest, JsMeltResponse};
 use cashu_js::JsAmount;
@@ -117,6 +118,7 @@ impl JsMint {
     }
 
     /// Check Spendable
+    #[cfg(feature = "nut07")]
     #[wasm_bindgen(js_name = CheckSpendable)]
     pub fn check_spendable(
         &mut self,
