@@ -3,7 +3,9 @@ use std::ops::Deref;
 use cashu_js::nuts::nut00::{JsBlindedMessages, JsToken};
 use cashu_js::nuts::nut01::JsKeys;
 use cashu_js::nuts::nut03::JsRequestMintResponse;
-use cashu_js::{JsAmount, JsBolt11Invoice, JsProofsStatus};
+#[cfg(feature = "nut07")]
+use cashu_js::JsProofsStatus;
+use cashu_js::{JsAmount, JsBolt11Invoice};
 use cashu_sdk::wallet::Wallet;
 use wasm_bindgen::prelude::*;
 
@@ -39,6 +41,7 @@ impl JsWallet {
     }
 
     /// Check Proofs spent
+    #[cfg(feature = "nut07")]
     #[wasm_bindgen(js_name = checkProofsSpent)]
     pub async fn check_proofs_spent(&self, proofs: JsValue) -> Result<JsProofsStatus> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;

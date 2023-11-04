@@ -6,6 +6,7 @@ use cashu::nuts::nut00::{BlindedMessage, BlindedSignature, Proof};
 use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::nut02::Id;
 use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+#[cfg(feature = "nut07")]
 use cashu::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::nuts::nut08::{MeltRequest, MeltResponse};
 use cashu::nuts::*;
@@ -231,6 +232,7 @@ impl Mint {
         Ok(())
     }
 
+    #[cfg(feature = "nut07")]
     pub fn check_spendable(
         &self,
         check_spendable: &CheckSpendableRequest,

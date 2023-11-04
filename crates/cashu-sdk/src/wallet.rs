@@ -5,13 +5,15 @@ use std::str::FromStr;
 
 use cashu::dhke::{construct_proofs, unblind_message};
 use cashu::nuts::nut00::wallet::{BlindedMessages, Token};
-use cashu::nuts::nut00::{mint, BlindedSignature, Proof, Proofs};
+use cashu::nuts::nut00::{BlindedSignature, Proof, Proofs};
 use cashu::nuts::nut01::Keys;
 use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut06::{SplitPayload, SplitRequest};
-use cashu::types::{Melted, ProofsStatus, SendProofs};
+use cashu::types::{Melted, SendProofs};
 use cashu::Amount;
 pub use cashu::Bolt11Invoice;
+#[cfg(feature = "nut07")]
+use cashu::{nuts::nut00::mint, types::ProofsStatus};
 use tracing::warn;
 
 #[cfg(feature = "blocking")]
@@ -72,7 +74,7 @@ impl Wallet {
     // TODO: getter method for keys that if it cant get them try again
 
     /// Check if a proof is spent
-    #[cfg(not(feature = "blocking"))]
+    #[cfg(all(not(feature = "blocking"), feature = "nut07"))]
     pub async fn check_proofs_spent(&self, proofs: &mint::Proofs) -> Result<ProofsStatus, Error> {
         let spendable = self.client.check_spendable(proofs).await?;
 
@@ -89,7 +91,7 @@ impl Wallet {
     }
 
     /// Check if a proof is spent
-    #[cfg(feature = "blocking")]
+    #[cfg(all(feature = "blocking", feature = "nut07"))]
     pub fn check_proofs_spent(&self, proofs: &mint::Proofs) -> Result<ProofsStatus, Error> {
         let spendable = self.client.check_spendable(proofs)?;
 

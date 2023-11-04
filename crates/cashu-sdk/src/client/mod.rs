@@ -9,8 +9,10 @@ use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut04::{MintRequest, PostMintResponse};
 use cashu::nuts::nut05::{CheckFeesRequest, CheckFeesResponse};
 use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+#[cfg(feature = "nut07")]
 use cashu::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::nuts::nut08::{MeltRequest, MeltResponse};
+#[cfg(feature = "nut09")]
 use cashu::nuts::nut09::MintInfo;
 use cashu::nuts::*;
 use cashu::url::UncheckedUrl;
@@ -480,7 +482,7 @@ impl Client {
     }
 
     /// Spendable check [NUT-07]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "nut07"))]
     pub async fn check_spendable(
         &self,
         proofs: &Vec<nut00::mint::Proof>,
@@ -505,7 +507,7 @@ impl Client {
     }
 
     /// Spendable check [NUT-07]
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "nut07"))]
     pub async fn check_spendable(
         &self,
         proofs: &Vec<nut00::mint::Proof>,
@@ -535,7 +537,7 @@ impl Client {
     }
 
     /// Get Mint Info [NUT-09]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "nut09"))]
     pub async fn get_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join("info")?;
         let res = minreq::get(url).send()?.json::<Value>()?;
@@ -549,7 +551,7 @@ impl Client {
     }
 
     /// Get Mint Info [NUT-09]
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "nut09"))]
     pub async fn get_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join("info")?;
         let res = Request::get(url.as_str())

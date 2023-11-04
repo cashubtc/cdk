@@ -12,7 +12,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cashu  = { path = "../../crates/cashu", features = ["wallet", "mint"] }
+cashu  = { path = "../../crates/cashu", features = ["wallet", "mint", "all-nuts"] }
 url = { workspace = true }
 uniffi = { workspace = true }
 

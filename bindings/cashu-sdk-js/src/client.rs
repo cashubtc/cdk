@@ -7,8 +7,10 @@ use cashu_js::nuts::nut03::JsRequestMintResponse;
 use cashu_js::nuts::nut04::JsPostMintResponse;
 use cashu_js::nuts::nut05::JsCheckFeesResponse;
 use cashu_js::nuts::nut06::{JsSplitRequest, JsSplitResponse};
+#[cfg(feature = "nut07")]
 use cashu_js::nuts::nut07::JsCheckSpendableResponse;
 use cashu_js::nuts::nut08::JsMeltResponse;
+#[cfg(feature = "nut09")]
 use cashu_js::nuts::nut09::JsMintInfo;
 use cashu_js::{JsAmount, JsBolt11Invoice};
 use cashu_sdk::client::Client;
@@ -125,6 +127,7 @@ impl JsClient {
             .into())
     }
 
+    #[cfg(feature = "nut07")]
     #[wasm_bindgen(js_name = checkSpendable)]
     pub async fn check_spendable(&self, proofs: JsValue) -> Result<JsCheckSpendableResponse> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
@@ -137,6 +140,7 @@ impl JsClient {
             .into())
     }
 
+    #[cfg(feature = "nut09")]
     #[wasm_bindgen(js_name = getInfo)]
     pub async fn get_info(&self) -> Result<JsMintInfo> {
         Ok(self.inner.get_info().await.map_err(into_err)?.into())

@@ -6,8 +6,10 @@ use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut04::PostMintResponse;
 use cashu::nuts::nut05::CheckFeesResponse;
 use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+#[cfg(feature = "nut07")]
 use cashu::nuts::nut07::CheckSpendableResponse;
 use cashu::nuts::nut08::MeltResponse;
+#[cfg(feature = "nut09")]
 use cashu::nuts::nut09::MintInfo;
 use cashu::{Amount, Bolt11Invoice};
 
@@ -63,6 +65,7 @@ impl Client {
         RUNTIME.block_on(async { self.client.split(split_request).await })
     }
 
+    #[cfg(feature = "nut07")]
     pub fn check_spendable(
         &self,
         proofs: &Vec<nut00::mint::Proof>,
@@ -70,6 +73,7 @@ impl Client {
         RUNTIME.block_on(async { self.client.check_spendable(proofs).await })
     }
 
+    #[cfg(feature = "nut09")]
     pub fn get_info(&self) -> Result<MintInfo, Error> {
         RUNTIME.block_on(async { self.client.get_info().await })
     }
