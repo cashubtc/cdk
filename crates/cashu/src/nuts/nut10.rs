@@ -11,19 +11,19 @@ pub enum Kind {
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SecretData {
     /// Unique random string
-    nonce: String,
+    pub nonce: String,
     /// Expresses the spending condition specific to each kind
-    data: String,
+    pub data: String,
     /// Additional data committed to and can be used for feature extensions
     #[serde(skip_serializing_if = "Option::is_none")]
-    tags: Option<Vec<Vec<String>>>,
+    pub tags: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
 pub struct Secret {
     ///  Kind of the spending condition
-    kind: Kind,
-    secret_data: SecretData,
+    pub kind: Kind,
+    pub secret_data: SecretData,
 }
 
 impl Serialize for Secret {
