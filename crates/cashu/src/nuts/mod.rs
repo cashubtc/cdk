@@ -11,3 +11,14 @@ pub mod nut07;
 pub mod nut08;
 #[cfg(feature = "nut09")]
 pub mod nut09;
+#[cfg(feature = "nut12")]
+pub mod nut12;
+
+pub use nut00::BlindedMessage;
+#[cfg(not(feature = "nut12"))]
+pub use nut00::{BlindedSignature, Proof};
+#[cfg(feature = "nut12")]
+pub use nut12::{BlindedSignature, DleqProof, Proof};
+
+/// List of proofs
+pub type Proofs = Vec<Proof>;

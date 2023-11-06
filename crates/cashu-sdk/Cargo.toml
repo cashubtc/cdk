@@ -20,7 +20,7 @@ nut09 = ["cashu/nut09"]
 
 
 [dependencies]
-cashu = { path = "../cashu", features = ["nut08"] }
+cashu = { path = "../cashu", default-features = false, features = ["nut08"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }

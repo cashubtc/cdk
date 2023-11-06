@@ -2,8 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut00::{mint, Proofs};
+use crate::nuts::nut00::mint;
 use crate::nuts::nut02::Id;
+use crate::nuts::Proofs;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {

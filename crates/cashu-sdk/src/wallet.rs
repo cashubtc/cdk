@@ -5,10 +5,10 @@ use std::str::FromStr;
 
 use cashu::dhke::{construct_proofs, unblind_message};
 use cashu::nuts::nut00::wallet::{BlindedMessages, Token};
-use cashu::nuts::nut00::{BlindedSignature, Proof, Proofs};
 use cashu::nuts::nut01::Keys;
 use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut06::{SplitPayload, SplitRequest};
+use cashu::nuts::{BlindedSignature, Proof, Proofs};
 use cashu::types::{Melted, SendProofs};
 use cashu::Amount;
 pub use cashu::Bolt11Invoice;

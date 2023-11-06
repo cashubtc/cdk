@@ -3,7 +3,6 @@ use std::fmt;
 use std::str::FromStr;
 
 use cashu::nuts::nut00::wallet::BlindedMessages;
-use cashu::nuts::nut00::{BlindedMessage, Proof};
 use cashu::nuts::nut01::Keys;
 use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut04::{MintRequest, PostMintResponse};
@@ -14,7 +13,7 @@ use cashu::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::nuts::nut08::{MeltRequest, MeltResponse};
 #[cfg(feature = "nut09")]
 use cashu::nuts::nut09::MintInfo;
-use cashu::nuts::*;
+use cashu::nuts::{Proof, *};
 use cashu::url::UncheckedUrl;
 use cashu::{utils, Amount};
 #[cfg(target_arch = "wasm32")]
