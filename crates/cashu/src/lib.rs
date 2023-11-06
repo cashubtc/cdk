@@ -1,5 +1,4 @@
 pub mod amount;
-#[cfg(feature = "wallet")]
 pub mod dhke;
 pub mod error;
 pub mod nuts;

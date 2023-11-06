@@ -33,4 +33,11 @@ pub use nut08::{MeltRequest, MeltResponse};
 #[cfg(feature = "nut09")]
 pub use nut09::MintInfo;
 
+#[cfg(feature = "nut12")]
+pub mod nut12;
+
+#[cfg(feature = "nut12")]
+pub use nut12::{BlindedSignature, DleqProof, Proof};
+
+/// List of proofs
 pub type Proofs = Vec<Proof>;

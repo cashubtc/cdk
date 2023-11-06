@@ -4,8 +4,8 @@
 use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 
-use super::{BlindedMessage, BlindedSignature, Proofs};
 use crate::error::Error;
+use crate::nuts::{BlindedMessage, BlindedSignature, Proofs};
 use crate::Amount;
 
 /// Melt Request [NUT-08]
