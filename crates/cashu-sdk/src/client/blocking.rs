@@ -1,5 +1,5 @@
 use cashu::nuts::nut00::wallet::BlindedMessages;
-use cashu::nuts::nut00::{self, BlindedMessage, Proof};
+use cashu::nuts::nut00::{BlindedMessage, Proof};
 use cashu::nuts::nut01::Keys;
 use cashu::nuts::nut02;
 use cashu::nuts::nut03::RequestMintResponse;
