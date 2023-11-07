@@ -68,7 +68,7 @@ impl Client {
     #[cfg(feature = "nut07")]
     pub fn check_spendable(
         &self,
-        proofs: &Vec<nut00::mint::Proof>,
+        proofs: &Vec<cashu::nuts::nut00::mint::Proof>,
     ) -> Result<CheckSpendableResponse, Error> {
         RUNTIME.block_on(async { self.client.check_spendable(proofs).await })
     }
