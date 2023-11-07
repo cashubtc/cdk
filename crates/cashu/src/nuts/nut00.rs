@@ -35,7 +35,6 @@ pub mod wallet {
     use crate::nuts::nut01;
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
-    use crate::utils::split_amount;
     use crate::{error, Amount};
 
     /// Blinded Messages [NUT-00]
@@ -56,7 +55,7 @@ pub mod wallet {
         pub fn random(amount: Amount) -> Result<Self, wallet::Error> {
             let mut blinded_messages = BlindedMessages::default();
 
-            for amount in split_amount(amount) {
+            for amount in amount.split() {
                 let secret = Secret::new();
                 let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
