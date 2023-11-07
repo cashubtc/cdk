@@ -84,3 +84,25 @@ impl core::iter::Sum for Amount {
         Amount::from(sats)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_amount() {
+        assert_eq!(Amount::from_sat(1).split(), vec![Amount::from_sat(1)]);
+        assert_eq!(Amount::from_sat(2).split(), vec![Amount::from_sat(2)]);
+        assert_eq!(
+            Amount::from_sat(3).split(),
+            vec![Amount::from_sat(2), Amount::from_sat(1)]
+        );
+        let amounts: Vec<Amount> = [8, 2, 1].iter().map(|a| Amount::from_sat(*a)).collect();
+        assert_eq!(Amount::from_sat(11).split(), amounts);
+        let amounts: Vec<Amount> = [128, 64, 32, 16, 8, 4, 2, 1]
+            .iter()
+            .map(|a| Amount::from_sat(*a))
+            .collect();
+        assert_eq!(Amount::from_sat(255).split(), amounts);
+    }
+}
