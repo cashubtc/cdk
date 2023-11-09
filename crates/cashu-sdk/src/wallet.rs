@@ -23,8 +23,8 @@ use crate::client::Client;
 
 #[derive(Debug)]
 pub enum Error {
-    /// Insufficaint Funds
-    InsufficantFunds,
+    /// Insufficient Funds
+    InsufficientFunds,
     Cashu(cashu::error::wallet::Error),
     Client(crate::client::Error),
     Custom(String),
@@ -35,7 +35,7 @@ impl StdError for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::InsufficantFunds => write!(f, "Insufficant Funds"),
+            Error::InsufficientFunds => write!(f, "Insufficient Funds"),
             Error::Cashu(err) => write!(f, "{}", err),
             Error::Client(err) => write!(f, "{}", err),
             Error::Custom(err) => write!(f, "{}", err),
@@ -341,7 +341,7 @@ impl Wallet {
 
         if amount_available.lt(&amount) {
             println!("Not enough funds");
-            return Err(Error::InsufficantFunds);
+            return Err(Error::InsufficientFunds);
         }
 
         // If amount available is EQUAL to send amount no need to split
@@ -403,7 +403,7 @@ impl Wallet {
 
         if amount_available.lt(&amount) {
             println!("Not enough funds");
-            return Err(Error::InsufficantFunds);
+            return Err(Error::InsufficientFunds);
         }
 
         // If amount available is EQUAL to send amount no need to split
