@@ -92,8 +92,8 @@ pub mod wallet {
         SerdeJsonError(serde_json::Error),
         /// From elliptic curve
         EllipticError(k256::elliptic_curve::Error),
-        /// Insufficaint Funds
-        InsufficantFunds,
+        /// Insufficient Funds
+        InsufficientFunds,
         /// Utf8 parse error
         Utf8ParseError(FromUtf8Error),
         /// Base64 error
@@ -114,7 +114,7 @@ pub mod wallet {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
                 Error::CustomError(err) => write!(f, "{}", err),
-                Error::InsufficantFunds => write!(f, "Insufficant Funds"),
+                Error::InsufficientFunds => write!(f, "Insufficient Funds"),
                 Error::Utf8ParseError(err) => write!(f, "{}", err),
                 Error::Base64Error(err) => write!(f, "{}", err),
                 Error::UnsupportedToken => write!(f, "Unsuppported Token"),
