@@ -1,6 +1,4 @@
 //! Cashu Wallet
-use std::error::Error as StdError;
-use std::fmt;
 use std::str::FromStr;
 
 use cashu::dhke::{construct_proofs, unblind_message};
@@ -14,6 +12,7 @@ use cashu::Amount;
 pub use cashu::Bolt11Invoice;
 #[cfg(feature = "nut07")]
 use cashu::{nuts::nut00::mint, types::ProofsStatus};
+use thiserror::Error;
 use tracing::warn;
 
 #[cfg(feature = "blocking")]
@@ -21,38 +20,17 @@ use crate::client::blocking::Client;
 #[cfg(not(feature = "blocking"))]
 use crate::client::Client;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
     /// Insufficient Funds
+    #[error("Insuddicient Funds")]
     InsufficientFunds,
-    Cashu(cashu::error::wallet::Error),
-    Client(crate::client::Error),
+    #[error("`{0}`")]
+    Cashu(#[from] cashu::error::wallet::Error),
+    #[error("`{0}`")]
+    Client(#[from] crate::client::Error),
+    #[error("`{0}`")]
     Custom(String),
-}
-
-impl StdError for Error {}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::InsufficientFunds => write!(f, "Insufficient Funds"),
-            Error::Cashu(err) => write!(f, "{}", err),
-            Error::Client(err) => write!(f, "{}", err),
-            Error::Custom(err) => write!(f, "{}", err),
-        }
-    }
-}
-
-impl From<cashu::error::wallet::Error> for Error {
-    fn from(err: cashu::error::wallet::Error) -> Self {
-        Self::Cashu(err)
-    }
-}
-
-impl From<crate::client::Error> for Error {
-    fn from(err: crate::client::Error) -> Error {
-        Error::Client(err)
-    }
 }
 
 #[derive(Clone, Debug)]
