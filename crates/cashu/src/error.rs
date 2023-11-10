@@ -1,153 +1,75 @@
-use std::error::Error as StdError;
-use std::fmt;
 use std::string::FromUtf8Error;
 
-#[derive(Debug)]
+use thiserror::Error;
+
+#[derive(Debug, Error)]
 pub enum Error {
     /// Parse Url Error
-    UrlParseError(url::ParseError),
+    #[error("`{0}`")]
+    UrlParseError(#[from] url::ParseError),
     /// Utf8 parse error
-    Utf8ParseError(FromUtf8Error),
+    #[error("`{0}`")]
+    Utf8ParseError(#[from] FromUtf8Error),
     /// Serde Json error
+    #[error("`{0}`")]
     SerdeJsonError(serde_json::Error),
     /// Base64 error
-    Base64Error(base64::DecodeError),
+    #[error("`{0}`")]
+    Base64Error(#[from] base64::DecodeError),
+    #[error("`{0}`")]
     CustomError(String),
     /// From hex error
-    HexError(hex::FromHexError),
-    EllipticCurve(k256::elliptic_curve::Error),
+    #[error("`{0}`")]
+    HexError(#[from] hex::FromHexError),
+    #[error("`{0}`")]
+    EllipticCurve(#[from] k256::elliptic_curve::Error),
+    #[error("No Key for Amoun")]
     AmountKey,
+    #[error("Amount miss match")]
     Amount,
+    #[error("Token already spent")]
     TokenSpent,
+    #[error("Token not verified")]
     TokenNotVerifed,
+    #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::UrlParseError(err) => write!(f, "{}", err),
-            Error::Utf8ParseError(err) => write!(f, "{}", err),
-            Error::SerdeJsonError(err) => write!(f, "{}", err),
-            Error::Base64Error(err) => write!(f, "{}", err),
-            Error::CustomError(err) => write!(f, "{}", err),
-            Error::HexError(err) => write!(f, "{}", err),
-            Error::AmountKey => write!(f, "No Key for amount"),
-            Error::Amount => write!(f, "Amount miss match."),
-            Error::TokenSpent => write!(f, "Token Spent"),
-            Error::TokenNotVerifed => write!(f, "Token Not Verified"),
-            Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
-            Error::EllipticCurve(err) => write!(f, "{}", err),
-        }
-    }
-}
-
-impl StdError for Error {}
-
-impl From<url::ParseError> for Error {
-    fn from(err: url::ParseError) -> Error {
-        Error::UrlParseError(err)
-    }
-}
-
-impl From<FromUtf8Error> for Error {
-    fn from(err: FromUtf8Error) -> Error {
-        Error::Utf8ParseError(err)
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Error {
-        Error::SerdeJsonError(err)
-    }
-}
-
-impl From<base64::DecodeError> for Error {
-    fn from(err: base64::DecodeError) -> Error {
-        Error::Base64Error(err)
-    }
-}
-
-impl From<hex::FromHexError> for Error {
-    fn from(err: hex::FromHexError) -> Error {
-        Error::HexError(err)
-    }
-}
-
-impl From<k256::elliptic_curve::Error> for Error {
-    fn from(err: k256::elliptic_curve::Error) -> Error {
-        Error::EllipticCurve(err)
-    }
 }
 
 #[cfg(feature = "wallet")]
 pub mod wallet {
-    use std::error::Error as StdError;
-    use std::fmt;
     use std::string::FromUtf8Error;
 
-    #[derive(Debug)]
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
     pub enum Error {
         /// Serde Json error
-        SerdeJsonError(serde_json::Error),
+        #[error("`{0}`")]
+        SerdeJsonError(#[from] serde_json::Error),
         /// From elliptic curve
-        EllipticError(k256::elliptic_curve::Error),
+        #[error("`{0}`")]
+        EllipticError(#[from] k256::elliptic_curve::Error),
         /// Insufficient Funds
+        #[error("Insufficient funds")]
         InsufficientFunds,
         /// Utf8 parse error
-        Utf8ParseError(FromUtf8Error),
+        #[error("`{0}`")]
+        Utf8ParseError(#[from] FromUtf8Error),
         /// Base64 error
-        Base64Error(base64::DecodeError),
+        #[error("`{0}`")]
+        Base64Error(#[from] base64::DecodeError),
         /// Unsupported Token
+        #[error("Token unsupported")]
         UnsupportedToken,
         /// Token Requires proofs
+        #[error("Proofs Required")]
         ProofsRequired,
         /// Url Parse error
+        #[error("Url Parse")]
         UrlParse,
         /// Custom Error message
+        #[error("`{0}`")]
         CustomError(String),
-    }
-
-    impl StdError for Error {}
-
-    impl fmt::Display for Error {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                Error::CustomError(err) => write!(f, "{}", err),
-                Error::InsufficientFunds => write!(f, "Insufficient Funds"),
-                Error::Utf8ParseError(err) => write!(f, "{}", err),
-                Error::Base64Error(err) => write!(f, "{}", err),
-                Error::UnsupportedToken => write!(f, "Unsuppported Token"),
-                Error::EllipticError(err) => write!(f, "{}", err),
-                Error::SerdeJsonError(err) => write!(f, "{}", err),
-                Error::UrlParse => write!(f, "Could not parse url"),
-                Error::ProofsRequired => write!(f, "Token must have at least one proof",),
-            }
-        }
-    }
-
-    impl From<serde_json::Error> for Error {
-        fn from(err: serde_json::Error) -> Error {
-            Error::SerdeJsonError(err)
-        }
-    }
-
-    impl From<k256::elliptic_curve::Error> for Error {
-        fn from(err: k256::elliptic_curve::Error) -> Error {
-            Error::EllipticError(err)
-        }
-    }
-
-    impl From<FromUtf8Error> for Error {
-        fn from(err: FromUtf8Error) -> Error {
-            Error::Utf8ParseError(err)
-        }
-    }
-
-    impl From<base64::DecodeError> for Error {
-        fn from(err: base64::DecodeError) -> Error {
-            Error::Base64Error(err)
-        }
     }
 
     impl From<crate::url::Error> for Error {
@@ -159,43 +81,27 @@ pub mod wallet {
 
 #[cfg(feature = "mint")]
 pub mod mint {
-    use std::error::Error as StdError;
-    use std::fmt;
+    use thiserror::Error;
 
-    #[derive(Debug)]
+    #[derive(Debug, Error)]
     pub enum Error {
+        #[error("No key for amount")]
         AmountKey,
+        #[error("Amount miss match")]
         Amount,
+        #[error("Token Already Spent")]
         TokenSpent,
         /// From elliptic curve
-        EllipticError(k256::elliptic_curve::Error),
+        #[error("`{0}`")]
+        EllipticError(#[from] k256::elliptic_curve::Error),
+        #[error("`Token not verified`")]
         TokenNotVerifed,
+        #[error("Invoice amount undefined")]
         InvoiceAmountUndefined,
         /// Duplicate Proofs sent in request
+        #[error("Duplicate proofs")]
         DuplicateProofs,
+        #[error("`{0}`")]
         CustomError(String),
-    }
-
-    impl StdError for Error {}
-
-    impl fmt::Display for Error {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                Error::AmountKey => write!(f, "No Key for amount"),
-                Error::Amount => write!(f, "Amount miss match"),
-                Error::TokenSpent => write!(f, "Token Spent"),
-                Error::EllipticError(err) => write!(f, "{}", err),
-                Error::CustomError(err) => write!(f, "{}", err),
-                Error::TokenNotVerifed => write!(f, "Token Not Verified"),
-                Error::InvoiceAmountUndefined => write!(f, "Invoice without amount"),
-                Error::DuplicateProofs => write!(f, "Request has duplicate proofs"),
-            }
-        }
-    }
-
-    impl From<k256::elliptic_curve::Error> for Error {
-        fn from(err: k256::elliptic_curve::Error) -> Error {
-            Error::EllipticError(err)
-        }
     }
 }
