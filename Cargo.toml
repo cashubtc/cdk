@@ -34,4 +34,4 @@ tokio = { version = "1.32", default-features = false }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = "0.3"
 uniffi = "0.24"
-
+thiserror = "1.0.50"
