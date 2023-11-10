@@ -27,6 +27,7 @@ url = { workspace = true }
 tracing = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 once_cell = { version = "1.17", optional = true }
+thiserror = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
