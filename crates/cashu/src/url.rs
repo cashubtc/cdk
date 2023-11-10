@@ -7,29 +7,15 @@ use core::fmt;
 use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use url::{ParseError, Url};
 
 /// Url Error
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
     /// Url error
-    Url(ParseError),
-}
-
-impl std::error::Error for Error {}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Url(e) => write!(f, "Url: {e}"),
-        }
-    }
-}
-
-impl From<ParseError> for Error {
-    fn from(e: ParseError) -> Self {
-        Self::Url(e)
-    }
+    #[error("`{0}`")]
+    Url(#[from] ParseError),
 }
 
 /// Unchecked Url
