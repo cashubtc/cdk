@@ -1,5 +1,4 @@
 //! Client to connet to mint
-use std::fmt;
 use std::str::FromStr;
 
 use cashu::nuts::nut00::wallet::BlindedMessages;
@@ -21,6 +20,7 @@ use cashu::{utils, Amount};
 use gloo::net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 use url::Url;
 
 #[cfg(feature = "blocking")]
@@ -28,73 +28,31 @@ pub mod blocking;
 
 pub use cashu::Bolt11Invoice;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error("Invoice not paid")]
     InvoiceNotPaid,
+    #[error("Wallet not responding")]
     LightingWalletNotResponding(Option<String>),
     /// Parse Url Error
-    UrlParse(url::ParseError),
+    #[error("`{0}`")]
+    UrlParse(#[from] url::ParseError),
     /// Serde Json error
-    SerdeJson(serde_json::Error),
+    #[error("`{0}`")]
+    SerdeJson(#[from] serde_json::Error),
     /// Cashu Url Error
-    CashuUrl(cashu::url::Error),
+    #[error("`{0}`")]
+    CashuUrl(#[from] cashu::url::Error),
     ///  Min req error
     #[cfg(not(target_arch = "wasm32"))]
-    MinReq(minreq::Error),
+    #[error("`{0}`")]
+    MinReq(#[from] minreq::Error),
     #[cfg(target_arch = "wasm32")]
+    #[error("`{0}`")]
     Gloo(String),
     /// Custom Error
+    #[error("`{0}`")]
     Custom(String),
-}
-
-impl From<url::ParseError> for Error {
-    fn from(err: url::ParseError) -> Error {
-        Error::UrlParse(err)
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Error {
-        Error::SerdeJson(err)
-    }
-}
-
-impl From<cashu::url::Error> for Error {
-    fn from(err: cashu::url::Error) -> Error {
-        Error::CashuUrl(err)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl From<minreq::Error> for Error {
-    fn from(err: minreq::Error) -> Error {
-        Error::MinReq(err)
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::InvoiceNotPaid => write!(f, "Invoice not paid"),
-            Error::LightingWalletNotResponding(mint) => {
-                write!(
-                    f,
-                    "Lightning Wallet not responding: {}",
-                    mint.clone().unwrap_or("".to_string())
-                )
-            }
-            Error::UrlParse(err) => write!(f, "{}", err),
-            Error::SerdeJson(err) => write!(f, "{}", err),
-            #[cfg(not(target_arch = "wasm32"))]
-            Error::MinReq(err) => write!(f, "{}", err),
-            Error::CashuUrl(err) => write!(f, "{}", err),
-            #[cfg(target_arch = "wasm32")]
-            Error::Gloo(err) => write!(f, "{}", err),
-            Error::Custom(message) => write!(f, "{}", message),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
