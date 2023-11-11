@@ -32,7 +32,6 @@ jobs:
             -p cashu --no-default-features --features mint,
             -p cashu-sdk,
             -p cashu-sdk --no-default-features,
-            -p cashu-sdk --features blocking,
           ]
     steps:
     - name: Checkout
