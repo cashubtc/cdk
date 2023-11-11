@@ -8,6 +8,7 @@ use cashu::nuts::nut01::Keys;
 use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut06::{SplitPayload, SplitRequest};
 use cashu::types::{Melted, SendProofs};
+use cashu::url::UncheckedUrl;
 use cashu::Amount;
 pub use cashu::Bolt11Invoice;
 #[cfg(feature = "nut07")]
@@ -15,9 +16,6 @@ use cashu::{nuts::nut00::mint, types::ProofsStatus};
 use thiserror::Error;
 use tracing::warn;
 
-#[cfg(feature = "blocking")]
-use crate::client::blocking::Client;
-#[cfg(not(feature = "blocking"))]
 use crate::client::Client;
 
 #[derive(Debug, Error)]
@@ -29,21 +27,26 @@ pub enum Error {
     Cashu(#[from] cashu::error::wallet::Error),
     #[error("`{0}`")]
     Client(#[from] crate::client::Error),
+    /// Cashu Url Error
+    #[error("`{0}`")]
+    CashuUrl(#[from] cashu::url::Error),
     #[error("`{0}`")]
     Custom(String),
 }
 
 #[derive(Clone, Debug)]
-pub struct Wallet {
-    pub client: Client,
+pub struct Wallet<C: Client> {
+    pub client: C,
+    pub mint_url: UncheckedUrl,
     pub mint_keys: Keys,
     pub balance: Amount,
 }
 
-impl Wallet {
-    pub fn new(client: Client, mint_keys: Keys) -> Self {
+impl<C: Client> Wallet<C> {
+    pub fn new(client: C, mint_url: UncheckedUrl, mint_keys: Keys) -> Self {
         Self {
             client,
+            mint_url,
             mint_keys,
             balance: Amount::ZERO,
         }
@@ -52,26 +55,17 @@ impl Wallet {
     // TODO: getter method for keys that if it cant get them try again
 
     /// Check if a proof is spent
-    #[cfg(all(not(feature = "blocking"), feature = "nut07"))]
-    pub async fn check_proofs_spent(&self, proofs: &mint::Proofs) -> Result<ProofsStatus, Error> {
-        let spendable = self.client.check_spendable(proofs).await?;
+    #[cfg(feature = "nut07")]
+    pub async fn check_proofs_spent(
+        &self,
+        proofs: Vec<cashu::nuts::nut00::mint::Proof>,
+    ) -> Result<ProofsStatus, Error> {
+        use cashu::types::ProofsStatus;
 
-        // Separate proofs in spent and unspent based on mint response
-        let (spendable, spent): (Vec<_>, Vec<_>) = proofs
-            .iter()
-            .zip(spendable.spendable.iter())
-            .partition(|(_, &b)| b);
-
-        Ok(ProofsStatus {
-            spendable: spendable.into_iter().map(|(s, _)| s).cloned().collect(),
-            spent: spent.into_iter().map(|(s, _)| s).cloned().collect(),
-        })
-    }
-
-    /// Check if a proof is spent
-    #[cfg(all(feature = "blocking", feature = "nut07"))]
-    pub fn check_proofs_spent(&self, proofs: &mint::Proofs) -> Result<ProofsStatus, Error> {
-        let spendable = self.client.check_spendable(proofs)?;
+        let spendable = self
+            .client
+            .post_check_spendable(&self.mint_url.clone().try_into()?, proofs.clone())
+            .await?;
 
         // Separate proofs in spent and unspent based on mint response
         let (spendable, spent): (Vec<_>, Vec<_>) = proofs
@@ -86,58 +80,32 @@ impl Wallet {
     }
 
     /// Request Token Mint
-    #[cfg(not(feature = "blocking"))]
     pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
-        Ok(self.client.request_mint(amount).await?)
+        Ok(self
+            .client
+            .get_request_mint(&self.mint_url.clone().try_into()?, amount)
+            .await?)
     }
 
-    /// Request Token Mint
-    #[cfg(feature = "blocking")]
-    pub fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
-        Ok(self.client.request_mint(amount)?)
-    }
-
-    /// Mint Token
-    #[cfg(not(feature = "blocking"))]
     pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
         let proofs = self.mint(amount, hash).await?;
 
-        let token = Token::new(self.client.mint_url.clone(), proofs, None);
-        Ok(token?)
-    }
-
-    /// Blocking Mint Token
-    #[cfg(feature = "blocking")]
-    pub fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
-        let proofs = self.mint(amount, hash)?;
-
-        let token = Token::new(self.client.client.mint_url.clone(), proofs, None);
+        let token = Token::new(self.mint_url.clone().into(), proofs, None);
         Ok(token?)
     }
 
     /// Mint Proofs
-    #[cfg(not(feature = "blocking"))]
     pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
         let blinded_messages = BlindedMessages::random(amount)?;
 
-        let mint_res = self.client.mint(blinded_messages.clone(), hash).await?;
-
-        let proofs = construct_proofs(
-            mint_res.promises,
-            blinded_messages.rs,
-            blinded_messages.secrets,
-            &self.mint_keys,
-        )?;
-
-        Ok(proofs)
-    }
-
-    /// Blocking Mint Proofs
-    #[cfg(feature = "blocking")]
-    pub fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
-        let blinded_messages = BlindedMessages::random(amount)?;
-
-        let mint_res = self.client.mint(blinded_messages.clone(), hash)?;
+        let mint_res = self
+            .client
+            .post_mint(
+                &self.mint_url.clone().try_into()?,
+                blinded_messages.clone(),
+                hash,
+            )
+            .await?;
 
         let proofs = construct_proofs(
             mint_res.promises,
@@ -150,19 +118,15 @@ impl Wallet {
     }
 
     /// Check fee
-    #[cfg(not(feature = "blocking"))]
     pub async fn check_fee(&self, invoice: Bolt11Invoice) -> Result<Amount, Error> {
-        Ok(self.client.check_fees(invoice).await?.fee)
-    }
-
-    /// Check fee
-    #[cfg(feature = "blocking")]
-    pub fn check_fee(&self, invoice: Bolt11Invoice) -> Result<Amount, Error> {
-        Ok(self.client.check_fees(invoice)?.fee)
+        Ok(self
+            .client
+            .post_check_fees(&self.mint_url.clone().try_into()?, invoice)
+            .await?
+            .fee)
     }
 
     /// Receive
-    #[cfg(not(feature = "blocking"))]
     pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, Error> {
         let token_data = Token::from_str(encoded_token)?;
 
@@ -172,12 +136,10 @@ impl Wallet {
                 continue;
             }
 
-            let keys = if token.mint.to_string().eq(&self.client.mint_url.to_string()) {
+            let keys = if token.mint.to_string().eq(&self.mint_url.to_string()) {
                 self.mint_keys.clone()
             } else {
-                Client::new(token.mint.to_string().as_str())?
-                    .get_keys()
-                    .await?
+                self.client.get_mint_keys(&token.mint.try_into()?).await?
             };
 
             // Sum amount of all proofs
@@ -185,52 +147,13 @@ impl Wallet {
 
             let split_payload = self.create_split(token.proofs)?;
 
-            let split_response = self.client.split(split_payload.split_payload).await?;
-
-            if let Some(promises) = &split_response.promises {
-                // Proof to keep
-                let p = construct_proofs(
-                    promises.to_owned(),
-                    split_payload.blinded_messages.rs,
-                    split_payload.blinded_messages.secrets,
-                    &keys,
-                )?;
-                proofs.push(p);
-            } else {
-                warn!("Response missing promises");
-                return Err(Error::Custom("Split response missing promises".to_string()));
-            }
-        }
-        Ok(proofs.iter().flatten().cloned().collect())
-    }
-
-    /// Blocking Receive
-    #[cfg(feature = "blocking")]
-    pub fn receive(&self, encoded_token: &str) -> Result<Proofs, Error> {
-        let token_data = Token::from_str(encoded_token)?;
-
-        let mut proofs: Vec<Proofs> = vec![vec![]];
-        for token in token_data.token {
-            if token.proofs.is_empty() {
-                continue;
-            }
-
-            let keys = if token
-                .mint
-                .to_string()
-                .eq(&self.client.client.mint_url.to_string())
-            {
-                self.mint_keys.clone()
-            } else {
-                Client::new(&token.mint.to_string())?.get_keys()?
-            };
-
-            // Sum amount of all proofs
-            let _amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
-
-            let split_payload = self.create_split(token.proofs)?;
-
-            let split_response = self.client.split(split_payload.split_payload)?;
+            let split_response = self
+                .client
+                .post_split(
+                    &self.mint_url.clone().try_into()?,
+                    split_payload.split_payload,
+                )
+                .await?;
 
             if let Some(promises) = &split_response.promises {
                 // Proof to keep
@@ -302,7 +225,6 @@ impl Wallet {
     }
 
     /// Send
-    #[cfg(not(feature = "blocking"))]
     pub async fn send(&self, amount: Amount, proofs: Proofs) -> Result<SendProofs, Error> {
         let mut amount_available = Amount::ZERO;
         let mut send_proofs = SendProofs::default();
@@ -332,7 +254,13 @@ impl Wallet {
 
         let split_payload = self.create_split(send_proofs.send_proofs)?;
 
-        let split_response = self.client.split(split_payload.split_payload).await?;
+        let split_response = self
+            .client
+            .post_split(
+                &self.mint_url.clone().try_into()?,
+                split_payload.split_payload,
+            )
+            .await?;
 
         // If only promises assemble proofs needed for amount
         let keep_proofs;
@@ -363,69 +291,6 @@ impl Wallet {
         })
     }
 
-    /// Send
-    #[cfg(feature = "blocking")]
-    pub fn send(&self, amount: Amount, proofs: Proofs) -> Result<SendProofs, Error> {
-        let mut amount_available = Amount::ZERO;
-        let mut send_proofs = SendProofs::default();
-
-        for proof in proofs {
-            let proof_value = proof.amount;
-            if amount_available > amount {
-                send_proofs.change_proofs.push(proof);
-            } else {
-                send_proofs.send_proofs.push(proof);
-            }
-            amount_available += proof_value;
-        }
-
-        if amount_available.lt(&amount) {
-            println!("Not enough funds");
-            return Err(Error::InsufficientFunds);
-        }
-
-        // If amount available is EQUAL to send amount no need to split
-        if amount_available.eq(&amount) {
-            return Ok(send_proofs);
-        }
-
-        let _amount_to_keep = amount_available - amount;
-        let amount_to_send = amount;
-
-        let split_payload = self.create_split(send_proofs.send_proofs)?;
-
-        let split_response = self.client.split(split_payload.split_payload)?;
-
-        // If only promises assemble proofs needed for amount
-        let keep_proofs;
-        let send_proofs;
-
-        if let Some(promises) = split_response.promises {
-            let proofs = construct_proofs(
-                promises,
-                split_payload.blinded_messages.rs,
-                split_payload.blinded_messages.secrets,
-                &self.mint_keys,
-            )?;
-
-            let split = amount_to_send.split();
-
-            keep_proofs = proofs[0..split.len()].to_vec();
-            send_proofs = proofs[split.len()..].to_vec();
-        } else {
-            return Err(Error::Custom("Invalid split response".to_string()));
-        }
-
-        // println!("Send Proofs: {:#?}", send_proofs);
-        // println!("Keep Proofs: {:#?}", keep_proofs);
-
-        Ok(SendProofs {
-            change_proofs: keep_proofs,
-            send_proofs,
-        })
-    }
-
-    #[cfg(not(feature = "blocking"))]
     pub async fn melt(
         &self,
         invoice: Bolt11Invoice,
@@ -435,7 +300,12 @@ impl Wallet {
         let blinded = BlindedMessages::blank(fee_reserve)?;
         let melt_response = self
             .client
-            .melt(proofs, invoice, Some(blinded.blinded_messages))
+            .post_melt(
+                &self.mint_url.clone().try_into()?,
+                proofs,
+                invoice,
+                Some(blinded.blinded_messages),
+            )
             .await?;
 
         let change_proofs = match melt_response.change {
@@ -457,45 +327,8 @@ impl Wallet {
         Ok(melted)
     }
 
-    #[cfg(feature = "blocking")]
-    pub fn melt(
-        &self,
-        invoice: Bolt11Invoice,
-        proofs: Proofs,
-        fee_reserve: Amount,
-    ) -> Result<Melted, Error> {
-        let blinded = BlindedMessages::blank(fee_reserve)?;
-        let melt_response = self
-            .client
-            .melt(proofs, invoice, Some(blinded.blinded_messages))?;
-
-        let change_proofs = match melt_response.change {
-            Some(change) => Some(construct_proofs(
-                change,
-                blinded.rs,
-                blinded.secrets,
-                &self.mint_keys,
-            )?),
-            None => None,
-        };
-
-        let melted = Melted {
-            paid: true,
-            preimage: melt_response.preimage,
-            change: change_proofs,
-        };
-
-        Ok(melted)
-    }
-
-    #[cfg(not(feature = "blocking"))]
     pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
-        Ok(Token::new(self.client.mint_url.clone(), proofs, memo)?.convert_to_string()?)
-    }
-
-    #[cfg(feature = "blocking")]
-    pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
-        Ok(Token::new(self.client.client.mint_url.clone(), proofs, memo)?.convert_to_string()?)
+        Ok(Token::new(self.mint_url.clone(), proofs, memo)?.convert_to_string()?)
     }
 }
 

@@ -11,3 +11,6 @@ pub mod nut07;
 pub mod nut08;
 #[cfg(feature = "nut09")]
 pub mod nut09;
+
+#[cfg(feature = "nut09")]
+pub use nut09::MintInfo;
