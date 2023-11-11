@@ -21,8 +21,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-#[cfg(feature = "blocking")]
-pub mod blocking;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod minreq_client;
 

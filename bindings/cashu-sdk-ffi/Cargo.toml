@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 cashu-ffi = { path = "../cashu-ffi" }
-cashu-sdk = { path = "../../crates/cashu-sdk", default-features = false, features = ["wallet", "mint", "blocking"] }
+cashu-sdk = { path = "../../crates/cashu-sdk", default-features = false, features = ["wallet", "mint"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uniffi = { workspace = true }

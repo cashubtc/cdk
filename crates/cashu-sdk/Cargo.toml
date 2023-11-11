@@ -12,7 +12,6 @@ license.workspace = true
 [features]
 default = ["mint", "wallet"]
 mint = ["cashu/mint"]
-blocking = ["dep:once_cell"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
 nut07 = ["cashu/nut07"]
 # nut08 = ["cashu/nut08"]
