@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 default = ["console_error_panic_hook"]
 
 [dependencies]
-cashu-sdk = { path = "../../crates/cashu-sdk" }
+cashu-sdk = { path = "../../crates/cashu-sdk", features = ["all-nuts", "gloo"] }
 cashu-js = { path = "../cashu-js" }
 wasm-bindgen = "0.2.84"
 js-sys = "0.3.64"

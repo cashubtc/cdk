@@ -162,10 +162,6 @@ impl JsWallet {
     pub fn proofs_to_token(&self, proofs: JsValue, memo: Option<String>) -> Result<String> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
-        Ok(self
-            .inner
-            .proofs_to_token(proofs, memo)
-            .map_err(into_err)?
-            .into())
+        self.inner.proofs_to_token(proofs, memo).map_err(into_err)
     }
 }

@@ -39,14 +39,14 @@ impl JsMelted {
 
     /// Get Preimage
     #[wasm_bindgen(getter)]
-    pub fn from_sat(&self) -> Option<String> {
+    pub fn preimage(&self) -> Option<String> {
         self.inner.preimage.clone()
     }
 
     /// Get Paid
     #[wasm_bindgen(getter)]
     pub fn paid(&self) -> bool {
-        self.inner.paid.clone()
+        self.inner.paid
     }
 
     /// Get Change
