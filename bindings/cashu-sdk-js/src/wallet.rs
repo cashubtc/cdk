@@ -6,27 +6,27 @@ use cashu_js::nuts::nut03::JsRequestMintResponse;
 #[cfg(feature = "nut07")]
 use cashu_js::JsProofsStatus;
 use cashu_js::{JsAmount, JsBolt11Invoice};
+use cashu_sdk::client::gloo_client::HttpClient;
 use cashu_sdk::wallet::Wallet;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
 use crate::types::{JsMelted, JsSendProofs};
-use crate::JsClient;
 
 #[wasm_bindgen(js_name = Wallet)]
 pub struct JsWallet {
-    inner: Wallet,
+    inner: Wallet<HttpClient>,
 }
 
 impl Deref for JsWallet {
-    type Target = Wallet;
+    type Target = Wallet<HttpClient>;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<Wallet> for JsWallet {
-    fn from(inner: Wallet) -> JsWallet {
+impl From<Wallet<HttpClient>> for JsWallet {
+    fn from(inner: Wallet<HttpClient>) -> JsWallet {
         JsWallet { inner }
     }
 }
@@ -34,9 +34,10 @@ impl From<Wallet> for JsWallet {
 #[wasm_bindgen(js_class = Wallet)]
 impl JsWallet {
     #[wasm_bindgen(constructor)]
-    pub fn new(client: JsClient, mint_keys: JsKeys) -> JsWallet {
+    pub fn new(mint_url: String, mint_keys: JsKeys) -> JsWallet {
+        let client = HttpClient {};
         JsWallet {
-            inner: Wallet::new(client.deref().clone(), mint_keys.deref().clone()),
+            inner: Wallet::new(client, mint_url.into(), mint_keys.deref().clone()),
         }
     }
 
