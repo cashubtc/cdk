@@ -12,10 +12,18 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 cashu-ffi = { path = "../cashu-ffi" }
-cashu-sdk = { path = "../../crates/cashu-sdk", default-features = false, features = ["wallet", "mint"] }
+cashu-sdk = { path = "../../crates/cashu-sdk", default-features = false, features = ["wallet", "mint", "all-nuts"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uniffi = { workspace = true }
+futures = { version= "0.3.29", feature = "executor" }
+once_cell = { version = "1.17" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }

@@ -13,6 +13,7 @@ license.workspace = true
 default = ["mint", "wallet"]
 mint = ["cashu/mint"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
+all-nuts = ["nut07", "nut09"]
 nut07 = ["cashu/nut07"]
 # nut08 = ["cashu/nut08"]
 nut09 = ["cashu/nut09"]

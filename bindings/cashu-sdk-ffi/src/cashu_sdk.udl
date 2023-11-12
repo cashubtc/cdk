@@ -289,31 +289,7 @@ interface Melted {
 	sequence<Proof>? change();
 };
 
-interface Client {
-    [Throws=CashuSdkError]
-	constructor(string mint_url);
-	[Throws=CashuSdkError]
-	Keys get_keys();
-    [Throws=CashuSdkError]
-	KeySetResponse get_keysets();
-    [Throws=CashuSdkError]
-    RequestMintResponse request_mint(Amount amount);
-    [Throws=CashuSdkError]
-	PostMintResponse mint(BlindedMessages blinded_messages, string hash);
-    [Throws=CashuSdkError]
-    CheckFeesResponse check_fees(Bolt11Invoice invoice);
-    [Throws=CashuSdkError]
-	MeltResponse melt(sequence<Proof> proofs, Bolt11Invoice invoice, sequence<BlindedMessage>? outputs);
-    [Throws=CashuSdkError]
-    SplitResponse split(SplitRequest split_request);
-    [Throws=CashuSdkError]
-	CheckSpendableResponse check_spendable(sequence<MintProof> proofs);
-    [Throws=CashuSdkError]
-    MintInfo get_info();
-};
-
 interface Wallet {
-	constructor(Client client, Keys mint_keys);
 	// [Throws=CashuSdkError]
 	// ProofsStatus check_proofs_spent(sequence<MintProof> proofs);
     [Throws=CashuSdkError]
