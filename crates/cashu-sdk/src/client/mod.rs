@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "gloo")]
 pub mod gloo_client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod minreq_client;
@@ -45,7 +45,7 @@ pub enum Error {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("`{0}`")]
     MinReq(#[from] minreq::Error),
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(feature = "gloo")]
     #[error("`{0}`")]
     Gloo(String),
     /// Custom Error
