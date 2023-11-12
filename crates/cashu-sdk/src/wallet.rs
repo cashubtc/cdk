@@ -7,12 +7,12 @@ use cashu::nuts::nut00::{BlindedSignature, Proof, Proofs};
 use cashu::nuts::nut01::Keys;
 use cashu::nuts::nut03::RequestMintResponse;
 use cashu::nuts::nut06::{SplitPayload, SplitRequest};
+#[cfg(feature = "nut07")]
+use cashu::types::ProofsStatus;
 use cashu::types::{Melted, SendProofs};
 use cashu::url::UncheckedUrl;
 use cashu::Amount;
 pub use cashu::Bolt11Invoice;
-#[cfg(feature = "nut07")]
-use cashu::{nuts::nut00::mint, types::ProofsStatus};
 use thiserror::Error;
 use tracing::warn;
 
@@ -60,8 +60,6 @@ impl<C: Client> Wallet<C> {
         &self,
         proofs: Vec<cashu::nuts::nut00::mint::Proof>,
     ) -> Result<ProofsStatus, Error> {
-        use cashu::types::ProofsStatus;
-
         let spendable = self
             .client
             .post_check_spendable(&self.mint_url.clone().try_into()?, proofs.clone())
@@ -90,7 +88,7 @@ impl<C: Client> Wallet<C> {
     pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
         let proofs = self.mint(amount, hash).await?;
 
-        let token = Token::new(self.mint_url.clone().into(), proofs, None);
+        let token = Token::new(self.mint_url.clone(), proofs, None);
         Ok(token?)
     }
 
