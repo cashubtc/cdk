@@ -13,7 +13,7 @@ license.workspace = true
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-cashu = { path = "../../crates/cashu"}
+cashu = { path = "../../crates/cashu", features = ["nut08"] }
 js-sys = "0.3.64"
 serde-wasm-bindgen = "0.6.0"
 serde_json.workspace = true
