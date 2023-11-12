@@ -9,18 +9,18 @@ use cashu::nuts::nut04::PostMintResponse;
 use cashu::nuts::nut05::CheckFeesResponse;
 use cashu::nuts::nut06::{SplitRequest, SplitResponse};
 #[cfg(feature = "nut07")]
-use cashu::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
+use cashu::nuts::nut07::CheckSpendableResponse;
 use cashu::nuts::nut08::MeltResponse;
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
 use cashu::nuts::*;
 use cashu::{utils, Amount};
-#[cfg(target_arch = "wasm32")]
-use gloo::net::http::Request;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
+#[cfg(target_arch = "wasm32")]
+pub mod gloo_client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod minreq_client;
 

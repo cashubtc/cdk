@@ -1,4 +1,4 @@
-//! Minreq http Client
+//! gloo wasm http Client
 
 use async_trait::async_trait;
 use cashu::nuts::nut00::wallet::BlindedMessages;
@@ -15,6 +15,7 @@ use cashu::nuts::nut08::{MeltRequest, MeltResponse};
 use cashu::nuts::MintInfo;
 use cashu::nuts::*;
 use cashu::{Amount, Bolt11Invoice};
+use gloo::net::http::Request;
 use serde_json::Value;
 use url::Url;
 
@@ -28,7 +29,13 @@ impl Client for HttpClient {
     /// Get Mint Keys [NUT-01]
     async fn get_mint_keys(&self, mint_url: &Url) -> Result<Keys, Error> {
         let url = mint_url.join("keys")?;
-        let keys = minreq::get(url).send()?.json::<Value>()?;
+        let keys = Request::get(url.as_str())
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let keys: Keys = serde_json::from_str(&keys.to_string())?;
         Ok(keys)
@@ -37,7 +44,13 @@ impl Client for HttpClient {
     /// Get Keysets [NUT-02]
     async fn get_mint_keysets(&self, mint_url: &Url) -> Result<nut02::Response, Error> {
         let url = mint_url.join("keysets")?;
-        let res = minreq::get(url).send()?.json::<Value>()?;
+        let res = Request::get(url.as_str())
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<nut02::Response, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -58,7 +71,13 @@ impl Client for HttpClient {
         url.query_pairs_mut()
             .append_pair("amount", &amount.to_sat().to_string());
 
-        let res = minreq::get(url).send()?.json::<Value>()?;
+        let res = Request::get(url.as_str())
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<RequestMintResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -83,10 +102,15 @@ impl Client for HttpClient {
             outputs: blinded_messages.blinded_messages,
         };
 
-        let res = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
+        let res = Request::post(url.as_str())
+            .json(&request)
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<PostMintResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -107,10 +131,15 @@ impl Client for HttpClient {
 
         let request = CheckFeesRequest { pr: invoice };
 
-        let res = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
+        let res = Request::post(url.as_str())
+            .json(&request)
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<CheckFeesResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -138,10 +167,15 @@ impl Client for HttpClient {
             outputs,
         };
 
-        let value = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
+        let value = Request::post(url.as_str())
+            .json(&request)
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<MeltResponse, serde_json::Error> =
             serde_json::from_value(value.clone());
@@ -160,17 +194,22 @@ impl Client for HttpClient {
     ) -> Result<SplitResponse, Error> {
         let url = mint_url.join("split")?;
 
-        let res = minreq::post(url)
-            .with_json(&split_request)?
-            .send()?
-            .json::<Value>()?;
+        let res = Request::post(url.as_str())
+            .json(&split_request)
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<SplitResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
 
         match response {
-            Ok(res) if res.promises.is_some() => Ok(res),
-            _ => Err(Error::from_json(&res.to_string())?),
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 
@@ -182,12 +221,19 @@ impl Client for HttpClient {
         proofs: Vec<nut00::mint::Proof>,
     ) -> Result<CheckSpendableResponse, Error> {
         let url = mint_url.join("check")?;
-        let request = CheckSpendableRequest { proofs };
+        let request = CheckSpendableRequest {
+            proofs: proofs.to_owned(),
+        };
 
-        let res = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
+        let res = Request::post(url.as_str())
+            .json(&request)
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<CheckSpendableResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
@@ -202,7 +248,13 @@ impl Client for HttpClient {
     #[cfg(feature = "nut09")]
     async fn get_mint_info(&self, mint_url: &Url) -> Result<MintInfo, Error> {
         let url = mint_url.join("info")?;
-        let res = minreq::get(url).send()?.json::<Value>()?;
+        let res = Request::get(url.as_str())
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
 
