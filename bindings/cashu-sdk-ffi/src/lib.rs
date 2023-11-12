@@ -1,4 +1,3 @@
-mod client;
 mod error;
 mod mint;
 mod types;
@@ -14,7 +13,6 @@ mod ffi {
         RequestMintResponse, Secret, SecretKey, SplitRequest, SplitResponse, Token,
     };
 
-    pub use crate::client::Client;
     pub use crate::error::CashuSdkError;
     pub use crate::mint::Mint;
     pub use crate::types::{Melted, ProofsStatus, SendProofs};
