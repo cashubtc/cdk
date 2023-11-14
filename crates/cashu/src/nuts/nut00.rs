@@ -23,8 +23,8 @@ pub struct BlindedMessage {
 pub mod wallet {
     use std::str::FromStr;
 
-    use base64::engine::general_purpose;
-    use base64::Engine as _;
+    use base64::engine::{general_purpose, GeneralPurpose};
+    use base64::{alphabet, Engine as _};
     use serde::{Deserialize, Serialize};
     use url::Url;
 
@@ -148,7 +148,9 @@ pub mod wallet {
             }
 
             let s = s.replace("cashuA", "");
-            let decoded = general_purpose::STANDARD.decode(s)?;
+            let decode_config = general_purpose::GeneralPurposeConfig::new()
+                .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+            let decoded = GeneralPurpose::new(&alphabet::STANDARD, decode_config).decode(s)?;
             let decoded_str = String::from_utf8(decoded)?;
             let token: Token = serde_json::from_str(&decoded_str)?;
             Ok(token)
@@ -286,6 +288,22 @@ mod tests {
         let token_data = Token::from_str(encoded).unwrap();
 
         assert_eq!(token_data, token);
+    }
+
+    #[test]
+    fn test_token_with_and_without_padding() {
+        let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
+        let proof: Proofs = serde_json::from_str(proof).unwrap();
+        let token = Token::new(
+            UncheckedUrl::from_str("https://localhost:5000/cashu").unwrap(),
+            proof,
+            None,
+        )
+        .unwrap();
+
+        let _token = Token::from_str(&token.convert_to_string().unwrap()).unwrap();
+
+        let _token = Token::from_str("cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6IjBOSTNUVUFzMVNmeSIsImFtb3VudCI6MSwic2VjcmV0IjoiVE92cGVmZGxSZ0EzdlhMN05pM2MvRE1oY29URXNQdnV4eFc0Rys2dXVycz0iLCJDIjoiMDNiZThmMzQwOTMxYTI4ZTlkMGRmNGFmMWQwMWY1ZTcxNTFkMmQ1M2RiN2Y0ZDAyMWQzZGUwZmRiMDNjZGY4ZTlkIn1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvNGdyOVhjbXozWEVrVU53aUJpUUdvQyJ9XX0").unwrap();
     }
 
     #[test]
