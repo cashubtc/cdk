@@ -84,33 +84,33 @@ pub struct MintErrorResponse {
 
 #[async_trait(?Send)]
 pub trait Client {
-    async fn get_mint_keys(&self, mint_url: &Url) -> Result<Keys, Error>;
+    async fn get_mint_keys(&self, mint_url: Url) -> Result<Keys, Error>;
 
-    async fn get_mint_keysets(&self, mint_url: &Url) -> Result<nut02::Response, Error>;
+    async fn get_mint_keysets(&self, mint_url: Url) -> Result<nut02::Response, Error>;
 
     async fn get_request_mint(
         &self,
-        mint_url: &Url,
+        mint_url: Url,
         amount: Amount,
     ) -> Result<RequestMintResponse, Error>;
 
     // TODO: Hash should have a type
     async fn post_mint(
         &self,
-        mint_url: &Url,
+        mint_url: Url,
         blinded_messages: BlindedMessages,
         hash: &str,
     ) -> Result<PostMintResponse, Error>;
 
     async fn post_check_fees(
         &self,
-        mint_url: &Url,
+        mint_url: Url,
         invoice: Bolt11Invoice,
     ) -> Result<CheckFeesResponse, Error>;
 
     async fn post_melt(
         &self,
-        mint_url: &Url,
+        mint_url: Url,
         proofs: Vec<Proof>,
         invoice: Bolt11Invoice,
         outputs: Option<Vec<BlindedMessage>>,
@@ -121,19 +121,36 @@ pub trait Client {
     // in but in check spendable and melt the compants are passed in
     async fn post_split(
         &self,
-        mint_url: &Url,
+        mint_url: Url,
         split_request: SplitRequest,
     ) -> Result<SplitResponse, Error>;
 
     #[cfg(feature = "nut07")]
     async fn post_check_spendable(
         &self,
-        mint_url: &Url,
+        mint_url: Url,
         proofs: Vec<nut00::mint::Proof>,
     ) -> Result<CheckSpendableResponse, Error>;
 
     #[cfg(feature = "nut09")]
-    async fn get_mint_info(&self, mint_url: &Url) -> Result<MintInfo, Error>;
+    async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error>;
+}
+
+#[cfg(any(not(target_arch = "wasm32"), feature = "gloo"))]
+fn join_url(url: Url, path: &str) -> Result<Url, Error> {
+    let mut url = url;
+    if !url.path().ends_with('/') {
+        url.path_segments_mut()
+            .map_err(|_| Error::Custom("Url Path Segmants".to_string()))?
+            .push(path);
+    } else {
+        url.path_segments_mut()
+            .map_err(|_| Error::Custom("Url Path Segmants".to_string()))?
+            .pop()
+            .push(path);
+    }
+
+    Ok(url)
 }
 
 #[cfg(test)]
