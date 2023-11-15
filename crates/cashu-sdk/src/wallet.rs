@@ -62,7 +62,7 @@ impl<C: Client> Wallet<C> {
     ) -> Result<ProofsStatus, Error> {
         let spendable = self
             .client
-            .post_check_spendable(&self.mint_url.clone().try_into()?, proofs.clone())
+            .post_check_spendable(self.mint_url.clone().try_into()?, proofs.clone())
             .await?;
 
         // Separate proofs in spent and unspent based on mint response
@@ -81,7 +81,7 @@ impl<C: Client> Wallet<C> {
     pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
         Ok(self
             .client
-            .get_request_mint(&self.mint_url.clone().try_into()?, amount)
+            .get_request_mint(self.mint_url.clone().try_into()?, amount)
             .await?)
     }
 
@@ -99,7 +99,7 @@ impl<C: Client> Wallet<C> {
         let mint_res = self
             .client
             .post_mint(
-                &self.mint_url.clone().try_into()?,
+                self.mint_url.clone().try_into()?,
                 blinded_messages.clone(),
                 hash,
             )
@@ -119,7 +119,7 @@ impl<C: Client> Wallet<C> {
     pub async fn check_fee(&self, invoice: Bolt11Invoice) -> Result<Amount, Error> {
         Ok(self
             .client
-            .post_check_fees(&self.mint_url.clone().try_into()?, invoice)
+            .post_check_fees(self.mint_url.clone().try_into()?, invoice)
             .await?
             .fee)
     }
@@ -137,7 +137,7 @@ impl<C: Client> Wallet<C> {
             let keys = if token.mint.to_string().eq(&self.mint_url.to_string()) {
                 self.mint_keys.clone()
             } else {
-                self.client.get_mint_keys(&token.mint.try_into()?).await?
+                self.client.get_mint_keys(token.mint.try_into()?).await?
             };
 
             // Sum amount of all proofs
@@ -148,7 +148,7 @@ impl<C: Client> Wallet<C> {
             let split_response = self
                 .client
                 .post_split(
-                    &self.mint_url.clone().try_into()?,
+                    self.mint_url.clone().try_into()?,
                     split_payload.split_payload,
                 )
                 .await?;
@@ -255,7 +255,7 @@ impl<C: Client> Wallet<C> {
         let split_response = self
             .client
             .post_split(
-                &self.mint_url.clone().try_into()?,
+                self.mint_url.clone().try_into()?,
                 split_payload.split_payload,
             )
             .await?;
@@ -299,7 +299,7 @@ impl<C: Client> Wallet<C> {
         let melt_response = self
             .client
             .post_melt(
-                &self.mint_url.clone().try_into()?,
+                self.mint_url.clone().try_into()?,
                 proofs,
                 invoice,
                 Some(blinded.blinded_messages),
