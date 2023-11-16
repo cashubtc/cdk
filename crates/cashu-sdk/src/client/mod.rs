@@ -86,7 +86,7 @@ pub struct MintErrorResponse {
 pub trait Client {
     async fn get_mint_keys(&self, mint_url: Url) -> Result<Keys, Error>;
 
-    async fn get_mint_keysets(&self, mint_url: Url) -> Result<nut02::Response, Error>;
+    async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error>;
 
     async fn get_request_mint(
         &self,

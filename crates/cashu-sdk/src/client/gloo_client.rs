@@ -43,7 +43,7 @@ impl Client for HttpClient {
     }
 
     /// Get Keysets [NUT-02]
-    async fn get_mint_keysets(&self, mint_url: Url) -> Result<nut02::Response, Error> {
+    async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error> {
         let url = join_url(mint_url, "keysets")?;
         let res = Request::get(url.as_str())
             .send()
@@ -53,7 +53,7 @@ impl Client for HttpClient {
             .await
             .map_err(|err| Error::Gloo(err.to_string()))?;
 
-        let response: Result<nut02::Response, serde_json::Error> =
+        let response: Result<KeysetResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
 
         match response {

@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::nuts::nut02::{Id as IdSdk, KeySet as KeySetSdk, Response};
+use cashu::nuts::nut02::{Id as IdSdk, KeySet as KeySetSdk, KeysetResponse as KeysetResponseSdk};
 
 use crate::error::Result;
 use crate::nuts::nut01::keys::Keys;
@@ -73,14 +73,14 @@ impl From<cashu::nuts::nut02::KeySet> for KeySet {
 }
 
 pub struct KeySetResponse {
-    inner: Response,
+    inner: KeysetResponseSdk,
 }
 
 impl KeySetResponse {
     pub fn new(keyset_ids: Vec<Arc<Id>>) -> Self {
         let keysets = keyset_ids.into_iter().map(|id| id.inner).collect();
         Self {
-            inner: Response { keysets },
+            inner: KeysetResponseSdk { keysets },
         }
     }
 
@@ -94,8 +94,8 @@ impl KeySetResponse {
     }
 }
 
-impl From<cashu::nuts::nut02::Response> for KeySetResponse {
-    fn from(inner: Response) -> KeySetResponse {
+impl From<KeysetResponseSdk> for KeySetResponse {
+    fn from(inner: KeysetResponseSdk) -> KeySetResponse {
         KeySetResponse { inner }
     }
 }

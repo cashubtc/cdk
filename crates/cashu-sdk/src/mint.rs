@@ -2,14 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use cashu::dhke::{sign_message, verify_message};
 pub use cashu::error::mint::Error;
-use cashu::nuts::nut00::{BlindedMessage, BlindedSignature, Proof};
-use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::nut02::Id;
-use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+use cashu::nuts::{
+    BlindedMessage, BlindedSignature, MeltRequest, MeltResponse, Proof, SplitRequest,
+    SplitResponse, *,
+};
 #[cfg(feature = "nut07")]
-use cashu::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
-use cashu::nuts::nut08::{MeltRequest, MeltResponse};
-use cashu::nuts::*;
+use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::secret::Secret;
 use cashu::types::KeysetInfo;
 use cashu::Amount;
@@ -60,24 +58,24 @@ impl Mint {
 
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
-    pub fn active_keyset_pubkeys(&self) -> nut01::Response {
-        nut01::Response {
-            keys: nut02::KeySet::from(self.active_keyset.clone()).keys,
+    pub fn active_keyset_pubkeys(&self) -> KeysResponse {
+        KeysResponse {
+            keys: KeySet::from(self.active_keyset.clone()).keys,
         }
     }
 
     /// Return a list of all supported keysets
-    pub fn keysets(&self) -> nut02::Response {
+    pub fn keysets(&self) -> KeysetResponse {
         let mut keysets: HashSet<_> = self.inactive_keysets.keys().cloned().collect();
         keysets.insert(self.active_keyset.id);
-        nut02::Response { keysets }
+        KeysetResponse { keysets }
     }
 
-    pub fn active_keyset(&self) -> nut02::mint::KeySet {
+    pub fn active_keyset(&self) -> MintKeySet {
         self.active_keyset.clone()
     }
 
-    pub fn keyset(&self, id: &Id) -> Option<nut02::KeySet> {
+    pub fn keyset(&self, id: &Id) -> Option<KeySet> {
         if self.active_keyset.id.eq(id) {
             return Some(self.active_keyset.clone().into());
         }
@@ -99,7 +97,7 @@ impl Mint {
         self.inactive_keysets
             .insert(self.active_keyset.id, self.active_keyset_info.clone());
 
-        self.active_keyset = KeySet::generate(secret, derivation_path, max_order);
+        self.active_keyset = MintKeySet::generate(secret, derivation_path, max_order);
     }
 
     pub fn process_mint_request(
