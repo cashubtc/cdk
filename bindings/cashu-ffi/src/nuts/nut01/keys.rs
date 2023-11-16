@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::nuts::nut01::{Keys as KeysSdk, Response as KeysResponseSdk};
+use cashu::nuts::nut01::{Keys as KeysSdk, KeysResponse as KeysResponseSdk};
 use cashu::Amount as AmountSdk;
 
 use crate::{Amount, PublicKey};

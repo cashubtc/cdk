@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::nuts::nut00::BlindedMessage as BlindedMessageSdk;
+use cashu::nuts::BlindedMessage as BlindedMessageSdk;
 
 use crate::nuts::nut01::public_key::PublicKey;
 use crate::Amount;

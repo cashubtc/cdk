@@ -10,18 +10,18 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet"]
+default = ["mint", "wallet", "all-nuts"]
 mint = ["cashu/mint"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
 gloo = ["dep:gloo"]
-all-nuts = ["nut07", "nut09"]
+all-nuts = ["nut07", "nut08", "nut09"]
 nut07 = ["cashu/nut07"]
-# nut08 = ["cashu/nut08"]
+nut08 = ["cashu/nut08"]
 nut09 = ["cashu/nut09"]
 
 
 [dependencies]
-cashu = { path = "../cashu", features = ["nut08"] }
+cashu = { path = "../cashu" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
@@ -30,7 +30,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 once_cell = { version = "1.17", optional = true }
 thiserror = { workspace = true }
 async-trait = "0.1.74"
-gloo = { version = "0.10.0", optional = true, features = ["net"]}
+gloo = { version = "0.10.0", optional = true, features = ["net"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }

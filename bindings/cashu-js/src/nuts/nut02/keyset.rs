@@ -1,7 +1,6 @@
 use std::ops::Deref;
 
-use cashu::nuts::nut01::Response as KeysResponse;
-use cashu::nuts::nut02::{Id, KeySet, Response as KeySetsResponse};
+use cashu::nuts::{Id, KeySet, KeysResponse, KeysetResponse};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -86,18 +85,18 @@ impl JsKeySet {
 
 #[wasm_bindgen(js_name = KeySetsResponse)]
 pub struct JsKeySetsResponse {
-    inner: KeySetsResponse,
+    inner: KeysetResponse,
 }
 
 impl Deref for JsKeySetsResponse {
-    type Target = KeySetsResponse;
+    type Target = KeysetResponse;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<KeySetsResponse> for JsKeySetsResponse {
-    fn from(inner: KeySetsResponse) -> JsKeySetsResponse {
+impl From<KeysetResponse> for JsKeySetsResponse {
+    fn from(inner: KeysetResponse) -> JsKeySetsResponse {
         JsKeySetsResponse { inner }
     }
 }

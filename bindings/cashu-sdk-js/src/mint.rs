@@ -8,8 +8,7 @@ use cashu_js::nuts::nut07::{JsCheckSpendableRequest, JsCheckSpendableResponse};
 use cashu_js::nuts::nut08::{JsMeltRequest, JsMeltResponse};
 use cashu_js::JsAmount;
 use cashu_sdk::mint::Mint;
-use cashu_sdk::nuts::nut01;
-use cashu_sdk::nuts::nut02::KeySet;
+use cashu_sdk::nuts::{KeySet, KeysResponse};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -64,7 +63,7 @@ impl JsMint {
     pub fn active_keyset_pubkeys(&self) -> Result<JsKeysResponse> {
         let keyset: KeySet = self.inner.active_keyset.clone().into();
 
-        Ok(nut01::Response { keys: keyset.keys }.into())
+        Ok(KeysResponse { keys: keyset.keys }.into())
     }
 
     /// Get Keysets
