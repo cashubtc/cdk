@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::nut00::BlindedSignature;
 #[cfg(feature = "wallet")]
-use crate::nuts::nut00::wallet::BlindedMessages;
-use crate::nuts::nut00::{BlindedMessage, Proofs};
+use crate::nuts::BlindedMessages;
+use crate::nuts::{BlindedMessage, Proofs};
 use crate::Amount;
 
 #[cfg(feature = "wallet")]
