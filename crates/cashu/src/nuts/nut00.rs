@@ -3,8 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::nut01::PublicKey;
-use super::nut02::Id;
+use super::{Id, Proofs, PublicKey};
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
 use crate::Amount;
@@ -31,8 +30,7 @@ pub mod wallet {
     use super::MintProofs;
     use crate::dhke::blind_message;
     use crate::error::wallet;
-    use crate::nuts::nut00::{BlindedMessage, Proofs};
-    use crate::nuts::nut01;
+    use crate::nuts::{BlindedMessage, Proofs, SecretKey};
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
     use crate::{error, Amount};
@@ -45,7 +43,7 @@ pub mod wallet {
         /// Secrets
         pub secrets: Vec<Secret>,
         /// Rs
-        pub rs: Vec<nut01::SecretKey>,
+        pub rs: Vec<SecretKey>,
         /// Amounts
         pub amounts: Vec<Amount>,
     }
@@ -206,9 +204,6 @@ pub struct Proof {
     pub id: Option<Id>,
 }
 
-/// List of proofs
-pub type Proofs = Vec<Proof>;
-
 impl From<Proof> for mint::Proof {
     fn from(proof: Proof) -> Self {
         Self {
@@ -245,7 +240,7 @@ pub mod mint {
     /// List of proofs
     pub type Proofs = Vec<Proof>;
 
-    pub fn mint_proofs_from_proofs(proofs: super::Proofs) -> Proofs {
+    pub fn mint_proofs_from_proofs(proofs: crate::nuts::Proofs) -> Proofs {
         proofs.iter().map(|p| p.to_owned().into()).collect()
     }
 }

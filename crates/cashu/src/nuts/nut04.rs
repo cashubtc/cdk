@@ -2,7 +2,7 @@
 // https://github.com/cashubtc/nuts/blob/main/04.md
 use serde::{Deserialize, Serialize};
 
-use super::nut00::{BlindedMessage, BlindedSignature};
+use super::{BlindedMessage, BlindedSignature};
 use crate::Amount;
 
 /// Post Mint Request [NUT-04]

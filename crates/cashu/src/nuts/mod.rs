@@ -14,9 +14,7 @@ pub mod nut09;
 
 #[cfg(feature = "wallet")]
 pub use nut00::wallet::{BlindedMessages, Token};
-#[cfg(feature = "mint")]
-pub use nut00::BlindedMessage;
-pub use nut00::{BlindedSignature, Proof, Proofs};
+pub use nut00::{BlindedMessage, BlindedSignature, Proof};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeysetResponse};
@@ -34,3 +32,5 @@ pub use nut07::{CheckSpendableRequest, CheckSpendableResponse};
 pub use nut08::{MeltRequest, MeltResponse};
 #[cfg(feature = "nut09")]
 pub use nut09::MintInfo;
+
+pub type Proofs = Vec<Proof>;

@@ -4,7 +4,7 @@
 use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 
-use super::nut00::{BlindedMessage, BlindedSignature, Proofs};
+use super::{BlindedMessage, BlindedSignature, Proofs};
 use crate::error::Error;
 use crate::Amount;
 

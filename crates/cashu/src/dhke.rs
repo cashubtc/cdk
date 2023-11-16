@@ -9,11 +9,11 @@ use k256::{Scalar, SecretKey};
 
 use crate::error;
 #[cfg(feature = "wallet")]
-use crate::nuts::nut00::{BlindedSignature, Proof, Proofs};
-#[cfg(feature = "wallet")]
 use crate::nuts::nut01::{Keys, PublicKey};
 #[cfg(feature = "wallet")]
 use crate::nuts::*;
+#[cfg(feature = "wallet")]
+use crate::nuts::{BlindedSignature, Proof, Proofs};
 use crate::secret::Secret;
 
 fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
