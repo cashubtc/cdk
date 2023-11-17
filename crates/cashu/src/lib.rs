@@ -1,5 +1,5 @@
 pub mod amount;
-#[cfg(feature = "wallet")]
+#[cfg(any(feature = "wallet", feature = "mint"))]
 pub mod dhke;
 pub mod error;
 pub mod nuts;
