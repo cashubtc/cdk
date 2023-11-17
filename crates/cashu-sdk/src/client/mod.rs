@@ -1,19 +1,16 @@
 //! Client to connet to mint
 
 use async_trait::async_trait;
-use cashu::nuts::nut00::wallet::BlindedMessages;
-use cashu::nuts::nut00::{BlindedMessage, Proof};
-use cashu::nuts::nut01::Keys;
-use cashu::nuts::nut03::RequestMintResponse;
-use cashu::nuts::nut04::PostMintResponse;
-use cashu::nuts::nut05::CheckFeesResponse;
-use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+#[cfg(feature = "mint")]
+use cashu::nuts::nut00;
 #[cfg(feature = "nut07")]
-use cashu::nuts::nut07::CheckSpendableResponse;
-use cashu::nuts::nut08::MeltResponse;
+use cashu::nuts::CheckSpendableResponse;
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
-use cashu::nuts::*;
+use cashu::nuts::{
+    BlindedMessage, BlindedMessages, CheckFeesResponse, Keys, KeysetResponse, MeltResponse,
+    PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
+};
 use cashu::{utils, Amount};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
