@@ -1,10 +1,10 @@
 //! Keysets and keyset ID
 // https://github.com/cashubtc/nuts/blob/main/02.md
 
+use core::fmt;
 use std::collections::HashSet;
+use std::str::FromStr;
 
-use base64::engine::general_purpose;
-use base64::Engine as _;
 use bitcoin::hashes::{sha256, Hash};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -12,12 +12,24 @@ use thiserror::Error;
 
 use super::nut01::Keys;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq)]
 pub enum Error {
     #[error("`{0}`")]
-    Base64(#[from] base64::DecodeError),
-    #[error("NUT01: ID length invalid")]
+    HexError(#[from] hex::FromHexError),
+    #[error("NUT02: ID length invalid")]
     Length,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeySetVersion {
+    Version00,
+}
+impl std::fmt::Display for KeySetVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeySetVersion::Version00 => f.write_str("00"),
+        }
+    }
 }
 
 /// A keyset ID is an identifier for a specific keyset. It can be derived by
@@ -25,50 +37,40 @@ pub enum Error {
 /// be stored in a Cashu token such that the token can be used to identify
 /// which mint or keyset it was generated from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Id([u8; Id::BYTES]);
+pub struct Id {
+    version: KeySetVersion,
+    id: [u8; Self::STRLEN],
+}
 
 impl Id {
-    const BYTES: usize = 9;
-    const STRLEN: usize = 12;
-
-    pub fn try_from_base64(b64: &str) -> Result<Self, Error> {
-        use base64::engine::general_purpose::{STANDARD, URL_SAFE};
-        use base64::Engine as _;
-
-        if b64.len() != Self::STRLEN {
-            return Err(Error::Length);
-        }
-
-        if let Ok(bytes) = URL_SAFE.decode(b64) {
-            if bytes.len() == Self::BYTES {
-                return Ok(Self(
-                    <[u8; Self::BYTES]>::try_from(bytes.as_slice()).unwrap(),
-                ));
-            }
-        }
-
-        match STANDARD.decode(b64) {
-            Ok(bytes) if bytes.len() == Self::BYTES => Ok(Self(
-                <[u8; Self::BYTES]>::try_from(bytes.as_slice()).unwrap(),
-            )),
-            Ok(_) => Err(Error::Length),
-            Err(e) => Err(Error::Base64(e)),
-        }
-    }
+    const STRLEN: usize = 14;
 }
 
 impl std::fmt::Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut output = String::with_capacity(Self::STRLEN);
-        general_purpose::STANDARD.encode_string(self.0.as_slice(), &mut output);
-        f.write_str(&output)
+        f.write_str(&format!(
+            "{}{}",
+            self.version,
+            String::from_utf8(self.id.to_vec()).map_err(|_| fmt::Error::default())?
+        ))
     }
 }
 
-impl std::convert::TryFrom<String> for Id {
-    type Error = Error;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Id::try_from_base64(&value)
+impl FromStr for Id {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Check if the string length is valid
+        if s.len() != 16 {
+            return Err(Error::Length);
+        }
+
+        println!("{}", s[2..].as_bytes().len());
+
+        Ok(Self {
+            version: KeySetVersion::Version00,
+            id: s[2..].as_bytes().try_into().map_err(|_| Error::Length)?,
+        })
     }
 }
 
@@ -99,13 +101,13 @@ impl<'de> serde::de::Deserialize<'de> for Id {
             where
                 E: serde::de::Error,
             {
-                Id::try_from_base64(v).map_err(|e| match e {
+                Id::from_str(v).map_err(|e| match e {
                     Error::Length => E::custom(format!(
                         "Invalid Length: Expected {}, got {}",
                         Id::STRLEN,
                         v.len()
                     )),
-                    Error::Base64(e) => E::custom(e),
+                    Error::HexError(e) => E::custom(e),
                 })
             }
         }
@@ -116,23 +118,33 @@ impl<'de> serde::de::Deserialize<'de> for Id {
 
 impl From<&Keys> for Id {
     fn from(map: &Keys) -> Self {
-        /* NUT-02 § 2.2.2
-            1 - sort keyset by amount
-            2 - concatenate all (sorted) public keys to one string
+        // REVIEW: Is it 16 or 14 bytes
+        /* NUT-02
+            1 - sort public keys by their amount in ascending order
+            2 - concatenate all public keys to one string
             3 - HASH_SHA256 the concatenated public keys
-            4 - take the first 12 characters of the base64-encoded hash
+            4 - take the first 14 characters of the hex-encoded hash
+            5 - prefix it with a keyset ID version byte
         */
 
         let pubkeys_concat = map
             .iter()
             .sorted_by(|(amt_a, _), (amt_b, _)| amt_a.cmp(amt_b))
-            .map(|(_, pubkey)| pubkey)
-            .join("");
+            .map(|(_, pubkey)| pubkey.to_bytes())
+            .collect::<Box<[Box<[u8]>]>>()
+            .concat();
 
-        let hash = sha256::Hash::hash(pubkeys_concat.as_bytes());
-        let bytes = hash.to_byte_array();
+        let hash = sha256::Hash::hash(&pubkeys_concat);
+        let hex_of_hash = hex::encode(hash.to_byte_array());
         // First 9 bytes of hash will encode as the first 12 Base64 characters later
-        Self(<[u8; Self::BYTES]>::try_from(&bytes[0..Self::BYTES]).unwrap())
+        Self {
+            version: KeySetVersion::Version00,
+            id: hex_of_hash[0..Self::STRLEN]
+                .as_bytes()
+                .to_owned()
+                .try_into()
+                .unwrap(),
+        }
     }
 }
 
@@ -141,12 +153,21 @@ impl From<&Keys> for Id {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
-    pub keysets: HashSet<Id>,
+    pub keysets: HashSet<KeySetInfo>,
+}
+
+impl KeysetResponse {
+    pub fn new(keysets: Vec<KeySet>) -> Self {
+        Self {
+            keysets: keysets.into_iter().map(|keyset| keyset.into()).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySet {
     pub id: Id,
+    pub symbol: String,
     pub keys: Keys,
 }
 
@@ -154,7 +175,23 @@ impl From<mint::KeySet> for KeySet {
     fn from(keyset: mint::KeySet) -> Self {
         Self {
             id: keyset.id,
+            symbol: keyset.symbol,
             keys: Keys::from(keyset.keys),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
+pub struct KeySetInfo {
+    pub id: Id,
+    pub symbol: String,
+}
+
+impl From<KeySet> for KeySetInfo {
+    fn from(keyset: KeySet) -> KeySetInfo {
+        Self {
+            id: keyset.id,
+            symbol: keyset.symbol,
         }
     }
 }
@@ -164,7 +201,6 @@ pub mod mint {
 
     use bitcoin::hashes::sha256::Hash as Sha256;
     use bitcoin::hashes::{Hash, HashEngine};
-    use itertools::Itertools;
     use k256::SecretKey;
     use serde::Serialize;
 
@@ -175,12 +211,14 @@ pub mod mint {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct KeySet {
         pub id: Id,
+        pub symbol: String,
         pub keys: Keys,
     }
 
     impl KeySet {
         pub fn generate(
             secret: impl Into<String>,
+            symbol: impl Into<String>,
             derivation_path: impl Into<String>,
             max_order: u8,
         ) -> Self {
@@ -214,6 +252,7 @@ pub mod mint {
 
             Self {
                 id: (&keys).into(),
+                symbol: symbol.into(),
                 keys,
             }
         }
@@ -229,25 +268,9 @@ pub mod mint {
 
     impl From<&Keys> for Id {
         fn from(map: &Keys) -> Self {
-            /* NUT-02 § 2.2.2
-                1 - sort keyset by amount
-                2 - concatenate all (sorted) public keys to one string
-                3 - HASH_SHA256 the concatenated public keys
-                4 - take the first 12 characters of the base64-encoded hash
-            */
-
             let keys: super::Keys = map.clone().into();
 
-            let pubkeys_concat = keys
-                .iter()
-                .sorted_by(|(amt_a, _), (amt_b, _)| amt_a.cmp(amt_b))
-                .map(|(_, pubkey)| pubkey)
-                .join("");
-
-            let hash = Sha256::hash(pubkeys_concat.as_bytes());
-            let bytes = hash.to_byte_array();
-            // First 9 bytes of hash will encode as the first 12 Base64 characters later
-            Self(<[u8; Self::BYTES]>::try_from(&bytes[0..Self::BYTES]).unwrap())
+            Id::from(&keys)
         }
     }
 }
@@ -255,10 +278,12 @@ pub mod mint {
 #[cfg(test)]
 mod test {
 
+    use std::str::FromStr;
+
     use super::Keys;
     use crate::nuts::nut02::Id;
 
-    const SHORT_KEYSET_ID: &str = "esom3oyNLLit";
+    const SHORT_KEYSET_ID: &str = "00456a94ab4e1c46";
     const SHORT_KEYSET: &str = r#"
         {
             "1":"03a40f20667ed53513075dc51e715ff2046cad64eb68960632269ba7f0210e38bc",
@@ -268,7 +293,7 @@ mod test {
         }
     "#;
 
-    const KEYSET_ID: &str = "I2yN+iRYfkzT";
+    const KEYSET_ID: &str = "000f01df73ea149a";
     const KEYSET: &str = r#"
         {
             "1":"03ba786a2c0745f8c30e490288acd7a72dd53d65afd292ddefa326a4a3fa14c566",
@@ -344,12 +369,12 @@ mod test {
 
         let id: Id = (&keys).into();
 
-        assert_eq!(id, Id::try_from_base64(SHORT_KEYSET_ID).unwrap());
+        assert_eq!(id, Id::from_str(SHORT_KEYSET_ID).unwrap());
 
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
 
         let id: Id = (&keys).into();
 
-        assert_eq!(id, Id::try_from_base64(KEYSET_ID).unwrap());
+        assert_eq!(id, Id::from_str(KEYSET_ID).unwrap());
     }
 }
