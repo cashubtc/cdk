@@ -40,6 +40,10 @@ impl PublicKey {
         let bytes = self.0.to_sec1_bytes();
         hex::encode(bytes)
     }
+
+    pub fn to_bytes(&self) -> Box<[u8]> {
+        self.0.to_sec1_bytes()
+    }
 }
 
 impl std::fmt::Display for PublicKey {

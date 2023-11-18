@@ -278,7 +278,7 @@ mod tests {
 
         assert_eq!(
             proof[0].clone().id.unwrap(),
-            Id::try_from_base64("DSAl9nvvyfva").unwrap()
+            Id::from_str("DSAl9nvvyfva").unwrap()
         );
     }
 
@@ -294,7 +294,7 @@ mod tests {
         );
         assert_eq!(
             token.token[0].proofs[0].clone().id.unwrap(),
-            Id::try_from_base64("DSAl9nvvyfva").unwrap()
+            Id::from_str("DSAl9nvvyfva").unwrap()
         );
 
         let encoded = &token.convert_to_string().unwrap();
