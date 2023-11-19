@@ -14,12 +14,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::types::MeltQuote;
+use crate::Mnemonic;
 
 pub struct Mint {
     //    pub pubkey: PublicKey
-    _secret: String,
     pub keysets: HashMap<Id, nut02::mint::KeySet>,
     pub keysets_info: HashMap<Id, MintKeySetInfo>,
+    //    pub pubkey: PublicKey,
+    mnemonic: Mnemonic,
     pub spent_secrets: HashSet<Secret>,
     pub pending_secrets: HashSet<Secret>,
     pub fee_reserve: FeeReserve,
@@ -28,7 +30,7 @@ pub struct Mint {
 
 impl Mint {
     pub fn new(
-        secret: &str,
+        mnemonic: Mnemonic,
         keysets_info: HashSet<MintKeySetInfo>,
         spent_secrets: HashSet<Secret>,
         melt_quotes: Vec<MeltQuote>,
@@ -38,7 +40,7 @@ impl Mint {
         let mut keysets = HashMap::default();
         let mut info = HashMap::default();
 
-        let mut active_units: HashSet<String> = HashSet::default();
+        let mut active_units: HashSet<CurrencyUnit> = HashSet::default();
 
         let melt_quotes = melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect();
 
@@ -50,9 +52,9 @@ impl Mint {
             }
 
             let keyset = nut02::mint::KeySet::generate(
-                secret,
+                &mnemonic.to_seed_normalized(""),
                 keyset_info.unit.clone(),
-                keyset_info.derivation_path.clone(),
+                &keyset_info.derivation_path.clone(),
                 keyset_info.max_order,
             );
 
@@ -62,7 +64,7 @@ impl Mint {
         }
 
         Self {
-            _secret: secret.to_string(),
+            mnemonic,
             keysets,
             melt_quotes,
             keysets_info: info,
@@ -103,6 +105,21 @@ impl Mint {
 
     pub fn keyset(&self, id: &Id) -> Option<KeySet> {
         self.keysets.get(id).map(|ks| ks.clone().into())
+    }
+
+    /// Add current keyset to inactive keysets
+    /// Generate new keyset
+    pub fn rotate_keyset(&mut self, unit: CurrencyUnit, derivation_path: &str, max_order: u8) {
+        // TODO: Set old keyset as inactive
+
+        let new_keyset = MintKeySet::generate(
+            &self.mnemonic.to_seed_normalized(""),
+            unit,
+            derivation_path,
+            max_order,
+        );
+
+        self.keysets.insert(new_keyset.id, new_keyset);
     }
 
     pub fn process_mint_request(
@@ -327,7 +344,7 @@ pub struct FeeReserve {
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeySetInfo {
     pub id: Id,
-    pub unit: String,
+    pub unit: CurrencyUnit,
     pub active: bool,
     pub valid_from: u64,
     pub valid_to: Option<u64>,

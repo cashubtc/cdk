@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut01::Keys;
+use super::CurrencyUnit;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum Error {
@@ -164,7 +165,7 @@ impl KeysetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySet {
     pub id: Id,
-    pub unit: String,
+    pub unit: CurrencyUnit,
     pub keys: Keys,
 }
 
@@ -181,7 +182,7 @@ impl From<mint::KeySet> for KeySet {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySetInfo {
     pub id: Id,
-    pub unit: String,
+    pub unit: CurrencyUnit,
 }
 
 impl From<KeySet> for KeySetInfo {
@@ -203,20 +204,21 @@ pub mod mint {
 
     use super::Id;
     use crate::nuts::nut01::mint::{KeyPair, Keys};
+    use crate::nuts::CurrencyUnit;
     use crate::Amount;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct KeySet {
         pub id: Id,
-        pub unit: String,
+        pub unit: CurrencyUnit,
         pub keys: Keys,
     }
 
     impl KeySet {
         pub fn generate(
-            secret: impl Into<String>,
-            unit: impl Into<String>,
-            derivation_path: impl Into<String>,
+            secret: &[u8],
+            unit: CurrencyUnit,
+            derivation_path: &str,
             max_order: u8,
         ) -> Self {
             // Elliptic curve math context
@@ -230,8 +232,8 @@ pub mod mint {
 
             // SHA-256 midstate, for quicker hashing
             let mut engine = Sha256::engine();
-            engine.input(secret.into().as_bytes());
-            engine.input(derivation_path.into().as_bytes());
+            engine.input(secret);
+            engine.input(derivation_path.as_bytes());
 
             for i in 0..max_order {
                 let amount = Amount::from(2_u64.pow(i as u32));
@@ -249,7 +251,7 @@ pub mod mint {
 
             Self {
                 id: (&keys).into(),
-                unit: unit.into(),
+                unit,
                 keys,
             }
         }

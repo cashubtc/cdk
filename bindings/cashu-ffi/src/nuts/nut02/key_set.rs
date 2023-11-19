@@ -2,7 +2,9 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cashu::nuts::{Id as IdSdk, KeySet as KeySetSdk, KeysetResponse as KeysetResponseSdk};
+use cashu::nuts::{
+    CurrencyUnit, Id as IdSdk, KeySet as KeySetSdk, KeysetResponse as KeysetResponseSdk,
+};
 
 use crate::error::Result;
 use crate::nuts::nut01::keys::Keys;
@@ -54,7 +56,7 @@ impl KeySet {
         Self {
             inner: KeySetSdk {
                 id: *id.as_ref().deref(),
-                unit,
+                unit: CurrencyUnit::from_str(&unit).unwrap(),
                 keys: keys.as_ref().deref().clone(),
             },
         }
@@ -65,7 +67,7 @@ impl KeySet {
     }
 
     pub fn unit(&self) -> String {
-        self.inner.unit.clone()
+        self.inner.unit.clone().to_string()
     }
 
     pub fn keys(&self) -> Arc<Keys> {

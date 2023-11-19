@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::str::FromStr;
 
-use cashu::nuts::{Id, KeySet, KeysResponse, KeysetResponse};
+use cashu::nuts::{CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -68,7 +68,7 @@ impl JsKeySet {
         Self {
             inner: KeySet {
                 id: *id.deref(),
-                unit,
+                unit: CurrencyUnit::from_str(&unit).unwrap(),
                 keys: keys.deref().clone(),
             },
         }

@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use cashu_ffi::{
@@ -7,6 +8,7 @@ use cashu_ffi::{
     Secret, SwapRequest, SwapResponse,
 };
 use cashu_sdk::mint::Mint as MintSdk;
+use cashu_sdk::Mnemonic;
 
 use crate::error::Result;
 use crate::types::MintKeySetInfo;
@@ -35,7 +37,7 @@ impl Mint {
 
         Ok(Self {
             inner: MintSdk::new(
-                &secret,
+                Mnemonic::from_str(&secret).unwrap(),
                 keysets,
                 spent_secrets,
                 // TODO: quotes

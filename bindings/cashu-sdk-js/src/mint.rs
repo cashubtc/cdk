@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::str::FromStr;
 
 #[cfg(feature = "nut07")]
 use cashu_js::nuts::{JsCheckSpendableRequest, JsCheckSpendableResponse};
@@ -9,6 +10,7 @@ use cashu_js::nuts::{
 use cashu_js::JsAmount;
 use cashu_sdk::mint::Mint;
 use cashu_sdk::nuts::{KeySet, KeysResponse};
+use cashu_sdk::Mnemonic;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -48,7 +50,7 @@ impl JsMint {
         let quotes = serde_wasm_bindgen::from_value(quotes).map_err(into_err)?;
         Ok(JsMint {
             inner: Mint::new(
-                &secret,
+                Mnemonic::from_str(&secret).unwrap(),
                 keyset_info,
                 spent_secrets,
                 quotes,
