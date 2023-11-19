@@ -25,7 +25,7 @@ pub struct BlindedMessage {
     pub b: PublicKey,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum CurrencyUnit {
     #[default]

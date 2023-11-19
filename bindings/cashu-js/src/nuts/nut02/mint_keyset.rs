@@ -1,6 +1,8 @@
 use std::ops::Deref;
+use std::str::FromStr;
 
 use cashu::nuts::nut02::mint::KeySet;
+use cashu::nuts::CurrencyUnit;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(js_name = MintKeySet)]
@@ -32,7 +34,12 @@ impl JsMintKeySet {
         max_order: u8,
     ) -> JsMintKeySet {
         Self {
-            inner: KeySet::generate(secret, unit, derivation_path, max_order),
+            inner: KeySet::generate(
+                secret.as_bytes(),
+                CurrencyUnit::from_str(&unit).unwrap(),
+                &derivation_path,
+                max_order,
+            ),
         }
     }
 }

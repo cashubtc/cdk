@@ -1,7 +1,8 @@
 use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::Arc;
 
-use cashu::nuts::KeySetInfo as KeySetInfoSdk;
+use cashu::nuts::{CurrencyUnit, KeySetInfo as KeySetInfoSdk};
 
 use crate::Id;
 
@@ -27,7 +28,7 @@ impl KeySetInfo {
         Self {
             inner: KeySetInfoSdk {
                 id: *id.as_ref().deref(),
-                unit,
+                unit: CurrencyUnit::from_str(&unit).unwrap(),
             },
         }
     }

@@ -1,7 +1,9 @@
 use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use cashu_sdk::mint::MintKeySetInfo as MintKeySetInfoSdk;
+use cashu_sdk::nuts::CurrencyUnit;
 
 use crate::Id;
 
@@ -36,7 +38,7 @@ impl MintKeySetInfo {
             inner: MintKeySetInfoSdk {
                 id: *id.as_ref().deref(),
                 active,
-                unit,
+                unit: CurrencyUnit::from_str(&unit).unwrap(),
                 valid_from,
                 valid_to,
                 derivation_path,

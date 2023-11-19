@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::{CurrencyUnit, Proofs};
+use crate::nuts::{CurrencyUnit, Id, Proofs};
 use crate::{Amount, Bolt11Invoice};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,4 +55,14 @@ pub struct MeltQuote {
     pub fee_reserve: Amount,
     pub paid: bool,
     pub expiry: u64,
+}
+
+/// Keyset id
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeysetInfo {
+    pub id: Id,
+    pub valid_from: u64,
+    pub valid_to: Option<u64>,
+    pub derivation_path: String,
+    pub max_order: u8,
 }
