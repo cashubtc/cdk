@@ -50,11 +50,11 @@ impl Deref for KeySet {
 }
 
 impl KeySet {
-    pub fn new(id: Arc<Id>, symbol: String, keys: Arc<Keys>) -> Self {
+    pub fn new(id: Arc<Id>, unit: String, keys: Arc<Keys>) -> Self {
         Self {
             inner: KeySetSdk {
                 id: *id.as_ref().deref(),
-                symbol,
+                unit,
                 keys: keys.as_ref().deref().clone(),
             },
         }
@@ -64,8 +64,8 @@ impl KeySet {
         Arc::new(self.inner.id.into())
     }
 
-    pub fn symbol(&self) -> String {
-        self.inner.symbol.clone()
+    pub fn unit(&self) -> String {
+        self.inner.unit.clone()
     }
 
     pub fn keys(&self) -> Arc<Keys> {

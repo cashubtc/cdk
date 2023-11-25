@@ -64,11 +64,11 @@ impl From<KeySet> for JsKeySet {
 impl JsKeySet {
     /// From Hex
     #[wasm_bindgen(constructor)]
-    pub fn new(id: JsId, symbol: String, keys: JsKeys) -> JsKeySet {
+    pub fn new(id: JsId, unit: String, keys: JsKeys) -> JsKeySet {
         Self {
             inner: KeySet {
                 id: *id.deref(),
-                symbol,
+                unit,
                 keys: keys.deref().clone(),
             },
         }

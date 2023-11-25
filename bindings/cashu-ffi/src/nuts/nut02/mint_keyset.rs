@@ -14,14 +14,9 @@ impl Deref for MintKeySet {
 }
 
 impl MintKeySet {
-    pub fn generate(
-        secret: String,
-        symbol: String,
-        derivation_path: String,
-        max_order: u8,
-    ) -> Self {
+    pub fn generate(secret: String, unit: String, derivation_path: String, max_order: u8) -> Self {
         Self {
-            inner: KeySetSdk::generate(secret, symbol, derivation_path, max_order),
+            inner: KeySetSdk::generate(secret, unit, derivation_path, max_order),
         }
     }
 }

@@ -124,14 +124,14 @@ interface Keys {
 };
 
 interface KeySet {
-	constructor(Id id, string symbol, Keys keys);
+	constructor(Id id, string unit, Keys keys);
 	Id id();
 	Keys keys();
 };
 
 interface MintKeySet {
 	[Name=generate]
-	constructor(string secret, string symbol, string derivation_path, u8 max_order);
+	constructor(string secret, string unit, string derivation_path, u8 max_order);
 };
 
 
@@ -246,7 +246,7 @@ interface MintInfo {
 };
 
 interface KeySetInfo {
-	constructor(Id id, string symbol);
+	constructor(Id id, string unit);
 	
 };
 

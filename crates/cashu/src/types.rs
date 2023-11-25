@@ -36,7 +36,7 @@ pub enum InvoiceStatus {
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysetInfo {
     pub id: Id,
-    pub symbol: String,
+    pub unit: String,
     pub valid_from: u64,
     pub valid_to: Option<u64>,
     pub derivation_path: String,
@@ -47,7 +47,7 @@ impl From<KeysetInfo> for KeySetInfo {
     fn from(keyset_info: KeysetInfo) -> Self {
         Self {
             id: keyset_info.id,
-            symbol: keyset_info.symbol,
+            unit: keyset_info.unit,
         }
     }
 }

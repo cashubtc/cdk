@@ -27,12 +27,12 @@ impl JsMintKeySet {
     #[wasm_bindgen(constructor)]
     pub fn generate(
         secret: String,
-        symbol: String,
+        unit: String,
         derivation_path: String,
         max_order: u8,
     ) -> JsMintKeySet {
         Self {
-            inner: KeySet::generate(secret, symbol, derivation_path, max_order),
+            inner: KeySet::generate(secret, unit, derivation_path, max_order),
         }
     }
 }

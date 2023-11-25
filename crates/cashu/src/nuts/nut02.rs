@@ -167,7 +167,7 @@ impl KeysetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySet {
     pub id: Id,
-    pub symbol: String,
+    pub unit: String,
     pub keys: Keys,
 }
 
@@ -175,7 +175,7 @@ impl From<mint::KeySet> for KeySet {
     fn from(keyset: mint::KeySet) -> Self {
         Self {
             id: keyset.id,
-            symbol: keyset.symbol,
+            unit: keyset.unit,
             keys: Keys::from(keyset.keys),
         }
     }
@@ -184,14 +184,14 @@ impl From<mint::KeySet> for KeySet {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySetInfo {
     pub id: Id,
-    pub symbol: String,
+    pub unit: String,
 }
 
 impl From<KeySet> for KeySetInfo {
     fn from(keyset: KeySet) -> KeySetInfo {
         Self {
             id: keyset.id,
-            symbol: keyset.symbol,
+            unit: keyset.unit,
         }
     }
 }
@@ -211,14 +211,14 @@ pub mod mint {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct KeySet {
         pub id: Id,
-        pub symbol: String,
+        pub unit: String,
         pub keys: Keys,
     }
 
     impl KeySet {
         pub fn generate(
             secret: impl Into<String>,
-            symbol: impl Into<String>,
+            unit: impl Into<String>,
             derivation_path: impl Into<String>,
             max_order: u8,
         ) -> Self {
@@ -252,7 +252,7 @@ pub mod mint {
 
             Self {
                 id: (&keys).into(),
-                symbol: symbol.into(),
+                unit: unit.into(),
                 keys,
             }
         }
