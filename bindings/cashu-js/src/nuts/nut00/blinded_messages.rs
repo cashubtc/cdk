@@ -4,6 +4,7 @@ use cashu::nuts::nut00::wallet::BlindedMessages;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
+use crate::nuts::nut02::JsId;
 use crate::types::JsAmount;
 
 #[wasm_bindgen(js_name = BlindedMessages)]
@@ -21,16 +22,18 @@ impl Deref for JsBlindedMessages {
 #[wasm_bindgen(js_class = BlindedMessages)]
 impl JsBlindedMessages {
     #[wasm_bindgen(js_name = random)]
-    pub fn random(amount: JsAmount) -> Result<JsBlindedMessages> {
+    pub fn random(keyset_id: JsId, amount: JsAmount) -> Result<JsBlindedMessages> {
         Ok(JsBlindedMessages {
-            inner: BlindedMessages::random(*amount.deref()).map_err(into_err)?,
+            inner: BlindedMessages::random(*keyset_id.deref(), *amount.deref())
+                .map_err(into_err)?,
         })
     }
 
     #[wasm_bindgen(js_name = blank)]
-    pub fn blank(fee_reserve: JsAmount) -> Result<JsBlindedMessages> {
+    pub fn blank(keyset_id: JsId, fee_reserve: JsAmount) -> Result<JsBlindedMessages> {
         Ok(JsBlindedMessages {
-            inner: BlindedMessages::blank(*fee_reserve.deref()).map_err(into_err)?,
+            inner: BlindedMessages::blank(*keyset_id.deref(), *fee_reserve.deref())
+                .map_err(into_err)?,
         })
     }
 

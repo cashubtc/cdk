@@ -98,7 +98,7 @@ impl<C: Client> Wallet<C> {
 
     /// Mint Proofs
     pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
-        let blinded_messages = BlindedMessages::random(amount)?;
+        let blinded_messages = BlindedMessages::random((&self.mint_keys).into(), amount)?;
 
         let mint_res = self
             .client
@@ -181,17 +181,17 @@ impl<C: Client> Wallet<C> {
         // amount first blinded messages are created for the amount
 
         let blinded_messages = if let Some(amount) = amount {
-            let mut desired_messages = BlindedMessages::random(amount)?;
+            let mut desired_messages = BlindedMessages::random((&self.mint_keys).into(), amount)?;
 
             let change_amount = proofs.iter().map(|p| p.amount).sum::<Amount>() - amount;
 
-            let change_messages = BlindedMessages::random(change_amount)?;
+            let change_messages = BlindedMessages::random((&self.mint_keys).into(), change_amount)?;
             desired_messages.combine(change_messages);
             desired_messages
         } else {
             let value = proofs.iter().map(|p| p.amount).sum();
 
-            BlindedMessages::random(value)?
+            BlindedMessages::random((&self.mint_keys).into(), value)?
         };
 
         let split_payload = SplitRequest::new(proofs, blinded_messages.blinded_messages.clone());
@@ -308,7 +308,7 @@ impl<C: Client> Wallet<C> {
         proofs: Proofs,
         fee_reserve: Amount,
     ) -> Result<Melted, Error> {
-        let blinded = BlindedMessages::blank(fee_reserve)?;
+        let blinded = BlindedMessages::blank((&self.mint_keys).into(), fee_reserve)?;
         let melt_response = self
             .client
             .post_melt(

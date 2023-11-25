@@ -101,6 +101,9 @@ pub mod mint {
         /// Duplicate Proofs sent in request
         #[error("Duplicate proofs")]
         DuplicateProofs,
+        /// Keyset id not active
+        #[error("Keyset id is not active")]
+        InactiveKeyset,
         #[error("`{0}`")]
         CustomError(String),
     }

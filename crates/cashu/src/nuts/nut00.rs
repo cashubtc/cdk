@@ -16,6 +16,8 @@ pub struct BlindedMessage {
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
     pub b: PublicKey,
+    #[serde(rename = "id")]
+    pub keyset_id: Id,
 }
 
 #[cfg(feature = "wallet")]
@@ -30,7 +32,7 @@ pub mod wallet {
     use super::MintProofs;
     use crate::dhke::blind_message;
     use crate::error::wallet;
-    use crate::nuts::{BlindedMessage, Proofs, SecretKey};
+    use crate::nuts::{BlindedMessage, Id, Proofs, SecretKey};
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
     use crate::{error, Amount};
@@ -50,14 +52,18 @@ pub mod wallet {
 
     impl BlindedMessages {
         /// Outputs for speceifed amount with random secret
-        pub fn random(amount: Amount) -> Result<Self, wallet::Error> {
+        pub fn random(keyset_id: Id, amount: Amount) -> Result<Self, wallet::Error> {
             let mut blinded_messages = BlindedMessages::default();
 
             for amount in amount.split() {
                 let secret = Secret::new();
                 let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
-                let blinded_message = BlindedMessage { amount, b: blinded };
+                let blinded_message = BlindedMessage {
+                    amount,
+                    b: blinded,
+                    keyset_id,
+                };
 
                 blinded_messages.secrets.push(secret);
                 blinded_messages.blinded_messages.push(blinded_message);
@@ -69,7 +75,7 @@ pub mod wallet {
         }
 
         /// Blank Outputs used for NUT-08 change
-        pub fn blank(fee_reserve: Amount) -> Result<Self, wallet::Error> {
+        pub fn blank(keyset_id: Id, fee_reserve: Amount) -> Result<Self, wallet::Error> {
             let mut blinded_messages = BlindedMessages::default();
 
             let fee_reserve = bitcoin::Amount::from_sat(fee_reserve.to_sat());
@@ -87,6 +93,7 @@ pub mod wallet {
                 let blinded_message = BlindedMessage {
                     amount: Amount::ZERO,
                     b: blinded,
+                    keyset_id,
                 };
 
                 blinded_messages.secrets.push(secret);
@@ -322,10 +329,12 @@ mod tests {
 
     #[test]
     fn test_blank_blinded_messages() {
-        let b = BlindedMessages::blank(Amount::from_sat(1000)).unwrap();
+        // TODO: Need to update id to new type in proof
+        let b = BlindedMessages::blank(Id::from_str("").unwrap(), Amount::from_sat(1000)).unwrap();
         assert_eq!(b.blinded_messages.len(), 10);
 
-        let b = BlindedMessages::blank(Amount::from_sat(1)).unwrap();
+        // TODO: Need to update id to new type in proof
+        let b = BlindedMessages::blank(Id::from_str("").unwrap(), Amount::from_sat(1)).unwrap();
         assert_eq!(b.blinded_messages.len(), 1);
     }
 }

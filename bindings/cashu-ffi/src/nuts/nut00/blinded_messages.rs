@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cashu::nuts::nut00::wallet::BlindedMessages as BlindedMessagesSdk;
 
 use crate::error::Result;
-use crate::{Amount, BlindedMessage, Secret, SecretKey};
+use crate::{Amount, BlindedMessage, Id, Secret, SecretKey};
 
 pub struct BlindedMessages {
     inner: BlindedMessagesSdk,
@@ -18,15 +18,21 @@ impl Deref for BlindedMessages {
 }
 
 impl BlindedMessages {
-    pub fn random(amount: Arc<Amount>) -> Result<Self> {
+    pub fn random(keyset_id: Arc<Id>, amount: Arc<Amount>) -> Result<Self> {
         Ok(Self {
-            inner: BlindedMessagesSdk::random(*amount.as_ref().deref())?,
+            inner: BlindedMessagesSdk::random(
+                *keyset_id.as_ref().deref(),
+                *amount.as_ref().deref(),
+            )?,
         })
     }
 
-    pub fn blank(fee_reserve: Arc<Amount>) -> Result<Self> {
+    pub fn blank(keyset_id: Arc<Id>, fee_reserve: Arc<Amount>) -> Result<Self> {
         Ok(Self {
-            inner: BlindedMessagesSdk::blank(*fee_reserve.as_ref().deref())?,
+            inner: BlindedMessagesSdk::blank(
+                *keyset_id.as_ref().deref(),
+                *fee_reserve.as_ref().deref(),
+            )?,
         })
     }
 
