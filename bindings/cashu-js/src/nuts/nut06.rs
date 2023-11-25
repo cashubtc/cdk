@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use cashu::nuts::nut06::{SplitRequest, SplitResponse};
+use cashu::nuts::{SplitRequest, SplitResponse};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -27,23 +27,19 @@ impl From<SplitRequest> for JsSplitRequest {
 #[wasm_bindgen(js_class = SplitRequest)]
 impl JsSplitRequest {
     #[wasm_bindgen(constructor)]
-    pub fn new(proofs: JsValue, outputs: JsValue) -> Result<JsSplitRequest> {
-        let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
+    pub fn new(inputs: JsValue, outputs: JsValue) -> Result<JsSplitRequest> {
+        let inputs = serde_wasm_bindgen::from_value(inputs).map_err(into_err)?;
         let outputs = serde_wasm_bindgen::from_value(outputs).map_err(into_err)?;
 
         Ok(JsSplitRequest {
-            inner: SplitRequest {
-                amount: None,
-                proofs,
-                outputs,
-            },
+            inner: SplitRequest { inputs, outputs },
         })
     }
 
     /// Get Proofs
     #[wasm_bindgen(getter)]
     pub fn proofs(&self) -> Result<JsValue> {
-        serde_wasm_bindgen::to_value(&self.inner.proofs).map_err(into_err)
+        serde_wasm_bindgen::to_value(&self.inner.inputs).map_err(into_err)
     }
 
     /// Get Outputs
@@ -55,7 +51,7 @@ impl JsSplitRequest {
     /// Proofs Amount
     #[wasm_bindgen(js_name = proofsAmount)]
     pub fn proofs_amount(&self) -> JsAmount {
-        self.inner.proofs_amount().into()
+        self.inner.input_amount().into()
     }
 
     /// Output Amount
@@ -91,8 +87,6 @@ impl JsSplitResponse {
 
         Ok(JsSplitResponse {
             inner: SplitResponse {
-                fst: None,
-                snd: None,
                 promises: Some(promises),
             },
         })

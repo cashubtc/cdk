@@ -1,19 +1,15 @@
 //! gloo wasm http Client
 
 use async_trait::async_trait;
-use cashu::nuts::nut00::wallet::BlindedMessages;
-use cashu::nuts::nut00::{BlindedMessage, Proof};
-use cashu::nuts::nut01::Keys;
-use cashu::nuts::nut03::RequestMintResponse;
-use cashu::nuts::nut04::{MintRequest, PostMintResponse};
-use cashu::nuts::nut05::{CheckFeesRequest, CheckFeesResponse};
-use cashu::nuts::nut06::{SplitRequest, SplitResponse};
-#[cfg(feature = "nut07")]
-use cashu::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
-use cashu::nuts::nut08::{MeltRequest, MeltResponse};
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
-use cashu::nuts::*;
+use cashu::nuts::{
+    BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse, Keys, MeltRequest,
+    MeltResponse, MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest,
+    SplitResponse, *,
+};
+#[cfg(feature = "nut07")]
+use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::{Amount, Bolt11Invoice};
 use gloo::net::http::Request;
 use serde_json::Value;

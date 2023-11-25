@@ -1,11 +1,11 @@
 use std::ops::Deref;
 
-use cashu_js::nuts::nut02::{JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMintKeySet};
-use cashu_js::nuts::nut04::{JsMintRequest, JsPostMintResponse};
-use cashu_js::nuts::nut06::{JsSplitRequest, JsSplitResponse};
 #[cfg(feature = "nut07")]
-use cashu_js::nuts::nut07::{JsCheckSpendableRequest, JsCheckSpendableResponse};
-use cashu_js::nuts::nut08::{JsMeltRequest, JsMeltResponse};
+use cashu_js::nuts::{JsCheckSpendableRequest, JsCheckSpendableResponse};
+use cashu_js::nuts::{
+    JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMeltRequest, JsMeltResponse, JsMintKeySet,
+    JsMintRequest, JsPostMintResponse, JsSplitRequest, JsSplitResponse,
+};
 use cashu_js::JsAmount;
 use cashu_sdk::mint::Mint;
 use cashu_sdk::nuts::{KeySet, KeysResponse};
