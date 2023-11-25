@@ -89,7 +89,7 @@ mod wallet {
             let unblinded_signature = unblind_message(blinded_c, rs[i].clone().into(), a)?;
 
             let proof = Proof {
-                id: Some(promise.id),
+                id: promise.id,
                 amount: promise.amount,
                 secret: secrets[i].clone(),
                 c: unblinded_signature,
