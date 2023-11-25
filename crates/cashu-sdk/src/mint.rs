@@ -190,21 +190,16 @@ impl Mint {
             return Err(Error::TokenSpent);
         }
 
-        let keyset = proof.id.as_ref().map_or_else(
-            || self.active_keyset.clone(),
-            |id| {
-                if let Some(keyset) = self.inactive_keysets.get(id) {
-                    nut02::mint::KeySet::generate(
-                        &self.secret,
-                        &keyset.symbol,
-                        &keyset.derivation_path,
-                        keyset.max_order,
-                    )
-                } else {
-                    self.active_keyset.clone()
-                }
-            },
-        );
+        let keyset = if let Some(keyset) = self.inactive_keysets.get(&proof.id) {
+            nut02::mint::KeySet::generate(
+                &self.secret,
+                &keyset.symbol,
+                &keyset.derivation_path,
+                keyset.max_order,
+            )
+        } else {
+            self.active_keyset.clone()
+        };
 
         let Some(keypair) = keyset.keys.0.get(&proof.amount) else {
             return Err(Error::AmountKey);

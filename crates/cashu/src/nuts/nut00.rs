@@ -207,6 +207,8 @@ pub struct BlindedSignature {
 /// Proofs [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proof {
+    /// `Keyset id`
+    pub id: Id,
     /// Amount in satoshi
     pub amount: Amount,
     /// Secret message
@@ -214,8 +216,6 @@ pub struct Proof {
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,
-    /// `Keyset id`
-    pub id: Option<Id>,
 }
 
 impl Ord for Proof {
@@ -236,7 +236,7 @@ impl From<Proof> for mint::Proof {
             amount: Some(proof.amount),
             secret: proof.secret,
             c: Some(proof.c),
-            id: proof.id,
+            id: Some(proof.id),
         }
     }
 }
@@ -283,10 +283,7 @@ mod tests {
         let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
         let proof: Proofs = serde_json::from_str(proof).unwrap();
 
-        assert_eq!(
-            proof[0].clone().id.unwrap(),
-            Id::from_str("DSAl9nvvyfva").unwrap()
-        );
+        assert_eq!(proof[0].clone().id, Id::from_str("DSAl9nvvyfva").unwrap());
     }
 
     #[test]
@@ -300,7 +297,7 @@ mod tests {
             UncheckedUrl::from_str("https://8333.space:3338").unwrap()
         );
         assert_eq!(
-            token.token[0].proofs[0].clone().id.unwrap(),
+            token.token[0].proofs[0].clone().id,
             Id::from_str("DSAl9nvvyfva").unwrap()
         );
 

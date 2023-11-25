@@ -59,12 +59,12 @@ interface BlindedMessage {
 };
 
 interface Proof {
-	constructor(Amount amount, Secret secret, PublicKey c, Id? id);
+	constructor(Amount amount, Secret secret, PublicKey c, Id id);
 	Amount amount();
 	Secret secret();
 	PublicKey c();
-	Id? id();
-};
+	Id id();
+	};
 
 interface BlindedSignature {
 	constructor(Id id, Amount amount, PublicKey c);
