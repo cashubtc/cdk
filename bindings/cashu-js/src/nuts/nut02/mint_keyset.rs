@@ -25,9 +25,14 @@ impl From<KeySet> for JsMintKeySet {
 impl JsMintKeySet {
     /// Generate
     #[wasm_bindgen(constructor)]
-    pub fn generate(secret: String, derivation_path: String, max_order: u8) -> JsMintKeySet {
+    pub fn generate(
+        secret: String,
+        symbol: String,
+        derivation_path: String,
+        max_order: u8,
+    ) -> JsMintKeySet {
         Self {
-            inner: KeySet::generate(secret, derivation_path, max_order),
+            inner: KeySet::generate(secret, symbol, derivation_path, max_order),
         }
     }
 }

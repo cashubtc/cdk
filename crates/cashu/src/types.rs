@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::{Id, Proofs};
+use crate::nuts::{Id, KeySetInfo, Proofs};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {
@@ -36,9 +36,18 @@ pub enum InvoiceStatus {
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysetInfo {
     pub id: Id,
+    pub symbol: String,
     pub valid_from: u64,
     pub valid_to: Option<u64>,
-    pub secret: String,
     pub derivation_path: String,
     pub max_order: u8,
+}
+
+impl From<KeysetInfo> for KeySetInfo {
+    fn from(keyset_info: KeysetInfo) -> Self {
+        Self {
+            id: keyset_info.id,
+            symbol: keyset_info.symbol,
+        }
+    }
 }

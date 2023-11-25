@@ -2,13 +2,14 @@ use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
 use cashu_ffi::{
-    Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetInfo, KeySetResponse,
+    Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse,
     KeysResponse, MeltRequest, MeltResponse, MintKeySet, MintRequest, PostMintResponse, Secret,
     SplitRequest, SplitResponse,
 };
 use cashu_sdk::mint::Mint as MintSdk;
 
 use crate::error::Result;
+use crate::types::MintKeySetInfo;
 
 pub struct Mint {
     inner: RwLock<MintSdk>,
@@ -17,10 +18,9 @@ pub struct Mint {
 impl Mint {
     pub fn new(
         secret: String,
-        derivation_path: String,
-        inactive_keysets: Vec<Arc<KeySetInfo>>,
+        active_keyset_info: Arc<MintKeySetInfo>,
+        inactive_keysets: Vec<Arc<MintKeySetInfo>>,
         spent_secrets: Vec<Arc<Secret>>,
-        max_order: u8,
         min_fee_reserve: Arc<Amount>,
         percent_fee_reserve: f32,
     ) -> Result<Self> {
@@ -37,10 +37,9 @@ impl Mint {
         Ok(Self {
             inner: MintSdk::new(
                 &secret,
-                &derivation_path,
+                active_keyset_info.as_ref().deref().clone(),
                 inactive_keysets,
                 spent_secrets,
-                max_order,
                 *min_fee_reserve.as_ref().deref(),
                 percent_fee_reserve,
             )

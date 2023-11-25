@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::str::FromStr;
 
 use cashu::nuts::{Id, KeySet, KeysResponse, KeysetResponse};
 use wasm_bindgen::prelude::*;
@@ -30,7 +31,7 @@ impl JsId {
     #[wasm_bindgen(js_name = tryFromBase64)]
     pub fn try_from_base64(id: String) -> Result<JsId> {
         Ok(JsId {
-            inner: Id::try_from_base64(&id).map_err(into_err)?,
+            inner: Id::from_str(&id).map_err(into_err)?,
         })
     }
 
@@ -63,10 +64,11 @@ impl From<KeySet> for JsKeySet {
 impl JsKeySet {
     /// From Hex
     #[wasm_bindgen(constructor)]
-    pub fn new(id: JsId, keys: JsKeys) -> JsKeySet {
+    pub fn new(id: JsId, symbol: String, keys: JsKeys) -> JsKeySet {
         Self {
             inner: KeySet {
                 id: *id.deref(),
+                symbol,
                 keys: keys.deref().clone(),
             },
         }

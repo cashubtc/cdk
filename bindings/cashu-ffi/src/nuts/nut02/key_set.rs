@@ -1,10 +1,12 @@
 use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::Arc;
 
-use cashu::nuts::nut02::{Id as IdSdk, KeySet as KeySetSdk, KeysetResponse as KeysetResponseSdk};
+use cashu::nuts::{Id as IdSdk, KeySet as KeySetSdk, KeysetResponse as KeysetResponseSdk};
 
 use crate::error::Result;
 use crate::nuts::nut01::keys::Keys;
+use crate::KeySetInfo;
 
 pub struct Id {
     inner: IdSdk,
@@ -19,7 +21,7 @@ impl Deref for Id {
 impl Id {
     pub fn new(id: String) -> Result<Self> {
         Ok(Self {
-            inner: IdSdk::try_from_base64(&id)?,
+            inner: IdSdk::from_str(&id)?,
         })
     }
 }
@@ -48,10 +50,11 @@ impl Deref for KeySet {
 }
 
 impl KeySet {
-    pub fn new(id: Arc<Id>, keys: Arc<Keys>) -> Self {
+    pub fn new(id: Arc<Id>, symbol: String, keys: Arc<Keys>) -> Self {
         Self {
             inner: KeySetSdk {
                 id: *id.as_ref().deref(),
+                symbol,
                 keys: keys.as_ref().deref().clone(),
             },
         }
@@ -59,6 +62,10 @@ impl KeySet {
 
     pub fn id(&self) -> Arc<Id> {
         Arc::new(self.inner.id.into())
+    }
+
+    pub fn symbol(&self) -> String {
+        self.inner.symbol.clone()
     }
 
     pub fn keys(&self) -> Arc<Keys> {
@@ -77,19 +84,22 @@ pub struct KeySetResponse {
 }
 
 impl KeySetResponse {
-    pub fn new(keyset_ids: Vec<Arc<Id>>) -> Self {
-        let keysets = keyset_ids.into_iter().map(|id| id.inner).collect();
+    pub fn new(keyset_ids: Vec<Arc<KeySetInfo>>) -> Self {
+        let keysets = keyset_ids
+            .into_iter()
+            .map(|ki| ki.as_ref().deref().clone())
+            .collect();
         Self {
             inner: KeysetResponseSdk { keysets },
         }
     }
 
-    pub fn keyset_ids(&self) -> Vec<Arc<Id>> {
+    pub fn keysets(&self) -> Vec<Arc<KeySetInfo>> {
         self.inner
             .clone()
             .keysets
             .into_iter()
-            .map(|id| Arc::new(id.into()))
+            .map(|keyset_info| Arc::new(keyset_info.into()))
             .collect()
     }
 }
