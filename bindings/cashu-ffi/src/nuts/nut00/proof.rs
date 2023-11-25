@@ -113,7 +113,7 @@ pub mod mint {
         }
 
         pub fn id(&self) -> Option<Arc<Id>> {
-            self.inner.id.clone().map(|id| Arc::new(id.into()))
+            self.inner.id.map(|id| Arc::new(id.into()))
         }
     }
 

@@ -12,11 +12,16 @@ pub struct Token {
 }
 
 impl Token {
-    pub fn new(mint: String, proofs: Vec<Arc<Proof>>, memo: Option<String>) -> Result<Self> {
+    pub fn new(
+        mint: String,
+        proofs: Vec<Arc<Proof>>,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<Self> {
         let mint = UncheckedUrl::from_str(&mint)?;
         let proofs = proofs.into_iter().map(|p| p.as_ref().into()).collect();
         Ok(Self {
-            inner: TokenSdk::new(mint, proofs, memo)?,
+            inner: TokenSdk::new(mint, proofs, unit, memo)?,
         })
     }
 
