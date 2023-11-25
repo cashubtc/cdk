@@ -35,7 +35,7 @@ impl Mint {
     ) -> Self {
         let active_keyset = nut02::mint::KeySet::generate(
             secret,
-            active_keyset_info.symbol.clone(),
+            active_keyset_info.unit.clone(),
             active_keyset_info.derivation_path.clone(),
             active_keyset_info.max_order,
         );
@@ -83,7 +83,7 @@ impl Mint {
         }
 
         self.inactive_keysets.get(id).map(|k| {
-            nut02::mint::KeySet::generate(&self.secret, &k.symbol, &k.derivation_path, k.max_order)
+            nut02::mint::KeySet::generate(&self.secret, &k.unit, &k.derivation_path, k.max_order)
                 .into()
         })
     }
@@ -92,7 +92,7 @@ impl Mint {
     /// Generate new keyset
     pub fn rotate_keyset(
         &mut self,
-        symbol: impl Into<String>,
+        unit: impl Into<String>,
         derivation_path: impl Into<String>,
         max_order: u8,
     ) {
@@ -100,7 +100,7 @@ impl Mint {
         self.inactive_keysets
             .insert(self.active_keyset.id, self.active_keyset_info.clone());
 
-        self.active_keyset = MintKeySet::generate(&self.secret, symbol, derivation_path, max_order);
+        self.active_keyset = MintKeySet::generate(&self.secret, unit, derivation_path, max_order);
     }
 
     pub fn process_mint_request(
@@ -193,7 +193,7 @@ impl Mint {
         let keyset = if let Some(keyset) = self.inactive_keysets.get(&proof.id) {
             nut02::mint::KeySet::generate(
                 &self.secret,
-                &keyset.symbol,
+                &keyset.unit,
                 &keyset.derivation_path,
                 keyset.max_order,
             )

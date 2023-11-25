@@ -127,7 +127,7 @@ interface Keys {
 };
 
 interface KeySet {
-	constructor(Id id, string symbol, Keys keys);
+	constructor(Id id, string unit, Keys keys);
 	Id id();
 	Keys keys();
 };
@@ -135,7 +135,7 @@ interface KeySet {
 
 interface MintKeySet {
 	[Name=generate]
-	constructor(string secret, string symbol, string derivation_path, u8 max_order);
+	constructor(string secret, string unit, string derivation_path, u8 max_order);
 };
 
 
@@ -264,14 +264,14 @@ interface ProofsStatus {
 
 
 interface KeySetInfo {
-	constructor(Id id, string symbol);
+	constructor(Id id, string unit);
 	
 };
 
 // Cashu Sdk
 
 interface MintKeySetInfo {
-	constructor(Id id, string symbol, u64 valid_from, u64? valid_to, string derivation_path, u8 max_order);
+	constructor(Id id, string unit, u64 valid_from, u64? valid_to, string derivation_path, u8 max_order);
 };
 
 
