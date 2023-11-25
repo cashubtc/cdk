@@ -91,7 +91,7 @@ interface MintProofs {
 
 interface Token {
     [Throws=CashuError]
-	constructor(string mint, sequence<Proof> token, string? memo);
+	constructor(string mint, sequence<Proof> token, string? unit, string? memo);
 	sequence<MintProofs> token();
 	string? memo();
     [Throws=CashuError]

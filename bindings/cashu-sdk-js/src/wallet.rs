@@ -68,10 +68,16 @@ impl JsWallet {
 
     /// Mint Token
     #[wasm_bindgen(js_name = mintToken)]
-    pub async fn mint_token(&self, amount: JsAmount, hash: String) -> Result<JsToken> {
+    pub async fn mint_token(
+        &self,
+        amount: JsAmount,
+        hash: String,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<JsToken> {
         Ok(self
             .inner
-            .mint_token(*amount.deref(), &hash)
+            .mint_token(*amount.deref(), &hash, unit, memo)
             .await
             .map_err(into_err)?
             .into())
@@ -159,9 +165,16 @@ impl JsWallet {
 
     /// Proofs to token
     #[wasm_bindgen(js_name = proofsToToken)]
-    pub fn proofs_to_token(&self, proofs: JsValue, memo: Option<String>) -> Result<String> {
+    pub fn proofs_to_token(
+        &self,
+        proofs: JsValue,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<String> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
-        self.inner.proofs_to_token(proofs, memo).map_err(into_err)
+        self.inner
+            .proofs_to_token(proofs, unit, memo)
+            .map_err(into_err)
     }
 }

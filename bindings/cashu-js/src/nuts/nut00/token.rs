@@ -28,11 +28,16 @@ impl From<Token> for JsToken {
 #[wasm_bindgen(js_class = Token)]
 impl JsToken {
     #[wasm_bindgen(constructor)]
-    pub fn new(mint: String, proofs: JsValue, memo: Option<String>) -> Result<JsToken> {
+    pub fn new(
+        mint: String,
+        proofs: JsValue,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<JsToken> {
         let mint = UncheckedUrl::from_str(&mint).map_err(into_err)?;
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
         Ok(Self {
-            inner: Token::new(mint, proofs, memo).map_err(into_err)?,
+            inner: Token::new(mint, proofs, unit, memo).map_err(into_err)?,
         })
     }
 

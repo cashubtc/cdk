@@ -89,10 +89,18 @@ impl<C: Client> Wallet<C> {
             .await?)
     }
 
-    pub async fn mint_token(&self, amount: Amount, hash: &str) -> Result<Token, Error> {
+    // TODO: Need to use the unit, check keyset is of the same unit of attempting to
+    // mint
+    pub async fn mint_token(
+        &self,
+        amount: Amount,
+        hash: &str,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<Token, Error> {
         let proofs = self.mint(amount, hash).await?;
 
-        let token = Token::new(self.mint_url.clone(), proofs, None);
+        let token = Token::new(self.mint_url.clone(), proofs, unit, memo);
         Ok(token?)
     }
 
@@ -338,8 +346,13 @@ impl<C: Client> Wallet<C> {
         Ok(melted)
     }
 
-    pub fn proofs_to_token(&self, proofs: Proofs, memo: Option<String>) -> Result<String, Error> {
-        Ok(Token::new(self.mint_url.clone(), proofs, memo)?.convert_to_string()?)
+    pub fn proofs_to_token(
+        &self,
+        proofs: Proofs,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<String, Error> {
+        Ok(Token::new(self.mint_url.clone(), proofs, unit, memo)?.convert_to_string()?)
     }
 }
 

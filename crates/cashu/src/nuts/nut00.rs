@@ -116,13 +116,19 @@ pub mod wallet {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Token {
         pub token: Vec<MintProofs>,
+        /// Memo for token
+        #[serde(skip_serializing_if = "Option::is_none")]
         pub memo: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Unit of the token eg: sats, usd
+        pub unit: Option<String>,
     }
 
     impl Token {
         pub fn new(
             mint_url: UncheckedUrl,
             proofs: Proofs,
+            unit: Option<String>,
             memo: Option<String>,
         ) -> Result<Self, wallet::Error> {
             if proofs.is_empty() {
@@ -135,6 +141,7 @@ pub mod wallet {
             Ok(Self {
                 token: vec![MintProofs::new(mint_url, proofs)],
                 memo,
+                unit,
             })
         }
 
@@ -315,6 +322,7 @@ mod tests {
         let token = Token::new(
             UncheckedUrl::from_str("https://localhost:5000/cashu").unwrap(),
             proof,
+            None,
             None,
         )
         .unwrap();
