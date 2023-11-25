@@ -18,14 +18,12 @@ pub use nut00::{BlindedMessage, BlindedSignature, Proof};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
-pub use nut03::RequestMintResponse;
+pub use nut03::{RequestMintResponse, SplitPayload, SplitRequest, SplitResponse};
 pub use nut04::{MintRequest, PostMintResponse};
 pub use nut05::{CheckFeesRequest, CheckFeesResponse};
 #[cfg(not(feature = "nut08"))]
 pub use nut05::{MeltRequest, MeltResponse};
 #[cfg(feature = "wallet")]
-pub use nut06::SplitPayload;
-pub use nut06::{SplitRequest, SplitResponse};
 #[cfg(feature = "nut07")]
 pub use nut07::{CheckSpendableRequest, CheckSpendableResponse};
 #[cfg(feature = "nut08")]
