@@ -124,14 +124,14 @@ interface Keys {
 };
 
 interface KeySet {
-	constructor(Id id, Keys keys);
+	constructor(Id id, string symbol, Keys keys);
 	Id id();
 	Keys keys();
 };
 
 interface MintKeySet {
 	[Name=generate]
-	constructor(string secret, string derivation_path, u8 max_order);
+	constructor(string secret, string symbol, string derivation_path, u8 max_order);
 };
 
 
@@ -140,8 +140,8 @@ interface KeysResponse {
 };
 
 interface KeySetResponse {
-	constructor(sequence<Id> keyset_ids);
-	sequence<Id> keyset_ids();
+	constructor(sequence<KeySetInfo> keysets);
+	sequence<KeySetInfo> keysets();
 };
 
 interface RequestMintResponse {
@@ -246,7 +246,7 @@ interface MintInfo {
 };
 
 interface KeySetInfo {
-	constructor(Id id, u64 valid_from, u64? valid_to, string secret, string derivation_path, u8 max_order);
+	constructor(Id id, string symbol);
 	
 };
 

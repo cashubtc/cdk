@@ -17,7 +17,7 @@ pub use nut00::wallet::{BlindedMessages, Token};
 pub use nut00::{BlindedMessage, BlindedSignature, Proof};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
-pub use nut02::{Id, KeySet, KeysetResponse};
+pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 pub use nut03::RequestMintResponse;
 pub use nut04::{MintRequest, PostMintResponse};
 pub use nut05::{CheckFeesRequest, CheckFeesResponse};

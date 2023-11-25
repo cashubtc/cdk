@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::nuts::KeySetInfo as KeySetInfoSdk;
+use cashu_sdk::types::KeysetInfo as KeySetInfoSdk;
 
 use crate::Id;
 
@@ -23,11 +23,22 @@ impl From<KeySetInfoSdk> for KeySetInfo {
 }
 
 impl KeySetInfo {
-    pub fn new(id: Arc<Id>, symbol: String) -> Self {
+    pub fn new(
+        id: Arc<Id>,
+        symbol: String,
+        valid_from: u64,
+        valid_to: Option<u64>,
+        derivation_path: String,
+        max_order: u8,
+    ) -> Self {
         Self {
             inner: KeySetInfoSdk {
                 id: *id.as_ref().deref(),
                 symbol,
+                valid_from,
+                valid_to,
+                derivation_path,
+                max_order,
             },
         }
     }

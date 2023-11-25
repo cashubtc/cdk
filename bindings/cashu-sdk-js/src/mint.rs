@@ -36,22 +36,22 @@ impl JsMint {
     #[wasm_bindgen(constructor)]
     pub fn new(
         secret: String,
-        derivation_path: String,
+        active_keyset_info: JsValue,
         inactive_keyset: JsValue,
         spent_secrets: JsValue,
-        max_order: u8,
         min_fee_reserve: JsAmount,
         percent_fee_reserve: f32,
     ) -> Result<JsMint> {
+        let active_keyset_info =
+            serde_wasm_bindgen::from_value(active_keyset_info).map_err(into_err)?;
         let inactive_keyset = serde_wasm_bindgen::from_value(inactive_keyset).map_err(into_err)?;
         let spent_secrets = serde_wasm_bindgen::from_value(spent_secrets).map_err(into_err)?;
         Ok(JsMint {
             inner: Mint::new(
                 &secret,
-                &derivation_path,
+                active_keyset_info,
                 inactive_keyset,
                 spent_secrets,
-                max_order,
                 *min_fee_reserve.deref(),
                 percent_fee_reserve,
             ),

@@ -14,7 +14,8 @@ use cashu::Amount;
 use tracing::{debug, info};
 
 pub struct Mint {
-    //    pub pubkey: PublicKey,
+    //    pub pubkey: PublicKey
+    secret: String,
     pub active_keyset: nut02::mint::KeySet,
     pub active_keyset_info: KeysetInfo,
     pub inactive_keysets: HashMap<Id, KeysetInfo>,
@@ -26,27 +27,24 @@ pub struct Mint {
 impl Mint {
     pub fn new(
         secret: &str,
-        derivation_path: &str,
+        active_keyset_info: KeysetInfo,
         inactive_keysets: HashSet<KeysetInfo>,
         spent_secrets: HashSet<Secret>,
-        max_order: u8,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
     ) -> Self {
-        let active_keyset = nut02::mint::KeySet::generate(secret, derivation_path, max_order);
-        let id = active_keyset.id;
+        let active_keyset = nut02::mint::KeySet::generate(
+            secret,
+            active_keyset_info.symbol.clone(),
+            active_keyset_info.derivation_path.clone(),
+            active_keyset_info.max_order,
+        );
 
         Self {
+            secret: secret.to_string(),
             active_keyset,
             inactive_keysets: inactive_keysets.into_iter().map(|ks| (ks.id, ks)).collect(),
-            active_keyset_info: KeysetInfo {
-                id,
-                valid_from: 0,
-                valid_to: None,
-                secret: secret.to_string(),
-                derivation_path: derivation_path.to_string(),
-                max_order,
-            },
+            active_keyset_info,
             spent_secrets,
             pending_secrets: HashSet::new(),
             fee_reserve: FeeReserve {
@@ -66,8 +64,12 @@ impl Mint {
 
     /// Return a list of all supported keysets
     pub fn keysets(&self) -> KeysetResponse {
-        let mut keysets: HashSet<_> = self.inactive_keysets.keys().cloned().collect();
-        keysets.insert(self.active_keyset.id);
+        let mut keysets: HashSet<_> = self.inactive_keysets.values().cloned().collect();
+
+        keysets.insert(self.active_keyset_info.clone());
+
+        let keysets = keysets.into_iter().map(|k| k.into()).collect();
+
         KeysetResponse { keysets }
     }
 
@@ -81,7 +83,8 @@ impl Mint {
         }
 
         self.inactive_keysets.get(id).map(|k| {
-            nut02::mint::KeySet::generate(&k.secret, &k.derivation_path, k.max_order).into()
+            nut02::mint::KeySet::generate(&self.secret, &k.symbol, &k.derivation_path, k.max_order)
+                .into()
         })
     }
 
@@ -89,7 +92,7 @@ impl Mint {
     /// Generate new keyset
     pub fn rotate_keyset(
         &mut self,
-        secret: impl Into<String>,
+        symbol: impl Into<String>,
         derivation_path: impl Into<String>,
         max_order: u8,
     ) {
@@ -97,7 +100,7 @@ impl Mint {
         self.inactive_keysets
             .insert(self.active_keyset.id, self.active_keyset_info.clone());
 
-        self.active_keyset = MintKeySet::generate(secret, derivation_path, max_order);
+        self.active_keyset = MintKeySet::generate(&self.secret, symbol, derivation_path, max_order);
     }
 
     pub fn process_mint_request(
@@ -207,7 +210,8 @@ impl Mint {
             |id| {
                 if let Some(keyset) = self.inactive_keysets.get(id) {
                     nut02::mint::KeySet::generate(
-                        &keyset.secret,
+                        &self.secret,
+                        &keyset.symbol,
                         &keyset.derivation_path,
                         keyset.max_order,
                     )
