@@ -51,7 +51,7 @@ impl std::fmt::Display for Id {
         f.write_str(&format!(
             "{}{}",
             self.version,
-            String::from_utf8(self.id.to_vec()).map_err(|_| fmt::Error::default())?
+            String::from_utf8(self.id.to_vec()).map_err(|_| fmt::Error)?
         ))
     }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cashu::nuts::BlindedMessage as BlindedMessageSdk;
 
 use crate::nuts::nut01::public_key::PublicKey;
-use crate::Amount;
+use crate::{Amount, Id};
 
 pub struct BlindedMessage {
     inner: BlindedMessageSdk,
@@ -18,9 +18,10 @@ impl Deref for BlindedMessage {
 }
 
 impl BlindedMessage {
-    pub fn new(amount: Arc<Amount>, b: Arc<PublicKey>) -> Self {
+    pub fn new(keyset_id: Arc<Id>, amount: Arc<Amount>, b: Arc<PublicKey>) -> Self {
         Self {
             inner: BlindedMessageSdk {
+                keyset_id: *keyset_id.as_ref().deref(),
                 amount: *amount.as_ref().deref(),
                 b: b.as_ref().into(),
             },

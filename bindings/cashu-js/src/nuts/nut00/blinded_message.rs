@@ -4,6 +4,7 @@ use cashu::nuts::nut00::BlindedMessage;
 use wasm_bindgen::prelude::*;
 
 use crate::nuts::nut01::JsPublicKey;
+use crate::nuts::nut02::JsId;
 use crate::types::amount::JsAmount;
 
 #[wasm_bindgen(js_name = BlindedMessage)]
@@ -28,9 +29,10 @@ impl From<BlindedMessage> for JsBlindedMessage {
 impl JsBlindedMessage {
     #[allow(clippy::new_without_default)]
     #[wasm_bindgen(constructor)]
-    pub fn new(amount: JsAmount, b: JsPublicKey) -> Self {
+    pub fn new(keyset_id: JsId, amount: JsAmount, b: JsPublicKey) -> Self {
         Self {
             inner: BlindedMessage {
+                keyset_id: *keyset_id.deref(),
                 amount: *amount.deref(),
                 b: b.deref().clone(),
             },

@@ -50,7 +50,7 @@ interface SecretKey {
 };
 
 interface BlindedMessage {
-	constructor(Amount amount, PublicKey b);
+	constructor(Id keyset_id, Amount amount, PublicKey b);
 	Amount amount();
 	PublicKey b();	
 };
@@ -100,9 +100,9 @@ interface Token {
 
 interface BlindedMessages {
     [Throws=CashuError, Name=random]
-	constructor(Amount amount);
+	constructor(Id keyset_id, Amount amount);
     [Throws=CashuError, Name=blank]
-	constructor(Amount fee_reserve);
+	constructor(Id keyset_id, Amount amount);
 	sequence<BlindedMessage> blinded_messages();
 	sequence<Secret> secrets();
 	sequence<SecretKey> rs();
