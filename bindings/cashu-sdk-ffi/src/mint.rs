@@ -12,6 +12,7 @@ use cashu_sdk::Mnemonic;
 
 use crate::error::Result;
 use crate::types::MintKeySetInfo;
+use crate::CashuSdkError;
 
 pub struct Mint {
     inner: RwLock<MintSdk>,
@@ -35,9 +36,13 @@ impl Mint {
             .map(|ik| ik.as_ref().deref().clone())
             .collect();
 
+        let menemonic = Mnemonic::from_str(&secret).map_err(|_| CashuSdkError::Generic {
+            err: "Invalid Mnemonic".to_string(),
+        })?;
+
         Ok(Self {
             inner: MintSdk::new(
-                Mnemonic::from_str(&secret).unwrap(),
+                menemonic,
                 keysets,
                 spent_secrets,
                 // TODO: quotes
