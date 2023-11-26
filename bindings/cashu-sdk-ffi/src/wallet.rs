@@ -50,9 +50,18 @@ impl Wallet {
         Ok(Arc::new(mint_response))
     }
 
-    pub fn mint_token(&self, amount: Arc<Amount>, hash: String) -> Result<Arc<Token>> {
-        let token = RUNTIME
-            .block_on(async { self.inner.mint_token(*amount.as_ref().deref(), &hash).await })?;
+    pub fn mint_token(
+        &self,
+        amount: Arc<Amount>,
+        hash: String,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<Arc<Token>> {
+        let token = RUNTIME.block_on(async {
+            self.inner
+                .mint_token(*amount.as_ref().deref(), &hash, unit, memo)
+                .await
+        })?;
 
         Ok(Arc::new(token.into()))
     }
@@ -125,9 +134,15 @@ impl Wallet {
         Ok(Arc::new(melted.into()))
     }
 
-    pub fn proof_to_token(&self, proofs: Vec<Arc<Proof>>, memo: Option<String>) -> Result<String> {
+    pub fn proof_to_token(
+        &self,
+        proofs: Vec<Arc<Proof>>,
+        unit: Option<String>,
+        memo: Option<String>,
+    ) -> Result<String> {
         Ok(self.inner.proofs_to_token(
             proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
+            unit,
             memo,
         )?)
     }
