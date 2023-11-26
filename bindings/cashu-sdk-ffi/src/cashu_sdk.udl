@@ -271,7 +271,7 @@ interface KeySetInfo {
 // Cashu Sdk
 
 interface MintKeySetInfo {
-	constructor(Id id, string unit, u64 valid_from, u64? valid_to, string derivation_path, u8 max_order);
+	constructor(Id id, boolean active, string unit, u64 valid_from, u64? valid_to, string derivation_path, u8 max_order);
 };
 
 
@@ -319,10 +319,9 @@ interface Wallet {
 
 interface Mint {
     [Throws=CashuSdkError]
-	constructor(string secret, MintKeySetInfo active_keyset_info, sequence<MintKeySetInfo> inactive_keysets, sequence<Secret> spent_secrets, Amount min_fee_reserve, f32 percent_fee_reserve);
-	KeysResponse active_keyset_pubkeys();
+	constructor(string secret, sequence<MintKeySetInfo> keysets_info, sequence<Secret> spent_secrets, Amount min_fee_reserve, f32 percent_fee_reserve);
+	KeysResponse? keyset_pubkeys(Id keyset_id);
 	KeySetResponse keysets();
-	MintKeySet active_keyset();
 	KeySet? keyset(Id id);
     [Throws=CashuSdkError]
 	PostMintResponse process_mint_request(MintRequest mint_request);

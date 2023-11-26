@@ -37,6 +37,7 @@ pub enum InvoiceStatus {
 pub struct KeysetInfo {
     pub id: Id,
     pub unit: String,
+    pub active: bool,
     pub valid_from: u64,
     pub valid_to: Option<u64>,
     pub derivation_path: String,

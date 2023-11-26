@@ -3,7 +3,7 @@ use std::ops::Deref;
 #[cfg(feature = "nut07")]
 use cashu_js::nuts::{JsCheckSpendableRequest, JsCheckSpendableResponse};
 use cashu_js::nuts::{
-    JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMeltRequest, JsMeltResponse, JsMintKeySet,
+    JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMeltRequest, JsMeltResponse,
     JsMintRequest, JsPostMintResponse, JsSplitRequest, JsSplitResponse,
 };
 use cashu_js::JsAmount;
@@ -36,21 +36,17 @@ impl JsMint {
     #[wasm_bindgen(constructor)]
     pub fn new(
         secret: String,
-        active_keyset_info: JsValue,
-        inactive_keyset: JsValue,
+        keyset_info: JsValue,
         spent_secrets: JsValue,
         min_fee_reserve: JsAmount,
         percent_fee_reserve: f32,
     ) -> Result<JsMint> {
-        let active_keyset_info =
-            serde_wasm_bindgen::from_value(active_keyset_info).map_err(into_err)?;
-        let inactive_keyset = serde_wasm_bindgen::from_value(inactive_keyset).map_err(into_err)?;
+        let keyset_info = serde_wasm_bindgen::from_value(keyset_info).map_err(into_err)?;
         let spent_secrets = serde_wasm_bindgen::from_value(spent_secrets).map_err(into_err)?;
         Ok(JsMint {
             inner: Mint::new(
                 &secret,
-                active_keyset_info,
-                inactive_keyset,
+                keyset_info,
                 spent_secrets,
                 *min_fee_reserve.deref(),
                 percent_fee_reserve,
@@ -60,8 +56,13 @@ impl JsMint {
 
     /// Get Active Keyset Pubkeys
     #[wasm_bindgen(getter)]
-    pub fn active_keyset_pubkeys(&self) -> Result<JsKeysResponse> {
-        let keyset: KeySet = self.inner.active_keyset.clone().into();
+    pub fn keyset_pubkeys(&self, keyset_id: JsId) -> Result<JsKeysResponse> {
+        let keyset: KeySet = self
+            .inner
+            .keyset(&keyset_id)
+            .ok_or(JsError::new("Unknown Keyset"))?
+            .clone()
+            .into();
 
         Ok(KeysResponse { keys: keyset.keys }.into())
     }
@@ -72,22 +73,10 @@ impl JsMint {
         self.inner.keysets().into()
     }
 
-    /// Get Active Keyset
-    #[wasm_bindgen(getter)]
-    pub fn active_keyset(&self) -> JsMintKeySet {
-        self.inner.active_keyset.clone().into()
-    }
-
     /// Keyset
     #[wasm_bindgen(js_name = KeySet)]
     pub fn keyset(&self, id: JsId) -> Option<JsKeySet> {
         self.inner.keyset(id.deref()).map(|ks| ks.into())
-    }
-
-    /// Rotate Keyset
-    #[wasm_bindgen(js_name = RotateKeyset)]
-    pub fn rotate_keyset(&mut self, secret: String, derivation_path: String, max_order: u8) {
-        self.inner.rotate_keyset(secret, derivation_path, max_order);
     }
 
     /// Process Mint Request
