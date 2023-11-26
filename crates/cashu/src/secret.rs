@@ -25,21 +25,19 @@ impl Default for Secret {
 }
 
 impl Secret {
-    const BIT_LENGTH: usize = 128;
     /// Create secret value
+    /// Generate a new random secret as the recommended 32 byte hex
     pub fn new() -> Self {
-        use base64::engine::general_purpose::URL_SAFE;
-        use base64::Engine as _;
         use rand::RngCore;
 
         let mut rng = rand::thread_rng();
 
-        let mut random_bytes = [0u8; Self::BIT_LENGTH / 8];
+        let mut random_bytes = [0u8; 32];
 
         // Generate random bytes
         rng.fill_bytes(&mut random_bytes);
-        // The secret string is Base64-encoded
-        let secret = URL_SAFE.encode(random_bytes);
+        // The secret string is hex encoded
+        let secret = hex::encode(random_bytes);
         Self(secret)
     }
 
@@ -52,10 +50,6 @@ impl FromStr for Secret {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len().ne(&24) {
-            return Err(Error::InvalidLength(s.as_bytes().len() as u64));
-        }
-
         Ok(Secret(s.to_string()))
     }
 }
@@ -68,6 +62,7 @@ impl ToString for Secret {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_eq;
     use std::str::FromStr;
 
     use super::*;
@@ -77,6 +72,8 @@ mod tests {
         let secret = Secret::new();
 
         let secret_str = secret.to_string();
+
+        assert_eq!(hex::decode(secret_str.clone()).unwrap().len(), 32);
 
         let secret_n = Secret::from_str(&secret_str).unwrap();
 
