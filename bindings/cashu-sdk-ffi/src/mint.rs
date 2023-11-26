@@ -3,8 +3,8 @@ use std::sync::{Arc, RwLock};
 
 use cashu_ffi::{
     Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse,
-    KeysResponse, MeltRequest, MeltResponse, MintKeySet, MintRequest, PostMintResponse, Secret,
-    SplitRequest, SplitResponse,
+    KeysResponse, MeltRequest, MeltResponse, MintRequest, PostMintResponse, Secret, SplitRequest,
+    SplitResponse,
 };
 use cashu_sdk::mint::Mint as MintSdk;
 
@@ -18,8 +18,7 @@ pub struct Mint {
 impl Mint {
     pub fn new(
         secret: String,
-        active_keyset_info: Arc<MintKeySetInfo>,
-        inactive_keysets: Vec<Arc<MintKeySetInfo>>,
+        keysets_info: Vec<Arc<MintKeySetInfo>>,
         spent_secrets: Vec<Arc<Secret>>,
         min_fee_reserve: Arc<Amount>,
         percent_fee_reserve: f32,
@@ -29,7 +28,7 @@ impl Mint {
             .map(|s| s.as_ref().deref().clone())
             .collect();
 
-        let inactive_keysets = inactive_keysets
+        let keysets = keysets_info
             .into_iter()
             .map(|ik| ik.as_ref().deref().clone())
             .collect();
@@ -37,8 +36,7 @@ impl Mint {
         Ok(Self {
             inner: MintSdk::new(
                 &secret,
-                active_keyset_info.as_ref().deref().clone(),
-                inactive_keysets,
+                keysets,
                 spent_secrets,
                 *min_fee_reserve.as_ref().deref(),
                 percent_fee_reserve,
@@ -47,16 +45,16 @@ impl Mint {
         })
     }
 
-    pub fn active_keyset_pubkeys(&self) -> Arc<KeysResponse> {
-        Arc::new(self.inner.read().unwrap().active_keyset_pubkeys().into())
+    pub fn keyset_pubkeys(&self, keyset_id: Arc<Id>) -> Option<Arc<KeysResponse>> {
+        self.inner
+            .read()
+            .unwrap()
+            .keyset_pubkeys(&keyset_id)
+            .map(|keyset| Arc::new(keyset.into()))
     }
 
     pub fn keysets(&self) -> Arc<KeySetResponse> {
         Arc::new(self.inner.read().unwrap().keysets().into())
-    }
-
-    pub fn active_keyset(&self) -> Arc<MintKeySet> {
-        Arc::new(self.inner.read().unwrap().active_keyset.clone().into())
     }
 
     pub fn keyset(&self, id: Arc<Id>) -> Option<Arc<KeySet>> {

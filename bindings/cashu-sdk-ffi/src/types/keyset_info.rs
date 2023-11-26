@@ -25,6 +25,7 @@ impl From<KeySetInfoSdk> for KeySetInfo {
 impl KeySetInfo {
     pub fn new(
         id: Arc<Id>,
+        active: bool,
         unit: String,
         valid_from: u64,
         valid_to: Option<u64>,
@@ -34,6 +35,7 @@ impl KeySetInfo {
         Self {
             inner: KeySetInfoSdk {
                 id: *id.as_ref().deref(),
+                active,
                 unit,
                 valid_from,
                 valid_to,

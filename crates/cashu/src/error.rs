@@ -104,6 +104,9 @@ pub mod mint {
         /// Keyset id not active
         #[error("Keyset id is not active")]
         InactiveKeyset,
+        /// Keyset is not known
+        #[error("Unknown Keyset")]
+        UnknownKeySet,
         #[error("`{0}`")]
         CustomError(String),
     }
