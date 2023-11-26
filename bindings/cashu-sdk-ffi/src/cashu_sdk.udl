@@ -299,7 +299,7 @@ interface Wallet {
     [Throws=CashuSdkError]
 	RequestMintResponse request_mint(Amount amount);
     [Throws=CashuSdkError]
-	Token mint_token(Amount amount, string hash);
+	Token mint_token(Amount amount, string hash, string? unit, string? memo);
     [Throws=CashuSdkError]
 	sequence<Proof> mint(Amount amount, string hash);
     [Throws=CashuSdkError]
@@ -313,7 +313,7 @@ interface Wallet {
     [Throws=CashuSdkError]
 	Melted melt(Bolt11Invoice invoice, sequence<Proof> proofs, Amount fee_reserve);
     [Throws=CashuSdkError]
-	string proof_to_token(sequence<Proof> proof, string? memo);
+	string proof_to_token(sequence<Proof> proof, string? unit, string? memo);
 };
 
 
