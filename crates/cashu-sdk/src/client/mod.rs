@@ -8,8 +8,8 @@ use cashu::nuts::CheckSpendableResponse;
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
-    BlindedMessage, BlindedMessages, CheckFeesResponse, Keys, KeysetResponse, MeltResponse,
-    PostMintResponse, Proof, RequestMintResponse, SplitRequest, SplitResponse,
+    BlindedMessage, CheckFeesResponse, Keys, KeysetResponse, MeltResponse, PostMintResponse,
+    PreMintSecrets, Proof, RequestMintResponse, SplitRequest, SplitResponse,
 };
 use cashu::{utils, Amount};
 use serde::{Deserialize, Serialize};
@@ -99,7 +99,7 @@ pub trait Client {
     async fn post_mint(
         &self,
         mint_url: Url,
-        blinded_messages: BlindedMessages,
+        premint_secrets: PreMintSecrets,
         hash: &str,
     ) -> Result<PostMintResponse, Error>;
 

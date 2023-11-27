@@ -5,12 +5,12 @@ mod wallet;
 
 mod ffi {
     pub use cashu_ffi::{
-        Amount, BlindedMessage, BlindedMessages, BlindedSignature, Bolt11Invoice, CashuError,
-        CheckFeesRequest, CheckFeesResponse, CheckSpendableRequest, CheckSpendableResponse, Id,
-        InvoiceStatus, KeyPair, KeySet, KeySetInfo, KeySetResponse, Keys, KeysResponse,
-        MeltRequest, MeltResponse, MintInfo, MintKeySet, MintProof, MintProofs, MintRequest,
-        MintVersion, Nut05MeltRequest, Nut05MeltResponse, PostMintResponse, Proof, PublicKey,
-        RequestMintResponse, Secret, SecretKey, SplitRequest, SplitResponse, Token,
+        Amount, BlindedMessage, BlindedSignature, Bolt11Invoice, CashuError, CheckFeesRequest,
+        CheckFeesResponse, CheckSpendableRequest, CheckSpendableResponse, Id, InvoiceStatus,
+        KeyPair, KeySet, KeySetInfo, KeySetResponse, Keys, KeysResponse, MeltRequest, MeltResponse,
+        MintInfo, MintKeySet, MintProof, MintProofs, MintRequest, MintVersion, Nut05MeltRequest,
+        Nut05MeltResponse, PostMintResponse, PreMintSecrets, Proof, PublicKey, RequestMintResponse,
+        Secret, SecretKey, SplitRequest, SplitResponse, Token,
     };
 
     pub use crate::error::CashuSdkError;

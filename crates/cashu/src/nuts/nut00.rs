@@ -22,6 +22,7 @@ pub struct BlindedMessage {
 
 #[cfg(feature = "wallet")]
 pub mod wallet {
+    use std::cmp::Ordering;
     use std::str::FromStr;
 
     use base64::engine::{general_purpose, GeneralPurpose};
@@ -37,25 +38,65 @@ pub mod wallet {
     use crate::url::UncheckedUrl;
     use crate::{error, Amount};
 
-    /// Blinded Messages [NUT-00]
-    #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
-    pub struct BlindedMessages {
-        /// Blinded messages
-        pub blinded_messages: Vec<BlindedMessage>,
-        /// Secrets
-        pub secrets: Vec<Secret>,
-        /// Rs
-        pub rs: Vec<SecretKey>,
-        /// Amounts
-        pub amounts: Vec<Amount>,
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    pub struct PreMint {
+        /// Blinded message
+        pub blinded_message: BlindedMessage,
+        /// Secret
+        pub secret: Secret,
+        /// R
+        pub r: SecretKey,
+        /// Amount
+        pub amount: Amount,
     }
 
-    impl BlindedMessages {
+    impl Ord for PreMint {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.amount.cmp(&other.amount)
+        }
+    }
+
+    impl PartialOrd for PreMint {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+    pub struct PreMintSecrets {
+        secrets: Vec<PreMint>,
+    }
+
+    // Implement Iterator for PreMintSecrets
+    impl Iterator for PreMintSecrets {
+        type Item = PreMint;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            // Use the iterator of the vector
+            self.secrets.pop()
+        }
+    }
+
+    impl Ord for PreMintSecrets {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.secrets.cmp(&other.secrets)
+        }
+    }
+
+    impl PartialOrd for PreMintSecrets {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl PreMintSecrets {
         /// Outputs for speceifed amount with random secret
         pub fn random(keyset_id: Id, amount: Amount) -> Result<Self, wallet::Error> {
-            let mut blinded_messages = BlindedMessages::default();
+            let amount_split = amount.split();
 
-            for amount in amount.split() {
+            let mut output = Vec::with_capacity(amount_split.len());
+
+            for amount in amount_split {
                 let secret = Secret::new();
                 let (blinded, r) = blind_message(secret.as_bytes(), None)?;
 
@@ -65,19 +106,19 @@ pub mod wallet {
                     keyset_id,
                 };
 
-                blinded_messages.secrets.push(secret);
-                blinded_messages.blinded_messages.push(blinded_message);
-                blinded_messages.rs.push(r.into());
-                blinded_messages.amounts.push(amount);
+                output.push(PreMint {
+                    secret,
+                    blinded_message,
+                    r: r.into(),
+                    amount,
+                });
             }
 
-            Ok(blinded_messages)
+            Ok(PreMintSecrets { secrets: output })
         }
 
         /// Blank Outputs used for NUT-08 change
         pub fn blank(keyset_id: Id, fee_reserve: Amount) -> Result<Self, wallet::Error> {
-            let mut blinded_messages = BlindedMessages::default();
-
             let fee_reserve = bitcoin::Amount::from_sat(fee_reserve.to_sat());
 
             let count = (fee_reserve
@@ -85,6 +126,8 @@ pub mod wallet {
                 .log2()
                 .ceil() as u64)
                 .max(1);
+
+            let mut output = Vec::with_capacity(count as usize);
 
             for _i in 0..count {
                 let secret = Secret::new();
@@ -96,20 +139,58 @@ pub mod wallet {
                     keyset_id,
                 };
 
-                blinded_messages.secrets.push(secret);
-                blinded_messages.blinded_messages.push(blinded_message);
-                blinded_messages.rs.push(r.into());
-                blinded_messages.amounts.push(Amount::ZERO);
+                output.push(PreMint {
+                    secret,
+                    blinded_message,
+                    r: r.into(),
+                    amount: Amount::ZERO,
+                })
             }
 
-            Ok(blinded_messages)
+            Ok(PreMintSecrets { secrets: output })
+        }
+
+        pub fn iter(&self) -> impl Iterator<Item = &PreMint> {
+            self.secrets.iter()
+        }
+
+        pub fn len(&self) -> usize {
+            self.secrets.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.secrets.is_empty()
+        }
+
+        pub fn total_amount(&self) -> Amount {
+            self.secrets
+                .iter()
+                .map(|PreMint { amount, .. }| *amount)
+                .sum()
+        }
+
+        pub fn blinded_messages(&self) -> Vec<BlindedMessage> {
+            self.iter().map(|pm| pm.blinded_message.clone()).collect()
+        }
+
+        pub fn secrets(&self) -> Vec<Secret> {
+            self.iter().map(|pm| pm.secret.clone()).collect()
+        }
+
+        pub fn rs(&self) -> Vec<SecretKey> {
+            self.iter().map(|pm| pm.r.clone()).collect()
+        }
+
+        pub fn amounts(&self) -> Vec<Amount> {
+            self.iter().map(|pm| pm.amount).collect()
         }
 
         pub fn combine(&mut self, mut other: Self) {
-            self.blinded_messages.append(&mut other.blinded_messages);
-            self.secrets.append(&mut other.secrets);
-            self.rs.append(&mut other.rs);
-            self.amounts.append(&mut other.amounts);
+            self.secrets.append(&mut other.secrets)
+        }
+
+        pub fn sort_secrets(&mut self) {
+            self.secrets.sort();
         }
     }
 
@@ -335,11 +416,11 @@ mod tests {
     #[test]
     fn test_blank_blinded_messages() {
         // TODO: Need to update id to new type in proof
-        let b = BlindedMessages::blank(Id::from_str("").unwrap(), Amount::from_sat(1000)).unwrap();
-        assert_eq!(b.blinded_messages.len(), 10);
+        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from_sat(1000)).unwrap();
+        assert_eq!(b.len(), 10);
 
         // TODO: Need to update id to new type in proof
-        let b = BlindedMessages::blank(Id::from_str("").unwrap(), Amount::from_sat(1)).unwrap();
-        assert_eq!(b.blinded_messages.len(), 1);
+        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from_sat(1)).unwrap();
+        assert_eq!(b.len(), 1);
     }
 }

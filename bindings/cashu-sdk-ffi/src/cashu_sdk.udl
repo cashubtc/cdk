@@ -101,7 +101,7 @@ interface Token {
 	
 };
 
-interface BlindedMessages {
+interface PreMintSecrets {
     [Throws=CashuError, Name=random]
 	constructor(Id keyset_id, Amount amount);
     [Throws=CashuError, Name=blank]
@@ -307,7 +307,7 @@ interface Wallet {
     [Throws=CashuSdkError]
 	sequence<Proof> receive(string encoded_token);
     [Throws=CashuSdkError]
-	sequence<Proof> process_split_response(BlindedMessages blinded_messages, sequence<BlindedSignature> promises);
+	sequence<Proof> process_split_response(PreMintSecrets blinded_messages, sequence<BlindedSignature> promises);
     [Throws=CashuSdkError]
 	SendProofs send(Amount amount, sequence<Proof> proofs);
     [Throws=CashuSdkError]

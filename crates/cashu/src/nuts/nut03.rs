@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::nut00::BlindedSignature;
 #[cfg(feature = "wallet")]
-use crate::nuts::BlindedMessages;
+use crate::nuts::PreMintSecrets;
 use crate::nuts::{BlindedMessage, Proofs};
 use crate::Amount;
 pub use crate::Bolt11Invoice;
@@ -22,7 +22,7 @@ pub struct RequestMintResponse {
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SplitPayload {
-    pub blinded_messages: BlindedMessages,
+    pub pre_mint_secrets: PreMintSecrets,
     pub split_payload: SplitRequest,
 }
 

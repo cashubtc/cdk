@@ -38,11 +38,9 @@ impl Mint {
 
         // Check that there is only one active keyset per unit
         for keyset_info in keysets_info {
-            if keyset_info.active {
-                if !active_units.insert(keyset_info.unit.clone()) {
-                    // TODO: Handle Error
-                    todo!()
-                }
+            if keyset_info.active && !active_units.insert(keyset_info.unit.clone()) {
+                // TODO: Handle Error
+                todo!()
             }
 
             let keyset = nut02::mint::KeySet::generate(
@@ -88,7 +86,6 @@ impl Mint {
         let keysets = self
             .keysets_info
             .values()
-            .into_iter()
             .map(|k| k.clone().into())
             .collect();
 

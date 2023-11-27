@@ -6,8 +6,8 @@ use async_trait::async_trait;
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
-    BlindedMessage, BlindedMessages, CheckFeesRequest, CheckFeesResponse, Keys, MeltRequest,
-    MeltResponse, MintRequest, PostMintResponse, Proof, RequestMintResponse, SplitRequest,
+    BlindedMessage, CheckFeesRequest, CheckFeesResponse, Keys, MeltRequest, MeltResponse,
+    MintRequest, PostMintResponse, PreMintSecrets, Proof, RequestMintResponse, SplitRequest,
     SplitResponse, *,
 };
 #[cfg(feature = "nut07")]
@@ -72,14 +72,14 @@ impl Client for HttpClient {
     async fn post_mint(
         &self,
         mint_url: Url,
-        blinded_messages: BlindedMessages,
+        premint_secrets: PreMintSecrets,
         hash: &str,
     ) -> Result<PostMintResponse, Error> {
         let mut url = join_url(mint_url, "mint")?;
         url.query_pairs_mut().append_pair("hash", hash);
 
         let request = MintRequest {
-            outputs: blinded_messages.blinded_messages,
+            outputs: premint_secrets.blinded_messages(),
         };
 
         let res = minreq::post(url)

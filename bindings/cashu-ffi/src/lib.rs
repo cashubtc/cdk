@@ -7,9 +7,9 @@ mod ffi {
 
     pub use crate::error::CashuError;
     pub use crate::nuts::nut00::blinded_message::BlindedMessage;
-    pub use crate::nuts::nut00::blinded_messages::BlindedMessages;
     pub use crate::nuts::nut00::blinded_signature::BlindedSignature;
     pub use crate::nuts::nut00::mint_proofs::MintProofs;
+    pub use crate::nuts::nut00::premint_secrets::PreMintSecrets;
     pub use crate::nuts::nut00::proof::mint::Proof as MintProof;
     pub use crate::nuts::nut00::proof::Proof;
     pub use crate::nuts::nut00::token::Token;
