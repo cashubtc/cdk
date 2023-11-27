@@ -5,7 +5,7 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedMessages, BlindedSignature, Keys, Proof, Proofs, RequestMintResponse, SplitPayload,
+    BlindedSignature, Keys, PreMintSecrets, Proof, Proofs, RequestMintResponse, SplitPayload,
     SplitRequest, Token,
 };
 #[cfg(feature = "nut07")]
@@ -106,21 +106,21 @@ impl<C: Client> Wallet<C> {
 
     /// Mint Proofs
     pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
-        let blinded_messages = BlindedMessages::random((&self.mint_keys).into(), amount)?;
+        let premint_secrets = PreMintSecrets::random((&self.mint_keys).into(), amount)?;
 
         let mint_res = self
             .client
             .post_mint(
                 self.mint_url.clone().try_into()?,
-                blinded_messages.clone(),
+                premint_secrets.clone(),
                 hash,
             )
             .await?;
 
         let proofs = construct_proofs(
             mint_res.promises,
-            blinded_messages.rs,
-            blinded_messages.secrets,
+            premint_secrets.rs(),
+            premint_secrets.secrets(),
             &self.mint_keys,
         )?;
 
@@ -169,8 +169,8 @@ impl<C: Client> Wallet<C> {
                 // Proof to keep
                 let p = construct_proofs(
                     promises.to_owned(),
-                    split_payload.blinded_messages.rs,
-                    split_payload.blinded_messages.secrets,
+                    split_payload.pre_mint_secrets.rs(),
+                    split_payload.pre_mint_secrets.secrets(),
                     &keys,
                 )?;
                 proofs.push(p);
@@ -183,49 +183,43 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Create Split Payload
-    /// TODO: This needs to sort to avoid finer printing
     fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<SplitPayload, Error> {
         // Since split is used to get the needed combination of tokens for a specific
         // amount first blinded messages are created for the amount
 
-        let blinded_messages = if let Some(amount) = amount {
-            let mut desired_messages = BlindedMessages::random((&self.mint_keys).into(), amount)?;
+        let pre_mint_secrets = if let Some(amount) = amount {
+            let mut desired_messages = PreMintSecrets::random((&self.mint_keys).into(), amount)?;
 
             let change_amount = proofs.iter().map(|p| p.amount).sum::<Amount>() - amount;
 
-            let change_messages = BlindedMessages::random((&self.mint_keys).into(), change_amount)?;
+            let change_messages = PreMintSecrets::random((&self.mint_keys).into(), change_amount)?;
+            // Combine the BlindedMessages totoalling the desired amount with change
             desired_messages.combine(change_messages);
+            // Sort the premint secrets to avoid finger printing
+            desired_messages.sort_secrets();
             desired_messages
         } else {
             let value = proofs.iter().map(|p| p.amount).sum();
 
-            BlindedMessages::random((&self.mint_keys).into(), value)?
+            PreMintSecrets::random((&self.mint_keys).into(), value)?
         };
 
-        let split_payload = SplitRequest::new(proofs, blinded_messages.blinded_messages.clone());
+        let split_payload = SplitRequest::new(proofs, pre_mint_secrets.blinded_messages());
 
         Ok(SplitPayload {
-            blinded_messages,
+            pre_mint_secrets,
             split_payload,
         })
     }
 
     pub fn process_split_response(
         &self,
-        blinded_messages: BlindedMessages,
+        blinded_messages: PreMintSecrets,
         promises: Vec<BlindedSignature>,
     ) -> Result<Proofs, Error> {
-        let BlindedMessages {
-            blinded_messages: _,
-            secrets,
-            rs,
-            amounts: _,
-        } = blinded_messages;
-
-        let secrets: Vec<_> = secrets.iter().collect();
         let mut proofs = vec![];
 
-        for (i, promise) in promises.iter().enumerate() {
+        for (promise, premint) in promises.iter().zip(blinded_messages) {
             let a = self
                 .mint_keys
                 .amount_key(promise.amount)
@@ -234,11 +228,11 @@ impl<C: Client> Wallet<C> {
 
             let blinded_c = promise.c.clone();
 
-            let unblinded_sig = unblind_message(blinded_c, rs[i].clone().into(), a).unwrap();
+            let unblinded_sig = unblind_message(blinded_c, premint.r.into(), a).unwrap();
             let proof = Proof {
                 id: promise.id,
                 amount: promise.amount,
-                secret: secrets[i].clone(),
+                secret: premint.secret,
                 c: unblinded_sig,
             };
 
@@ -273,8 +267,8 @@ impl<C: Client> Wallet<C> {
         if let Some(promises) = split_response.promises {
             let mut proofs = construct_proofs(
                 promises,
-                split_payload.blinded_messages.rs,
-                split_payload.blinded_messages.secrets,
+                split_payload.pre_mint_secrets.rs(),
+                split_payload.pre_mint_secrets.secrets(),
                 &self.mint_keys,
             )?;
 
@@ -316,22 +310,22 @@ impl<C: Client> Wallet<C> {
         proofs: Proofs,
         fee_reserve: Amount,
     ) -> Result<Melted, Error> {
-        let blinded = BlindedMessages::blank((&self.mint_keys).into(), fee_reserve)?;
+        let blinded = PreMintSecrets::blank((&self.mint_keys).into(), fee_reserve)?;
         let melt_response = self
             .client
             .post_melt(
                 self.mint_url.clone().try_into()?,
                 proofs,
                 invoice,
-                Some(blinded.blinded_messages),
+                Some(blinded.blinded_messages()),
             )
             .await?;
 
         let change_proofs = match melt_response.change {
             Some(change) => Some(construct_proofs(
                 change,
-                blinded.rs,
-                blinded.secrets,
+                blinded.rs(),
+                blinded.secrets(),
                 &self.mint_keys,
             )?),
             None => None,

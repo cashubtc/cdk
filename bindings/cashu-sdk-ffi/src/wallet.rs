@@ -2,7 +2,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use cashu_ffi::{
-    BlindedMessages, BlindedSignature, Bolt11Invoice, Proof, RequestMintResponse, Token,
+    BlindedSignature, Bolt11Invoice, PreMintSecrets, Proof, RequestMintResponse, Token,
 };
 use cashu_sdk::client::minreq_client::HttpClient;
 use cashu_sdk::types::ProofsStatus;
@@ -88,7 +88,7 @@ impl Wallet {
 
     pub fn process_split_response(
         &self,
-        blinded_messages: Arc<BlindedMessages>,
+        blinded_messages: Arc<PreMintSecrets>,
         promises: Vec<Arc<BlindedSignature>>,
     ) -> Result<Vec<Arc<Proof>>> {
         Ok(self

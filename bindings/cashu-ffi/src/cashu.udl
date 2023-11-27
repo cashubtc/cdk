@@ -98,7 +98,7 @@ interface Token {
 	
 };
 
-interface BlindedMessages {
+interface PreMintSecrets {
     [Throws=CashuError, Name=random]
 	constructor(Id keyset_id, Amount amount);
     [Throws=CashuError, Name=blank]
