@@ -32,23 +32,3 @@ pub enum InvoiceStatus {
     Expired,
     InFlight,
 }
-
-#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KeysetInfo {
-    pub id: Id,
-    pub unit: String,
-    pub active: bool,
-    pub valid_from: u64,
-    pub valid_to: Option<u64>,
-    pub derivation_path: String,
-    pub max_order: u8,
-}
-
-impl From<KeysetInfo> for KeySetInfo {
-    fn from(keyset_info: KeysetInfo) -> Self {
-        Self {
-            id: keyset_info.id,
-            unit: keyset_info.unit,
-        }
-    }
-}

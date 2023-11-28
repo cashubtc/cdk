@@ -1,28 +1,28 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu_sdk::types::KeysetInfo as KeySetInfoSdk;
+use cashu_sdk::mint::MintKeySetInfo as MintKeySetInfoSdk;
 
 use crate::Id;
 
-pub struct KeySetInfo {
-    inner: KeySetInfoSdk,
+pub struct MintKeySetInfo {
+    inner: MintKeySetInfoSdk,
 }
 
-impl Deref for KeySetInfo {
-    type Target = KeySetInfoSdk;
+impl Deref for MintKeySetInfo {
+    type Target = MintKeySetInfoSdk;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<KeySetInfoSdk> for KeySetInfo {
-    fn from(inner: KeySetInfoSdk) -> KeySetInfo {
-        KeySetInfo { inner }
+impl From<MintKeySetInfoSdk> for MintKeySetInfo {
+    fn from(inner: MintKeySetInfoSdk) -> MintKeySetInfo {
+        MintKeySetInfo { inner }
     }
 }
 
-impl KeySetInfo {
+impl MintKeySetInfo {
     pub fn new(
         id: Arc<Id>,
         active: bool,
@@ -33,7 +33,7 @@ impl KeySetInfo {
         max_order: u8,
     ) -> Self {
         Self {
-            inner: KeySetInfoSdk {
+            inner: MintKeySetInfoSdk {
                 id: *id.as_ref().deref(),
                 active,
                 unit,

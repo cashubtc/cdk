@@ -9,15 +9,15 @@ use cashu::nuts::{
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::secret::Secret;
-use cashu::types::KeysetInfo;
 use cashu::Amount;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 pub struct Mint {
     //    pub pubkey: PublicKey
     secret: String,
     pub keysets: HashMap<Id, nut02::mint::KeySet>,
-    pub keysets_info: HashMap<Id, KeysetInfo>,
+    pub keysets_info: HashMap<Id, MintKeySetInfo>,
     pub spent_secrets: HashSet<Secret>,
     pub pending_secrets: HashSet<Secret>,
     pub fee_reserve: FeeReserve,
@@ -26,7 +26,7 @@ pub struct Mint {
 impl Mint {
     pub fn new(
         secret: &str,
-        keysets_info: HashSet<KeysetInfo>,
+        keysets_info: HashSet<MintKeySetInfo>,
         spent_secrets: HashSet<Secret>,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
@@ -323,4 +323,24 @@ impl Mint {
 pub struct FeeReserve {
     pub min_fee_reserve: Amount,
     pub percent_fee_reserve: f32,
+}
+
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintKeySetInfo {
+    pub id: Id,
+    pub unit: String,
+    pub active: bool,
+    pub valid_from: u64,
+    pub valid_to: Option<u64>,
+    pub derivation_path: String,
+    pub max_order: u8,
+}
+
+impl From<MintKeySetInfo> for KeySetInfo {
+    fn from(keyset_info: MintKeySetInfo) -> Self {
+        Self {
+            id: keyset_info.id,
+            unit: keyset_info.unit,
+        }
+    }
 }
