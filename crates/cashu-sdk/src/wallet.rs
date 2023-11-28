@@ -5,7 +5,7 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, Keys, PreMintSecrets, Proof, Proofs, RequestMintResponse, SplitPayload,
+    BlindedSignature, Keys, PreMintSecrets, PreSplit, Proof, Proofs, RequestMintResponse,
     SplitRequest, Token,
 };
 #[cfg(feature = "nut07")]
@@ -155,22 +155,19 @@ impl<C: Client> Wallet<C> {
             // Sum amount of all proofs
             let _amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
 
-            let split_payload = self.create_split(None, token.proofs)?;
+            let pre_split = self.create_split(None, token.proofs)?;
 
             let split_response = self
                 .client
-                .post_split(
-                    self.mint_url.clone().try_into()?,
-                    split_payload.split_payload,
-                )
+                .post_split(self.mint_url.clone().try_into()?, pre_split.split_request)
                 .await?;
 
             if let Some(promises) = &split_response.promises {
                 // Proof to keep
                 let p = construct_proofs(
                     promises.to_owned(),
-                    split_payload.pre_mint_secrets.rs(),
-                    split_payload.pre_mint_secrets.secrets(),
+                    pre_split.pre_mint_secrets.rs(),
+                    pre_split.pre_mint_secrets.secrets(),
                     &keys,
                 )?;
                 proofs.push(p);
@@ -183,7 +180,7 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Create Split Payload
-    fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<SplitPayload, Error> {
+    fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<PreSplit, Error> {
         // Since split is used to get the needed combination of tokens for a specific
         // amount first blinded messages are created for the amount
 
@@ -204,11 +201,11 @@ impl<C: Client> Wallet<C> {
             PreMintSecrets::random((&self.mint_keys).into(), value)?
         };
 
-        let split_payload = SplitRequest::new(proofs, pre_mint_secrets.blinded_messages());
+        let split_request = SplitRequest::new(proofs, pre_mint_secrets.blinded_messages());
 
-        Ok(SplitPayload {
+        Ok(PreSplit {
             pre_mint_secrets,
-            split_payload,
+            split_request,
         })
     }
 
@@ -251,14 +248,11 @@ impl<C: Client> Wallet<C> {
             return Err(Error::InsufficientFunds);
         }
 
-        let split_payload = self.create_split(Some(amount), proofs)?;
+        let pre_split = self.create_split(Some(amount), proofs)?;
 
         let split_response = self
             .client
-            .post_split(
-                self.mint_url.clone().try_into()?,
-                split_payload.split_payload,
-            )
+            .post_split(self.mint_url.clone().try_into()?, pre_split.split_request)
             .await?;
 
         let mut keep_proofs = Proofs::new();
@@ -267,8 +261,8 @@ impl<C: Client> Wallet<C> {
         if let Some(promises) = split_response.promises {
             let mut proofs = construct_proofs(
                 promises,
-                split_payload.pre_mint_secrets.rs(),
-                split_payload.pre_mint_secrets.secrets(),
+                pre_split.pre_mint_secrets.rs(),
+                pre_split.pre_mint_secrets.secrets(),
                 &self.mint_keys,
             )?;
 

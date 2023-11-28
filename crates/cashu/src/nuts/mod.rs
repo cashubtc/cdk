@@ -18,7 +18,7 @@ pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 #[cfg(feature = "wallet")]
-pub use nut03::SplitPayload;
+pub use nut03::PreSplit;
 pub use nut03::{RequestMintResponse, SplitRequest, SplitResponse};
 pub use nut04::{MintRequest, PostMintResponse};
 pub use nut05::{CheckFeesRequest, CheckFeesResponse};

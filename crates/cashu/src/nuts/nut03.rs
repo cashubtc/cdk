@@ -21,9 +21,9 @@ pub struct RequestMintResponse {
 
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SplitPayload {
+pub struct PreSplit {
     pub pre_mint_secrets: PreMintSecrets,
-    pub split_payload: SplitRequest,
+    pub split_request: SplitRequest,
 }
 
 /// Split Request [NUT-06]
