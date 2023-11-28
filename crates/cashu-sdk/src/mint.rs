@@ -11,7 +11,7 @@ use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::secret::Secret;
 use cashu::types::KeysetInfo;
 use cashu::Amount;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub struct Mint {
     //    pub pubkey: PublicKey,
@@ -300,25 +300,46 @@ impl Mint {
             self.spent_secrets.insert(secret);
         }
 
-        let change_target = melt_request.proofs_amount() - total_spent;
-        let amounts = change_target.split();
-        let mut change = Vec::with_capacity(amounts.len());
+        let mut change = None;
 
-        if let Some(outputs) = &melt_request.outputs {
-            for (i, amount) in amounts.iter().enumerate() {
-                let mut message = outputs[i].clone();
+        if let Some(outputs) = melt_request.outputs.clone() {
+            let change_target = melt_request.proofs_amount() - total_spent;
+            let mut amounts = change_target.split();
+            let mut change_sigs = Vec::with_capacity(amounts.len());
 
-                message.amount = *amount;
+            if outputs.len().lt(&amounts.len()) {
+                debug!(
+                    "Providing change requires {} blinded messages, but only {} provided",
+                    amounts.len(),
+                    outputs.len()
+                );
 
-                let signature = self.blind_sign(&message)?;
-                change.push(signature)
+                // In the case that not enough outputs are provided to return all change
+                // Reverse sort the amounts so that the most amount of change possible is
+                // returned. The rest is burnt
+                amounts.sort_by(|a, b| b.cmp(a));
             }
+
+            for (amount, blinded_message) in amounts.iter().zip(outputs) {
+                let mut blinded_message = blinded_message;
+                blinded_message.amount = *amount;
+
+                let signature = self.blind_sign(&blinded_message)?;
+                change_sigs.push(signature)
+            }
+
+            change = Some(change_sigs);
+        } else {
+            info!(
+                "No change outputs provided. Burnt: {} sats",
+                (melt_request.proofs_amount() - total_spent).to_sat()
+            );
         }
 
         Ok(MeltResponse {
             paid: true,
             preimage: Some(preimage.to_string()),
-            change: Some(change),
+            change,
         })
     }
 }
