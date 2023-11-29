@@ -204,6 +204,18 @@ pub struct Proof {
     pub id: Option<Id>,
 }
 
+impl Ord for Proof {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.amount.cmp(&other.amount)
+    }
+}
+
+impl PartialOrd for Proof {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl From<Proof> for mint::Proof {
     fn from(proof: Proof) -> Self {
         Self {

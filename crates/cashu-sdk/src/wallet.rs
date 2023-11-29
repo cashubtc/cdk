@@ -171,6 +171,11 @@ impl<C: Client> Wallet<C> {
 
     /// Create Split Payload
     fn create_split(&self, proofs: Proofs) -> Result<SplitPayload, Error> {
+        let mut proofs = proofs;
+
+        // Sort proofs in ascending order to avoid fingerprinting
+        proofs.sort();
+
         let value = proofs.iter().map(|p| p.amount).sum();
 
         let blinded_messages = BlindedMessages::random(value)?;
@@ -223,33 +228,14 @@ impl<C: Client> Wallet<C> {
 
     /// Send
     pub async fn send(&self, amount: Amount, proofs: Proofs) -> Result<SendProofs, Error> {
-        let mut amount_available = Amount::ZERO;
-        let mut send_proofs = SendProofs::default();
-
-        for proof in proofs {
-            let proof_value = proof.amount;
-            if amount_available > amount {
-                send_proofs.change_proofs.push(proof);
-            } else {
-                send_proofs.send_proofs.push(proof);
-            }
-            amount_available += proof_value;
-        }
+        let amount_available: Amount = proofs.iter().map(|p| p.amount).sum();
 
         if amount_available.lt(&amount) {
             println!("Not enough funds");
             return Err(Error::InsufficientFunds);
         }
 
-        // If amount available is EQUAL to send amount no need to split
-        if amount_available.eq(&amount) {
-            return Ok(send_proofs);
-        }
-
-        let _amount_to_keep = amount_available - amount;
-        let amount_to_send = amount;
-
-        let split_payload = self.create_split(send_proofs.send_proofs)?;
+        let split_payload = self.create_split(proofs)?;
 
         let split_response = self
             .client
@@ -259,28 +245,42 @@ impl<C: Client> Wallet<C> {
             )
             .await?;
 
-        // If only promises assemble proofs needed for amount
-        let keep_proofs;
-        let send_proofs;
+        let mut keep_proofs = Proofs::new();
+        let mut send_proofs = Proofs::new();
 
         if let Some(promises) = split_response.promises {
-            let proofs = construct_proofs(
+            let mut proofs = construct_proofs(
                 promises,
                 split_payload.blinded_messages.rs,
                 split_payload.blinded_messages.secrets,
                 &self.mint_keys,
             )?;
 
-            let split = amount_to_send.split();
+            proofs.reverse();
 
-            keep_proofs = proofs[0..split.len()].to_vec();
-            send_proofs = proofs[split.len()..].to_vec();
+            for proof in proofs {
+                if (proof.amount + send_proofs.iter().map(|p| p.amount).sum()).gt(&amount) {
+                    keep_proofs.push(proof);
+                } else {
+                    send_proofs.push(proof);
+                }
+            }
         } else {
             return Err(Error::Custom("Invalid split response".to_string()));
         }
 
         // println!("Send Proofs: {:#?}", send_proofs);
         // println!("Keep Proofs: {:#?}", keep_proofs);
+
+        let send_amount: Amount = send_proofs.iter().map(|p| p.amount).sum();
+
+        if send_amount.ne(&amount) {
+            warn!(
+                "Send amount proofs is {} expected {}",
+                send_amount.to_sat(),
+                amount.to_sat()
+            );
+        }
 
         Ok(SendProofs {
             change_proofs: keep_proofs,
