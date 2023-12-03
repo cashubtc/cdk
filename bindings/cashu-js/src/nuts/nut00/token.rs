@@ -57,7 +57,7 @@ impl JsToken {
 
     /// As String
     #[wasm_bindgen(js_name = asString)]
-    pub fn as_string(&self) -> Result<String> {
-        self.inner.convert_to_string().map_err(into_err)
+    pub fn as_string(&self) -> String {
+        self.inner.to_string()
     }
 }
