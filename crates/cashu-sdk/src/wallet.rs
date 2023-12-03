@@ -2,6 +2,8 @@
 use std::str::FromStr;
 
 use cashu::dhke::{construct_proofs, unblind_message};
+#[cfg(feature = "nut07")]
+use cashu::nuts::nut00::mint;
 use cashu::nuts::{
     BlindedMessages, BlindedSignature, Keys, Proof, Proofs, RequestMintResponse, SplitPayload,
     SplitRequest, Token,
@@ -51,17 +53,20 @@ impl<C: Client> Wallet<C> {
         }
     }
 
-    // TODO: getter method for keys that if it cant get them try again
-
     /// Check if a proof is spent
     #[cfg(feature = "nut07")]
-    pub async fn check_proofs_spent(
-        &self,
-        proofs: Vec<cashu::nuts::nut00::mint::Proof>,
-    ) -> Result<ProofsStatus, Error> {
+    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<ProofsStatus, Error> {
         let spendable = self
             .client
-            .post_check_spendable(self.mint_url.clone().try_into()?, proofs.clone())
+            .post_check_spendable(
+                self.mint_url.clone().try_into()?,
+                proofs
+                    .clone()
+                    .into_iter()
+                    .map(|p| p.into())
+                    .collect::<mint::Proofs>()
+                    .clone(),
+            )
             .await?;
 
         // Separate proofs in spent and unspent based on mint response

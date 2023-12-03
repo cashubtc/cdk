@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use cashu_sdk::types::ProofsStatus as ProofsStatusSdk;
 
-use crate::MintProof;
+use crate::Proof;
 
 pub struct ProofsStatus {
     inner: ProofsStatusSdk,
@@ -23,7 +23,7 @@ impl From<ProofsStatusSdk> for ProofsStatus {
 }
 
 impl ProofsStatus {
-    pub fn new(spendable: Vec<Arc<MintProof>>, spent: Vec<Arc<MintProof>>) -> Self {
+    pub fn new(spendable: Vec<Arc<Proof>>, spent: Vec<Arc<Proof>>) -> Self {
         Self {
             inner: ProofsStatusSdk {
                 spendable: spendable
@@ -35,7 +35,7 @@ impl ProofsStatus {
         }
     }
 
-    pub fn spendable(&self) -> Vec<Arc<MintProof>> {
+    pub fn spendable(&self) -> Vec<Arc<Proof>> {
         self.inner
             .spendable
             .clone()
@@ -44,7 +44,7 @@ impl ProofsStatus {
             .collect()
     }
 
-    pub fn spent(&self) -> Vec<Arc<MintProof>> {
+    pub fn spent(&self) -> Vec<Arc<Proof>> {
         self.inner
             .spent
             .clone()

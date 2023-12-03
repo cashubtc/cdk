@@ -2,13 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::nut00::mint;
 use crate::nuts::{Id, Proofs};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {
-    pub spendable: mint::Proofs,
-    pub spent: mint::Proofs,
+    pub spendable: Proofs,
+    pub spent: Proofs,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
