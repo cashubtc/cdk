@@ -23,6 +23,7 @@ pub struct BlindedMessage {
 #[cfg(feature = "wallet")]
 pub mod wallet {
     use std::cmp::Ordering;
+    use std::fmt;
     use std::str::FromStr;
 
     use base64::engine::{general_purpose, GeneralPurpose};
@@ -201,7 +202,6 @@ pub mod wallet {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub memo: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        /// Unit of the token eg: sats, usd
         pub unit: Option<String>,
     }
 
@@ -209,8 +209,8 @@ pub mod wallet {
         pub fn new(
             mint_url: UncheckedUrl,
             proofs: Proofs,
-            unit: Option<String>,
             memo: Option<String>,
+            unit: Option<String>,
         ) -> Result<Self, wallet::Error> {
             if proofs.is_empty() {
                 return Err(wallet::Error::ProofsRequired);
@@ -257,11 +257,11 @@ pub mod wallet {
         }
     }
 
-    impl Token {
-        pub fn convert_to_string(&self) -> Result<String, wallet::Error> {
-            let json_string = serde_json::to_string(self)?;
+    impl fmt::Display for Token {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let json_string = serde_json::to_string(self).map_err(|_| fmt::Error)?;
             let encoded = general_purpose::STANDARD.encode(json_string);
-            Ok(format!("cashuA{}", encoded))
+            write!(f, "cashuA{}", encoded)
         }
     }
 }
@@ -389,7 +389,7 @@ mod tests {
             Id::from_str("DSAl9nvvyfva").unwrap()
         );
 
-        let encoded = &token.convert_to_string().unwrap();
+        let encoded = &token.to_string();
 
         let token_data = Token::from_str(encoded).unwrap();
 
@@ -408,7 +408,7 @@ mod tests {
         )
         .unwrap();
 
-        let _token = Token::from_str(&token.convert_to_string().unwrap()).unwrap();
+        let _token = Token::from_str(&token.to_string()).unwrap();
 
         let _token = Token::from_str("cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6IjBOSTNUVUFzMVNmeSIsImFtb3VudCI6MSwic2VjcmV0IjoiVE92cGVmZGxSZ0EzdlhMN05pM2MvRE1oY29URXNQdnV4eFc0Rys2dXVycz0iLCJDIjoiMDNiZThmMzQwOTMxYTI4ZTlkMGRmNGFmMWQwMWY1ZTcxNTFkMmQ1M2RiN2Y0ZDAyMWQzZGUwZmRiMDNjZGY4ZTlkIn1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvNGdyOVhjbXozWEVrVU53aUJpUUdvQyJ9XX0").unwrap();
     }

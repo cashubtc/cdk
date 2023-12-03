@@ -45,7 +45,7 @@ impl Token {
     }
 
     pub fn as_string(&self) -> Result<String> {
-        Ok(self.inner.convert_to_string()?)
+        Ok(self.inner.to_string())
     }
 }
 

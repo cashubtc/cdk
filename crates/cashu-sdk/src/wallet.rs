@@ -340,7 +340,7 @@ impl<C: Client> Wallet<C> {
         unit: Option<String>,
         memo: Option<String>,
     ) -> Result<String, Error> {
-        Ok(Token::new(self.mint_url.clone(), proofs, unit, memo)?.convert_to_string()?)
+        Ok(Token::new(self.mint_url.clone(), proofs, unit, memo)?.to_string())
     }
 }
 
