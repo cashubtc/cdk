@@ -257,9 +257,9 @@ enum InvoiceStatus {
 };
 
 interface ProofsStatus {
-	constructor(sequence<MintProof> spendable, sequence<MintProof> spent);
-	sequence<MintProof> spendable();
-	sequence<MintProof> spent();
+	constructor(sequence<Proof> spendable, sequence<Proof> spent);
+	sequence<Proof> spendable();
+	sequence<Proof> spent();
 };
 
 
@@ -291,7 +291,7 @@ interface Melted {
 
 interface Wallet {
 	// [Throws=CashuSdkError]
-	// ProofsStatus check_proofs_spent(sequence<MintProof> proofs);
+	// ProofsStatus check_proofs_spent(sequence<Proof> proofs);
     [Throws=CashuSdkError]
 	RequestMintResponse request_mint(Amount amount);
     [Throws=CashuSdkError]
