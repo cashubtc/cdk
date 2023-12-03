@@ -243,11 +243,14 @@ pub mod wallet {
         type Err = error::wallet::Error;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
-            if !s.starts_with("cashuA") {
+            let s = if s.starts_with("cashuA") {
+                s.replace("cashuA", "")
+            } else if s.starts_with("cashuB") {
+                s.replace("cashuB", "")
+            } else {
                 return Err(wallet::Error::UnsupportedToken);
-            }
+            };
 
-            let s = s.replace("cashuA", "");
             let decode_config = general_purpose::GeneralPurposeConfig::new()
                 .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
             let decoded = GeneralPurpose::new(&alphabet::STANDARD, decode_config).decode(s)?;
@@ -261,7 +264,7 @@ pub mod wallet {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let json_string = serde_json::to_string(self).map_err(|_| fmt::Error)?;
             let encoded = general_purpose::STANDARD.encode(json_string);
-            write!(f, "cashuA{}", encoded)
+            write!(f, "cashuB{}", encoded)
         }
     }
 }
