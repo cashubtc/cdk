@@ -76,8 +76,12 @@ impl<C: Client> Wallet<C> {
             .partition(|(_, &b)| b);
 
         Ok(ProofsStatus {
-            spendable: spendable.into_iter().map(|(s, _)| s).cloned().collect(),
-            spent: spent.into_iter().map(|(s, _)| s).cloned().collect(),
+            spendable: spendable
+                .into_iter()
+                .map(|(s, _)| s.into())
+                .cloned()
+                .collect(),
+            spent: spent.into_iter().map(|(s, _)| s.into()).cloned().collect(),
         })
     }
 
@@ -177,8 +181,6 @@ impl<C: Client> Wallet<C> {
     /// Create Split Payload
     /// TODO: This needs to sort to avoid finer printing
     fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<SplitPayload, Error> {
-        let proofs = proofs;
-
         // Since split is used to get the needed combination of tokens for a specific
         // amount first blinded messages are created for the amount
 
