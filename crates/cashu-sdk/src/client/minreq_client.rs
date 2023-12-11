@@ -1,5 +1,7 @@
 //! Minreq http Client
 
+use std::println;
+
 use async_trait::async_trait;
 use cashu::nuts::nut00::wallet::BlindedMessages;
 use cashu::nuts::nut00::{BlindedMessage, Proof};
@@ -16,6 +18,7 @@ use cashu::nuts::MintInfo;
 use cashu::nuts::*;
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
+use tracing::debug;
 use url::Url;
 
 use super::join_url;
@@ -161,17 +164,16 @@ impl Client for HttpClient {
     ) -> Result<SplitResponse, Error> {
         let url = join_url(mint_url, "split")?;
 
-        let res = minreq::post(url)
-            .with_json(&split_request)?
-            .send()?
-            .json::<Value>()?;
+        let res = minreq::post(url).with_json(&split_request)?.send()?;
+
+        println!("{:?}", res);
 
         let response: Result<SplitResponse, serde_json::Error> =
-            serde_json::from_value(res.clone());
+            serde_json::from_value(res.json::<Value>()?.clone());
 
         match response {
             Ok(res) if res.promises.is_some() => Ok(res),
-            _ => Err(Error::from_json(&res.to_string())?),
+            _ => Err(Error::from_json(&res.json::<Value>()?.to_string())?),
         }
     }
 

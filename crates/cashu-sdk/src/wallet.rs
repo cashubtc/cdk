@@ -147,7 +147,7 @@ impl<C: Client> Wallet<C> {
             // Sum amount of all proofs
             let _amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
 
-            let split_payload = self.create_split(token.proofs)?;
+            let split_payload = self.create_split(None, token.proofs)?;
 
             let split_response = self
                 .client
@@ -175,15 +175,26 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Create Split Payload
-    fn create_split(&self, proofs: Proofs) -> Result<SplitPayload, Error> {
-        let mut proofs = proofs;
+    /// TODO: This needs to sort to avoid finer printing
+    fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<SplitPayload, Error> {
+        let proofs = proofs;
 
-        // Sort proofs in ascending order to avoid fingerprinting
-        proofs.sort();
+        // Since split is used to get the needed combination of tokens for a specific
+        // amount first blinded messages are created for the amount
 
-        let value = proofs.iter().map(|p| p.amount).sum();
+        let blinded_messages = if let Some(amount) = amount {
+            let mut desired_messages = BlindedMessages::random(amount)?;
 
-        let blinded_messages = BlindedMessages::random(value)?;
+            let change_amount = proofs.iter().map(|p| p.amount).sum::<Amount>() - amount;
+
+            let change_messages = BlindedMessages::random(change_amount)?;
+            desired_messages.combine(change_messages);
+            desired_messages
+        } else {
+            let value = proofs.iter().map(|p| p.amount).sum();
+
+            BlindedMessages::random(value)?
+        };
 
         let split_payload = SplitRequest::new(proofs, blinded_messages.blinded_messages.clone());
 
@@ -240,7 +251,7 @@ impl<C: Client> Wallet<C> {
             return Err(Error::InsufficientFunds);
         }
 
-        let split_payload = self.create_split(proofs)?;
+        let split_payload = self.create_split(Some(amount), proofs)?;
 
         let split_response = self
             .client
