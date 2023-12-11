@@ -76,12 +76,8 @@ impl<C: Client> Wallet<C> {
             .partition(|(_, &b)| b);
 
         Ok(ProofsStatus {
-            spendable: spendable
-                .into_iter()
-                .map(|(s, _)| s.into())
-                .cloned()
-                .collect(),
-            spent: spent.into_iter().map(|(s, _)| s.into()).cloned().collect(),
+            spendable: spendable.into_iter().map(|(s, _)| s).cloned().collect(),
+            spent: spent.into_iter().map(|(s, _)| s).cloned().collect(),
         })
     }
 
