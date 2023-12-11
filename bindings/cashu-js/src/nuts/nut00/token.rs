@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use cashu::nuts::nut00::wallet::Token;
+use cashu::nuts::CurrencyUnit;
 use cashu::url::UncheckedUrl;
 use wasm_bindgen::prelude::*;
 
@@ -31,13 +32,18 @@ impl JsToken {
     pub fn new(
         mint: String,
         proofs: JsValue,
-        unit: Option<String>,
         memo: Option<String>,
+        unit: Option<String>,
     ) -> Result<JsToken> {
         let mint = UncheckedUrl::from_str(&mint).map_err(into_err)?;
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
+        let unit = unit.map(|u| {
+            CurrencyUnit::from_str(&u)
+                .map_err(into_err)
+                .unwrap_or_default()
+        });
         Ok(Self {
-            inner: Token::new(mint, proofs, unit, memo).map_err(into_err)?,
+            inner: Token::new(mint, proofs, memo, unit).map_err(into_err)?,
         })
     }
 

@@ -38,16 +38,20 @@ impl JsMint {
         secret: String,
         keyset_info: JsValue,
         spent_secrets: JsValue,
+        quotes: JsValue,
         min_fee_reserve: JsAmount,
         percent_fee_reserve: f32,
     ) -> Result<JsMint> {
         let keyset_info = serde_wasm_bindgen::from_value(keyset_info).map_err(into_err)?;
         let spent_secrets = serde_wasm_bindgen::from_value(spent_secrets).map_err(into_err)?;
+
+        let quotes = serde_wasm_bindgen::from_value(quotes).map_err(into_err)?;
         Ok(JsMint {
             inner: Mint::new(
                 &secret,
                 keyset_info,
                 spent_secrets,
+                quotes,
                 *min_fee_reserve.deref(),
                 percent_fee_reserve,
             ),

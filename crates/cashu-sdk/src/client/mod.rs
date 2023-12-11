@@ -8,8 +8,8 @@ use cashu::nuts::CheckSpendableResponse;
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
-    BlindedMessage, CheckFeesResponse, Keys, KeysetResponse, MeltResponse, PostMintResponse,
-    PreMintSecrets, Proof, RequestMintResponse, SplitRequest, SplitResponse,
+    BlindedMessage, Keys, KeysetResponse, MeltBolt11Response, PostMintResponse, PreMintSecrets,
+    Proof, RequestMintResponse, SplitRequest, SplitResponse,
 };
 use cashu::{utils, Amount};
 use serde::{Deserialize, Serialize};
@@ -103,19 +103,13 @@ pub trait Client {
         hash: &str,
     ) -> Result<PostMintResponse, Error>;
 
-    async fn post_check_fees(
-        &self,
-        mint_url: Url,
-        invoice: Bolt11Invoice,
-    ) -> Result<CheckFeesResponse, Error>;
-
     async fn post_melt(
         &self,
         mint_url: Url,
-        proofs: Vec<Proof>,
-        invoice: Bolt11Invoice,
+        quote: String,
+        inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
-    ) -> Result<MeltResponse, Error>;
+    ) -> Result<MeltBolt11Response, Error>;
 
     // REVIEW: Should be consistent aboue passing in the Request struct or the
     // compnatants and making it within the function. Here the struct is passed

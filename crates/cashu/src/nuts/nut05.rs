@@ -3,48 +3,54 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use super::CurrencyUnit;
 use crate::nuts::Proofs;
 use crate::{Amount, Bolt11Invoice};
 
-/// Check Fees Response [NUT-05]
+/// Melt quote request [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckFeesResponse {
-    /// Expected Mac Fee in satoshis    
-    pub fee: Amount,
+pub struct MeltQuoteBolt11Request {
+    /// Bolt11 invoice to be paid
+    pub request: Bolt11Invoice,
+    /// Unit wallet would like to pay with
+    pub unit: CurrencyUnit,
 }
 
-/// Check Fees request [NUT-05]
+/// Melt quote response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckFeesRequest {
-    /// Lighting Invoice
-    pub pr: Bolt11Invoice,
+pub struct MeltQuoteBolt11Response {
+    /// Quote Id
+    pub quote: String,
+    /// The amount that needs to be provided
+    pub amount: u64,
+    /// The fee reserve that is required
+    pub fee_reserve: u64,
+    /// Whether the the request haas be paid
+    pub paid: bool,
+    /// Unix timestamp until the quote is valid
+    pub expiry: u64,
 }
 
-/// Melt Request [NUT-05]
+/// Melt Bolt11 Request [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltRequest {
-    pub proofs: Proofs,
-    /// bollt11
-    pub pr: Bolt11Invoice,
+pub struct MeltBolt11Request {
+    /// Quote ID
+    pub quote: String,
+    /// Proofs
+    pub inputs: Proofs,
 }
 
-impl MeltRequest {
+impl MeltBolt11Request {
     pub fn proofs_amount(&self) -> Amount {
-        self.proofs.iter().map(|proof| proof.amount).sum()
-    }
-
-    pub fn invoice_amount(&self) -> Result<Amount, Error> {
-        match self.pr.amount_milli_satoshis() {
-            Some(value) => Ok(Amount::from_sat(value)),
-            None => Err(Error::InvoiceAmountUndefined),
-        }
+        self.inputs.iter().map(|proof| proof.amount).sum()
     }
 }
 
 /// Melt Response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltResponse {
+pub struct MeltBolt11Response {
+    /// Indicate if payment was successful
     pub paid: bool,
-    pub preimage: Option<String>,
+    /// Bolt11 preimage
+    pub payment_preimage: String,
 }

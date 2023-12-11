@@ -13,7 +13,7 @@ pub mod nut09;
 
 #[cfg(feature = "wallet")]
 pub use nut00::wallet::{PreMint, PreMintSecrets, Token};
-pub use nut00::{BlindedMessage, BlindedSignature, Proof};
+pub use nut00::{BlindedMessage, BlindedSignature, CurrencyUnit, Proof};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
@@ -21,14 +21,14 @@ pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 pub use nut03::PreSplit;
 pub use nut03::{RequestMintResponse, SplitRequest, SplitResponse};
 pub use nut04::{MintRequest, PostMintResponse};
-pub use nut05::{CheckFeesRequest, CheckFeesResponse};
 #[cfg(not(feature = "nut08"))]
-pub use nut05::{MeltRequest, MeltResponse};
+pub use nut05::{MeltBolt11Request, MeltBolt11Response};
+pub use nut05::{MeltQuoteBolt11Request, MeltQuoteBolt11Response};
 #[cfg(feature = "wallet")]
 #[cfg(feature = "nut07")]
 pub use nut07::{CheckSpendableRequest, CheckSpendableResponse};
 #[cfg(feature = "nut08")]
-pub use nut08::{MeltRequest, MeltResponse};
+pub use nut08::{MeltBolt11Request, MeltBolt11Response};
 #[cfg(feature = "nut09")]
 pub use nut09::MintInfo;
 

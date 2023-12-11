@@ -1,53 +1,51 @@
 use std::ops::Deref;
-use std::str::FromStr;
 use std::sync::Arc;
 
-use cashu::nuts::nut08::{MeltRequest as MeltRequestSdk, MeltResponse as MeltResponseSdk};
-use cashu::Bolt11Invoice;
+use cashu::nuts::nut08::{
+    MeltBolt11Request as MeltBolt11RequestSdk, MeltBolt11Response as MeltBolt11ResponseSdk,
+};
 
 use crate::error::Result;
 use crate::{BlindedMessage, BlindedSignature, Proof};
 
-pub struct MeltRequest {
-    inner: MeltRequestSdk,
+pub struct MeltBolt11Request {
+    inner: MeltBolt11RequestSdk,
 }
 
-impl Deref for MeltRequest {
-    type Target = MeltRequestSdk;
+impl Deref for MeltBolt11Request {
+    type Target = MeltBolt11RequestSdk;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl MeltRequest {
+impl MeltBolt11Request {
     pub fn new(
+        quote: String,
         proofs: Vec<Arc<Proof>>,
-        invoice: String,
         outputs: Option<Vec<Arc<BlindedMessage>>>,
     ) -> Result<Self> {
-        let pr = Bolt11Invoice::from_str(&invoice)?;
-
         Ok(Self {
-            inner: MeltRequestSdk {
-                proofs: proofs.iter().map(|p| p.as_ref().into()).collect(),
-                pr,
+            inner: MeltBolt11RequestSdk {
+                quote,
+                inputs: proofs.iter().map(|p| p.as_ref().into()).collect(),
                 outputs: outputs
                     .map(|outputs| outputs.into_iter().map(|o| o.as_ref().into()).collect()),
             },
         })
     }
 
-    pub fn proofs(&self) -> Vec<Arc<Proof>> {
+    pub fn inputs(&self) -> Vec<Arc<Proof>> {
         self.inner
-            .proofs
+            .inputs
             .clone()
             .into_iter()
             .map(|o| Arc::new(o.into()))
             .collect()
     }
 
-    pub fn invoice(&self) -> String {
-        self.inner.pr.to_string()
+    pub fn quote(&self) -> String {
+        self.inner.quote.clone()
     }
 
     pub fn outputs(&self) -> Option<Vec<Arc<BlindedMessage>>> {
@@ -58,39 +56,35 @@ impl MeltRequest {
     }
 }
 
-pub struct MeltResponse {
-    inner: MeltResponseSdk,
+pub struct MeltBolt11Response {
+    inner: MeltBolt11ResponseSdk,
 }
 
-impl Deref for MeltResponse {
-    type Target = MeltResponseSdk;
+impl Deref for MeltBolt11Response {
+    type Target = MeltBolt11ResponseSdk;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<cashu::nuts::nut08::MeltResponse> for MeltResponse {
-    fn from(inner: cashu::nuts::nut08::MeltResponse) -> MeltResponse {
-        MeltResponse { inner }
+impl From<cashu::nuts::nut08::MeltBolt11Response> for MeltBolt11Response {
+    fn from(inner: cashu::nuts::nut08::MeltBolt11Response) -> MeltBolt11Response {
+        MeltBolt11Response { inner }
     }
 }
 
-impl From<MeltResponse> for cashu::nuts::nut08::MeltResponse {
-    fn from(res: MeltResponse) -> cashu::nuts::nut08::MeltResponse {
+impl From<MeltBolt11Response> for cashu::nuts::nut08::MeltBolt11Response {
+    fn from(res: MeltBolt11Response) -> cashu::nuts::nut08::MeltBolt11Response {
         res.inner
     }
 }
 
-impl MeltResponse {
-    pub fn new(
-        paid: bool,
-        preimage: Option<String>,
-        change: Option<Vec<Arc<BlindedSignature>>>,
-    ) -> Self {
+impl MeltBolt11Response {
+    pub fn new(paid: bool, proof: String, change: Option<Vec<Arc<BlindedSignature>>>) -> Self {
         Self {
-            inner: MeltResponseSdk {
+            inner: MeltBolt11ResponseSdk {
                 paid,
-                preimage,
+                proof,
                 change: change
                     .map(|change| change.into_iter().map(|bs| bs.as_ref().into()).collect()),
             },
@@ -101,8 +95,8 @@ impl MeltResponse {
         self.inner.paid
     }
 
-    pub fn preimage(&self) -> Option<String> {
-        self.inner.preimage.clone()
+    pub fn proof(&self) -> String {
+        self.inner.proof.clone()
     }
 
     pub fn change(&self) -> Option<Vec<Arc<BlindedSignature>>> {

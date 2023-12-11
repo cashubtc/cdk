@@ -10,6 +10,13 @@ interface CashuError {
 
 // Types 
 
+
+[Enum]
+interface CurrencyUnit {
+	Sat();
+	Custom(string unit);
+};
+
 interface Bolt11Invoice {
     [Throws=CashuError]
     constructor(string bolt11);
@@ -91,11 +98,11 @@ interface MintProofs {
 
 interface Token {
     [Throws=CashuError]
-	constructor(string mint, sequence<Proof> token, string? unit, string? memo);
+	constructor(string mint, sequence<Proof> token, string? memo, CurrencyUnit? unit);
 	sequence<MintProofs> token();
 	string? memo();
-    [Throws=CashuError]
-	string as_string();
+	CurrencyUnit? unit();
+	string to_string();
     [Throws=CashuError, Name=from_string]
 	constructor(string token);
 	
@@ -148,6 +155,32 @@ interface KeySetResponse {
 	sequence<KeySetInfo> keysets();
 };
 
+// NUT-05
+
+interface MeltQuoteBolt11Response {
+    [Throws=CashuError]
+	constructor(string quote, u64 amount, u64 fee_reserve, boolean paid, u64 expiry);
+	string quote();
+	u64 amount();
+	u64 fee_reserve();
+	boolean paid();
+	u64 expiry();
+};
+
+interface MeltQuoteBolt11Request {
+    [Throws=CashuError]
+	constructor(string request, string unit);
+	string request();
+	string unit();
+};
+
+interface MeltBolt11Request {
+    [Throws=CashuError]
+	constructor(sequence<Proof> inputs, string quote);
+	sequence<Proof> inputs();
+	string quote();
+};
+
 interface RequestMintResponse {
     [Throws=CashuError]
 	constructor(string invoice, string hash);
@@ -166,30 +199,6 @@ interface PostMintResponse {
 	sequence<BlindedSignature> promises();
 };
 
-interface CheckFeesRequest {
-    [Throws=CashuError]
-	constructor(string invoice);
-	string invoice();
-};
-
-interface CheckFeesResponse {
-	constructor(Amount amount);
-	Amount amount();
-};
-
-interface Nut05MeltRequest {
-    [Throws=CashuError]
-	constructor(sequence<Proof> proofs, string Invoice);
-	sequence<Proof> proofs();
-	string invoice();
-};
-
-interface Nut05MeltResponse {
-	constructor(boolean paid, string? preimage);
-	boolean paid();
-	string? preimage();
-};
-
 interface SplitRequest {
 	constructor(sequence<Proof> proofs, sequence<BlindedMessage> outputs);
 	sequence<Proof> proofs();
@@ -205,31 +214,6 @@ interface SplitResponse {
 
 };
 
-interface CheckSpendableRequest {
-	constructor(sequence<MintProof> proofs);
-	sequence<MintProof> proofs();
-};
-
-interface CheckSpendableResponse {
-	constructor(sequence<boolean> spendable, sequence<boolean> pending);
-	sequence<boolean> spendable();
-	sequence<boolean> pending();	
-};
-
-interface MeltRequest {
-    [Throws=CashuError]
-	constructor(sequence<Proof> proofs, string Invoice, sequence<BlindedMessage>? outputs);
-	sequence<Proof> proofs();
-	string invoice();
-	sequence<BlindedMessage>? outputs();
-};
-
-interface MeltResponse {
-	constructor(boolean paid, string? preimage, sequence<BlindedSignature>? change);
-	boolean paid();
-	string? preimage();
-	sequence<BlindedSignature>? change();
-};
 
 interface MintVersion {
 	constructor(string name, string version);
