@@ -52,23 +52,27 @@ pub enum Error {
 
 impl Error {
     pub fn from_json(json: &str) -> Result<Self, Error> {
-        let mint_res: MintErrorResponse = serde_json::from_str(json)?;
+        if let Ok(mint_res) = serde_json::from_str::<MintErrorResponse>(json) {
+            let err = mint_res
+                .error
+                .as_deref()
+                .or(mint_res.detail.as_deref())
+                .unwrap_or_default();
 
-        let err = mint_res
-            .error
-            .as_deref()
-            .or(mint_res.detail.as_deref())
-            .unwrap_or_default();
-
-        let mint_error = match err {
-            error if error.starts_with("Lightning invoice not paid yet.") => Error::InvoiceNotPaid,
-            error if error.starts_with("Lightning wallet not responding") => {
-                let mint = utils::extract_url_from_error(error);
-                Error::LightingWalletNotResponding(mint)
-            }
-            error => Error::Custom(error.to_owned()),
-        };
-        Ok(mint_error)
+            let mint_error = match err {
+                error if error.starts_with("Lightning invoice not paid yet.") => {
+                    Error::InvoiceNotPaid
+                }
+                error if error.starts_with("Lightning wallet not responding") => {
+                    let mint = utils::extract_url_from_error(error);
+                    Error::LightingWalletNotResponding(mint)
+                }
+                error => Error::Custom(error.to_owned()),
+            };
+            Ok(mint_error)
+        } else {
+            Ok(Error::Custom(json.to_string()))
+        }
     }
 }
 

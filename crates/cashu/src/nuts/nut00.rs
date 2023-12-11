@@ -97,6 +97,13 @@ pub mod wallet {
 
             Ok(blinded_messages)
         }
+
+        pub fn combine(&mut self, mut other: Self) {
+            self.blinded_messages.append(&mut other.blinded_messages);
+            self.secrets.append(&mut other.secrets);
+            self.rs.append(&mut other.rs);
+            self.amounts.append(&mut other.amounts);
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
