@@ -1,9 +1,13 @@
 //! Notation and Models
 // https://github.com/cashubtc/nuts/blob/main/00.md
 
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 use super::{Id, Proofs, PublicKey};
+use crate::error::Error;
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
 use crate::Amount;
@@ -20,6 +24,33 @@ pub struct BlindedMessage {
     pub keyset_id: Id,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CurrencyUnit {
+    #[default]
+    Sat,
+    Custom(String),
+}
+
+impl FromStr for CurrencyUnit {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "sat" => Ok(Self::Sat),
+            _ => Ok(Self::Custom(s.to_string())),
+        }
+    }
+}
+
+impl fmt::Display for CurrencyUnit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CurrencyUnit::Sat => write!(f, "sat"),
+            CurrencyUnit::Custom(unit) => write!(f, "{}", unit),
+        }
+    }
+}
+
 #[cfg(feature = "wallet")]
 pub mod wallet {
     use std::cmp::Ordering;
@@ -31,7 +62,7 @@ pub mod wallet {
     use serde::{Deserialize, Serialize};
     use url::Url;
 
-    use super::MintProofs;
+    use super::{CurrencyUnit, MintProofs};
     use crate::dhke::blind_message;
     use crate::error::wallet;
     use crate::nuts::{BlindedMessage, Id, Proofs, SecretKey};
@@ -201,8 +232,9 @@ pub mod wallet {
         /// Memo for token
         #[serde(skip_serializing_if = "Option::is_none")]
         pub memo: Option<String>,
+        /// Token Unit
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub unit: Option<String>,
+        pub unit: Option<CurrencyUnit>,
     }
 
     impl Token {
@@ -210,7 +242,7 @@ pub mod wallet {
             mint_url: UncheckedUrl,
             proofs: Proofs,
             memo: Option<String>,
-            unit: Option<String>,
+            unit: Option<CurrencyUnit>,
         ) -> Result<Self, wallet::Error> {
             if proofs.is_empty() {
                 return Err(wallet::Error::ProofsRequired);

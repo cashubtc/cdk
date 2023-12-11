@@ -6,13 +6,12 @@ use async_trait::async_trait;
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
-    BlindedMessage, CheckFeesRequest, CheckFeesResponse, Keys, MeltRequest, MeltResponse,
-    MintRequest, PostMintResponse, PreMintSecrets, Proof, RequestMintResponse, SplitRequest,
-    SplitResponse, *,
+    BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintRequest, PostMintResponse,
+    PreMintSecrets, Proof, RequestMintResponse, SplitRequest, SplitResponse, *,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
-use cashu::{Amount, Bolt11Invoice};
+use cashu::Amount;
 use serde_json::Value;
 use url::Url;
 
@@ -96,44 +95,20 @@ impl Client for HttpClient {
         }
     }
 
-    /// Check Max expected fee [NUT-05]
-    async fn post_check_fees(
-        &self,
-        mint_url: Url,
-        invoice: Bolt11Invoice,
-    ) -> Result<CheckFeesResponse, Error> {
-        let url = join_url(mint_url, "checkfees")?;
-
-        let request = CheckFeesRequest { pr: invoice };
-
-        let res = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
-
-        let response: Result<CheckFeesResponse, serde_json::Error> =
-            serde_json::from_value(res.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&res.to_string())?),
-        }
-    }
-
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     async fn post_melt(
         &self,
         mint_url: Url,
-        proofs: Vec<Proof>,
-        invoice: Bolt11Invoice,
+        quote: String,
+        inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
-    ) -> Result<MeltResponse, Error> {
+    ) -> Result<MeltBolt11Response, Error> {
         let url = join_url(mint_url, "melt")?;
 
-        let request = MeltRequest {
-            proofs,
-            pr: invoice,
+        let request = MeltBolt11Request {
+            quote,
+            inputs,
             outputs,
         };
 
@@ -142,7 +117,7 @@ impl Client for HttpClient {
             .send()?
             .json::<Value>()?;
 
-        let response: Result<MeltResponse, serde_json::Error> =
+        let response: Result<MeltBolt11Response, serde_json::Error> =
             serde_json::from_value(value.clone());
 
         match response {

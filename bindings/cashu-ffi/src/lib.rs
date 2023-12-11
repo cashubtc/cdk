@@ -12,7 +12,7 @@ mod ffi {
     pub use crate::nuts::nut00::premint_secrets::PreMintSecrets;
     pub use crate::nuts::nut00::proof::mint::Proof as MintProof;
     pub use crate::nuts::nut00::proof::Proof;
-    pub use crate::nuts::nut00::token::Token;
+    pub use crate::nuts::nut00::token::{CurrencyUnit, Token};
     pub use crate::nuts::nut01::key_pair::KeyPair;
     pub use crate::nuts::nut01::keys::{Keys, KeysResponse};
     pub use crate::nuts::nut01::public_key::PublicKey;
@@ -21,11 +21,11 @@ mod ffi {
     pub use crate::nuts::nut03::{RequestMintResponse, SplitRequest, SplitResponse};
     pub use crate::nuts::nut04::{MintRequest, PostMintResponse};
     pub use crate::nuts::nut05::{
-        CheckFeesRequest, CheckFeesResponse, MeltRequest as Nut05MeltRequest,
-        MeltResponse as Nut05MeltResponse,
+        MeltBolt11Request as Nut05MeltBolt11Request, MeltBolt11Response as Nut05MeltBolt11Response,
+        MeltQuoteBolt11Request,
     };
     pub use crate::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
-    pub use crate::nuts::nut08::{MeltRequest, MeltResponse};
+    pub use crate::nuts::nut08::{MeltBolt11Request, MeltBolt11Response};
     pub use crate::nuts::nut09::{MintInfo, MintVersion};
     pub use crate::types::amount::Amount;
     pub use crate::types::{Bolt11Invoice, KeySetInfo, Secret};

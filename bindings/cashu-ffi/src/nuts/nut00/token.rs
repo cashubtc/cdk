@@ -1,11 +1,36 @@
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use cashu::nuts::nut00::wallet::Token as TokenSdk;
+use cashu::nuts::CurrencyUnit as CurrencyUnitSdk;
 use cashu::url::UncheckedUrl;
 
 use crate::error::Result;
 use crate::{MintProofs, Proof};
+
+pub enum CurrencyUnit {
+    Sat,
+    Custom { unit: String },
+}
+
+impl From<&CurrencyUnit> for CurrencyUnitSdk {
+    fn from(unit: &CurrencyUnit) -> CurrencyUnitSdk {
+        match unit {
+            CurrencyUnit::Sat => CurrencyUnitSdk::Sat,
+            CurrencyUnit::Custom { unit } => CurrencyUnitSdk::Custom(unit.clone()),
+        }
+    }
+}
+
+impl From<CurrencyUnitSdk> for CurrencyUnit {
+    fn from(unit: CurrencyUnitSdk) -> CurrencyUnit {
+        match unit {
+            CurrencyUnitSdk::Sat => CurrencyUnit::Sat,
+            CurrencyUnitSdk::Custom(unit) => CurrencyUnit::Custom { unit: unit.clone() },
+        }
+    }
+}
 
 pub struct Token {
     inner: TokenSdk,
@@ -15,13 +40,16 @@ impl Token {
     pub fn new(
         mint: String,
         proofs: Vec<Arc<Proof>>,
-        unit: Option<String>,
         memo: Option<String>,
+        unit: Option<String>,
     ) -> Result<Self> {
         let mint = UncheckedUrl::from_str(&mint)?;
         let proofs = proofs.into_iter().map(|p| p.as_ref().into()).collect();
+
+        let unit = unit.map(|u| CurrencyUnitSdk::from_str(&u).unwrap_or_default().into());
+
         Ok(Self {
-            inner: TokenSdk::new(mint, proofs, unit, memo)?,
+            inner: TokenSdk::new(mint, proofs, memo, unit)?,
         })
     }
 
@@ -38,14 +66,23 @@ impl Token {
         self.inner.memo.clone()
     }
 
+    pub fn unit(&self) -> Option<String> {
+        self.inner
+            .unit
+            .clone()
+            .map(|u| Into::<CurrencyUnitSdk>::into(u).to_string())
+    }
+
     pub fn from_string(token: String) -> Result<Self> {
         Ok(Self {
             inner: TokenSdk::from_str(&token)?,
         })
     }
+}
 
-    pub fn as_string(&self) -> Result<String> {
-        Ok(self.inner.to_string())
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.inner.to_string())
     }
 }
 

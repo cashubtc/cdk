@@ -1,51 +1,49 @@
 //! Lightning fee return
 // https://github.com/cashubtc/nuts/blob/main/08.md
 
-use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 
 use super::{BlindedMessage, BlindedSignature, Proofs};
-use crate::error::Error;
 use crate::Amount;
 
-/// Melt Request [NUT-08]
+/// Melt Bolt11 Request [NUT-08]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltRequest {
-    pub proofs: Proofs,
-    /// bollt11
-    pub pr: Bolt11Invoice,
+pub struct MeltBolt11Request {
+    /// Quote ID
+    pub quote: String,
+    /// Proofs
+    pub inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of blindedMessages `SHOULD` be set to zero
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
-impl MeltRequest {
+impl MeltBolt11Request {
     pub fn proofs_amount(&self) -> Amount {
-        self.proofs.iter().map(|proof| proof.amount).sum()
+        self.inputs.iter().map(|proof| proof.amount).sum()
     }
 
-    pub fn invoice_amount(&self) -> Result<Amount, Error> {
-        match self.pr.amount_milli_satoshis() {
-            Some(value) => Ok(Amount::from_msat(value)),
-            None => Err(Error::InvoiceAmountUndefined),
-        }
+    pub fn output_amount(&self) -> Option<Amount> {
+        self.outputs
+            .as_ref()
+            .map(|o| o.iter().map(|proof| proof.amount).sum())
     }
 }
 
 /// Melt Response [NUT-08]
 /// Lightning fee return [NUT-08] if change is defined
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltResponse {
+pub struct MeltBolt11Response {
     pub paid: bool,
-    pub preimage: Option<String>,
+    // REVIEW: https://github.com/cashubtc/nuts/pull/55#discussion_r1419991818
+    pub proof: String,
     pub change: Option<Vec<BlindedSignature>>,
 }
 
-impl MeltResponse {
-    pub fn change_amount(&self) -> Amount {
-        match &self.change {
-            Some(change) => change.iter().map(|c| c.amount).sum(),
-            None => Amount::ZERO,
-        }
+impl MeltBolt11Response {
+    pub fn change_amount(&self) -> Option<Amount> {
+        self.change
+            .as_ref()
+            .map(|c| c.iter().map(|b| b.amount).sum())
     }
 }

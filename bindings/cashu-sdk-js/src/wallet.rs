@@ -1,12 +1,14 @@
 use std::ops::Deref;
+use std::str::FromStr;
 
 use cashu_js::nuts::nut00::{JsBlindedMessages, JsToken};
 use cashu_js::nuts::nut01::JsKeys;
 use cashu_js::nuts::nut03::JsRequestMintResponse;
+use cashu_js::JsAmount;
 #[cfg(feature = "nut07")]
 use cashu_js::JsProofsStatus;
-use cashu_js::{JsAmount, JsBolt11Invoice};
 use cashu_sdk::client::gloo_client::HttpClient;
+use cashu_sdk::nuts::CurrencyUnit;
 use cashu_sdk::wallet::Wallet;
 use wasm_bindgen::prelude::*;
 
@@ -72,12 +74,14 @@ impl JsWallet {
         &self,
         amount: JsAmount,
         hash: String,
-        unit: Option<String>,
         memo: Option<String>,
+        unit: Option<String>,
     ) -> Result<JsToken> {
+        let unit = unit.map(|u| CurrencyUnit::from_str(&u).unwrap_or_default());
+
         Ok(self
             .inner
-            .mint_token(*amount.deref(), &hash, unit, memo)
+            .mint_token(*amount.deref(), &hash, memo, unit)
             .await
             .map_err(into_err)?
             .into())
@@ -94,17 +98,6 @@ impl JsWallet {
                 .map_err(into_err)?,
         )
         .map_err(into_err)
-    }
-
-    /// Check Fee
-    #[wasm_bindgen(js_name = checkFee)]
-    pub async fn check_fee(&self, invoice: JsBolt11Invoice) -> Result<JsAmount> {
-        Ok(self
-            .inner
-            .check_fee(invoice.deref().clone())
-            .await
-            .map_err(into_err)?
-            .into())
     }
 
     /// Receive
@@ -149,7 +142,7 @@ impl JsWallet {
     #[wasm_bindgen(js_name = melt)]
     pub async fn melt(
         &self,
-        invoice: JsBolt11Invoice,
+        quote: String,
         proofs: JsValue,
         fee_reserve: JsAmount,
     ) -> Result<JsMelted> {
@@ -157,7 +150,7 @@ impl JsWallet {
 
         Ok(self
             .inner
-            .melt(invoice.deref().clone(), proofs, *fee_reserve.deref())
+            .melt(quote, proofs, *fee_reserve.deref())
             .await
             .map_err(into_err)?
             .into())
@@ -173,8 +166,14 @@ impl JsWallet {
     ) -> Result<String> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
+        let unit = unit.map(|u| {
+            CurrencyUnit::from_str(&u)
+                .map_err(into_err)
+                .unwrap_or_default()
+        });
+
         self.inner
-            .proofs_to_token(proofs, unit, memo)
+            .proofs_to_token(proofs, memo, unit)
             .map_err(into_err)
     }
 }

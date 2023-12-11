@@ -2,100 +2,130 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cashu::nuts::nut05::{
-    CheckFeesRequest as CheckFeesRequestSdk, CheckFeesResponse as CheckFeesResponseSdk,
-    MeltRequest as MeltRequestSdk, MeltResponse as MeltResponseSdk,
+use cashu::nuts::{
+    CurrencyUnit, MeltBolt11Request as MeltBolt11RequestSdk,
+    MeltBolt11Response as MeltBolt11ResponseSdk,
+    MeltQuoteBolt11Request as MeltQuoteBolt11RequestSdk,
+    MeltQuoteBolt11Response as MeltQuoteBolt11ResponseSdk,
 };
 use cashu::Bolt11Invoice;
 
 use crate::error::Result;
-use crate::{Amount, Proof};
+use crate::{BlindedMessage, BlindedSignature, Proof};
 
-pub struct CheckFeesRequest {
-    inner: CheckFeesRequestSdk,
+pub struct MeltQuoteBolt11Response {
+    inner: MeltQuoteBolt11ResponseSdk,
 }
 
-impl CheckFeesRequest {
-    pub fn new(invoice: String) -> Result<Self> {
+impl MeltQuoteBolt11Response {
+    pub fn new(
+        quote: String,
+        amount: u64,
+        fee_reserve: u64,
+        paid: bool,
+        expiry: u64,
+    ) -> Result<Self> {
         Ok(Self {
-            inner: CheckFeesRequestSdk {
-                pr: Bolt11Invoice::from_str(&invoice)?,
+            inner: MeltQuoteBolt11ResponseSdk {
+                quote,
+                amount,
+                fee_reserve,
+                paid,
+                expiry,
             },
         })
     }
 
-    pub fn invoice(&self) -> String {
-        self.inner.pr.to_string()
+    pub fn quote(&self) -> String {
+        self.inner.quote.clone()
+    }
+
+    pub fn amount(&self) -> u64 {
+        self.inner.amount
+    }
+
+    pub fn fee_reserve(&self) -> u64 {
+        self.inner.fee_reserve
+    }
+
+    pub fn paid(&self) -> bool {
+        self.inner.paid
+    }
+
+    pub fn expiry(&self) -> u64 {
+        self.inner.expiry
     }
 }
 
-pub struct CheckFeesResponse {
-    inner: CheckFeesResponseSdk,
+pub struct MeltQuoteBolt11Request {
+    inner: MeltQuoteBolt11RequestSdk,
 }
 
-impl CheckFeesResponse {
-    pub fn new(amount: Arc<Amount>) -> Self {
-        Self {
-            inner: CheckFeesResponseSdk {
-                fee: *amount.as_ref().deref(),
-            },
-        }
-    }
-
-    pub fn amount(&self) -> Arc<Amount> {
-        Arc::new(self.inner.fee.into())
-    }
-}
-
-impl From<cashu::nuts::nut05::CheckFeesResponse> for CheckFeesResponse {
-    fn from(inner: cashu::nuts::nut05::CheckFeesResponse) -> CheckFeesResponse {
-        Self { inner }
-    }
-}
-
-impl From<CheckFeesResponse> for cashu::nuts::nut05::CheckFeesResponse {
-    fn from(res: CheckFeesResponse) -> cashu::nuts::nut05::CheckFeesResponse {
-        res.inner
-    }
-}
-
-pub struct MeltRequest {
-    inner: MeltRequestSdk,
-}
-
-impl MeltRequest {
-    pub fn new(proofs: Vec<Arc<Proof>>, invoice: String) -> Result<Self> {
-        let pr = Bolt11Invoice::from_str(&invoice)?;
+impl MeltQuoteBolt11Request {
+    pub fn new(request: String, unit: String) -> Result<Self> {
         Ok(Self {
-            inner: MeltRequestSdk {
-                pr,
-                proofs: proofs.into_iter().map(|p| p.as_ref().into()).collect(),
+            inner: MeltQuoteBolt11RequestSdk {
+                request: Bolt11Invoice::from_str(&request)?,
+                unit: CurrencyUnit::from_str(&unit)?,
             },
         })
     }
 
-    pub fn proofs(&self) -> Vec<Arc<Proof>> {
+    pub fn request(&self) -> String {
+        self.inner.request.to_string()
+    }
+
+    pub fn unit(&self) -> String {
+        self.inner.unit.to_string()
+    }
+}
+
+pub struct MeltBolt11Request {
+    inner: MeltBolt11RequestSdk,
+}
+
+impl MeltBolt11Request {
+    pub fn new(
+        quote: String,
+        inputs: Vec<Arc<Proof>>,
+        outputs: Option<Vec<Arc<BlindedMessage>>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: MeltBolt11RequestSdk {
+                quote,
+                inputs: inputs.into_iter().map(|p| p.as_ref().into()).collect(),
+                outputs: outputs
+                    .map(|o| o.into_iter().map(|p| p.as_ref().deref().clone()).collect()),
+            },
+        })
+    }
+
+    pub fn inputs(&self) -> Vec<Arc<Proof>> {
         self.inner
-            .proofs
+            .inputs
             .clone()
             .into_iter()
             .map(|p| Arc::new(p.into()))
             .collect()
     }
 
-    pub fn invoice(&self) -> String {
-        self.inner.pr.to_string()
+    pub fn quote(&self) -> String {
+        self.inner.quote
     }
 }
 
-pub struct MeltResponse {
-    inner: MeltResponseSdk,
+pub struct MeltBolt11Response {
+    inner: MeltBolt11ResponseSdk,
 }
 
-impl MeltResponse {
-    pub fn new(paid: bool, preimage: Option<String>) -> Self {
+impl MeltBolt11Response {
+    pub fn new(paid: bool, proof: String, change: Option<Vec<Arc<BlindedSignature>>>) -> Self {
         Self {
-            inner: MeltResponseSdk { paid, preimage },
+            inner: MeltBolt11ResponseSdk {
+                paid,
+                proof,
+                change: change.map(|c| c.into_iter().map(|b| b.as_ref().deref().clone()).collect()),
+            },
         }
     }
 
@@ -103,7 +133,7 @@ impl MeltResponse {
         self.inner.paid
     }
 
-    pub fn preimage(&self) -> Option<String> {
-        self.inner.preimage.clone()
+    pub fn proof(&self) -> String {
+        self.inner.proof.clone()
     }
 }

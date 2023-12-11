@@ -9,6 +9,13 @@ pub struct BlindedSignature {
     inner: BlindedSignatureSdk,
 }
 
+impl Deref for BlindedSignature {
+    type Target = BlindedSignatureSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl BlindedSignature {
     pub fn new(id: Arc<Id>, amount: Arc<Amount>, c: Arc<PublicKey>) -> Self {
         Self {

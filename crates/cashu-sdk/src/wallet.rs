@@ -5,8 +5,8 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, Keys, PreMintSecrets, PreSplit, Proof, Proofs, RequestMintResponse,
-    SplitRequest, Token,
+    BlindedSignature, CurrencyUnit, Keys, PreMintSecrets, PreSplit, Proof, Proofs,
+    RequestMintResponse, SplitRequest, Token,
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
@@ -95,12 +95,12 @@ impl<C: Client> Wallet<C> {
         &self,
         amount: Amount,
         hash: &str,
-        unit: Option<String>,
         memo: Option<String>,
+        unit: Option<CurrencyUnit>,
     ) -> Result<Token, Error> {
         let proofs = self.mint(amount, hash).await?;
 
-        let token = Token::new(self.mint_url.clone(), proofs, unit, memo);
+        let token = Token::new(self.mint_url.clone(), proofs, memo, unit);
         Ok(token?)
     }
 
@@ -125,15 +125,6 @@ impl<C: Client> Wallet<C> {
         )?;
 
         Ok(proofs)
-    }
-
-    /// Check fee
-    pub async fn check_fee(&self, invoice: Bolt11Invoice) -> Result<Amount, Error> {
-        Ok(self
-            .client
-            .post_check_fees(self.mint_url.clone().try_into()?, invoice)
-            .await?
-            .fee)
     }
 
     /// Receive
@@ -300,7 +291,7 @@ impl<C: Client> Wallet<C> {
 
     pub async fn melt(
         &self,
-        invoice: Bolt11Invoice,
+        quote: String,
         proofs: Proofs,
         fee_reserve: Amount,
     ) -> Result<Melted, Error> {
@@ -309,8 +300,8 @@ impl<C: Client> Wallet<C> {
             .client
             .post_melt(
                 self.mint_url.clone().try_into()?,
+                quote,
                 proofs,
-                invoice,
                 Some(blinded.blinded_messages()),
             )
             .await?;
@@ -327,7 +318,7 @@ impl<C: Client> Wallet<C> {
 
         let melted = Melted {
             paid: true,
-            preimage: melt_response.preimage,
+            preimage: Some(melt_response.proof),
             change: change_proofs,
         };
 
@@ -337,10 +328,10 @@ impl<C: Client> Wallet<C> {
     pub fn proofs_to_token(
         &self,
         proofs: Proofs,
-        unit: Option<String>,
         memo: Option<String>,
+        unit: Option<CurrencyUnit>,
     ) -> Result<String, Error> {
-        Ok(Token::new(self.mint_url.clone(), proofs, unit, memo)?.to_string())
+        Ok(Token::new(self.mint_url.clone(), proofs, memo, unit)?.to_string())
     }
 }
 

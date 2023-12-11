@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use cashu::dhke::{sign_message, verify_message};
 pub use cashu::error::mint::Error;
 use cashu::nuts::{
-    BlindedMessage, BlindedSignature, MeltRequest, MeltResponse, Proof, SplitRequest,
+    BlindedMessage, BlindedSignature, MeltBolt11Request, MeltBolt11Response, Proof, SplitRequest,
     SplitResponse, *,
 };
 #[cfg(feature = "nut07")]
@@ -13,6 +13,8 @@ use cashu::Amount;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::types::Quote;
+
 pub struct Mint {
     //    pub pubkey: PublicKey
     secret: String,
@@ -21,6 +23,7 @@ pub struct Mint {
     pub spent_secrets: HashSet<Secret>,
     pub pending_secrets: HashSet<Secret>,
     pub fee_reserve: FeeReserve,
+    pub quotes: HashMap<String, Quote>,
 }
 
 impl Mint {
@@ -28,6 +31,7 @@ impl Mint {
         secret: &str,
         keysets_info: HashSet<MintKeySetInfo>,
         spent_secrets: HashSet<Secret>,
+        quotes: Vec<Quote>,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
     ) -> Self {
@@ -35,6 +39,8 @@ impl Mint {
         let mut info = HashMap::default();
 
         let mut active_units: HashSet<String> = HashSet::default();
+
+        let quotes = quotes.into_iter().map(|q| (q.id.clone(), q)).collect();
 
         // Check that there is only one active keyset per unit
         for keyset_info in keysets_info {
@@ -58,6 +64,7 @@ impl Mint {
         Self {
             secret: secret.to_string(),
             keysets,
+            quotes,
             keysets_info: info,
             spent_secrets,
             pending_secrets: HashSet::new(),
@@ -222,41 +229,28 @@ impl Mint {
         Ok(CheckSpendableResponse { spendable, pending })
     }
 
-    pub fn verify_melt_request(&mut self, melt_request: &MeltRequest) -> Result<(), Error> {
-        let proofs_total = melt_request.proofs_amount();
+    pub fn verify_melt_request(&mut self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
+        let quote = self.quotes.get(&melt_request.quote).unwrap();
+        let proofs_total = melt_request.proofs_amount().to_sat();
 
-        let percent_fee_reserve = Amount::from_sat(
-            (proofs_total.to_sat() as f32 * self.fee_reserve.percent_fee_reserve) as u64,
-        );
-
-        let fee_reserve = if percent_fee_reserve > self.fee_reserve.min_fee_reserve {
-            percent_fee_reserve
-        } else {
-            self.fee_reserve.min_fee_reserve
-        };
-
-        let required_total = melt_request
-            .invoice_amount()
-            .map_err(|_| Error::InvoiceAmountUndefined)?
-            + fee_reserve;
+        let required_total = quote.amount + quote.fee_reserve;
 
         if proofs_total < required_total {
             debug!(
                 "Insufficient Proofs: Got: {}, Required: {}",
-                proofs_total.to_sat().to_string(),
-                required_total.to_sat().to_string()
+                proofs_total, required_total
             );
             return Err(Error::Amount);
         }
 
-        let secrets: HashSet<&Secret> = melt_request.proofs.iter().map(|p| &p.secret).collect();
+        let secrets: HashSet<&Secret> = melt_request.inputs.iter().map(|p| &p.secret).collect();
 
         // Ensure proofs are unique and not being double spent
-        if melt_request.proofs.len().ne(&secrets.len()) {
+        if melt_request.inputs.len().ne(&secrets.len()) {
             return Err(Error::DuplicateProofs);
         }
 
-        for proof in &melt_request.proofs {
+        for proof in &melt_request.inputs {
             self.verify_proof(proof)?
         }
 
@@ -265,13 +259,13 @@ impl Mint {
 
     pub fn process_melt_request(
         &mut self,
-        melt_request: &MeltRequest,
+        melt_request: &MeltBolt11Request,
         preimage: &str,
         total_spent: Amount,
-    ) -> Result<MeltResponse, Error> {
+    ) -> Result<MeltBolt11Response, Error> {
         self.verify_melt_request(melt_request)?;
 
-        let secrets = Vec::with_capacity(melt_request.proofs.len());
+        let secrets = Vec::with_capacity(melt_request.inputs.len());
         for secret in secrets {
             self.spent_secrets.insert(secret);
         }
@@ -312,9 +306,9 @@ impl Mint {
             );
         }
 
-        Ok(MeltResponse {
+        Ok(MeltBolt11Response {
             paid: true,
-            preimage: Some(preimage.to_string()),
+            proof: preimage.to_string(),
             change,
         })
     }
