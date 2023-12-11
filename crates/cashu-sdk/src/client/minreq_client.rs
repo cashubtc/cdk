@@ -18,7 +18,6 @@ use cashu::nuts::MintInfo;
 use cashu::nuts::*;
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
-use tracing::debug;
 use url::Url;
 
 use super::join_url;
