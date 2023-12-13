@@ -20,7 +20,9 @@ pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSplit;
 pub use nut03::{RequestMintResponse, SplitRequest, SplitResponse};
-pub use nut04::{MintRequest, PostMintResponse};
+pub use nut04::{
+    MintBolt11Request, MintBolt11Response, MintQuoteBolt11Request, MintQuoteBolt11Response,
+};
 #[cfg(not(feature = "nut08"))]
 pub use nut05::{MeltBolt11Request, MeltBolt11Response};
 pub use nut05::{MeltQuoteBolt11Request, MeltQuoteBolt11Response};

@@ -2,16 +2,41 @@
 // https://github.com/cashubtc/nuts/blob/main/04.md
 use serde::{Deserialize, Serialize};
 
-use super::{BlindedMessage, BlindedSignature};
+use super::{BlindedMessage, BlindedSignature, CurrencyUnit};
 use crate::Amount;
 
-/// Post Mint Request [NUT-04]
+/// Mint quote request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintRequest {
+pub struct MintQuoteBolt11Request {
+    /// Amount
+    pub amount: u64,
+    /// Unit wallet would like to pay with
+    pub unit: CurrencyUnit,
+}
+
+/// Mint quote response [NUT-04]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintQuoteBolt11Response {
+    /// Quote Id
+    pub quote: String,
+    /// Payment request to fulfil
+    pub request: String,
+    /// Whether the the request haas be paid
+    pub paid: bool,
+    /// Unix timestamp until the quote is valid
+    pub expiry: u64,
+}
+
+/// Mint request [NUT-04]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintBolt11Request {
+    /// Quote id
+    pub quote: String,
+    /// Outputs
     pub outputs: Vec<BlindedMessage>,
 }
 
-impl MintRequest {
+impl MintBolt11Request {
     pub fn total_amount(&self) -> Amount {
         self.outputs
             .iter()
@@ -20,8 +45,9 @@ impl MintRequest {
     }
 }
 
-/// Post Mint Response [NUT-04]
+/// Mint response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostMintResponse {
-    pub promises: Vec<BlindedSignature>,
+pub struct MintBolt11Response {
+    /// Blinded Signatures
+    pub signatures: Vec<BlindedSignature>,
 }
