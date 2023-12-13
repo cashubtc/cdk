@@ -277,8 +277,6 @@ pub mod wallet {
         fn from_str(s: &str) -> Result<Self, Self::Err> {
             let s = if s.starts_with("cashuA") {
                 s.replace("cashuA", "")
-            } else if s.starts_with("cashuB") {
-                s.replace("cashuB", "")
             } else {
                 return Err(wallet::Error::UnsupportedToken);
             };
@@ -296,7 +294,7 @@ pub mod wallet {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let json_string = serde_json::to_string(self).map_err(|_| fmt::Error)?;
             let encoded = general_purpose::STANDARD.encode(json_string);
-            write!(f, "cashuB{}", encoded)
+            write!(f, "cashuA{}", encoded)
         }
     }
 }
