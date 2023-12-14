@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use cashu::dhke::{sign_message, verify_message};
 pub use cashu::error::mint::Error;
 use cashu::nuts::{
-    BlindedMessage, BlindedSignature, MeltBolt11Request, MeltBolt11Response, Proof, SplitRequest,
-    SplitResponse, *,
+    BlindedMessage, BlindedSignature, MeltBolt11Request, MeltBolt11Response, Proof, SwapRequest,
+    SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
@@ -153,8 +153,8 @@ impl Mint {
 
     pub fn process_split_request(
         &mut self,
-        split_request: SplitRequest,
-    ) -> Result<SplitResponse, Error> {
+        split_request: SwapRequest,
+    ) -> Result<SwapResponse, Error> {
         let proofs_total = split_request.input_amount();
 
         let output_total = split_request.output_amount();
@@ -190,7 +190,7 @@ impl Mint {
             .map(|b| self.blind_sign(b).unwrap())
             .collect();
 
-        Ok(SplitResponse::new(promises))
+        Ok(SwapResponse::new(promises))
     }
 
     fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {

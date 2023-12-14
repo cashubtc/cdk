@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
     BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintBolt11Request,
-    MintBolt11Response, PreMintSecrets, Proof, SplitRequest, SplitResponse, *,
+    MintBolt11Response, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
@@ -129,8 +129,8 @@ impl Client for HttpClient {
     async fn post_split(
         &self,
         mint_url: Url,
-        split_request: SplitRequest,
-    ) -> Result<SplitResponse, Error> {
+        split_request: SwapRequest,
+    ) -> Result<SwapResponse, Error> {
         let url = join_url(mint_url, "split")?;
 
         let res = Request::post(url.as_str())
@@ -143,8 +143,7 @@ impl Client for HttpClient {
             .await
             .map_err(|err| Error::Gloo(err.to_string()))?;
 
-        let response: Result<SplitResponse, serde_json::Error> =
-            serde_json::from_value(res.clone());
+        let response: Result<SwapResponse, serde_json::Error> = serde_json::from_value(res.clone());
 
         match response {
             Ok(res) => Ok(res),

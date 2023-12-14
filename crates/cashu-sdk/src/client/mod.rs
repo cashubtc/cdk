@@ -9,7 +9,7 @@ use cashu::nuts::CheckSpendableResponse;
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
     BlindedMessage, Keys, KeysetResponse, MeltBolt11Response, MintBolt11Response, PreMintSecrets,
-    Proof, SplitRequest, SplitResponse,
+    Proof, SwapRequest, SwapResponse,
 };
 use cashu::utils;
 use serde::{Deserialize, Serialize};
@@ -111,8 +111,8 @@ pub trait Client {
     async fn post_split(
         &self,
         mint_url: Url,
-        split_request: SplitRequest,
-    ) -> Result<SplitResponse, Error>;
+        split_request: SwapRequest,
+    ) -> Result<SwapResponse, Error>;
 
     #[cfg(feature = "nut07")]
     async fn post_check_spendable(

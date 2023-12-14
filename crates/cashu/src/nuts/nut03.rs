@@ -12,21 +12,21 @@ pub use crate::Bolt11Invoice;
 
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PreSplit {
+pub struct PreSwap {
     pub pre_mint_secrets: PreMintSecrets,
-    pub split_request: SplitRequest,
+    pub split_request: SwapRequest,
 }
 
 /// Split Request [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SplitRequest {
+pub struct SwapRequest {
     /// Proofs that are to be spent in `Split`
     pub inputs: Proofs,
     /// Blinded Messages for Mint to sign
     pub outputs: Vec<BlindedMessage>,
 }
 
-impl SplitRequest {
+impl SwapRequest {
     pub fn new(inputs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
         Self { inputs, outputs }
     }
@@ -44,24 +44,22 @@ impl SplitRequest {
 
 /// Split Response [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SplitResponse {
+pub struct SwapResponse {
     /// Promises
-    pub promises: Option<Vec<BlindedSignature>>,
+    pub signatures: Vec<BlindedSignature>,
 }
 
-impl SplitResponse {
-    pub fn new(promises: Vec<BlindedSignature>) -> SplitResponse {
-        SplitResponse {
-            promises: Some(promises),
+impl SwapResponse {
+    pub fn new(promises: Vec<BlindedSignature>) -> SwapResponse {
+        SwapResponse {
+            signatures: promises,
         }
     }
 
-    pub fn promises_amount(&self) -> Option<Amount> {
-        self.promises.as_ref().map(|promises| {
-            promises
-                .iter()
-                .map(|BlindedSignature { amount, .. }| *amount)
-                .sum()
-        })
+    pub fn promises_amount(&self) -> Amount {
+        self.signatures
+            .iter()
+            .map(|BlindedSignature { amount, .. }| *amount)
+            .sum()
     }
 }

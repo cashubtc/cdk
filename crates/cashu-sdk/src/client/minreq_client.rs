@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
     BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintBolt11Request,
-    MintBolt11Response, PreMintSecrets, Proof, SplitRequest, SplitResponse, *,
+    MintBolt11Response, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
@@ -108,21 +108,19 @@ impl Client for HttpClient {
     async fn post_split(
         &self,
         mint_url: Url,
-        split_request: SplitRequest,
-    ) -> Result<SplitResponse, Error> {
-        let url = join_url(mint_url, "split")?;
+        split_request: SwapRequest,
+    ) -> Result<SwapResponse, Error> {
+        // TODO: Add to endpoint
+        let url = join_url(mint_url, "swap")?;
 
         let res = minreq::post(url).with_json(&split_request)?.send()?;
 
         println!("{:?}", res);
 
-        let response: Result<SplitResponse, serde_json::Error> =
+        let response: Result<SwapResponse, serde_json::Error> =
             serde_json::from_value(res.json::<Value>()?.clone());
 
-        match response {
-            Ok(res) if res.promises.is_some() => Ok(res),
-            _ => Err(Error::from_json(&res.json::<Value>()?.to_string())?),
-        }
+        Ok(response?)
     }
 
     /// Spendable check [NUT-07]

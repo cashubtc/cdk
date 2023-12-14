@@ -5,7 +5,7 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Keys, PreMintSecrets, PreSplit, Proof, Proofs, SplitRequest,
+    BlindedSignature, CurrencyUnit, Keys, PreMintSecrets, PreSwap, Proof, Proofs, SwapRequest,
     Token,
 };
 #[cfg(feature = "nut07")]
@@ -138,32 +138,27 @@ impl<C: Client> Wallet<C> {
             // Sum amount of all proofs
             let _amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
 
-            let pre_split = self.create_split(None, token.proofs)?;
+            let pre_swap = self.create_split(None, token.proofs)?;
 
-            let split_response = self
+            let swap_response = self
                 .client
-                .post_split(self.mint_url.clone().try_into()?, pre_split.split_request)
+                .post_split(self.mint_url.clone().try_into()?, pre_swap.split_request)
                 .await?;
 
-            if let Some(promises) = &split_response.promises {
-                // Proof to keep
-                let p = construct_proofs(
-                    promises.to_owned(),
-                    pre_split.pre_mint_secrets.rs(),
-                    pre_split.pre_mint_secrets.secrets(),
-                    &keys,
-                )?;
-                proofs.push(p);
-            } else {
-                warn!("Response missing promises");
-                return Err(Error::Custom("Split response missing promises".to_string()));
-            }
+            // Proof to keep
+            let p = construct_proofs(
+                swap_response.signatures,
+                pre_swap.pre_mint_secrets.rs(),
+                pre_swap.pre_mint_secrets.secrets(),
+                &keys,
+            )?;
+            proofs.push(p);
         }
         Ok(proofs.iter().flatten().cloned().collect())
     }
 
     /// Create Split Payload
-    fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<PreSplit, Error> {
+    fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<PreSwap, Error> {
         // Since split is used to get the needed combination of tokens for a specific
         // amount first blinded messages are created for the amount
 
@@ -184,9 +179,9 @@ impl<C: Client> Wallet<C> {
             PreMintSecrets::random((&self.mint_keys).into(), value)?
         };
 
-        let split_request = SplitRequest::new(proofs, pre_mint_secrets.blinded_messages());
+        let split_request = SwapRequest::new(proofs, pre_mint_secrets.blinded_messages());
 
-        Ok(PreSplit {
+        Ok(PreSwap {
             pre_mint_secrets,
             split_request,
         })
@@ -231,35 +226,31 @@ impl<C: Client> Wallet<C> {
             return Err(Error::InsufficientFunds);
         }
 
-        let pre_split = self.create_split(Some(amount), proofs)?;
+        let pre_swap = self.create_split(Some(amount), proofs)?;
 
-        let split_response = self
+        let swap_response = self
             .client
-            .post_split(self.mint_url.clone().try_into()?, pre_split.split_request)
+            .post_split(self.mint_url.clone().try_into()?, pre_swap.split_request)
             .await?;
 
         let mut keep_proofs = Proofs::new();
         let mut send_proofs = Proofs::new();
 
-        if let Some(promises) = split_response.promises {
-            let mut proofs = construct_proofs(
-                promises,
-                pre_split.pre_mint_secrets.rs(),
-                pre_split.pre_mint_secrets.secrets(),
-                &self.mint_keys,
-            )?;
+        let mut proofs = construct_proofs(
+            swap_response.signatures,
+            pre_swap.pre_mint_secrets.rs(),
+            pre_swap.pre_mint_secrets.secrets(),
+            &self.mint_keys,
+        )?;
 
-            proofs.reverse();
+        proofs.reverse();
 
-            for proof in proofs {
-                if (proof.amount + send_proofs.iter().map(|p| p.amount).sum()).gt(&amount) {
-                    keep_proofs.push(proof);
-                } else {
-                    send_proofs.push(proof);
-                }
+        for proof in proofs {
+            if (proof.amount + send_proofs.iter().map(|p| p.amount).sum()).gt(&amount) {
+                keep_proofs.push(proof);
+            } else {
+                send_proofs.push(proof);
             }
-        } else {
-            return Err(Error::Custom("Invalid split response".to_string()));
         }
 
         // println!("Send Proofs: {:#?}", send_proofs);
