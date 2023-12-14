@@ -94,31 +94,31 @@ impl<C: Client> Wallet<C> {
     pub async fn mint_token(
         &self,
         amount: Amount,
-        hash: &str,
+        quote: &str,
         memo: Option<String>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Token, Error> {
-        let proofs = self.mint(amount, hash).await?;
+        let proofs = self.mint(amount, quote).await?;
 
         let token = Token::new(self.mint_url.clone(), proofs, memo, unit);
         Ok(token?)
     }
 
     /// Mint Proofs
-    pub async fn mint(&self, amount: Amount, hash: &str) -> Result<Proofs, Error> {
+    pub async fn mint(&self, amount: Amount, quote: &str) -> Result<Proofs, Error> {
         let premint_secrets = PreMintSecrets::random((&self.mint_keys).into(), amount)?;
 
         let mint_res = self
             .client
             .post_mint(
                 self.mint_url.clone().try_into()?,
+                quote,
                 premint_secrets.clone(),
-                hash,
             )
             .await?;
 
         let proofs = construct_proofs(
-            mint_res.promises,
+            mint_res.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
             &self.mint_keys,
