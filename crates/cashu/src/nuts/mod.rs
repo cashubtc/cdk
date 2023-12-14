@@ -19,7 +19,7 @@ pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSplit;
-pub use nut03::{RequestMintResponse, SplitRequest, SplitResponse};
+pub use nut03::{SplitRequest, SplitResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintQuoteBolt11Request, MintQuoteBolt11Response,
 };

@@ -10,15 +10,6 @@ use crate::nuts::{BlindedMessage, Proofs};
 use crate::Amount;
 pub use crate::Bolt11Invoice;
 
-/// Mint request response [NUT-03]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestMintResponse {
-    /// Bolt11 payment request
-    pub pr: Bolt11Invoice,
-    /// Random hash MUST not be the hash of invoice
-    pub hash: String,
-}
-
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreSplit {

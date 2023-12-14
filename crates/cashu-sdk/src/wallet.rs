@@ -5,8 +5,8 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Keys, PreMintSecrets, PreSplit, Proof, Proofs,
-    RequestMintResponse, SplitRequest, Token,
+    BlindedSignature, CurrencyUnit, Keys, PreMintSecrets, PreSplit, Proof, Proofs, SplitRequest,
+    Token,
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
@@ -79,14 +79,6 @@ impl<C: Client> Wallet<C> {
             spendable: spendable.into_iter().map(|(s, _)| s).cloned().collect(),
             spent: spent.into_iter().map(|(s, _)| s).cloned().collect(),
         })
-    }
-
-    /// Request Token Mint
-    pub async fn request_mint(&self, amount: Amount) -> Result<RequestMintResponse, Error> {
-        Ok(self
-            .client
-            .get_request_mint(self.mint_url.clone().try_into()?, amount)
-            .await?)
     }
 
     // TODO: Need to use the unit, check keyset is of the same unit of attempting to
