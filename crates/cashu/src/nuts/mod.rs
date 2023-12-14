@@ -18,8 +18,8 @@ pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 #[cfg(feature = "wallet")]
-pub use nut03::PreSplit;
-pub use nut03::{SplitRequest, SplitResponse};
+pub use nut03::PreSwap;
+pub use nut03::{SwapRequest, SwapResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintQuoteBolt11Request, MintQuoteBolt11Response,
 };
