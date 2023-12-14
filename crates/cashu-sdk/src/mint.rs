@@ -105,16 +105,16 @@ impl Mint {
 
     pub fn process_mint_request(
         &mut self,
-        mint_request: nut04::MintRequest,
-    ) -> Result<nut04::PostMintResponse, Error> {
+        mint_request: nut04::MintBolt11Request,
+    ) -> Result<nut04::MintBolt11Response, Error> {
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
         for blinded_message in mint_request.outputs {
             blind_signatures.push(self.blind_sign(&blinded_message)?);
         }
 
-        Ok(nut04::PostMintResponse {
-            promises: blind_signatures,
+        Ok(nut04::MintBolt11Response {
+            signatures: blind_signatures,
         })
     }
 

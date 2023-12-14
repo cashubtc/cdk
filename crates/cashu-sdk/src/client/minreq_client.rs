@@ -6,8 +6,8 @@ use async_trait::async_trait;
 #[cfg(feature = "nut09")]
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
-    BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintRequest, PostMintResponse,
-    PreMintSecrets, Proof, RequestMintResponse, SplitRequest, SplitResponse, *,
+    BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintBolt11Request,
+    MintBolt11Response, PreMintSecrets, Proof, RequestMintResponse, SplitRequest, SplitResponse, *,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
@@ -71,13 +71,13 @@ impl Client for HttpClient {
     async fn post_mint(
         &self,
         mint_url: Url,
+        quote: &str,
         premint_secrets: PreMintSecrets,
-        hash: &str,
-    ) -> Result<PostMintResponse, Error> {
-        let mut url = join_url(mint_url, "mint")?;
-        url.query_pairs_mut().append_pair("hash", hash);
+    ) -> Result<MintBolt11Response, Error> {
+        let url = join_url(mint_url, "mint")?;
 
-        let request = MintRequest {
+        let request = MintBolt11Request {
+            quote: quote.to_string(),
             outputs: premint_secrets.blinded_messages(),
         };
 
@@ -86,7 +86,7 @@ impl Client for HttpClient {
             .send()?
             .json::<Value>()?;
 
-        let response: Result<PostMintResponse, serde_json::Error> =
+        let response: Result<MintBolt11Response, serde_json::Error> =
             serde_json::from_value(res.clone());
 
         match response {
