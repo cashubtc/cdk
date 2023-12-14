@@ -9,9 +9,9 @@ use cashu::nuts::CheckSpendableResponse;
 use cashu::nuts::MintInfo;
 use cashu::nuts::{
     BlindedMessage, Keys, KeysetResponse, MeltBolt11Response, MintBolt11Response, PreMintSecrets,
-    Proof, RequestMintResponse, SplitRequest, SplitResponse,
+    Proof, SplitRequest, SplitResponse,
 };
-use cashu::{utils, Amount};
+use cashu::utils;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -88,12 +88,6 @@ pub trait Client {
     async fn get_mint_keys(&self, mint_url: Url) -> Result<Keys, Error>;
 
     async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error>;
-
-    async fn get_request_mint(
-        &self,
-        mint_url: Url,
-        amount: Amount,
-    ) -> Result<RequestMintResponse, Error>;
 
     // TODO: Hash should have a type
     async fn post_mint(
