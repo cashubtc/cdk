@@ -54,3 +54,10 @@ pub struct MeltBolt11Response {
     /// Bolt11 preimage
     pub payment_preimage: String,
 }
+
+/// Melt Settings
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Settings {
+    methods: Vec<(String, CurrencyUnit)>,
+}

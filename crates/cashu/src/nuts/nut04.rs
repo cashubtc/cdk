@@ -51,3 +51,10 @@ pub struct MintBolt11Response {
     /// Blinded Signatures
     pub signatures: Vec<BlindedSignature>,
 }
+
+/// Mint Settings
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    methods: Vec<(String, CurrencyUnit)>,
+    disabled: bool,
+}
