@@ -1,9 +1,13 @@
 //! Mint Information
 // https://github.com/cashubtc/nuts/blob/main/09.md
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 use super::nut01::PublicKey;
+use super::{nut04, nut05};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,9 +65,64 @@ pub struct MintInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contact: Option<Vec<Vec<String>>>,
     /// shows which NUTs the mint supports
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub nuts: Vec<String>,
+    #[serde(deserialize_with = "deserialize_nuts")]
+    pub nuts: HashMap<u8, NutSettings>,
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NutSettings {
+    Nut04(nut04::Settings),
+    Nut05(nut05::Settings),
+    Optional(OptionalSettings),
+    UnknownNut(Value),
+}
+
+fn deserialize_nuts<'de, D>(deserializer: D) -> Result<HashMap<u8, NutSettings>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let b: Vec<_> = Deserialize::deserialize(deserializer)?;
+
+    let h: HashMap<u8, String> = HashMap::from_iter(b);
+
+    let mut nuts: HashMap<u8, NutSettings> = HashMap::with_capacity(h.capacity());
+
+    for (num, nut) in h {
+        let nut_settings = match num {
+            4 => {
+                let settings: nut04::Settings = serde_json::from_str(&nut).unwrap();
+
+                NutSettings::Nut04(settings)
+            }
+            5 => {
+                let settings: nut05::Settings = serde_json::from_str(&nut).unwrap();
+
+                NutSettings::Nut05(settings)
+            }
+            7..=10 | 12 => {
+                let settings: OptionalSettings = serde_json::from_str(&nut).unwrap();
+
+                NutSettings::Optional(settings)
+            }
+            _ => {
+                let settings: Value = serde_json::from_str(&nut).unwrap();
+
+                NutSettings::UnknownNut(settings)
+            }
+        };
+        nuts.insert(num, nut_settings);
+    }
+
+    Ok(nuts)
+}
+
+/// Spendable Settings
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OptionalSettings {
+    supported: bool,
 }
