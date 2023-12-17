@@ -260,9 +260,8 @@ impl<C: Client> Wallet<C> {
 
         if send_amount.ne(&amount) {
             warn!(
-                "Send amount proofs is {} expected {}",
-                send_amount.to_sat(),
-                amount.to_sat()
+                "Send amount proofs is {:?} expected {:?}",
+                send_amount, amount
             );
         }
 

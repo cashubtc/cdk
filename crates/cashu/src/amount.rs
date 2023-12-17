@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 /// Number of satoshis
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Amount(#[serde(with = "bitcoin::amount::serde::as_sat")] bitcoin::Amount);
+pub struct Amount(u64);
 
 impl Amount {
-    pub const ZERO: Amount = Amount(bitcoin::Amount::ZERO);
+    pub const ZERO: Amount = Amount(0);
 
     /// Split into parts that are powers of two
     pub fn split(&self) -> Vec<Self> {
-        let sats = self.0.to_sat();
+        let sats = self.0;
         (0_u64..64)
             .rev()
             .filter_map(|bit| {
@@ -19,22 +19,6 @@ impl Amount {
                 ((sats & part) == part).then_some(Self::from(part))
             })
             .collect()
-    }
-
-    pub fn to_sat(&self) -> u64 {
-        self.0.to_sat()
-    }
-
-    pub fn to_msat(&self) -> u64 {
-        self.0.to_sat() * 1000
-    }
-
-    pub fn from_sat(sat: u64) -> Self {
-        Self(bitcoin::Amount::from_sat(sat))
-    }
-
-    pub fn from_msat(msat: u64) -> Self {
-        Self(bitcoin::Amount::from_sat(msat / 1000))
     }
 }
 
@@ -46,13 +30,13 @@ impl Default for Amount {
 
 impl From<u64> for Amount {
     fn from(value: u64) -> Self {
-        Self(bitcoin::Amount::from_sat(value))
+        Self(value)
     }
 }
 
 impl From<Amount> for u64 {
     fn from(value: Amount) -> Self {
-        value.0.to_sat()
+        value.0
     }
 }
 
@@ -80,7 +64,7 @@ impl std::ops::Sub for Amount {
 
 impl core::iter::Sum for Amount {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let sats: u64 = iter.map(|amt| amt.0.to_sat()).sum();
+        let sats: u64 = iter.map(|amt| amt.0).sum();
         Amount::from(sats)
     }
 }
@@ -91,18 +75,18 @@ mod tests {
 
     #[test]
     fn test_split_amount() {
-        assert_eq!(Amount::from_sat(1).split(), vec![Amount::from_sat(1)]);
-        assert_eq!(Amount::from_sat(2).split(), vec![Amount::from_sat(2)]);
+        assert_eq!(Amount::from(1).split(), vec![Amount::from(1)]);
+        assert_eq!(Amount::from(2).split(), vec![Amount::from(2)]);
         assert_eq!(
-            Amount::from_sat(3).split(),
-            vec![Amount::from_sat(2), Amount::from_sat(1)]
+            Amount::from(3).split(),
+            vec![Amount::from(2), Amount::from(1)]
         );
-        let amounts: Vec<Amount> = [8, 2, 1].iter().map(|a| Amount::from_sat(*a)).collect();
-        assert_eq!(Amount::from_sat(11).split(), amounts);
+        let amounts: Vec<Amount> = [8, 2, 1].iter().map(|a| Amount::from(*a)).collect();
+        assert_eq!(Amount::from(11).split(), amounts);
         let amounts: Vec<Amount> = [128, 64, 32, 16, 8, 4, 2, 1]
             .iter()
-            .map(|a| Amount::from_sat(*a))
+            .map(|a| Amount::from(*a))
             .collect();
-        assert_eq!(Amount::from_sat(255).split(), amounts);
+        assert_eq!(Amount::from(255).split(), amounts);
     }
 }

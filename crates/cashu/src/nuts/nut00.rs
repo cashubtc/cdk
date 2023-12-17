@@ -184,13 +184,7 @@ pub mod wallet {
 
         /// Blank Outputs used for NUT-08 change
         pub fn blank(keyset_id: Id, fee_reserve: Amount) -> Result<Self, wallet::Error> {
-            let fee_reserve = bitcoin::Amount::from_sat(fee_reserve.to_sat());
-
-            let count = (fee_reserve
-                .to_float_in(bitcoin::Denomination::Satoshi)
-                .log2()
-                .ceil() as u64)
-                .max(1);
+            let count = ((u64::from(fee_reserve) as f64).log2().ceil() as u64).max(1);
 
             let mut output = Vec::with_capacity(count as usize);
 
@@ -300,7 +294,7 @@ pub mod wallet {
                 }
             }
 
-            (amount.to_sat(), self.token[0].mint.to_string())
+            (amount.into(), self.token[0].mint.to_string())
         }
     }
 
@@ -482,11 +476,11 @@ mod tests {
     #[test]
     fn test_blank_blinded_messages() {
         // TODO: Need to update id to new type in proof
-        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from_sat(1000)).unwrap();
+        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from(1000)).unwrap();
         assert_eq!(b.len(), 10);
 
         // TODO: Need to update id to new type in proof
-        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from_sat(1)).unwrap();
+        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from(1)).unwrap();
         assert_eq!(b.len(), 1);
     }
 }

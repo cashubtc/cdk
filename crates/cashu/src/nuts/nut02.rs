@@ -237,7 +237,7 @@ pub mod mint {
             engine.input(derivation_path.into().as_bytes());
 
             for i in 0..max_order {
-                let amount = Amount::from_sat(2_u64.pow(i as u32));
+                let amount = Amount::from(2_u64.pow(i as u32));
 
                 // Reuse midstate
                 let mut e = engine.clone();
