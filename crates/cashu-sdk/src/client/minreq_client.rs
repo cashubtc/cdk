@@ -150,7 +150,10 @@ impl Client for HttpClient {
     /// Get Mint Info [NUT-09]
     #[cfg(feature = "nut09")]
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
-        let url = join_url(mint_url, "info")?;
+        let url = join_url(mint_url, "v1")?;
+        let url = join_url(url, "info")?;
+
+        println!("{}", url);
 
         let res = minreq::get(url).send()?.json::<Value>()?;
 
@@ -158,7 +161,10 @@ impl Client for HttpClient {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&res.to_string())?),
+            Err(_) => {
+                println!("{:?}", response);
+                Err(Error::from_json(&res.to_string())?)
+            }
         }
     }
 }

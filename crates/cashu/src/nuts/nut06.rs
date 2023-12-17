@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::nut01::PublicKey;
 use super::{nut04, nut05};
@@ -85,31 +85,35 @@ fn deserialize_nuts<'de, D>(deserializer: D) -> Result<HashMap<u8, NutSettings>,
 where
     D: Deserializer<'de>,
 {
-    let b: Vec<_> = Deserialize::deserialize(deserializer)?;
+    let b: Map<_, _> = Deserialize::deserialize(deserializer).unwrap();
 
-    let h: HashMap<u8, String> = HashMap::from_iter(b);
+    let h: HashMap<u8, Value> = b
+        .into_iter()
+        .map(|(v, k)| (v.parse().unwrap(), k))
+        .collect();
 
     let mut nuts: HashMap<u8, NutSettings> = HashMap::with_capacity(h.capacity());
 
     for (num, nut) in h {
         let nut_settings = match num {
             4 => {
-                let settings: nut04::Settings = serde_json::from_str(&nut).unwrap();
+                let settings: nut04::Settings = serde_json::from_value(nut).unwrap();
 
                 NutSettings::Nut04(settings)
             }
             5 => {
-                let settings: nut05::Settings = serde_json::from_str(&nut).unwrap();
+                let settings: nut05::Settings = serde_json::from_value(nut).unwrap();
 
                 NutSettings::Nut05(settings)
             }
             7..=10 | 12 => {
-                let settings: OptionalSettings = serde_json::from_str(&nut).unwrap();
+                println!("{}", nut);
+                let settings: OptionalSettings = serde_json::from_value(nut).unwrap();
 
                 NutSettings::Optional(settings)
             }
             _ => {
-                let settings: Value = serde_json::from_str(&nut).unwrap();
+                let settings: Value = serde_json::from_value(nut).unwrap();
 
                 NutSettings::UnknownNut(settings)
             }
@@ -125,4 +129,17 @@ where
 #[serde(transparent)]
 pub struct OptionalSettings {
     supported: bool,
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_mint_info() {
+        let mint_info = r#"{"name":"moksha-mint","pubkey":"02b3d8d8280b26f1223dc603a9b2a69618dc26821bef8ee22d419c44d710007cbc","version":"0.1.2","description":"mutiny signet mint v1 api","contact":[["[[email"],["ngutech21@pm.me]]"]],"nuts":{"4":{"methods":[["bolt11","sat"]],"disabled":false},"5":{"methods":[["bolt11","sat"]]},"6":{"supported":true},"7":{"supported":false},"8":{"supported":true},"9":{"supported":false},"10":{"supported":false},"11":{"supported":false},"12":{"supported":false}}}"#;
+
+        let _info: MintInfo = serde_json::from_str(mint_info).unwrap();
+    }
 }
