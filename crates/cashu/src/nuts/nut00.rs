@@ -27,6 +27,7 @@ pub struct BlindedMessage {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CurrencyUnit {
     #[default]
+    #[serde(rename = "sat")]
     Sat,
     Custom(String),
 }
