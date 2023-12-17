@@ -1,13 +1,10 @@
 //! Mint Information
 // https://github.com/cashubtc/nuts/blob/main/09.md
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{Map, Value};
 
 use super::nut01::PublicKey;
-use super::{nut04, nut05};
+use super::{nut04, nut05, nut07, nut08};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,70 +62,38 @@ pub struct MintInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contact: Option<Vec<Vec<String>>>,
     /// shows which NUTs the mint supports
-    #[serde(deserialize_with = "deserialize_nuts")]
-    pub nuts: HashMap<u8, NutSettings>,
+    pub nuts: Nuts,
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum NutSettings {
-    Nut04(nut04::Settings),
-    Nut05(nut05::Settings),
-    Optional(OptionalSettings),
-    UnknownNut(Value),
-}
-
-fn deserialize_nuts<'de, D>(deserializer: D) -> Result<HashMap<u8, NutSettings>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let b: Map<_, _> = Deserialize::deserialize(deserializer).unwrap();
-
-    let h: HashMap<u8, Value> = b
-        .into_iter()
-        .map(|(v, k)| (v.parse().unwrap(), k))
-        .collect();
-
-    let mut nuts: HashMap<u8, NutSettings> = HashMap::with_capacity(h.capacity());
-
-    for (num, nut) in h {
-        let nut_settings = match num {
-            4 => {
-                let settings: nut04::Settings = serde_json::from_value(nut).unwrap();
-
-                NutSettings::Nut04(settings)
-            }
-            5 => {
-                let settings: nut05::Settings = serde_json::from_value(nut).unwrap();
-
-                NutSettings::Nut05(settings)
-            }
-            7..=10 | 12 => {
-                println!("{}", nut);
-                let settings: OptionalSettings = serde_json::from_value(nut).unwrap();
-
-                NutSettings::Optional(settings)
-            }
-            _ => {
-                let settings: Value = serde_json::from_value(nut).unwrap();
-
-                NutSettings::UnknownNut(settings)
-            }
-        };
-        nuts.insert(num, nut_settings);
-    }
-
-    Ok(nuts)
-}
-
-/// Spendable Settings
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct OptionalSettings {
-    supported: bool,
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Nuts {
+    #[serde(default)]
+    #[serde(rename = "4")]
+    pub nut04: nut04::Settings,
+    #[serde(default)]
+    #[serde(rename = "5")]
+    pub nut05: nut05::Settings,
+    #[serde(default)]
+    #[serde(rename = "7")]
+    pub nut07: nut07::Settings,
+    #[serde(default)]
+    #[serde(rename = "8")]
+    pub nut08: nut08::Settings,
+    // TODO: Change to nut settings
+    #[serde(default)]
+    #[serde(rename = "9")]
+    pub nut09: nut07::Settings,
+    // TODO: Change to nut settings
+    #[serde(default)]
+    #[serde(rename = "10")]
+    pub nut10: nut07::Settings,
+    #[serde(default)]
+    // TODO: Change to nut settings
+    #[serde(rename = "12")]
+    pub nut12: nut07::Settings,
 }
 
 #[cfg(test)]
@@ -137,9 +102,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mint_info() {
-        let mint_info = r#"{"name":"moksha-mint","pubkey":"02b3d8d8280b26f1223dc603a9b2a69618dc26821bef8ee22d419c44d710007cbc","version":"0.1.2","description":"mutiny signet mint v1 api","contact":[["[[email"],["ngutech21@pm.me]]"]],"nuts":{"4":{"methods":[["bolt11","sat"]],"disabled":false},"5":{"methods":[["bolt11","sat"]]},"6":{"supported":true},"7":{"supported":false},"8":{"supported":true},"9":{"supported":false},"10":{"supported":false},"11":{"supported":false},"12":{"supported":false}}}"#;
+    fn test_ser_mint_info() {
+        /*
+                let mint_info = serde_json::to_string(&MintInfo {
+                    name: Some("Cashu-crab".to_string()),
+                    pubkey: None,
+                    version: None,
+                    description: Some("A mint".to_string()),
+                    description_long: Some("Some longer test".to_string()),
+                    contact: None,
+                    nuts: Nuts::default(),
+                    motd: None,
+                })
+                .unwrap();
 
-        let _info: MintInfo = serde_json::from_str(mint_info).unwrap();
+                println!("{}", mint_info);
+        */
+        let mint_info_str = r#"{
+  "name": "Bob's Cashu mint",
+  "pubkey": "0283bf290884eed3a7ca2663fc0260de2e2064d6b355ea13f98dec004b7a7ead99",
+  "version": "Nutshell/0.15.0",
+  "description": "The short mint description",
+  "description_long": "A description that can be a long piece of text.",
+  "contact": [
+    ["email", "contact@me.com"],
+    ["twitter", "@me"],
+    ["nostr" ,"npub..."]
+  ],
+  "motd": "Message to display to users.",
+  "nuts": {
+    "4": {
+      "methods": [
+        ["bolt11", "sat"]
+      ],
+      "disabled": false
+    },
+    "5": {
+      "methods": [
+        ["bolt11", "sat"]
+      ]
+    },
+    "7": {"supported": true},
+    "8": {"supported": true},
+    "9": {"supported": true},
+    "10": {"supported": true},
+    "12": {"supported": true}
+  }
+}"#;
+        let _info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
     }
 }

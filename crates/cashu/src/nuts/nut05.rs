@@ -56,8 +56,7 @@ pub struct MeltBolt11Response {
 }
 
 /// Melt Settings
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     methods: Vec<(String, CurrencyUnit)>,
 }
