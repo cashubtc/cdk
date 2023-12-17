@@ -151,11 +151,11 @@ impl<'de> serde::de::Deserialize<'de> for KeysResponse {
                 let mut keys: BTreeMap<Amount, PublicKey> = BTreeMap::new();
 
                 while let Some((a, k)) = m.next_entry::<String, String>()? {
-                    let amount = a.parse();
+                    let amount = a.parse::<u64>();
                     let pub_key = PublicKey::from_hex(k);
 
                     if let (Ok(amount), Ok(pubkey)) = (amount, pub_key) {
-                        let amount = Amount::from_sat(amount);
+                        let amount = Amount::from(amount);
 
                         keys.insert(amount, pubkey);
                     }

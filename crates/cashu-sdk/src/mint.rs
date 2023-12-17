@@ -231,13 +231,13 @@ impl Mint {
 
     pub fn verify_melt_request(&mut self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
         let quote = self.quotes.get(&melt_request.quote).unwrap();
-        let proofs_total = melt_request.proofs_amount().to_sat();
+        let proofs_total = melt_request.proofs_amount();
 
         let required_total = quote.amount + quote.fee_reserve;
 
-        if proofs_total < required_total {
+        if proofs_total < required_total.into() {
             debug!(
-                "Insufficient Proofs: Got: {}, Required: {}",
+                "Insufficient Proofs: Got: {:?}, Required: {}",
                 proofs_total, required_total
             );
             return Err(Error::Amount);
@@ -301,8 +301,8 @@ impl Mint {
             change = Some(change_sigs);
         } else {
             info!(
-                "No change outputs provided. Burnt: {} sats",
-                (melt_request.proofs_amount() - total_spent).to_sat()
+                "No change outputs provided. Burnt: {:?} sats",
+                (melt_request.proofs_amount() - total_spent)
             );
         }
 
