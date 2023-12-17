@@ -12,7 +12,7 @@ pub mod nut08;
 
 #[cfg(feature = "wallet")]
 pub use nut00::wallet::{PreMint, PreMintSecrets, Token};
-pub use nut00::{BlindedMessage, BlindedSignature, CurrencyUnit, Proof};
+pub use nut00::{BlindedMessage, BlindedSignature, CurrencyUnit, PaymentMethod, Proof};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};

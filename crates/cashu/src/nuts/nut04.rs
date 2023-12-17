@@ -2,7 +2,7 @@
 // https://github.com/cashubtc/nuts/blob/main/04.md
 use serde::{Deserialize, Serialize};
 
-use super::{BlindedMessage, BlindedSignature, CurrencyUnit};
+use super::{BlindedMessage, BlindedSignature, CurrencyUnit, PaymentMethod};
 use crate::Amount;
 
 /// Mint quote request [NUT-04]
@@ -55,6 +55,6 @@ pub struct MintBolt11Response {
 /// Mint Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    methods: Vec<(String, CurrencyUnit)>,
+    methods: Vec<(PaymentMethod, CurrencyUnit)>,
     disabled: bool,
 }
