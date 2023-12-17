@@ -25,11 +25,18 @@ pub struct BlindedMessage {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CurrencyUnit {
     #[default]
-    #[serde(rename = "sat")]
     Sat,
+    Usd,
     Custom(String),
+}
+
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PaymentMethod {
+    Bolt11,
 }
 
 impl FromStr for CurrencyUnit {
@@ -38,6 +45,7 @@ impl FromStr for CurrencyUnit {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "sat" => Ok(Self::Sat),
+            "usd" => Ok(Self::Usd),
             _ => Ok(Self::Custom(s.to_string())),
         }
     }
@@ -47,6 +55,7 @@ impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CurrencyUnit::Sat => write!(f, "sat"),
+            CurrencyUnit::Usd => write!(f, "usd"),
             CurrencyUnit::Custom(unit) => write!(f, "{}", unit),
         }
     }
