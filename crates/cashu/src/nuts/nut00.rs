@@ -15,11 +15,12 @@ use crate::Amount;
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindedMessage {
-    /// Amount in satoshi
+    /// Amount
     pub amount: Amount,
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
     pub b: PublicKey,
+    /// Keyset Id
     #[serde(rename = "id")]
     pub keyset_id: Id,
 }
@@ -31,12 +32,6 @@ pub enum CurrencyUnit {
     Sat,
     Usd,
     Custom(String),
-}
-
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum PaymentMethod {
-    Bolt11,
 }
 
 impl FromStr for CurrencyUnit {
@@ -57,6 +52,34 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Sat => write!(f, "sat"),
             CurrencyUnit::Usd => write!(f, "usd"),
             CurrencyUnit::Custom(unit) => write!(f, "{}", unit),
+        }
+    }
+}
+
+#[derive(Default, Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PaymentMethod {
+    #[default]
+    Bolt11,
+    Custom(String),
+}
+
+impl FromStr for PaymentMethod {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "bolt11" => Ok(Self::Bolt11),
+            _ => Ok(Self::Custom(s.to_string())),
+        }
+    }
+}
+
+impl fmt::Display for PaymentMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PaymentMethod::Bolt11 => write!(f, "bolt11"),
+            PaymentMethod::Custom(unit) => write!(f, "{}", unit),
         }
     }
 }
