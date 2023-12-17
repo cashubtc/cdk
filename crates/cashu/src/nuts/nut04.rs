@@ -53,7 +53,7 @@ pub struct MintBolt11Response {
 }
 
 /// Mint Settings
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     methods: Vec<(String, CurrencyUnit)>,
     disabled: bool,

@@ -47,3 +47,9 @@ impl MeltBolt11Response {
             .map(|c| c.iter().map(|b| b.amount).sum())
     }
 }
+
+/// Melt Settings
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    supported: bool,
+}

@@ -19,3 +19,9 @@ pub struct CheckSpendableResponse {
     pub spendable: Vec<bool>,
     pub pending: Vec<bool>,
 }
+
+/// Spendable Settings
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    supported: bool,
+}
