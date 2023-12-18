@@ -17,12 +17,12 @@ use crate::Amount;
 pub struct BlindedMessage {
     /// Amount
     pub amount: Amount,
-    /// encrypted secret message (B_)
-    #[serde(rename = "B_")]
-    pub b: PublicKey,
     /// Keyset Id
     #[serde(rename = "id")]
     pub keyset_id: Id,
+    /// encrypted secret message (B_)
+    #[serde(rename = "B_")]
+    pub b: PublicKey,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,8 +345,10 @@ impl MintProofs {
 /// Promise (BlindedSignature) [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindedSignature {
-    pub id: Id,
     pub amount: Amount,
+    /// Keyset Id
+    #[serde(rename = "id")]
+    pub keyset_id: Id,
     /// blinded signature (C_) on the secret message `B_` of [BlindedMessage]
     #[serde(rename = "C_")]
     pub c: PublicKey,
@@ -355,10 +357,11 @@ pub struct BlindedSignature {
 /// Proofs [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proof {
-    /// `Keyset id`
-    pub id: Id,
     /// Amount in satoshi
     pub amount: Amount,
+    /// `Keyset id`
+    #[serde(rename = "id")]
+    pub keyset_id: Id,
     /// Secret message
     pub secret: Secret,
     /// Unblinded signature
@@ -384,7 +387,7 @@ impl From<Proof> for mint::Proof {
             amount: Some(proof.amount),
             secret: proof.secret,
             c: Some(proof.c),
-            id: Some(proof.id),
+            keyset_id: Some(proof.keyset_id),
         }
     }
 }
@@ -394,7 +397,7 @@ impl TryFrom<mint::Proof> for Proof {
 
     fn try_from(mint_proof: mint::Proof) -> Result<Proof, Self::Error> {
         Ok(Self {
-            id: mint_proof.id.ok_or(Error::MissingProofField)?,
+            keyset_id: mint_proof.keyset_id.ok_or(Error::MissingProofField)?,
             amount: mint_proof.amount.ok_or(Error::MissingProofField)?,
             secret: mint_proof.secret,
             c: mint_proof.c.ok_or(Error::MissingProofField)?,
@@ -424,7 +427,8 @@ pub mod mint {
         pub c: Option<PublicKey>,
         /// `Keyset id`
         #[serde(skip_serializing)]
-        pub id: Option<Id>,
+        #[serde(rename = "id")]
+        pub keyset_id: Option<Id>,
     }
 
     /// List of proofs
@@ -447,7 +451,10 @@ mod tests {
         let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
         let proof: Proofs = serde_json::from_str(proof).unwrap();
 
-        assert_eq!(proof[0].clone().id, Id::from_str("DSAl9nvvyfva").unwrap());
+        assert_eq!(
+            proof[0].clone().keyset_id,
+            Id::from_str("DSAl9nvvyfva").unwrap()
+        );
     }
 
     #[test]
@@ -461,7 +468,7 @@ mod tests {
             UncheckedUrl::from_str("https://8333.space:3338").unwrap()
         );
         assert_eq!(
-            token.token[0].proofs[0].clone().id,
+            token.token[0].proofs[0].clone().keyset_id,
             Id::from_str("DSAl9nvvyfva").unwrap()
         );
 

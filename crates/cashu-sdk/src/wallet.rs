@@ -205,7 +205,7 @@ impl<C: Client> Wallet<C> {
 
             let unblinded_sig = unblind_message(blinded_c, premint.r.into(), a).unwrap();
             let proof = Proof {
-                id: promise.id,
+                keyset_id: promise.keyset_id,
                 amount: promise.amount,
                 secret: premint.secret,
                 c: unblinded_sig,
