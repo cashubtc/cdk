@@ -52,7 +52,7 @@ pub struct MeltBolt11Response {
     /// Indicate if payment was successful
     pub paid: bool,
     /// Bolt11 preimage
-    pub payment_preimage: String,
+    pub payment_preimage: Option<String>,
 }
 
 /// Melt Settings

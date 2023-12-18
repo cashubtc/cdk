@@ -14,7 +14,7 @@ pub struct MeltBolt11Request {
     /// Proofs
     pub inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
-    /// Amount field of blindedMessages `SHOULD` be set to zero
+    /// Amount field of BlindedMessages `SHOULD` be set to zero
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
@@ -31,12 +31,11 @@ impl MeltBolt11Request {
 }
 
 /// Melt Response [NUT-08]
-/// Lightning fee return [NUT-08] if change is defined
+/// Lightning fee return [NUT-08]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltBolt11Response {
     pub paid: bool,
-    // REVIEW: https://github.com/cashubtc/nuts/pull/55#discussion_r1419991818
-    pub proof: String,
+    pub payment_preimage: Option<String>,
     pub change: Option<Vec<BlindedSignature>>,
 }
 
