@@ -147,7 +147,7 @@ impl Mint {
         Ok(BlindedSignature {
             amount: *amount,
             c: c.into(),
-            id: keyset.id,
+            keyset_id: keyset.id,
         })
     }
 
@@ -198,7 +198,10 @@ impl Mint {
             return Err(Error::TokenSpent);
         }
 
-        let keyset = self.keysets.get(&proof.id).ok_or(Error::UnknownKeySet)?;
+        let keyset = self
+            .keysets
+            .get(&proof.keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
 
         let Some(keypair) = keyset.keys.0.get(&proof.amount) else {
             return Err(Error::AmountKey);
