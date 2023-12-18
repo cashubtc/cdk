@@ -33,6 +33,8 @@ pub enum Error {
     TokenNotVerifed,
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
+    #[error("Proof missing required field")]
+    MissingProofField,
 }
 
 #[cfg(feature = "wallet")]

@@ -308,7 +308,7 @@ impl Mint {
 
         Ok(MeltBolt11Response {
             paid: true,
-            proof: preimage.to_string(),
+            payment_preimage: Some(preimage.to_string()),
             change,
         })
     }

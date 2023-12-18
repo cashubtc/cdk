@@ -300,7 +300,7 @@ impl<C: Client> Wallet<C> {
 
         let melted = Melted {
             paid: true,
-            preimage: Some(melt_response.proof),
+            preimage: melt_response.payment_preimage,
             change: change_proofs,
         };
 

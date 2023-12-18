@@ -389,6 +389,19 @@ impl From<Proof> for mint::Proof {
     }
 }
 
+impl TryFrom<mint::Proof> for Proof {
+    type Error = Error;
+
+    fn try_from(mint_proof: mint::Proof) -> Result<Proof, Self::Error> {
+        Ok(Self {
+            id: mint_proof.id.ok_or(Error::MissingProofField)?,
+            amount: mint_proof.amount.ok_or(Error::MissingProofField)?,
+            secret: mint_proof.secret,
+            c: mint_proof.c.ok_or(Error::MissingProofField)?,
+        })
+    }
+}
+
 pub mod mint {
     use serde::{Deserialize, Serialize};
 
@@ -401,13 +414,16 @@ pub mod mint {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Proof {
         /// Amount in satoshi
+        #[serde(skip_serializing)]
         pub amount: Option<Amount>,
         /// Secret message
+        #[serde(skip_serializing)]
         pub secret: Secret,
         /// Unblinded signature
         #[serde(rename = "C")]
         pub c: Option<PublicKey>,
         /// `Keyset id`
+        #[serde(skip_serializing)]
         pub id: Option<Id>,
     }
 
