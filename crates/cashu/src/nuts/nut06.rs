@@ -4,7 +4,11 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-use super::{nut04, nut05, nut07, nut08};
+#[cfg(feature = "nut07")]
+use super::nut07;
+#[cfg(feature = "nut08")]
+use super::nut08;
+use super::{nut04, nut05};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,22 +80,27 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "5")]
     pub nut05: nut05::Settings,
+    #[cfg(feature = "nut07")]
     #[serde(default)]
     #[serde(rename = "7")]
     pub nut07: nut07::Settings,
+    #[cfg(feature = "nut08")]
     #[serde(default)]
     #[serde(rename = "8")]
     pub nut08: nut08::Settings,
     // TODO: Change to nut settings
+    #[cfg(feature = "nut07")]
     #[serde(default)]
     #[serde(rename = "9")]
     pub nut09: nut07::Settings,
     // TODO: Change to nut settings
+    #[cfg(feature = "nut07")]
     #[serde(default)]
     #[serde(rename = "10")]
     pub nut10: nut07::Settings,
-    #[serde(default)]
     // TODO: Change to nut settings
+    #[cfg(feature = "nut07")]
+    #[serde(default)]
     #[serde(rename = "12")]
     pub nut12: nut07::Settings,
 }
