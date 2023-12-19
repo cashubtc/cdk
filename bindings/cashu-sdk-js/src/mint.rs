@@ -3,8 +3,8 @@ use std::ops::Deref;
 #[cfg(feature = "nut07")]
 use cashu_js::nuts::{JsCheckSpendableRequest, JsCheckSpendableResponse};
 use cashu_js::nuts::{
-    JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMeltRequest, JsMeltResponse,
-    JsMintRequest, JsPostMintResponse, JsSplitRequest, JsSplitResponse,
+    JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMeltBolt11Request, JsMeltBolt11Response,
+    JsMintBolt11Request, JsMintBolt11Response, JsSwapRequest, JsSwapResponse,
 };
 use cashu_js::JsAmount;
 use cashu_sdk::mint::Mint;
@@ -83,28 +83,12 @@ impl JsMint {
         self.inner.keyset(id.deref()).map(|ks| ks.into())
     }
 
-    /// Process Mint Request
-    #[wasm_bindgen(js_name = ProcessMintRequest)]
-    pub fn process_mint_request(
-        &mut self,
-        mint_request: JsMintRequest,
-    ) -> Result<JsPostMintResponse> {
-        Ok(self
-            .inner
-            .process_mint_request(mint_request.deref().clone())
-            .map_err(into_err)?
-            .into())
-    }
-
     /// Process Split Request
-    #[wasm_bindgen(js_name = ProcessSplitRequest)]
-    pub fn process_split_request(
-        &mut self,
-        split_request: JsSplitRequest,
-    ) -> Result<JsSplitResponse> {
+    #[wasm_bindgen(js_name = ProcessSwapRequest)]
+    pub fn process_swap_request(&mut self, swap_request: JsSwapRequest) -> Result<JsSwapResponse> {
         Ok(self
             .inner
-            .process_split_request(split_request.deref().clone())
+            .process_swap_request(swap_request.deref().clone())
             .map_err(into_err)?
             .into())
     }
@@ -125,7 +109,7 @@ impl JsMint {
 
     /// Check Verify Melt
     #[wasm_bindgen(js_name = VerifyMelt)]
-    pub fn verify_melt(&mut self, melt_request: JsMeltRequest) -> Result<()> {
+    pub fn verify_melt(&mut self, melt_request: JsMeltBolt11Request) -> Result<()> {
         self.inner
             .verify_melt_request(melt_request.deref())
             .map_err(into_err)
@@ -135,10 +119,10 @@ impl JsMint {
     #[wasm_bindgen(js_name = ProcessMeltRequest)]
     pub fn process_melt_request(
         &mut self,
-        melt_request: JsMeltRequest,
+        melt_request: JsMeltBolt11Request,
         preimage: String,
         total_spent: JsAmount,
-    ) -> Result<JsMeltResponse> {
+    ) -> Result<JsMeltBolt11Response> {
         Ok(self
             .inner
             .process_melt_request(melt_request.deref(), &preimage, *total_spent.deref())

@@ -3,7 +3,6 @@ use std::str::FromStr;
 
 use cashu_js::nuts::nut00::{JsBlindedMessages, JsToken};
 use cashu_js::nuts::nut01::JsKeys;
-use cashu_js::nuts::nut03::JsRequestMintResponse;
 use cashu_js::JsAmount;
 #[cfg(feature = "nut07")]
 use cashu_js::JsProofsStatus;
@@ -52,17 +51,6 @@ impl JsWallet {
         Ok(self
             .inner
             .check_proofs_spent(&proofs)
-            .await
-            .map_err(into_err)?
-            .into())
-    }
-
-    /// Request Mint
-    #[wasm_bindgen(js_name = requestMint)]
-    pub async fn request_mint(&self, amount: JsAmount) -> Result<JsRequestMintResponse> {
-        Ok(self
-            .inner
-            .request_mint(*amount.deref())
             .await
             .map_err(into_err)?
             .into())
