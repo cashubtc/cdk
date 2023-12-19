@@ -13,8 +13,8 @@ pub mod nut09;
 pub use nut00::{JsBlindedMessage, JsBlindedMessages, JsBlindedSignature, JsProof, JsToken};
 pub use nut01::{JsKeyPair, JsKeys, JsPublicKey, JsSecretKey};
 pub use nut02::{JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMintKeySet};
-pub use nut03::{JsRequestMintResponse, JsSplitRequest, JsSplitResponse};
-pub use nut04::{JsMintRequest, JsPostMintResponse};
+pub use nut03::{JsSwapRequest, JsSwapResponse};
+pub use nut04::{JsMintBolt11Request, JsMintBolt11Response};
 #[cfg(feature = "nut07")]
 pub use nut07::{JsCheckSpendableRequest, JsCheckSpendableResponse};
-pub use nut08::{JsMeltRequest, JsMeltResponse};
+pub use nut08::{JsMeltBolt11Request, JsMeltBolt11Response};

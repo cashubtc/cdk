@@ -1,38 +1,38 @@
 use std::ops::Deref;
 
-use cashu::nuts::{SplitRequest, SplitResponse};
+use cashu::nuts::{SwapRequest, SwapResponse};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
 use crate::types::JsAmount;
 
-#[wasm_bindgen(js_name = SplitRequest)]
-pub struct JsSplitRequest {
-    inner: SplitRequest,
+#[wasm_bindgen(js_name = SwapRequest)]
+pub struct JsSwapRequest {
+    inner: SwapRequest,
 }
 
-impl Deref for JsSplitRequest {
-    type Target = SplitRequest;
+impl Deref for JsSwapRequest {
+    type Target = SwapRequest;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<SplitRequest> for JsSplitRequest {
-    fn from(inner: SplitRequest) -> JsSplitRequest {
-        JsSplitRequest { inner }
+impl From<SwapRequest> for JsSwapRequest {
+    fn from(inner: SwapRequest) -> JsSwapRequest {
+        JsSwapRequest { inner }
     }
 }
 
-#[wasm_bindgen(js_class = SplitRequest)]
-impl JsSplitRequest {
+#[wasm_bindgen(js_class = SwapRequest)]
+impl JsSwapRequest {
     #[wasm_bindgen(constructor)]
-    pub fn new(inputs: JsValue, outputs: JsValue) -> Result<JsSplitRequest> {
+    pub fn new(inputs: JsValue, outputs: JsValue) -> Result<JsSwapRequest> {
         let inputs = serde_wasm_bindgen::from_value(inputs).map_err(into_err)?;
         let outputs = serde_wasm_bindgen::from_value(outputs).map_err(into_err)?;
 
-        Ok(JsSplitRequest {
-            inner: SplitRequest { inputs, outputs },
+        Ok(JsSwapRequest {
+            inner: SwapRequest { inputs, outputs },
         })
     }
 
@@ -62,45 +62,43 @@ impl JsSplitRequest {
 }
 
 #[wasm_bindgen(js_name = SplitResponse)]
-pub struct JsSplitResponse {
-    inner: SplitResponse,
+pub struct JsSwapResponse {
+    inner: SwapResponse,
 }
 
-impl Deref for JsSplitResponse {
-    type Target = SplitResponse;
+impl Deref for JsSwapResponse {
+    type Target = SwapResponse;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<SplitResponse> for JsSplitResponse {
-    fn from(inner: SplitResponse) -> JsSplitResponse {
-        JsSplitResponse { inner }
+impl From<SwapResponse> for JsSwapResponse {
+    fn from(inner: SwapResponse) -> JsSwapResponse {
+        JsSwapResponse { inner }
     }
 }
 
 #[wasm_bindgen(js_class = SplitResponse)]
-impl JsSplitResponse {
+impl JsSwapResponse {
     #[wasm_bindgen(constructor)]
-    pub fn new(promises: JsValue) -> Result<JsSplitResponse> {
-        let promises = serde_wasm_bindgen::from_value(promises).map_err(into_err)?;
+    pub fn new(signatures: JsValue) -> Result<JsSwapResponse> {
+        let signatures = serde_wasm_bindgen::from_value(signatures).map_err(into_err)?;
 
-        Ok(JsSplitResponse {
-            inner: SplitResponse {
-                promises: Some(promises),
-            },
+        Ok(JsSwapResponse {
+            inner: SwapResponse { signatures },
         })
     }
 
     /// Get Promises
     #[wasm_bindgen(getter)]
-    pub fn promises(&self) -> Result<JsValue> {
-        serde_wasm_bindgen::to_value(&self.inner.promises).map_err(into_err)
+    pub fn signatures(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.signatures).map_err(into_err)
     }
 
     /// Promises Amount
     #[wasm_bindgen(js_name = promisesAmount)]
-    pub fn promises_amount(&self) -> Option<JsAmount> {
-        self.inner.promises_amount().map(|a| a.into())
+    pub fn promises_amount(&self) -> JsAmount {
+        self.inner.promises_amount().into()
     }
 }
