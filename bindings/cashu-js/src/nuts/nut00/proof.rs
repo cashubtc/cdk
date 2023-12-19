@@ -28,13 +28,13 @@ impl From<Proof> for JsProof {
 #[wasm_bindgen(js_class = Proof)]
 impl JsProof {
     #[wasm_bindgen(constructor)]
-    pub fn new(amount: JsAmount, secret: JsSecret, c: JsPublicKey, id: JsId) -> JsProof {
+    pub fn new(amount: JsAmount, secret: JsSecret, c: JsPublicKey, keyset_id: JsId) -> JsProof {
         Self {
             inner: Proof {
                 amount: *amount.deref(),
                 secret: secret.deref().clone(),
                 c: c.deref().clone(),
-                id: *id.deref(),
+                keyset_id: *keyset_id.deref(),
             },
         }
     }
@@ -57,9 +57,9 @@ impl JsProof {
         self.inner.c.clone().into()
     }
 
-    /// Id
+    /// Keyset Id
     #[wasm_bindgen(getter)]
-    pub fn id(&self) -> JsId {
-        self.inner.id.into()
+    pub fn keyset_id(&self) -> JsId {
+        self.inner.keyset_id.into()
     }
 }

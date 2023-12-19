@@ -23,41 +23,21 @@ impl From<Amount> for JsAmount {
     }
 }
 
+impl From<u64> for JsAmount {
+    fn from(amount: u64) -> JsAmount {
+        JsAmount {
+            inner: Amount::from(amount),
+        }
+    }
+}
+
 #[wasm_bindgen(js_class = Amount)]
 impl JsAmount {
     #[wasm_bindgen(constructor)]
     pub fn new(sats: u32) -> Self {
         Self {
-            inner: Amount::from_sat(sats as u64),
+            inner: Amount::from(sats as u64),
         }
-    }
-
-    /// From Sats
-    #[wasm_bindgen(js_name = fromSat)]
-    pub fn from_sat(sats: u64) -> Self {
-        Self {
-            inner: Amount::from_sat(sats),
-        }
-    }
-
-    /// From Msats
-    #[wasm_bindgen(js_name = fromMSat)]
-    pub fn from_msat(msats: u64) -> Self {
-        Self {
-            inner: Amount::from_msat(msats),
-        }
-    }
-
-    /// Get as sats
-    #[wasm_bindgen(js_name = toSat)]
-    pub fn to_sat(&self) -> u64 {
-        self.inner.to_sat()
-    }
-
-    /// Get as msats
-    #[wasm_bindgen(js_name = toMSat)]
-    pub fn to_msat(&self) -> u64 {
-        self.inner.to_msat()
     }
 
     /// Split amount returns sat vec of sats

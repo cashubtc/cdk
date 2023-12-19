@@ -8,27 +8,27 @@ use crate::error::{into_err, Result};
 use crate::types::JsAmount;
 
 #[wasm_bindgen(js_name = MeltRequest)]
-pub struct JsMeltRequest {
+pub struct JsMeltBolt11Request {
     inner: MeltBolt11Request,
 }
 
-impl Deref for JsMeltRequest {
+impl Deref for JsMeltBolt11Request {
     type Target = MeltBolt11Request;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<MeltBolt11Request> for JsMeltRequest {
-    fn from(inner: MeltBolt11Request) -> JsMeltRequest {
-        JsMeltRequest { inner }
+impl From<MeltBolt11Request> for JsMeltBolt11Request {
+    fn from(inner: MeltBolt11Request) -> JsMeltBolt11Request {
+        JsMeltBolt11Request { inner }
     }
 }
 
-#[wasm_bindgen(js_class = MeltRequest)]
-impl JsMeltRequest {
+#[wasm_bindgen(js_class = MeltBolt11Request)]
+impl JsMeltBolt11Request {
     #[wasm_bindgen(constructor)]
-    pub fn new(quote: String, inputs: JsValue, outputs: JsValue) -> Result<JsMeltRequest> {
+    pub fn new(quote: String, inputs: JsValue, outputs: JsValue) -> Result<JsMeltBolt11Request> {
         let inputs: Vec<Proof> = serde_wasm_bindgen::from_value(inputs).map_err(into_err)?;
         let outputs: Option<Vec<BlindedMessage>> = if !outputs.is_null() {
             Some(serde_wasm_bindgen::from_value(outputs).map_err(into_err)?)
@@ -36,7 +36,7 @@ impl JsMeltRequest {
             None
         };
 
-        Ok(JsMeltRequest {
+        Ok(JsMeltBolt11Request {
             inner: MeltBolt11Request {
                 quote,
                 inputs,
@@ -65,36 +65,40 @@ impl JsMeltRequest {
 }
 
 #[wasm_bindgen(js_name = MeltResponse)]
-pub struct JsMeltResponse {
+pub struct JsMeltBolt11Response {
     inner: MeltBolt11Response,
 }
 
-impl Deref for JsMeltResponse {
+impl Deref for JsMeltBolt11Response {
     type Target = MeltBolt11Response;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<MeltBolt11Response> for JsMeltResponse {
-    fn from(inner: MeltBolt11Response) -> JsMeltResponse {
-        JsMeltResponse { inner }
+impl From<MeltBolt11Response> for JsMeltBolt11Response {
+    fn from(inner: MeltBolt11Response) -> JsMeltBolt11Response {
+        JsMeltBolt11Response { inner }
     }
 }
 
-#[wasm_bindgen(js_class = MeltResponse)]
-impl JsMeltResponse {
+#[wasm_bindgen(js_class = MeltBolt11Response)]
+impl JsMeltBolt11Response {
     #[wasm_bindgen(constructor)]
-    pub fn new(paid: bool, proof: String, change: JsValue) -> Result<JsMeltResponse> {
+    pub fn new(
+        paid: bool,
+        payment_preimage: Option<String>,
+        change: JsValue,
+    ) -> Result<JsMeltBolt11Response> {
         let change: Option<Vec<BlindedSignature>> = if change.is_null() {
             Some(serde_wasm_bindgen::from_value(change).map_err(into_err)?)
         } else {
             None
         };
 
-        Ok(JsMeltResponse {
+        Ok(JsMeltBolt11Response {
             inner: MeltBolt11Response {
-                proof,
+                payment_preimage,
                 paid,
                 change,
             },
@@ -109,8 +113,8 @@ impl JsMeltResponse {
 
     /// Get Preimage
     #[wasm_bindgen(getter)]
-    pub fn proof(&self) -> String {
-        self.inner.proof.clone()
+    pub fn payment_preimage(&self) -> Option<String> {
+        self.inner.payment_preimage.clone()
     }
 
     /// Get Change

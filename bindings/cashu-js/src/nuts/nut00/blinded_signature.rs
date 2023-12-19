@@ -23,10 +23,10 @@ impl Deref for JsBlindedSignature {
 impl JsBlindedSignature {
     #[allow(clippy::new_without_default)]
     #[wasm_bindgen(constructor)]
-    pub fn new(id: JsId, amount: JsAmount, c: JsPublicKey) -> Self {
+    pub fn new(keyset_id: JsId, amount: JsAmount, c: JsPublicKey) -> Self {
         Self {
             inner: BlindedSignature {
-                id: *id.deref(),
+                keyset_id: *keyset_id.deref(),
                 amount: *amount.deref(),
                 c: c.deref().clone(),
             },
