@@ -18,13 +18,18 @@ impl Deref for Proof {
 }
 
 impl Proof {
-    pub fn new(amount: Arc<Amount>, secret: Arc<Secret>, c: Arc<PublicKey>, id: Arc<Id>) -> Self {
+    pub fn new(
+        amount: Arc<Amount>,
+        secret: Arc<Secret>,
+        c: Arc<PublicKey>,
+        keyset_id: Arc<Id>,
+    ) -> Self {
         Self {
             inner: ProofSdk {
                 amount: *amount.as_ref().deref(),
                 secret: secret.as_ref().deref().clone(),
                 c: c.as_ref().deref().clone(),
-                id: *id.as_ref().deref(),
+                keyset_id: *keyset_id.as_ref().deref(),
             },
         }
     }
@@ -41,8 +46,8 @@ impl Proof {
         Arc::new(self.inner.c.clone().into())
     }
 
-    pub fn id(&self) -> Arc<Id> {
-        Arc::new(self.id.into())
+    pub fn keyset_id(&self) -> Arc<Id> {
+        Arc::new(self.keyset_id.into())
     }
 }
 
@@ -52,7 +57,7 @@ impl From<&Proof> for ProofSdk {
             amount: *proof.amount().as_ref().deref(),
             secret: proof.secret().as_ref().deref().clone(),
             c: proof.c().deref().into(),
-            id: proof.id,
+            keyset_id: proof.keyset_id,
         }
     }
 }
@@ -88,14 +93,14 @@ pub mod mint {
             amount: Option<Arc<Amount>>,
             secret: Arc<Secret>,
             c: Option<Arc<PublicKey>>,
-            id: Option<Arc<Id>>,
+            keyset_id: Option<Arc<Id>>,
         ) -> Self {
             Self {
                 inner: ProofSdk {
                     amount: amount.map(|a| *a.as_ref().deref()),
                     secret: secret.as_ref().deref().clone(),
                     c: c.map(|c| c.as_ref().into()),
-                    id: id.map(|id| *id.as_ref().deref()),
+                    keyset_id: keyset_id.map(|id| *id.as_ref().deref()),
                 },
             }
         }
@@ -112,8 +117,8 @@ pub mod mint {
             self.inner.c.clone().map(|c| Arc::new(c.into()))
         }
 
-        pub fn id(&self) -> Option<Arc<Id>> {
-            self.inner.id.map(|id| Arc::new(id.into()))
+        pub fn keyset_id(&self) -> Option<Arc<Id>> {
+            self.inner.keyset_id.map(|id| Arc::new(id.into()))
         }
     }
 

@@ -18,15 +18,17 @@ mod ffi {
     pub use crate::nuts::nut01::public_key::PublicKey;
     pub use crate::nuts::nut01::secret_key::SecretKey;
     pub use crate::nuts::nut02::{Id, KeySet, KeySetResponse, MintKeySet};
-    pub use crate::nuts::nut03::{RequestMintResponse, SplitRequest, SplitResponse};
-    pub use crate::nuts::nut04::{MintRequest, PostMintResponse};
+    pub use crate::nuts::nut03::{SwapRequest, SwapResponse};
+    pub use crate::nuts::nut04::{
+        MintBolt11Request, MintBolt11Response, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    };
     pub use crate::nuts::nut05::{
         MeltBolt11Request as Nut05MeltBolt11Request, MeltBolt11Response as Nut05MeltBolt11Response,
-        MeltQuoteBolt11Request,
+        MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     };
+    pub use crate::nuts::nut06::{MintInfo, MintVersion};
     pub use crate::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
     pub use crate::nuts::nut08::{MeltBolt11Request, MeltBolt11Response};
-    pub use crate::nuts::nut09::{MintInfo, MintVersion};
     pub use crate::types::amount::Amount;
     pub use crate::types::{Bolt11Invoice, KeySetInfo, Secret};
 

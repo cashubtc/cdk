@@ -151,21 +151,21 @@ impl Mint {
         })
     }
 
-    pub fn process_split_request(
+    pub fn process_swap_request(
         &mut self,
-        split_request: SwapRequest,
+        swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        let proofs_total = split_request.input_amount();
+        let proofs_total = swap_request.input_amount();
 
-        let output_total = split_request.output_amount();
+        let output_total = swap_request.output_amount();
 
         if proofs_total != output_total {
             return Err(Error::Amount);
         }
 
-        let proof_count = split_request.inputs.len();
+        let proof_count = swap_request.inputs.len();
 
-        let secrets: HashSet<Secret> = split_request
+        let secrets: HashSet<Secret> = swap_request
             .inputs
             .iter()
             .map(|p| p.secret.clone())
@@ -176,7 +176,7 @@ impl Mint {
             return Err(Error::DuplicateProofs);
         }
 
-        for proof in &split_request.inputs {
+        for proof in &swap_request.inputs {
             self.verify_proof(proof)?
         }
 
@@ -184,7 +184,7 @@ impl Mint {
             self.spent_secrets.insert(secret);
         }
 
-        let promises: Vec<BlindedSignature> = split_request
+        let promises: Vec<BlindedSignature> = swap_request
             .outputs
             .iter()
             .map(|b| self.blind_sign(b).unwrap())

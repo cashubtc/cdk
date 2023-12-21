@@ -15,29 +15,9 @@ impl Deref for Amount {
 }
 
 impl Amount {
-    pub fn new(sats: u64) -> Self {
+    pub fn new(amount: u64) -> Self {
         Self {
-            inner: AmountSdk::from_sat(sats),
-        }
-    }
-
-    pub fn to_sat(&self) -> u64 {
-        self.inner.to_sat()
-    }
-
-    pub fn to_msat(&self) -> u64 {
-        self.inner.to_msat()
-    }
-
-    pub fn from_sat(sats: u64) -> Self {
-        Self {
-            inner: AmountSdk::from_sat(sats),
-        }
-    }
-
-    pub fn from_msat(msats: u64) -> Self {
-        Self {
-            inner: AmountSdk::from_msat(msats),
+            inner: AmountSdk::from(amount),
         }
     }
 
@@ -47,13 +27,10 @@ impl Amount {
 
     /// Split into parts that are powers of two
     pub fn split(&self) -> Vec<Arc<Self>> {
-        let sats = self.inner.to_sat();
-        (0_u64..64)
-            .rev()
-            .filter_map(|bit| {
-                let part = 1 << bit;
-                ((sats & part) == part).then_some(Arc::new(Self::from_sat(part)))
-            })
+        self.inner
+            .split()
+            .into_iter()
+            .map(|a| Arc::new(a.into()))
             .collect()
     }
 }
@@ -67,5 +44,11 @@ impl From<AmountSdk> for Amount {
 impl From<&Amount> for AmountSdk {
     fn from(amount: &Amount) -> AmountSdk {
         amount.inner
+    }
+}
+
+impl From<u64> for Amount {
+    fn from(amount: u64) -> Amount {
+        AmountSdk::from(amount).into()
     }
 }

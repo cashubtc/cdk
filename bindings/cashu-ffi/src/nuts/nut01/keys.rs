@@ -29,7 +29,7 @@ impl From<KeysSdk> for Keys {
         let keys = keys
             .keys()
             .into_iter()
-            .map(|(amount, pk)| (amount.to_sat().to_string(), Arc::new(pk.into())))
+            .map(|(amount, pk)| (u64::from(amount).to_string(), Arc::new(pk.into())))
             .collect();
 
         Keys::new(keys)
@@ -42,7 +42,7 @@ impl Keys {
             .into_iter()
             .map(|(amount, pk)| {
                 (
-                    AmountSdk::from_sat(amount.parse::<u64>().unwrap()),
+                    AmountSdk::from(amount.parse::<u64>().unwrap()),
                     pk.as_ref().into(),
                 )
             })
@@ -57,7 +57,7 @@ impl Keys {
         self.inner
             .keys()
             .into_iter()
-            .map(|(amount, pk)| (amount.to_sat().to_string(), Arc::new(pk.into())))
+            .map(|(amount, pk)| (u64::from(amount).to_string(), Arc::new(pk.into())))
             .collect()
     }
 
@@ -71,7 +71,7 @@ impl Keys {
         self.inner
             .as_hashmap()
             .into_iter()
-            .map(|(amount, pk)| (amount.to_sat().to_string(), pk))
+            .map(|(amount, pk)| (u64::from(amount).to_string(), pk))
             .collect()
     }
 }
