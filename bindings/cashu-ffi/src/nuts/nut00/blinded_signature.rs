@@ -17,18 +17,18 @@ impl Deref for BlindedSignature {
 }
 
 impl BlindedSignature {
-    pub fn new(id: Arc<Id>, amount: Arc<Amount>, c: Arc<PublicKey>) -> Self {
+    pub fn new(keyset_id: Arc<Id>, amount: Arc<Amount>, c: Arc<PublicKey>) -> Self {
         Self {
             inner: BlindedSignatureSdk {
-                id: *id.as_ref().deref(),
+                keyset_id: *keyset_id.as_ref().deref(),
                 amount: *amount.as_ref().deref(),
                 c: c.as_ref().into(),
             },
         }
     }
 
-    pub fn id(&self) -> Arc<Id> {
-        Arc::new(self.inner.id.into())
+    pub fn keyset_id(&self) -> Arc<Id> {
+        Arc::new(self.inner.keyset_id.into())
     }
 
     pub fn amount(&self) -> Arc<Amount> {

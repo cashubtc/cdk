@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::nuts::nut09::{MintInfo as MintInfoSdk, MintVersion as MintVersionSdk};
+use cashu::nuts::{MintInfo as MintInfoSdk, MintVersion as MintVersionSdk, Nuts as NutsSdk};
 
 use crate::PublicKey;
 
@@ -57,7 +57,8 @@ impl MintInfo {
         description: Option<String>,
         description_long: Option<String>,
         contact: Option<Vec<Vec<String>>>,
-        nuts: Vec<String>,
+        // TODO: Should be a nuts type
+        nuts: String,
         motd: Option<String>,
     ) -> Self {
         let pubkey = pubkey.map(|p| p.as_ref().deref().clone());
@@ -70,7 +71,7 @@ impl MintInfo {
                 description,
                 description_long,
                 contact,
-                nuts,
+                nuts: NutsSdk::default(),
                 motd,
             },
         }
@@ -100,8 +101,8 @@ impl MintInfo {
         self.inner.contact.clone()
     }
 
-    pub fn nuts(&self) -> Vec<String> {
-        self.inner.nuts.clone()
+    pub fn nuts(&self) -> Arc<Nuts> {
+        Arc::new(self.inner.nuts.clone().into())
     }
 
     pub fn motd(&self) -> Option<String> {
@@ -109,8 +110,25 @@ impl MintInfo {
     }
 }
 
-impl From<cashu::nuts::nut09::MintInfo> for MintInfo {
-    fn from(inner: cashu::nuts::nut09::MintInfo) -> MintInfo {
+impl From<MintInfoSdk> for MintInfo {
+    fn from(inner: MintInfoSdk) -> MintInfo {
         MintInfo { inner }
+    }
+}
+
+pub struct Nuts {
+    inner: NutsSdk,
+}
+
+impl Deref for Nuts {
+    type Target = NutsSdk;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<NutsSdk> for Nuts {
+    fn from(inner: NutsSdk) -> Nuts {
+        Nuts { inner }
     }
 }

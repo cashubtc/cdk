@@ -80,11 +80,15 @@ impl From<MeltBolt11Response> for cashu::nuts::nut08::MeltBolt11Response {
 }
 
 impl MeltBolt11Response {
-    pub fn new(paid: bool, proof: String, change: Option<Vec<Arc<BlindedSignature>>>) -> Self {
+    pub fn new(
+        paid: bool,
+        payment_preimage: Option<String>,
+        change: Option<Vec<Arc<BlindedSignature>>>,
+    ) -> Self {
         Self {
             inner: MeltBolt11ResponseSdk {
                 paid,
-                proof,
+                payment_preimage,
                 change: change
                     .map(|change| change.into_iter().map(|bs| bs.as_ref().into()).collect()),
             },
@@ -95,8 +99,8 @@ impl MeltBolt11Response {
         self.inner.paid
     }
 
-    pub fn proof(&self) -> String {
-        self.inner.proof.clone()
+    pub fn payment_preimage(&self) -> Option<String> {
+        self.inner.payment_preimage.clone()
     }
 
     pub fn change(&self) -> Option<Vec<Arc<BlindedSignature>>> {

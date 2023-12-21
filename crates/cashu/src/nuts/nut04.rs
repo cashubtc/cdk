@@ -9,7 +9,7 @@ use crate::Amount;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuoteBolt11Request {
     /// Amount
-    pub amount: u64,
+    pub amount: Amount,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
 }

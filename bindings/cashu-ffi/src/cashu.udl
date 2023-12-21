@@ -10,6 +10,7 @@ interface CashuError {
 [Enum]
 interface CurrencyUnit {
 	Sat();
+	Usd();
 	Custom(string unit);
 };
  
@@ -21,12 +22,7 @@ interface Bolt11Invoice {
 };
 
 interface Amount {
-	u64 to_sat();	
-	u64 to_msat();
-	[Name = from_sat]
-	constructor(u64 sat);
-	[Name = from_msat]
-	constructor(u64 msat);
+	constructor(u64 amount);
  	sequence<Amount> split();
 };
 
@@ -58,6 +54,7 @@ interface SecretKey {
 interface BlindedMessage {
 	constructor(Id keyset_id, Amount amount, PublicKey b);
 	Amount amount();
+	Id keyset_id();
 	PublicKey b();	
 };
 
@@ -66,12 +63,12 @@ interface Proof {
 	Amount amount();
 	Secret secret();
 	PublicKey c();
-	Id id();
+	Id keyset_id();
 };
 
 interface BlindedSignature {
-	constructor(Id id, Amount amount, PublicKey c);
-	Id id();
+	constructor(Id keyset_id, Amount amount, PublicKey c);
+	Id keyset_id();
 	Amount amount();
 	PublicKey c();
 };
@@ -81,7 +78,7 @@ interface MintProof {
 	Amount? amount();
 	Secret secret();
 	PublicKey? c();
-	Id? id();
+	Id? keyset_id();
 	
 };
 
@@ -150,6 +147,36 @@ interface KeySetResponse {
 	sequence<KeySetInfo> keysets();
 };
 
+// --- NUT-04
+
+interface MintQuoteBolt11Request {
+	constructor(Amount amount, string unit);
+	Amount amount();
+};
+
+
+interface MintQuoteBolt11Response {
+	constructor(string quote, string request, boolean paid, u64 expiry);
+	string quote();
+	string request();
+	boolean paid();
+	u64 expiry();
+};
+
+
+interface MintBolt11Request {
+	constructor(string quote, sequence<BlindedMessage> outputs);
+	string quote();
+	sequence<BlindedMessage> outputs();
+};
+
+interface MintBolt11Response {
+	constructor(sequence<BlindedSignature> signatures);
+	sequence<BlindedSignature> signatures();
+};
+
+// ---
+
 // NUT-05
 
 interface MeltQuoteBolt11Response {
@@ -166,35 +193,23 @@ interface MeltQuoteBolt11Request {
     [Throws=CashuError]
 	constructor(string request, string unit);
 	string request();
-	string unit();
 };
 
 interface MeltBolt11Request {
     [Throws=CashuError]
-	constructor(sequence<Proof> inputs, string quote);
+	constructor(string quote, sequence<Proof> inputs, sequence<BlindedMessage>? outputs);
 	sequence<Proof> inputs();
 	string quote();
 };
 
-interface RequestMintResponse {
-    [Throws=CashuError]
-	constructor(string invoice, string hash);
-	string invoice();
-	string hash();
+interface MeltBolt11Response {
+	constructor(boolean paid, string? payment_preimage, sequence<BlindedSignature>? change);
+	string? payment_preimage();
+	boolean paid();
 };
 
-interface MintRequest {
-	constructor(sequence<BlindedMessage> outputs);
-	sequence<BlindedMessage> outputs();
-	Amount total_amount();
-};
-
-interface PostMintResponse {
-	constructor(sequence<BlindedSignature> promises);
-	sequence<BlindedSignature> promises();
-};
-
-interface SplitRequest {
+// ----
+interface SwapRequest {
 	constructor(sequence<Proof> proofs, sequence<BlindedMessage> outputs);
 	sequence<Proof> proofs();
 	sequence<BlindedMessage> outputs();
@@ -202,11 +217,9 @@ interface SplitRequest {
 	Amount output_amount();
 };
 
-interface SplitResponse {
+interface SwapResponse {
 	constructor(sequence<BlindedSignature> promises);
-	sequence<BlindedSignature> promises();
-	Amount? promises_amount();
-
+	sequence<BlindedSignature> signatures();
 };
 
 interface CheckSpendableRequest {
@@ -220,21 +233,6 @@ interface CheckSpendableResponse {
 	sequence<boolean> pending();	
 };
 
-interface MeltRequest {
-    [Throws=CashuError]
-	constructor(sequence<Proof> proofs, string Invoice, sequence<BlindedMessage>? outputs);
-	sequence<Proof> proofs();
-	string invoice();
-	sequence<BlindedMessage>? outputs();
-};
-
-interface MeltResponse {
-	constructor(boolean paid, string? preimage, sequence<BlindedSignature>? change);
-	boolean paid();
-	string? preimage();
-	sequence<BlindedSignature>? change();
-};
-
 interface MintVersion {
 	constructor(string name, string version);
 	string name();
@@ -242,14 +240,13 @@ interface MintVersion {
 };
 
 interface MintInfo {
-	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, sequence<string> nuts, string? motd);
+	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, string nuts, string? motd);
 	string? name();
 	PublicKey? pubkey();
 	MintVersion? version();
 	string? description();
 	string? description_long();
 	sequence<sequence<string>>? contact();
-	sequence<string> nuts();
 	string? motd();
 };
 

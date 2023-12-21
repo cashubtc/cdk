@@ -25,7 +25,7 @@ pub use nut04::{
 #[cfg(not(feature = "nut08"))]
 pub use nut05::{MeltBolt11Request, MeltBolt11Response};
 pub use nut05::{MeltQuoteBolt11Request, MeltQuoteBolt11Response};
-pub use nut06::{MintInfo, MintVersion};
+pub use nut06::{MintInfo, MintVersion, Nuts};
 #[cfg(feature = "wallet")]
 #[cfg(feature = "nut07")]
 pub use nut07::{CheckSpendableRequest, CheckSpendableResponse};

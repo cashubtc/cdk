@@ -32,6 +32,10 @@ impl BlindedMessage {
         Arc::new(self.inner.amount.into())
     }
 
+    pub fn keyset_id(&self) -> Arc<Id> {
+        Arc::new(self.inner.keyset_id.into())
+    }
+
     pub fn b(&self) -> Arc<PublicKey> {
         Arc::new(self.inner.b.clone().into())
     }

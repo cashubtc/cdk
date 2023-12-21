@@ -1,28 +1,28 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::nuts::{SplitRequest as SplitRequestSdk, SplitResponse as SplitResponseSdk};
+use cashu::nuts::{SwapRequest as SwapRequestSdk, SwapResponse as SwapResponseSdk};
 
 use crate::{Amount, BlindedMessage, BlindedSignature, Proof};
 
-pub struct SplitRequest {
-    inner: SplitRequestSdk,
+pub struct SwapRequest {
+    inner: SwapRequestSdk,
 }
 
-impl Deref for SplitRequest {
-    type Target = SplitRequestSdk;
+impl Deref for SwapRequest {
+    type Target = SwapRequestSdk;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl SplitRequest {
+impl SwapRequest {
     pub fn new(proofs: Vec<Arc<Proof>>, outputs: Vec<Arc<BlindedMessage>>) -> Self {
         let proofs = proofs.into_iter().map(|p| p.as_ref().into()).collect();
         let outputs = outputs.into_iter().map(|o| o.as_ref().into()).collect();
 
         Self {
-            inner: SplitRequestSdk::new(proofs, outputs),
+            inner: SwapRequestSdk::new(proofs, outputs),
         }
     }
 
@@ -53,35 +53,30 @@ impl SplitRequest {
     }
 }
 
-pub struct SplitResponse {
-    inner: SplitResponseSdk,
+pub struct SwapResponse {
+    inner: SwapResponseSdk,
 }
 
-impl SplitResponse {
-    pub fn new(promises: Vec<Arc<BlindedSignature>>) -> Self {
-        let promises = promises.into_iter().map(|p| p.as_ref().into()).collect();
+impl SwapResponse {
+    pub fn new(signatures: Vec<Arc<BlindedSignature>>) -> Self {
+        let signatures = signatures.into_iter().map(|p| p.as_ref().into()).collect();
         Self {
-            inner: SplitResponseSdk::new(promises),
+            inner: SwapResponseSdk::new(signatures),
         }
     }
 
-    pub fn promises(&self) -> Vec<Arc<BlindedSignature>> {
+    pub fn signatures(&self) -> Vec<Arc<BlindedSignature>> {
         self.inner
-            .promises
+            .signatures
             .clone()
-            .unwrap_or_default()
             .into_iter()
             .map(|p| Arc::new(p.into()))
             .collect()
     }
-
-    pub fn promises_amount(&self) -> Option<Arc<Amount>> {
-        self.inner.promises_amount().map(|a| Arc::new(a.into()))
-    }
 }
 
-impl From<cashu::nuts::SplitResponse> for SplitResponse {
-    fn from(inner: cashu::nuts::SplitResponse) -> SplitResponse {
-        SplitResponse { inner }
+impl From<SwapResponseSdk> for SwapResponse {
+    fn from(inner: SwapResponseSdk) -> SwapResponse {
+        SwapResponse { inner }
     }
 }
