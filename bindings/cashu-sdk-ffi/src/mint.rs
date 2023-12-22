@@ -3,8 +3,8 @@ use std::sync::{Arc, RwLock};
 
 use cashu_ffi::{
     Amount, CheckSpendableRequest, CheckSpendableResponse, Id, KeySet, KeySetResponse,
-    KeysResponse, MeltRequest, MeltResponse, MintRequest, PostMintResponse, Secret, SplitRequest,
-    SplitResponse,
+    KeysResponse, MeltBolt11Request, MeltBolt11Response, MintBolt11Request, MintBolt11Response,
+    Secret, SwapRequest, SwapResponse,
 };
 use cashu_sdk::mint::Mint as MintSdk;
 
@@ -38,6 +38,8 @@ impl Mint {
                 &secret,
                 keysets,
                 spent_secrets,
+                // TODO: quotes
+                vec![],
                 *min_fee_reserve.as_ref().deref(),
                 percent_fee_reserve,
             )
@@ -67,8 +69,8 @@ impl Mint {
 
     pub fn process_mint_request(
         &self,
-        mint_request: Arc<MintRequest>,
-    ) -> Result<Arc<PostMintResponse>> {
+        mint_request: Arc<MintBolt11Request>,
+    ) -> Result<Arc<MintBolt11Response>> {
         Ok(Arc::new(
             self.inner
                 .write()
@@ -78,15 +80,15 @@ impl Mint {
         ))
     }
 
-    pub fn process_split_request(
+    pub fn process_swap_request(
         &self,
-        split_request: Arc<SplitRequest>,
-    ) -> Result<Arc<SplitResponse>> {
+        split_request: Arc<SwapRequest>,
+    ) -> Result<Arc<SwapResponse>> {
         Ok(Arc::new(
             self.inner
                 .write()
                 .unwrap()
-                .process_split_request(split_request.as_ref().deref().clone())?
+                .process_swap_request(split_request.as_ref().deref().clone())?
                 .into(),
         ))
     }
@@ -104,7 +106,7 @@ impl Mint {
         ))
     }
 
-    pub fn verify_melt_request(&self, melt_request: Arc<MeltRequest>) -> Result<()> {
+    pub fn verify_melt_request(&self, melt_request: Arc<MeltBolt11Request>) -> Result<()> {
         Ok(self
             .inner
             .write()
@@ -114,10 +116,10 @@ impl Mint {
 
     pub fn process_melt_request(
         &self,
-        melt_request: Arc<MeltRequest>,
+        melt_request: Arc<MeltBolt11Request>,
         preimage: String,
         total_spent: Arc<Amount>,
-    ) -> Result<Arc<MeltResponse>> {
+    ) -> Result<Arc<MeltBolt11Response>> {
         Ok(Arc::new(
             self.inner
                 .write()

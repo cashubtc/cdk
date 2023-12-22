@@ -160,3 +160,9 @@ impl MintBolt11Response {
             .collect()
     }
 }
+
+impl From<MintBolt11ResponseSdk> for MintBolt11Response {
+    fn from(inner: MintBolt11ResponseSdk) -> MintBolt11Response {
+        MintBolt11Response { inner }
+    }
+}

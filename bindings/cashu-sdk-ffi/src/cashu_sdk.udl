@@ -8,12 +8,12 @@ interface CashuError {
 };
 
 
-// Types 
-
+// Types
 
 [Enum]
 interface CurrencyUnit {
 	Sat();
+	Usd();
 	Custom(string unit);
 };
 
@@ -25,26 +25,17 @@ interface Bolt11Invoice {
 };
 
 interface Amount {
-	u64 to_sat();	
-	u64 to_msat();
-	[Name = from_sat]
-	constructor(u64 sat);
-	[Name = from_msat]
-	constructor(u64 msat);
+	constructor(u64 amount);
  	sequence<Amount> split();
 };
-
 
 interface Secret {
 	constructor();
 	sequence<u8> as_bytes();	
 };
 
+// NUT00
 
-interface Id {
-    [Throws=CashuError]
-	constructor(string id);
-};
 
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]
@@ -62,6 +53,7 @@ interface SecretKey {
 interface BlindedMessage {
 	constructor(Id keyset_id, Amount amount, PublicKey b);
 	Amount amount();
+	Id keyset_id();
 	PublicKey b();	
 };
 
@@ -70,12 +62,12 @@ interface Proof {
 	Amount amount();
 	Secret secret();
 	PublicKey c();
-	Id id();
-	};
+	Id keyset_id();
+};
 
 interface BlindedSignature {
-	constructor(Id id, Amount amount, PublicKey c);
-	Id id();
+	constructor(Id keyset_id, Amount amount, PublicKey c);
+	Id keyset_id();
 	Amount amount();
 	PublicKey c();
 };
@@ -85,7 +77,7 @@ interface MintProof {
 	Amount? amount();
 	Secret secret();
 	PublicKey? c();
-	Id? id();
+	Id? keyset_id();
 	
 };
 
@@ -98,10 +90,10 @@ interface MintProofs {
 
 interface Token {
     [Throws=CashuError]
-	constructor(string mint, sequence<Proof> token, string? memo, CurrencyUnit? unit);
+	constructor(string mint, sequence<Proof> token, string? memo, string? unit);
 	sequence<MintProofs> token();
 	string? memo();
-	CurrencyUnit? unit();
+	string? unit();
 	string to_string();
     [Throws=CashuError, Name=from_string]
 	constructor(string token);
@@ -117,6 +109,14 @@ interface PreMintSecrets {
 	sequence<Secret> secrets();
 	sequence<SecretKey> rs();
 	sequence<Amount> amounts();
+};
+
+
+// NUT-02
+
+interface Id {
+    [Throws=CashuError]
+	constructor(string id);
 };
 
 interface KeyPair {
@@ -139,12 +139,10 @@ interface KeySet {
 	Keys keys();
 };
 
-
 interface MintKeySet {
 	[Name=generate]
 	constructor(string secret, string unit, string derivation_path, u8 max_order);
 };
-
 
 interface KeysResponse {
 	constructor(Keys keys);
@@ -153,6 +151,48 @@ interface KeysResponse {
 interface KeySetResponse {
 	constructor(sequence<KeySetInfo> keysets);
 	sequence<KeySetInfo> keysets();
+};
+
+// NUT-03
+
+interface SwapRequest {
+	constructor(sequence<Proof> proofs, sequence<BlindedMessage> outputs);
+	sequence<Proof> proofs();
+	sequence<BlindedMessage> outputs();
+	Amount proofs_amount();
+	Amount output_amount();
+};
+
+interface SwapResponse {
+	constructor(sequence<BlindedSignature> promises);
+	sequence<BlindedSignature> signatures();
+};
+
+// NUT-04
+
+interface MintQuoteBolt11Request {
+	constructor(Amount amount, string unit);
+	Amount amount();
+};
+
+interface MintQuoteBolt11Response {
+	constructor(string quote, string request, boolean paid, u64 expiry);
+	string quote();
+	string request();
+	boolean paid();
+	u64 expiry();
+};
+
+
+interface MintBolt11Request {
+	constructor(string quote, sequence<BlindedMessage> outputs);
+	string quote();
+	sequence<BlindedMessage> outputs();
+};
+
+interface MintBolt11Response {
+	constructor(sequence<BlindedSignature> signatures);
+	sequence<BlindedSignature> signatures();
 };
 
 // NUT-05
@@ -171,49 +211,46 @@ interface MeltQuoteBolt11Request {
     [Throws=CashuError]
 	constructor(string request, string unit);
 	string request();
-	string unit();
 };
 
 interface MeltBolt11Request {
     [Throws=CashuError]
-	constructor(sequence<Proof> inputs, string quote);
+	constructor(string quote, sequence<Proof> inputs, sequence<BlindedMessage>? outputs);
 	sequence<Proof> inputs();
 	string quote();
 };
 
-interface RequestMintResponse {
-    [Throws=CashuError]
-	constructor(string invoice, string hash);
-	string invoice();
-	string hash();
+interface MeltBolt11Response {
+	constructor(boolean paid, string? payment_preimage, sequence<BlindedSignature>? change);
+	string? payment_preimage();
+	boolean paid();
 };
 
-interface MintRequest {
-	constructor(sequence<BlindedMessage> outputs);
-	sequence<BlindedMessage> outputs();
-	Amount total_amount();
+// NUT-06
+
+interface MintInfo {
+	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, string nuts, string? motd);
+	string? name();
+	PublicKey? pubkey();
+	MintVersion? version();
+	string? description();
+	string? description_long();
+	sequence<sequence<string>>? contact();
+	string? motd();
 };
 
-interface PostMintResponse {
-	constructor(sequence<BlindedSignature> promises);
-	sequence<BlindedSignature> promises();
+// NUT-07
+
+interface CheckSpendableRequest {
+	constructor(sequence<MintProof> proofs);
+	sequence<MintProof> proofs();
 };
 
-interface SplitRequest {
-	constructor(sequence<Proof> proofs, sequence<BlindedMessage> outputs);
-	sequence<Proof> proofs();
-	sequence<BlindedMessage> outputs();
-	Amount proofs_amount();
-	Amount output_amount();
+interface CheckSpendableResponse {
+	constructor(sequence<boolean> spendable, sequence<boolean> pending);
+	sequence<boolean> spendable();
+	sequence<boolean> pending();
 };
-
-interface SplitResponse {
-	constructor(sequence<BlindedSignature> promises);
-	sequence<BlindedSignature> promises();
-	Amount? promises_amount();
-
-};
-
 
 interface MintVersion {
 	constructor(string name, string version);
@@ -221,16 +258,8 @@ interface MintVersion {
 	string version();
 };
 
-interface MintInfo {
-	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, sequence<string> nuts, string? motd);
-	string? name();
-	PublicKey? pubkey();
-	MintVersion? version();
-	string? description();
-	string? description_long();
-	sequence<sequence<string>>? contact();
-	sequence<string> nuts();
-	string? motd();
+interface KeySetInfo {
+	constructor(Id id, string unit);
 };
 
 enum InvoiceStatus {
@@ -240,17 +269,6 @@ enum InvoiceStatus {
 	"InFlight"
 };
 
-interface ProofsStatus {
-	constructor(sequence<Proof> spendable, sequence<Proof> spent);
-	sequence<Proof> spendable();
-	sequence<Proof> spent();
-};
-
-
-interface KeySetInfo {
-	constructor(Id id, string unit);
-	
-};
 
 // Cashu Sdk
 
@@ -281,23 +299,19 @@ interface Wallet {
 	// [Throws=CashuSdkError]
 	// ProofsStatus check_proofs_spent(sequence<Proof> proofs);
     [Throws=CashuSdkError]
-	RequestMintResponse request_mint(Amount amount);
-    [Throws=CashuSdkError]
-	Token mint_token(Amount amount, string hash, string? unit, string? memo);
+	Token mint_token(Amount amount, string hash,CurrencyUnit? unit, string? memo);
     [Throws=CashuSdkError]
 	sequence<Proof> mint(Amount amount, string hash);
     [Throws=CashuSdkError]
-	Amount check_fee(Bolt11Invoice invoice);
-    [Throws=CashuSdkError]
 	sequence<Proof> receive(string encoded_token);
     [Throws=CashuSdkError]
-	sequence<Proof> process_split_response(PreMintSecrets blinded_messages, sequence<BlindedSignature> promises);
+	sequence<Proof> process_swap_response(PreMintSecrets blinded_messages, sequence<BlindedSignature> promises);
     [Throws=CashuSdkError]
 	SendProofs send(Amount amount, sequence<Proof> proofs);
     [Throws=CashuSdkError]
-	Melted melt(Bolt11Invoice invoice, sequence<Proof> proofs, Amount fee_reserve);
+	Melted melt(string quote, sequence<Proof> proofs, Amount fee_reserve);
     [Throws=CashuSdkError]
-	string proof_to_token(sequence<Proof> proof, string? unit, string? memo);
+	string proofs_to_token(sequence<Proof> proof, CurrencyUnit? unit, string? memo);
 };
 
 
@@ -308,11 +322,5 @@ interface Mint {
 	KeySetResponse keysets();
 	KeySet? keyset(Id id);
     [Throws=CashuSdkError]
-	PostMintResponse process_mint_request(MintRequest mint_request);
-    [Throws=CashuSdkError]
-	SplitResponse process_split_request(SplitRequest split_request);
-    [Throws=CashuSdkError]
-	void verify_melt_request(MeltRequest melt_request);
-    [Throws=CashuSdkError]
-	MeltResponse process_melt_request(MeltRequest melt_request, string preimage, Amount totoal_spent);
+	SwapResponse process_swap_request(SwapRequest swap_request);
 };
