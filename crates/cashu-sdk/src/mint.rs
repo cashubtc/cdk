@@ -17,7 +17,7 @@ use crate::types::Quote;
 
 pub struct Mint {
     //    pub pubkey: PublicKey
-    secret: String,
+    _secret: String,
     pub keysets: HashMap<Id, nut02::mint::KeySet>,
     pub keysets_info: HashMap<Id, MintKeySetInfo>,
     pub spent_secrets: HashSet<Secret>,
@@ -62,7 +62,7 @@ impl Mint {
         }
 
         Self {
-            secret: secret.to_string(),
+            _secret: secret.to_string(),
             keysets,
             quotes,
             keysets_info: info,
