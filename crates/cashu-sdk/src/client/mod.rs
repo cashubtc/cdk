@@ -123,17 +123,19 @@ pub trait Client {
 }
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "gloo"))]
-fn join_url(url: Url, path: &str) -> Result<Url, Error> {
+fn join_url(url: Url, paths: &[&str]) -> Result<Url, Error> {
     let mut url = url;
-    if !url.path().ends_with('/') {
-        url.path_segments_mut()
-            .map_err(|_| Error::Custom("Url Path Segmants".to_string()))?
-            .push(path);
-    } else {
-        url.path_segments_mut()
-            .map_err(|_| Error::Custom("Url Path Segmants".to_string()))?
-            .pop()
-            .push(path);
+    for path in paths {
+        if !url.path().ends_with('/') {
+            url.path_segments_mut()
+                .map_err(|_| Error::Custom("Url Path Segmants".to_string()))?
+                .push(path);
+        } else {
+            url.path_segments_mut()
+                .map_err(|_| Error::Custom("Url Path Segmants".to_string()))?
+                .pop()
+                .push(path);
+        }
     }
 
     Ok(url)

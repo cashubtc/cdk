@@ -21,7 +21,7 @@ pub struct HttpClient {}
 impl Client for HttpClient {
     /// Get Mint Keys [NUT-01]
     async fn get_mint_keys(&self, mint_url: Url) -> Result<Keys, Error> {
-        let url = join_url(mint_url, "keys")?;
+        let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = Request::get(url.as_str())
             .send()
             .await
@@ -36,7 +36,7 @@ impl Client for HttpClient {
 
     /// Get Keysets [NUT-02]
     async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error> {
-        let url = join_url(mint_url, "keysets")?;
+        let url = join_url(mint_url, &["v1", "keysets"])?;
         let res = Request::get(url.as_str())
             .send()
             .await
@@ -61,7 +61,7 @@ impl Client for HttpClient {
         quote: &str,
         premint_secrets: PreMintSecrets,
     ) -> Result<MintBolt11Response, Error> {
-        let url = join_url(mint_url, "mint")?;
+        let url = join_url(mint_url, &["mint"])?;
 
         let request = MintBolt11Request {
             quote: quote.to_string(),
@@ -96,7 +96,7 @@ impl Client for HttpClient {
         inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> Result<MeltBolt11Response, Error> {
-        let url = join_url(mint_url, "melt")?;
+        let url = join_url(mint_url, &["melt"])?;
 
         let request = MeltBolt11Request {
             quote,
@@ -129,7 +129,7 @@ impl Client for HttpClient {
         mint_url: Url,
         split_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        let url = join_url(mint_url, "split")?;
+        let url = join_url(mint_url, &["v1", "split"])?;
 
         let res = Request::post(url.as_str())
             .json(&split_request)
@@ -156,7 +156,7 @@ impl Client for HttpClient {
         mint_url: Url,
         proofs: Vec<nut00::mint::Proof>,
     ) -> Result<CheckSpendableResponse, Error> {
-        let url = join_url(mint_url, "check")?;
+        let url = join_url(mint_url, &["v1", "check"])?;
         let request = CheckSpendableRequest {
             proofs: proofs.to_owned(),
         };
@@ -182,7 +182,7 @@ impl Client for HttpClient {
 
     /// Get Mint Info [NUT-09]
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
-        let url = join_url(mint_url, "info")?;
+        let url = join_url(mint_url, &["v1", "info"])?;
         let res = Request::get(url.as_str())
             .send()
             .await
