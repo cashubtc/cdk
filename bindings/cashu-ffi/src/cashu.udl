@@ -33,10 +33,6 @@ interface Secret {
 
 // NUT00
 
-interface Id {
-    [Throws=CashuError]
-	constructor(string id);
-};
 
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]
@@ -112,6 +108,14 @@ interface PreMintSecrets {
 	sequence<Amount> amounts();
 };
 
+
+// NUT-02
+
+interface Id {
+    [Throws=CashuError]
+	constructor(string id);
+};
+
 interface KeyPair {
 	[Name=from_secret_key]
 	constructor(SecretKey secret_key);
@@ -137,7 +141,6 @@ interface MintKeySet {
 	constructor(string secret, string unit, string derivation_path, u8 max_order);
 };
 
-
 interface KeysResponse {
 	constructor(Keys keys);
 };
@@ -147,13 +150,27 @@ interface KeySetResponse {
 	sequence<KeySetInfo> keysets();
 };
 
-// --- NUT-04
+// NUT-03
+
+interface SwapRequest {
+	constructor(sequence<Proof> proofs, sequence<BlindedMessage> outputs);
+	sequence<Proof> proofs();
+	sequence<BlindedMessage> outputs();
+	Amount proofs_amount();
+	Amount output_amount();
+};
+
+interface SwapResponse {
+	constructor(sequence<BlindedSignature> promises);
+	sequence<BlindedSignature> signatures();
+};
+
+// NUT-04
 
 interface MintQuoteBolt11Request {
 	constructor(Amount amount, string unit);
 	Amount amount();
 };
-
 
 interface MintQuoteBolt11Response {
 	constructor(string quote, string request, boolean paid, u64 expiry);
@@ -174,8 +191,6 @@ interface MintBolt11Response {
 	constructor(sequence<BlindedSignature> signatures);
 	sequence<BlindedSignature> signatures();
 };
-
-// ---
 
 // NUT-05
 
@@ -208,19 +223,20 @@ interface MeltBolt11Response {
 	boolean paid();
 };
 
-// ----
-interface SwapRequest {
-	constructor(sequence<Proof> proofs, sequence<BlindedMessage> outputs);
-	sequence<Proof> proofs();
-	sequence<BlindedMessage> outputs();
-	Amount proofs_amount();
-	Amount output_amount();
+// NUT-06
+
+interface MintInfo {
+	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, string nuts, string? motd);
+	string? name();
+	PublicKey? pubkey();
+	MintVersion? version();
+	string? description();
+	string? description_long();
+	sequence<sequence<string>>? contact();
+	string? motd();
 };
 
-interface SwapResponse {
-	constructor(sequence<BlindedSignature> promises);
-	sequence<BlindedSignature> signatures();
-};
+// NUT-07
 
 interface CheckSpendableRequest {
 	constructor(sequence<MintProof> proofs);
@@ -237,17 +253,6 @@ interface MintVersion {
 	constructor(string name, string version);
 	string name();
 	string version();
-};
-
-interface MintInfo {
-	constructor(string? name, PublicKey? pubkey, MintVersion? version, string? description, string? description_long, sequence<sequence<string>>? contact, string nuts, string? motd);
-	string? name();
-	PublicKey? pubkey();
-	MintVersion? version();
-	string? description();
-	string? description_long();
-	sequence<sequence<string>>? contact();
-	string? motd();
 };
 
 interface KeySetInfo {

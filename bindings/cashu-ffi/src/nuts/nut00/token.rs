@@ -25,6 +25,16 @@ impl From<&CurrencyUnit> for CurrencyUnitSdk {
     }
 }
 
+impl From<CurrencyUnit> for CurrencyUnitSdk {
+    fn from(unit: CurrencyUnit) -> CurrencyUnitSdk {
+        match unit {
+            CurrencyUnit::Sat() => CurrencyUnitSdk::Sat,
+            CurrencyUnit::Usd() => CurrencyUnitSdk::Usd,
+            CurrencyUnit::Custom { unit } => CurrencyUnitSdk::Custom(unit.clone()),
+        }
+    }
+}
+
 impl From<CurrencyUnitSdk> for CurrencyUnit {
     fn from(unit: CurrencyUnitSdk) -> CurrencyUnit {
         match unit {
