@@ -3,11 +3,9 @@
 use std::println;
 
 use async_trait::async_trait;
-#[cfg(feature = "nut09")]
-use cashu::nuts::MintInfo;
 use cashu::nuts::{
     BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintBolt11Request,
-    MintBolt11Response, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
+    MintBolt11Response, MintInfo, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
@@ -148,7 +146,6 @@ impl Client for HttpClient {
     }
 
     /// Get Mint Info [NUT-09]
-    #[cfg(feature = "nut09")]
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
         let url = join_url(mint_url, "v1")?;
         let url = join_url(url, "info")?;

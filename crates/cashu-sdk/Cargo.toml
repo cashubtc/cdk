@@ -14,10 +14,9 @@ default = ["mint", "wallet", "all-nuts"]
 mint = ["cashu/mint"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
 gloo = ["dep:gloo"]
-all-nuts = ["nut07", "nut08", "nut09"]
+all-nuts = ["nut07", "nut08"]
 nut07 = ["cashu/nut07"]
 nut08 = ["cashu/nut08"]
-nut09 = ["cashu/nut09"]
 
 
 [dependencies]

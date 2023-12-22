@@ -5,11 +5,9 @@ use async_trait::async_trait;
 use cashu::nuts::nut00;
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckSpendableResponse;
-#[cfg(feature = "nut09")]
-use cashu::nuts::MintInfo;
 use cashu::nuts::{
-    BlindedMessage, Keys, KeysetResponse, MeltBolt11Response, MintBolt11Response, PreMintSecrets,
-    Proof, SwapRequest, SwapResponse,
+    BlindedMessage, Keys, KeysetResponse, MeltBolt11Response, MintBolt11Response, MintInfo,
+    PreMintSecrets, Proof, SwapRequest, SwapResponse,
 };
 use cashu::utils;
 use serde::{Deserialize, Serialize};
@@ -121,7 +119,6 @@ pub trait Client {
         proofs: Vec<nut00::mint::Proof>,
     ) -> Result<CheckSpendableResponse, Error>;
 
-    #[cfg(feature = "nut09")]
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error>;
 }
 
