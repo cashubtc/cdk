@@ -60,6 +60,7 @@ impl FromStr for Id {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        println!("{}", s);
         // Check if the string length is valid
         if s.len() != 16 {
             return Err(Error::Length);

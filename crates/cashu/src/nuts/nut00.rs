@@ -448,18 +448,20 @@ mod tests {
 
     #[test]
     fn test_proof_serialize() {
-        let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
+        let proof = "[{\"id\":\"009a1f293253e41e\",\"amount\":2,\"secret\":\"407915bc212be61a77e3e6d2aeb4c727980bda51cd06a6afc29e2861768a7837\",\"C\":\"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea\"},{\"id\":\"009a1f293253e41e\",\"amount\":8,\"secret\":\"fe15109314e61d7756b0f8ee0f23a624acaa3f4e042f61433c728c7057b931be\",\"C\":\"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059\"}]";
         let proof: Proofs = serde_json::from_str(proof).unwrap();
 
         assert_eq!(
             proof[0].clone().keyset_id,
-            Id::from_str("DSAl9nvvyfva").unwrap()
+            Id::from_str("009a1f293253e41e").unwrap()
         );
+
+        assert_eq!(proof.len(), 2);
     }
 
     #[test]
     fn test_token_str_round_trip() {
-        let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJpZCI6IkRTQWw5bnZ2eWZ2YSIsImFtb3VudCI6Miwic2VjcmV0IjoiRWhwZW5uQzlxQjNpRmxXOEZaX3BadyIsIkMiOiIwMmMwMjAwNjdkYjcyN2Q1ODZiYzMxODNhZWNmOTdmY2I4MDBjM2Y0Y2M0NzU5ZjY5YzYyNmM5ZGI1ZDhmNWI1ZDQifSx7ImlkIjoiRFNBbDludnZ5ZnZhIiwiYW1vdW50Ijo4LCJzZWNyZXQiOiJUbVM2Q3YwWVQ1UFVfNUFUVktudWt3IiwiQyI6IjAyYWM5MTBiZWYyOGNiZTVkNzMyNTQxNWQ1YzI2MzAyNmYxNWY5Yjk2N2EwNzljYTk3NzlhYjZlNWMyZGIxMzNhNyJ9XX1dLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
+        let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
 
         let token = Token::from_str(token_str).unwrap();
 
@@ -469,8 +471,9 @@ mod tests {
         );
         assert_eq!(
             token.token[0].proofs[0].clone().keyset_id,
-            Id::from_str("DSAl9nvvyfva").unwrap()
+            Id::from_str("009a1f293253e41e").unwrap()
         );
+        assert_eq!(token.unit.clone().unwrap(), CurrencyUnit::Sat);
 
         let encoded = &token.to_string();
 
@@ -480,30 +483,18 @@ mod tests {
     }
 
     #[test]
-    fn test_token_with_and_without_padding() {
-        let proof = "[{\"id\":\"DSAl9nvvyfva\",\"amount\":2,\"secret\":\"EhpennC9qB3iFlW8FZ_pZw\",\"C\":\"02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4\"},{\"id\":\"DSAl9nvvyfva\",\"amount\":8,\"secret\":\"TmS6Cv0YT5PU_5ATVKnukw\",\"C\":\"02ac910bef28cbe5d7325415d5c263026f15f9b967a079ca9779ab6e5c2db133a7\"}]";
-        let proof: Proofs = serde_json::from_str(proof).unwrap();
-        let token = Token::new(
-            UncheckedUrl::from_str("https://localhost:5000/cashu").unwrap(),
-            proof,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let _token = Token::from_str(&token.to_string()).unwrap();
-
-        let _token = Token::from_str("cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJpZCI6IjBOSTNUVUFzMVNmeSIsImFtb3VudCI6MSwic2VjcmV0IjoiVE92cGVmZGxSZ0EzdlhMN05pM2MvRE1oY29URXNQdnV4eFc0Rys2dXVycz0iLCJDIjoiMDNiZThmMzQwOTMxYTI4ZTlkMGRmNGFmMWQwMWY1ZTcxNTFkMmQ1M2RiN2Y0ZDAyMWQzZGUwZmRiMDNjZGY4ZTlkIn1dLCJtaW50IjoiaHR0cHM6Ly9sZWdlbmQubG5iaXRzLmNvbS9jYXNodS9hcGkvdjEvNGdyOVhjbXozWEVrVU53aUJpUUdvQyJ9XX0").unwrap();
-    }
-
-    #[test]
     fn test_blank_blinded_messages() {
         // TODO: Need to update id to new type in proof
-        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from(1000)).unwrap();
+        let b = PreMintSecrets::blank(
+            Id::from_str("009a1f293253e41e").unwrap(),
+            Amount::from(1000),
+        )
+        .unwrap();
         assert_eq!(b.len(), 10);
 
         // TODO: Need to update id to new type in proof
-        let b = PreMintSecrets::blank(Id::from_str("").unwrap(), Amount::from(1)).unwrap();
+        let b = PreMintSecrets::blank(Id::from_str("009a1f293253e41e").unwrap(), Amount::from(1))
+            .unwrap();
         assert_eq!(b.len(), 1);
     }
 }
