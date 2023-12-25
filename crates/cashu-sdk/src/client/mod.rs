@@ -6,10 +6,10 @@ use cashu::nuts::nut00;
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckSpendableResponse;
 use cashu::nuts::{
-    BlindedMessage, Keys, KeysetResponse, MeltBolt11Response, MintBolt11Response, MintInfo,
-    PreMintSecrets, Proof, SwapRequest, SwapResponse,
+    BlindedMessage, CurrencyUnit, Keys, KeysetResponse, MeltBolt11Response, MintBolt11Response,
+    MintInfo, MintQuoteBolt11Response, PreMintSecrets, Proof, SwapRequest, SwapResponse,
 };
-use cashu::utils;
+use cashu::{utils, Amount};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -87,7 +87,13 @@ pub trait Client {
 
     async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error>;
 
-    // TODO: Hash should have a type
+    async fn post_mint_quote(
+        &self,
+        mint_url: Url,
+        amount: Amount,
+        unit: CurrencyUnit,
+    ) -> Result<MintQuoteBolt11Response, Error>;
+
     async fn post_mint(
         &self,
         mint_url: Url,
