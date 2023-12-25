@@ -1,4 +1,5 @@
 //! Cashu Wallet
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use cashu::dhke::{construct_proofs, unblind_message};
@@ -10,7 +11,7 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
-use cashu::types::{Melted, SendProofs};
+use cashu::types::{Melted, MintQuoteInfo, SendProofs};
 use cashu::url::UncheckedUrl;
 use cashu::Amount;
 pub use cashu::Bolt11Invoice;
@@ -39,16 +40,23 @@ pub enum Error {
 pub struct Wallet<C: Client> {
     pub client: C,
     pub mint_url: UncheckedUrl,
+    pub quotes: HashMap<String, MintQuoteInfo>,
     pub mint_keys: Keys,
     pub balance: Amount,
 }
 
 impl<C: Client> Wallet<C> {
-    pub fn new(client: C, mint_url: UncheckedUrl, mint_keys: Keys) -> Self {
+    pub fn new(
+        client: C,
+        mint_url: UncheckedUrl,
+        quotes: Vec<MintQuoteInfo>,
+        mint_keys: Keys,
+    ) -> Self {
         Self {
             client,
             mint_url,
             mint_keys,
+            quotes: quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
             balance: Amount::ZERO,
         }
     }
@@ -80,25 +88,56 @@ impl<C: Client> Wallet<C> {
             spent: spent.into_iter().map(|(s, _)| s).cloned().collect(),
         })
     }
+    /*
+     // TODO: Need to use the unit, check keyset is of the same unit of attempting to
+     // mint
+     pub async fn mint_token(
+         &self,
+         amount: Amount,
+         quote: &str,
+         memo: Option<String>,
+         unit: Option<CurrencyUnit>,
+     ) -> Result<Token, Error> {
+         let proofs = self.mint(amount, unit.clone().unwrap()).await?;
 
-    // TODO: Need to use the unit, check keyset is of the same unit of attempting to
-    // mint
-    pub async fn mint_token(
-        &self,
+         let token = Token::new(self.mint_url.clone(), proofs, memo, unit);
+         Ok(token?)
+     }
+
+    */
+
+    pub async fn mint_quote(
+        &mut self,
         amount: Amount,
-        quote: &str,
-        memo: Option<String>,
-        unit: Option<CurrencyUnit>,
-    ) -> Result<Token, Error> {
-        let proofs = self.mint(amount, quote).await?;
+        unit: CurrencyUnit,
+    ) -> Result<MintQuoteInfo, Error> {
+        let quote_res = self
+            .client
+            .post_mint_quote(self.mint_url.clone().try_into()?, amount, unit.clone())
+            .await?;
 
-        let token = Token::new(self.mint_url.clone(), proofs, memo, unit);
-        Ok(token?)
+        let quote = MintQuoteInfo {
+            id: quote_res.quote.clone(),
+            amount,
+            unit,
+            request: Some(Bolt11Invoice::from_str(&quote_res.request).unwrap()),
+            paid: quote_res.paid,
+            expiry: quote_res.expiry,
+        };
+
+        self.quotes.insert(quote_res.quote.clone(), quote.clone());
+
+        Ok(quote)
     }
 
     /// Mint Proofs
-    pub async fn mint(&self, amount: Amount, quote: &str) -> Result<Proofs, Error> {
-        let premint_secrets = PreMintSecrets::random((&self.mint_keys).into(), amount)?;
+    pub async fn mint(&self, quote: &str) -> Result<Proofs, Error> {
+        let quote_info = self
+            .quotes
+            .get(quote)
+            .ok_or(Error::Custom("Unknown quote".to_string()))?;
+
+        let premint_secrets = PreMintSecrets::random((&self.mint_keys).into(), quote_info.amount)?;
 
         let mint_res = self
             .client
@@ -271,6 +310,7 @@ impl<C: Client> Wallet<C> {
         })
     }
 
+    /// Melt
     pub async fn melt(
         &self,
         quote: String,

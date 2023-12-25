@@ -9,7 +9,9 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
+use cashu::Amount;
 use serde_json::Value;
+use tracing::warn;
 use url::Url;
 
 use super::join_url;
@@ -40,6 +42,34 @@ impl Client for HttpClient {
         match response {
             Ok(res) => Ok(res),
             Err(_) => Err(Error::from_json(&res.to_string())?),
+        }
+    }
+
+    /// Mint Quote [NUT-04]
+    async fn post_mint_quote(
+        &self,
+        mint_url: Url,
+        amount: Amount,
+        unit: CurrencyUnit,
+    ) -> Result<MintQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "quote", "bolt11"])?;
+
+        let request = MintQuoteBolt11Request { amount, unit };
+
+        let res = minreq::post(url)
+            .with_json(&request)?
+            .send()?
+            .json::<Value>()?;
+
+        let response: Result<MintQuoteBolt11Response, serde_json::Error> =
+            serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => {
+                warn!("Bolt11 Mint Quote Unexpected response: {}", res);
+                Err(Error::from_json(&res.to_string())?)
+            }
         }
     }
 

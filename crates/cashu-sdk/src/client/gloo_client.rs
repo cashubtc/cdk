@@ -7,6 +7,7 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
+use cashu::Amount;
 use gloo::net::http::Request;
 use serde_json::Value;
 use url::Url;
@@ -54,6 +55,35 @@ impl Client for HttpClient {
         }
     }
 
+    /// Mint Quote [NUT-04]
+    async fn post_mint_quote(
+        &self,
+        mint_url: Url,
+        amount: Amount,
+        unit: CurrencyUnit,
+    ) -> Result<MintQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "quote", "bolt11"])?;
+
+        let request = MintQuoteBolt11Request { amount, unit };
+        let res = Request::post(url.as_str())
+            .json(&request)
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
+
+        let response: Result<MintQuoteBolt11Response, serde_json::Error> =
+            serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
+        }
+    }
+
     /// Mint Tokens [NUT-04]
     async fn post_mint(
         &self,
@@ -61,7 +91,7 @@ impl Client for HttpClient {
         quote: &str,
         premint_secrets: PreMintSecrets,
     ) -> Result<MintBolt11Response, Error> {
-        let url = join_url(mint_url, &["mint"])?;
+        let url = join_url(mint_url, &["v1", "mint"])?;
 
         let request = MintBolt11Request {
             quote: quote.to_string(),

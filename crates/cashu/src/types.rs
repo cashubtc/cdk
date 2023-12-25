@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::nuts::{CurrencyUnit, Proofs};
-use crate::Bolt11Invoice;
+use crate::{Amount, Bolt11Invoice};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {
@@ -32,6 +32,17 @@ pub enum InvoiceStatus {
     Paid,
     Expired,
     InFlight,
+}
+
+/// Mint Quote Info
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct MintQuoteInfo {
+    pub id: String,
+    pub amount: Amount,
+    pub unit: CurrencyUnit,
+    pub request: Option<Bolt11Invoice>,
+    pub paid: bool,
+    pub expiry: u64,
 }
 
 /// Quote
