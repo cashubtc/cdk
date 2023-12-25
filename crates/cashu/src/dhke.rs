@@ -178,6 +178,18 @@ mod tests {
             )
             .unwrap();
             assert_eq!(y, expected_y);
+
+            // Note that this message will take a few iterations of the loop before finding
+            // a valid point
+            let secret = "0000000000000000000000000000000000000000000000000000000000000002";
+            let sec_hex = decode(secret).unwrap();
+            let y = hash_to_curve(&sec_hex);
+            let expected_y = k256::PublicKey::from_sec1_bytes(
+                &hex::decode("02076c988b353fcbb748178ecb286bc9d0b4acf474d4ba31ba62334e46c97c416a")
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(y, expected_y);
         }
 
         #[test]
