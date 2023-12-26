@@ -19,6 +19,7 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::client::Client;
+use crate::utils::unix_time;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -32,6 +33,10 @@ pub enum Error {
     /// Cashu Url Error
     #[error("`{0}`")]
     CashuUrl(#[from] cashu::url::Error),
+    #[error("Quote Expired")]
+    QuoteExpired,
+    #[error("Quote Unknown")]
+    QuoteUnknown,
     #[error("`{0}`")]
     Custom(String),
 }
@@ -88,24 +93,29 @@ impl<C: Client> Wallet<C> {
             spent: spent.into_iter().map(|(s, _)| s).cloned().collect(),
         })
     }
-    /*
-     // TODO: Need to use the unit, check keyset is of the same unit of attempting to
-     // mint
-     pub async fn mint_token(
-         &self,
-         amount: Amount,
-         quote: &str,
-         memo: Option<String>,
-         unit: Option<CurrencyUnit>,
-     ) -> Result<Token, Error> {
-         let proofs = self.mint(amount, unit.clone().unwrap()).await?;
 
-         let token = Token::new(self.mint_url.clone(), proofs, memo, unit);
-         Ok(token?)
-     }
+    // Mint a token
+    pub async fn mint_token(
+        &mut self,
+        amount: Amount,
+        memo: Option<String>,
+        unit: Option<CurrencyUnit>,
+    ) -> Result<Token, Error> {
+        let quote = self
+            .mint_quote(
+                amount,
+                unit.clone()
+                    .ok_or(Error::Custom("Unit required".to_string()))?,
+            )
+            .await?;
 
-    */
+        let proofs = self.mint(&quote.id).await?;
 
+        let token = Token::new(self.mint_url.clone(), proofs, memo, unit);
+        Ok(token?)
+    }
+
+    /// Mint Quote
     pub async fn mint_quote(
         &mut self,
         amount: Amount,
@@ -119,7 +129,7 @@ impl<C: Client> Wallet<C> {
         let quote = MintQuoteInfo {
             id: quote_res.quote.clone(),
             amount,
-            unit,
+            unit: unit.clone(),
             request: Some(Bolt11Invoice::from_str(&quote_res.request).unwrap()),
             paid: quote_res.paid,
             expiry: quote_res.expiry,
@@ -130,12 +140,19 @@ impl<C: Client> Wallet<C> {
         Ok(quote)
     }
 
-    /// Mint Proofs
-    pub async fn mint(&self, quote: &str) -> Result<Proofs, Error> {
-        let quote_info = self
-            .quotes
-            .get(quote)
-            .ok_or(Error::Custom("Unknown quote".to_string()))?;
+    /// Mint
+    pub async fn mint(&mut self, quote: &str) -> Result<Proofs, Error> {
+        let quote_info = self.quotes.get(quote);
+
+        let quote_info = if let Some(quote) = quote_info {
+            if quote.expiry.le(&unix_time()) {
+                return Err(Error::QuoteExpired);
+            }
+
+            quote.clone()
+        } else {
+            return Err(Error::QuoteUnknown);
+        };
 
         let premint_secrets = PreMintSecrets::random((&self.mint_keys).into(), quote_info.amount)?;
 
@@ -154,6 +171,8 @@ impl<C: Client> Wallet<C> {
             premint_secrets.secrets(),
             &self.mint_keys,
         )?;
+
+        self.quotes.remove(&quote_info.id);
 
         Ok(proofs)
     }
