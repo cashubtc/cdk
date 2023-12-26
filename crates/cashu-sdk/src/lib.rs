@@ -13,9 +13,9 @@ pub mod client;
 
 #[cfg(feature = "mint")]
 pub mod mint;
+pub mod utils;
 #[cfg(feature = "wallet")]
 pub mod wallet;
-
 pub use cashu::{self, *};
 
 #[cfg(feature = "blocking")]
