@@ -31,8 +31,11 @@ interface Secret {
 	sequence<u8> as_bytes();	
 };
 
-// NUT00
+interface MintQuoteInfo {
+	constructor(string id, Amount amount, string unit, Bolt11Invoice? request, boolean paid, u64 boolean);
+};
 
+// NUT00
 
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]

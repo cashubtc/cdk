@@ -34,8 +34,11 @@ interface Secret {
 	sequence<u8> as_bytes();	
 };
 
-// NUT00
+interface MintQuoteInfo {
+	constructor(string id, Amount amount, string unit, Bolt11Invoice? request, boolean paid, u64 boolean);
+};
 
+// NUT00
 
 interface PublicKey {
     [Throws=CashuError, Name=from_hex]
@@ -299,9 +302,9 @@ interface Wallet {
 	// [Throws=CashuSdkError]
 	// ProofsStatus check_proofs_spent(sequence<Proof> proofs);
     [Throws=CashuSdkError]
-	Token mint_token(Amount amount, string hash,CurrencyUnit? unit, string? memo);
+	Token mint_token(Amount amount, CurrencyUnit? unit, string? memo);
     [Throws=CashuSdkError]
-	sequence<Proof> mint(Amount amount, string hash);
+	sequence<Proof> mint(string quote);
     [Throws=CashuSdkError]
 	sequence<Proof> receive(string encoded_token);
     [Throws=CashuSdkError]
