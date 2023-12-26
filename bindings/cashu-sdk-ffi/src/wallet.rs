@@ -1,7 +1,7 @@
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use cashu_ffi::{BlindedSignature, CurrencyUnit, PreMintSecrets, Proof, Token};
+use cashu_ffi::{BlindedSignature, CurrencyUnit, MintQuoteInfo, PreMintSecrets, Proof, Token};
 use cashu_sdk::client::minreq_client::HttpClient;
 use cashu_sdk::types::ProofsStatus;
 use cashu_sdk::url::UncheckedUrl;
@@ -16,24 +16,31 @@ use crate::{Amount, Keys};
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().expect("Can't start Tokio runtime"));
 
 pub struct Wallet {
-    inner: WalletSdk<HttpClient>,
+    inner: RwLock<WalletSdk<HttpClient>>,
 }
 
 impl Wallet {
-    pub fn new(mint_url: &str, mint_keys: Arc<Keys>) -> Self {
+    pub fn new(mint_url: &str, mint_keys: Arc<Keys>, quotes: Vec<Arc<MintQuoteInfo>>) -> Self {
         let client = HttpClient {};
         Self {
             inner: WalletSdk::new(
                 client,
                 UncheckedUrl::new(mint_url),
+                quotes
+                    .into_iter()
+                    .map(|q| q.as_ref().deref().clone())
+                    .collect(),
                 mint_keys.as_ref().deref().clone(),
-            ),
+            )
+            .into(),
         }
     }
 
     pub fn check_proofs_spent(&self, proofs: Vec<Arc<Proof>>) -> Result<Arc<ProofsStatus>> {
         let proofs = RUNTIME.block_on(async {
             self.inner
+                .read()
+                .unwrap()
                 .check_proofs_spent(proofs.iter().map(|p| p.as_ref().deref().clone()).collect())
                 .await
         })?;
@@ -44,33 +51,29 @@ impl Wallet {
     pub fn mint_token(
         &self,
         amount: Arc<Amount>,
-        hash: String,
         unit: Option<CurrencyUnit>,
         memo: Option<String>,
     ) -> Result<Arc<Token>> {
         let token = RUNTIME.block_on(async {
             self.inner
-                .mint_token(
-                    *amount.as_ref().deref(),
-                    &hash,
-                    memo,
-                    unit.map(|u| u.into()),
-                )
+                .write()
+                .unwrap()
+                .mint_token(*amount.as_ref().deref(), memo, unit.map(|u| u.into()))
                 .await
         })?;
 
         Ok(Arc::new(token.into()))
     }
 
-    pub fn mint(&self, amount: Arc<Amount>, hash: String) -> Result<Vec<Arc<Proof>>> {
-        let proofs =
-            RUNTIME.block_on(async { self.inner.mint(*amount.as_ref().deref(), &hash).await })?;
+    pub fn mint(&self, quote: String) -> Result<Vec<Arc<Proof>>> {
+        let proofs = RUNTIME.block_on(async { self.inner.write().unwrap().mint(&quote).await })?;
 
         Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
     }
 
     pub fn receive(&self, encoded_token: String) -> Result<Vec<Arc<Proof>>> {
-        let proofs = RUNTIME.block_on(async { self.inner.receive(&encoded_token).await })?;
+        let proofs = RUNTIME
+            .block_on(async { self.inner.write().unwrap().receive(&encoded_token).await })?;
 
         Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
     }
@@ -82,6 +85,8 @@ impl Wallet {
     ) -> Result<Vec<Arc<Proof>>> {
         Ok(self
             .inner
+            .read()
+            .unwrap()
             .process_split_response(
                 blinded_messages.as_ref().deref().clone(),
                 promises.iter().map(|p| p.as_ref().into()).collect(),
@@ -94,6 +99,8 @@ impl Wallet {
     pub fn send(&self, amount: Arc<Amount>, proofs: Vec<Arc<Proof>>) -> Result<Arc<SendProofs>> {
         let send_proofs = RUNTIME.block_on(async {
             self.inner
+                .read()
+                .unwrap()
                 .send(
                     *amount.as_ref().deref(),
                     proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
@@ -112,6 +119,8 @@ impl Wallet {
     ) -> Result<Arc<Melted>> {
         let melted = RUNTIME.block_on(async {
             self.inner
+                .write()
+                .unwrap()
                 .melt(
                     quote,
                     proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
@@ -129,7 +138,7 @@ impl Wallet {
         unit: Option<CurrencyUnit>,
         memo: Option<String>,
     ) -> Result<String> {
-        Ok(self.inner.proofs_to_token(
+        Ok(self.inner.read().unwrap().proofs_to_token(
             proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
             memo,
             unit.map(|u| u.into()),

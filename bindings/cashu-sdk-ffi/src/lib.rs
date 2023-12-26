@@ -10,8 +10,9 @@ mod ffi {
         KeySetResponse, Keys, KeysResponse, MeltBolt11Request, MeltBolt11Response,
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
         MintInfo, MintKeySet, MintProof, MintProofs, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintVersion, Nut05MeltBolt11Request, Nut05MeltBolt11Response,
-        PreMintSecrets, Proof, PublicKey, Secret, SecretKey, SwapRequest, SwapResponse, Token,
+        MintQuoteBolt11Response, MintQuoteInfo, MintVersion, Nut05MeltBolt11Request,
+        Nut05MeltBolt11Response, PreMintSecrets, Proof, PublicKey, Secret, SecretKey, SwapRequest,
+        SwapResponse, Token,
     };
 
     pub use crate::error::CashuSdkError;
