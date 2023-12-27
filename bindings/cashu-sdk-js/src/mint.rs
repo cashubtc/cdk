@@ -4,7 +4,7 @@ use std::ops::Deref;
 use cashu_js::nuts::{JsCheckSpendableRequest, JsCheckSpendableResponse};
 use cashu_js::nuts::{
     JsId, JsKeySet, JsKeySetsResponse, JsKeysResponse, JsMeltBolt11Request, JsMeltBolt11Response,
-    JsMintBolt11Request, JsMintBolt11Response, JsSwapRequest, JsSwapResponse,
+    JsSwapRequest, JsSwapResponse,
 };
 use cashu_js::JsAmount;
 use cashu_sdk::mint::Mint;
@@ -68,7 +68,10 @@ impl JsMint {
             .clone()
             .into();
 
-        Ok(KeysResponse { keys: keyset.keys }.into())
+        Ok(KeysResponse {
+            keysets: vec![keyset],
+        }
+        .into())
     }
 
     /// Get Keysets

@@ -34,11 +34,13 @@ impl From<Wallet<HttpClient>> for JsWallet {
 
 #[wasm_bindgen(js_class = Wallet)]
 impl JsWallet {
+    // TODO: Quotes
     #[wasm_bindgen(constructor)]
     pub fn new(mint_url: String, mint_keys: JsKeys) -> JsWallet {
         let client = HttpClient {};
+
         JsWallet {
-            inner: Wallet::new(client, mint_url.into(), mint_keys.deref().clone()),
+            inner: Wallet::new(client, mint_url.into(), vec![], mint_keys.deref().clone()),
         }
     }
 
@@ -59,9 +61,8 @@ impl JsWallet {
     /// Mint Token
     #[wasm_bindgen(js_name = mintToken)]
     pub async fn mint_token(
-        &self,
+        &mut self,
         amount: JsAmount,
-        hash: String,
         memo: Option<String>,
         unit: Option<String>,
     ) -> Result<JsToken> {
@@ -69,7 +70,7 @@ impl JsWallet {
 
         Ok(self
             .inner
-            .mint_token(*amount.deref(), &hash, memo, unit)
+            .mint_token(*amount.deref(), memo, unit)
             .await
             .map_err(into_err)?
             .into())
@@ -77,15 +78,9 @@ impl JsWallet {
 
     /// Mint
     #[wasm_bindgen(js_name = mint)]
-    pub async fn mint(&self, amount: JsAmount, hash: String) -> Result<JsValue> {
-        serde_wasm_bindgen::to_value(
-            &self
-                .inner
-                .mint(*amount.deref(), &hash)
-                .await
-                .map_err(into_err)?,
-        )
-        .map_err(into_err)
+    pub async fn mint(&mut self, quote: String) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.mint(&quote).await.map_err(into_err)?)
+            .map_err(into_err)
     }
 
     /// Receive

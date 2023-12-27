@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cashu::nuts::nut01::{Keys as KeysSdk, KeysResponse as KeysResponseSdk};
 use cashu::Amount as AmountSdk;
 
-use crate::{Amount, PublicKey};
+use crate::{Amount, KeySet, PublicKey};
 
 pub struct Keys {
     inner: KeysSdk,
@@ -100,10 +100,10 @@ impl From<KeysResponseSdk> for KeysResponse {
 }
 
 impl KeysResponse {
-    pub fn new(keys: Arc<Keys>) -> Self {
+    pub fn new(keysets: Vec<Arc<KeySet>>) -> Self {
         Self {
             inner: KeysResponseSdk {
-                keys: keys.as_ref().deref().clone(),
+                keysets: keysets.iter().map(|k| k.as_ref().deref().clone()).collect(),
             },
         }
     }

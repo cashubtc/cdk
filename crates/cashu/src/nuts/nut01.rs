@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use super::KeySet;
 use crate::error::Error;
 use crate::Amount;
 
@@ -123,13 +124,12 @@ impl Keys {
 }
 
 /// Mint Public Keys [NUT-01]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysResponse {
-    /// set of public keys that the mint generates
-    #[serde(flatten)]
-    pub keys: Keys,
+    pub keysets: Vec<KeySet>,
 }
 
+/*
 impl<'de> serde::de::Deserialize<'de> for KeysResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -170,7 +170,7 @@ impl<'de> serde::de::Deserialize<'de> for KeysResponse {
         deserializer.deserialize_map(KeysVisitor)
     }
 }
-
+*/
 pub mod mint {
     use std::collections::BTreeMap;
 
