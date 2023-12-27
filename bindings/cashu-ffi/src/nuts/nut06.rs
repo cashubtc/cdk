@@ -58,7 +58,7 @@ impl MintInfo {
         description_long: Option<String>,
         contact: Option<Vec<Vec<String>>>,
         // TODO: Should be a nuts type
-        nuts: String,
+        _nuts: String,
         motd: Option<String>,
     ) -> Self {
         let pubkey = pubkey.map(|p| p.as_ref().deref().clone());

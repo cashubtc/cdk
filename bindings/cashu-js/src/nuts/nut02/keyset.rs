@@ -146,7 +146,7 @@ impl JsKeysResponse {
 
     /// Get Keys
     #[wasm_bindgen(getter)]
-    pub fn keys(&self) -> Result<JsValue> {
-        serde_wasm_bindgen::to_value(&self.inner.keys).map_err(into_err)
+    pub fn keysets(&self) -> Result<JsValue> {
+        serde_wasm_bindgen::to_value(&self.inner.keysets).map_err(into_err)
     }
 }

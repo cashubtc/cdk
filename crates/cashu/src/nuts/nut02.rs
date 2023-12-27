@@ -2,7 +2,6 @@
 // https://github.com/cashubtc/nuts/blob/main/02.md
 
 use core::fmt;
-use std::collections::HashSet;
 use std::str::FromStr;
 
 use bitcoin::hashes::{sha256, Hash};
@@ -60,13 +59,10 @@ impl FromStr for Id {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        println!("{}", s);
         // Check if the string length is valid
         if s.len() != 16 {
             return Err(Error::Length);
         }
-
-        println!("{}", s[2..].as_bytes().len());
 
         Ok(Self {
             version: KeySetVersion::Version00,
@@ -95,7 +91,7 @@ impl<'de> serde::de::Deserialize<'de> for Id {
             type Value = Id;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a 12-character Base64 string")
+                formatter.write_str("Expecting a 14 char hex string")
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
@@ -154,7 +150,7 @@ impl From<&Keys> for Id {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
-    pub keysets: HashSet<KeySetInfo>,
+    pub keysets: Vec<KeySetInfo>,
 }
 
 impl KeysetResponse {
@@ -366,6 +362,8 @@ mod test {
 
     #[test]
     fn deserialization_and_id_generation() {
+        let _id = Id::from_str("009a1f293253e41e").unwrap();
+
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
 
         let id: Id = (&keys).into();

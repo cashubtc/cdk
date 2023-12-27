@@ -145,7 +145,7 @@ interface MintKeySet {
 };
 
 interface KeysResponse {
-	constructor(Keys keys);
+	constructor(sequence<KeySet> keysets);
 };
 
 interface KeySetResponse {

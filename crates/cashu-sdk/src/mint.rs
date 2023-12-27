@@ -78,14 +78,16 @@ impl Mint {
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
     pub fn keyset_pubkeys(&self, keyset_id: &Id) -> Option<KeysResponse> {
-        let keys: Keys = match self.keysets.get(keyset_id) {
-            Some(keyset) => keyset.keys.clone().into(),
+        let keyset = match self.keysets.get(keyset_id) {
+            Some(keyset) => keyset.clone(),
             None => {
                 return None;
             }
         };
 
-        Some(KeysResponse { keys })
+        Some(KeysResponse {
+            keysets: vec![keyset.into()],
+        })
     }
 
     /// Return a list of all supported keysets
