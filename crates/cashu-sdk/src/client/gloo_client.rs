@@ -62,7 +62,7 @@ impl Client for HttpClient {
         amount: Amount,
         unit: CurrencyUnit,
     ) -> Result<MintQuoteBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "quote", "bolt11"])?;
+        let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11"])?;
 
         let request = MintQuoteBolt11Request { amount, unit };
         let res = Request::post(url.as_str())
@@ -91,7 +91,7 @@ impl Client for HttpClient {
         quote: &str,
         premint_secrets: PreMintSecrets,
     ) -> Result<MintBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "mint"])?;
+        let url = join_url(mint_url, &["v1", "mint", "bolt11"])?;
 
         let request = MintBolt11Request {
             quote: quote.to_string(),
@@ -126,7 +126,7 @@ impl Client for HttpClient {
         inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> Result<MeltBolt11Response, Error> {
-        let url = join_url(mint_url, &["melt"])?;
+        let url = join_url(mint_url, &["v1", "melt", "bolt11"])?;
 
         let request = MeltBolt11Request {
             quote,

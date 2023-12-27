@@ -4,8 +4,9 @@ use std::println;
 
 use async_trait::async_trait;
 use cashu::nuts::{
-    BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
+    nut00, BlindedMessage, CurrencyUnit, Keys, KeysResponse, KeysetResponse, MeltBolt11Request,
+    MeltBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, PreMintSecrets, Proof, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
@@ -27,8 +28,10 @@ impl Client for HttpClient {
         let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = minreq::get(url).send()?.json::<Value>()?;
 
-        let keys: Keys = serde_json::from_str(&keys.to_string())?;
-        Ok(keys)
+        println!("{}", keys);
+
+        let keys: KeysResponse = serde_json::from_str(&keys.to_string())?;
+        Ok(keys.keysets[0].keys.clone())
     }
 
     /// Get Keysets [NUT-02]
@@ -52,23 +55,22 @@ impl Client for HttpClient {
         amount: Amount,
         unit: CurrencyUnit,
     ) -> Result<MintQuoteBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "quote", "bolt11"])?;
+        let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11"])?;
 
         let request = MintQuoteBolt11Request { amount, unit };
 
-        let res = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
+        let res = minreq::post(url).with_json(&request)?.send()?;
+
+        print!("r: {:?}", res);
 
         let response: Result<MintQuoteBolt11Response, serde_json::Error> =
-            serde_json::from_value(res.clone());
+            serde_json::from_value(res.json()?);
 
         match response {
             Ok(res) => Ok(res),
             Err(_) => {
-                warn!("Bolt11 Mint Quote Unexpected response: {}", res);
-                Err(Error::from_json(&res.to_string())?)
+                warn!("Bolt11 Mint Quote Unexpected response: {:?}", res);
+                Err(Error::from_json(&res.status_code.to_string())?)
             }
         }
     }
@@ -80,7 +82,7 @@ impl Client for HttpClient {
         quote: &str,
         premint_secrets: PreMintSecrets,
     ) -> Result<MintBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "mint"])?;
+        let url = join_url(mint_url, &["v1", "mint", "bolt11"])?;
 
         let request = MintBolt11Request {
             quote: quote.to_string(),
@@ -110,7 +112,7 @@ impl Client for HttpClient {
         inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> Result<MeltBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "melt"])?;
+        let url = join_url(mint_url, &["v1", "melt", "bolt11"])?;
 
         let request = MeltBolt11Request {
             quote,
