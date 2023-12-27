@@ -26,6 +26,7 @@ bitcoin = { version = "0.30.0", features=["serde",  "rand"] }
 hex = "0.4.3"
 k256 = { version = "0.13.1", features=["arithmetic", "serde", "schnorr"] }
 lightning-invoice = { version = "0.25.0", features=["serde"] }
+log = "0.4.2"
 rand = "0.8.5"
 getrandom = { version = "0.2", features = ["js"] }
 serde = { workspace = true }
