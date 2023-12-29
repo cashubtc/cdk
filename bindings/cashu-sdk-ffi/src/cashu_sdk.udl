@@ -34,8 +34,13 @@ interface Secret {
 	sequence<u8> as_bytes();	
 };
 
-interface MintQuoteInfo {
-	constructor(string id, Amount amount, string unit, Bolt11Invoice? request, boolean paid, u64 boolean);
+interface MintQuote {
+	constructor(string id, Amount amount, string unit, Bolt11Invoice request, boolean paid, u64 boolean);
+};
+
+
+interface MeltQuote {
+	constructor(string id, Amount amount, string unit, Bolt11Invoice request, Amount fee_reserve, boolean paid, u64 boolean);
 };
 
 // NUT00
@@ -299,6 +304,7 @@ interface Melted {
 };
 
 interface Wallet {
+	constructor(string mint_url, Keys mint_keys, sequence<MintQuote> mint_quotes, sequence<MeltQuote> melt_quotes);
 	// [Throws=CashuSdkError]
 	// ProofsStatus check_proofs_spent(sequence<Proof> proofs);
     [Throws=CashuSdkError]
@@ -312,7 +318,7 @@ interface Wallet {
     [Throws=CashuSdkError]
 	SendProofs send(Amount amount, sequence<Proof> proofs);
     [Throws=CashuSdkError]
-	Melted melt(string quote, sequence<Proof> proofs, Amount fee_reserve);
+	Melted melt(string quote_id, sequence<Proof> proofs);
     [Throws=CashuSdkError]
 	string proofs_to_token(sequence<Proof> proof, CurrencyUnit? unit, string? memo);
 };

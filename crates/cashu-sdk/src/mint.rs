@@ -13,7 +13,7 @@ use cashu::Amount;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::types::Quote;
+use crate::types::MeltQuote;
 
 pub struct Mint {
     //    pub pubkey: PublicKey
@@ -23,7 +23,7 @@ pub struct Mint {
     pub spent_secrets: HashSet<Secret>,
     pub pending_secrets: HashSet<Secret>,
     pub fee_reserve: FeeReserve,
-    pub quotes: HashMap<String, Quote>,
+    pub melt_quotes: HashMap<String, MeltQuote>,
 }
 
 impl Mint {
@@ -31,7 +31,7 @@ impl Mint {
         secret: &str,
         keysets_info: HashSet<MintKeySetInfo>,
         spent_secrets: HashSet<Secret>,
-        quotes: Vec<Quote>,
+        melt_quotes: Vec<MeltQuote>,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
     ) -> Self {
@@ -40,7 +40,7 @@ impl Mint {
 
         let mut active_units: HashSet<String> = HashSet::default();
 
-        let quotes = quotes.into_iter().map(|q| (q.id.clone(), q)).collect();
+        let melt_quotes = melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect();
 
         // Check that there is only one active keyset per unit
         for keyset_info in keysets_info {
@@ -64,7 +64,7 @@ impl Mint {
         Self {
             _secret: secret.to_string(),
             keysets,
-            quotes,
+            melt_quotes,
             keysets_info: info,
             spent_secrets,
             pending_secrets: HashSet::new(),
@@ -235,14 +235,14 @@ impl Mint {
     }
 
     pub fn verify_melt_request(&mut self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let quote = self.quotes.get(&melt_request.quote).unwrap();
+        let quote = self.melt_quotes.get(&melt_request.quote).unwrap();
         let proofs_total = melt_request.proofs_amount();
 
         let required_total = quote.amount + quote.fee_reserve;
 
         if proofs_total < required_total.into() {
             debug!(
-                "Insufficient Proofs: Got: {:?}, Required: {}",
+                "Insufficient Proofs: Got: {}, Required: {}",
                 proofs_total, required_total
             );
             return Err(Error::Amount);

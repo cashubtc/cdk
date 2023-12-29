@@ -40,7 +40,13 @@ impl JsWallet {
         let client = HttpClient {};
 
         JsWallet {
-            inner: Wallet::new(client, mint_url.into(), vec![], mint_keys.deref().clone()),
+            inner: Wallet::new(
+                client,
+                mint_url.into(),
+                vec![],
+                vec![],
+                mint_keys.deref().clone(),
+            ),
         }
     }
 
@@ -123,17 +129,12 @@ impl JsWallet {
 
     /// Melt
     #[wasm_bindgen(js_name = melt)]
-    pub async fn melt(
-        &self,
-        quote: String,
-        proofs: JsValue,
-        fee_reserve: JsAmount,
-    ) -> Result<JsMelted> {
+    pub async fn melt(&self, quote: String, proofs: JsValue) -> Result<JsMelted> {
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
         Ok(self
             .inner
-            .melt(quote, proofs, *fee_reserve.deref())
+            .melt(&quote, proofs)
             .await
             .map_err(into_err)?
             .into())

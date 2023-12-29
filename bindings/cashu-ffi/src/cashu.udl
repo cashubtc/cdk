@@ -31,8 +31,12 @@ interface Secret {
 	sequence<u8> as_bytes();	
 };
 
-interface MintQuoteInfo {
-	constructor(string id, Amount amount, string unit, Bolt11Invoice? request, boolean paid, u64 boolean);
+interface MintQuote {
+	constructor(string id, Amount amount, string unit, Bolt11Invoice request, boolean paid, u64 boolean);
+};
+
+interface MeltQuote {
+	constructor(string id, Amount amount, string unit, Bolt11Invoice request, Amount fee_reserve, boolean paid, u64 boolean);
 };
 
 // NUT00

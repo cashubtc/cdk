@@ -6,8 +6,9 @@ use cashu::nuts::nut00;
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckSpendableResponse;
 use cashu::nuts::{
-    BlindedMessage, CurrencyUnit, Keys, KeysetResponse, MeltBolt11Response, MintBolt11Response,
-    MintInfo, MintQuoteBolt11Response, PreMintSecrets, Proof, SwapRequest, SwapResponse,
+    BlindedMessage, CurrencyUnit, Keys, KeysetResponse, MeltBolt11Response,
+    MeltQuoteBolt11Response, MintBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets,
+    Proof, SwapRequest, SwapResponse,
 };
 use cashu::{utils, Amount};
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,13 @@ pub trait Client {
         quote: &str,
         premint_secrets: PreMintSecrets,
     ) -> Result<MintBolt11Response, Error>;
+
+    async fn post_melt_quote(
+        &self,
+        mint_url: Url,
+        unit: CurrencyUnit,
+        request: Bolt11Invoice,
+    ) -> Result<MeltQuoteBolt11Response, Error>;
 
     async fn post_melt(
         &self,

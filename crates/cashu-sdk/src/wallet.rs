@@ -11,7 +11,7 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
-use cashu::types::{Melted, MintQuoteInfo, SendProofs};
+use cashu::types::{MeltQuote, Melted, MintQuote, SendProofs};
 use cashu::url::UncheckedUrl;
 use cashu::Amount;
 pub use cashu::Bolt11Invoice;
@@ -45,7 +45,8 @@ pub enum Error {
 pub struct Wallet<C: Client> {
     pub client: C,
     pub mint_url: UncheckedUrl,
-    pub quotes: HashMap<String, MintQuoteInfo>,
+    pub mint_quotes: HashMap<String, MintQuote>,
+    pub melt_quotes: HashMap<String, MeltQuote>,
     pub mint_keys: Keys,
     pub balance: Amount,
 }
@@ -54,14 +55,16 @@ impl<C: Client> Wallet<C> {
     pub fn new(
         client: C,
         mint_url: UncheckedUrl,
-        quotes: Vec<MintQuoteInfo>,
+        mint_quotes: Vec<MintQuote>,
+        melt_quotes: Vec<MeltQuote>,
         mint_keys: Keys,
     ) -> Self {
         Self {
             client,
             mint_url,
             mint_keys,
-            quotes: quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+            mint_quotes: mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+            melt_quotes: melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
             balance: Amount::ZERO,
         }
     }
@@ -120,29 +123,30 @@ impl<C: Client> Wallet<C> {
         &mut self,
         amount: Amount,
         unit: CurrencyUnit,
-    ) -> Result<MintQuoteInfo, Error> {
+    ) -> Result<MintQuote, Error> {
         let quote_res = self
             .client
             .post_mint_quote(self.mint_url.clone().try_into()?, amount, unit.clone())
             .await?;
 
-        let quote = MintQuoteInfo {
+        let quote = MintQuote {
             id: quote_res.quote.clone(),
             amount,
             unit: unit.clone(),
-            request: Some(Bolt11Invoice::from_str(&quote_res.request).unwrap()),
+            request: Bolt11Invoice::from_str(&quote_res.request).unwrap(),
             paid: quote_res.paid,
             expiry: quote_res.expiry,
         };
 
-        self.quotes.insert(quote_res.quote.clone(), quote.clone());
+        self.mint_quotes
+            .insert(quote_res.quote.clone(), quote.clone());
 
         Ok(quote)
     }
 
     /// Mint
-    pub async fn mint(&mut self, quote: &str) -> Result<Proofs, Error> {
-        let quote_info = self.quotes.get(quote);
+    pub async fn mint(&mut self, quote_id: &str) -> Result<Proofs, Error> {
+        let quote_info = self.mint_quotes.get(quote_id);
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
@@ -160,7 +164,7 @@ impl<C: Client> Wallet<C> {
             .client
             .post_mint(
                 self.mint_url.clone().try_into()?,
-                quote,
+                quote_id,
                 premint_secrets.clone(),
             )
             .await?;
@@ -172,7 +176,7 @@ impl<C: Client> Wallet<C> {
             &self.mint_keys,
         )?;
 
-        self.quotes.remove(&quote_info.id);
+        self.mint_quotes.remove(&quote_info.id);
 
         Ok(proofs)
     }
@@ -329,19 +333,57 @@ impl<C: Client> Wallet<C> {
         })
     }
 
+    /// Melt Quote
+    pub async fn melt_quote(
+        &mut self,
+        unit: CurrencyUnit,
+        request: Bolt11Invoice,
+    ) -> Result<MeltQuote, Error> {
+        let quote_res = self
+            .client
+            .post_melt_quote(
+                self.mint_url.clone().try_into()?,
+                unit.clone(),
+                request.clone(),
+            )
+            .await?;
+
+        let quote = MeltQuote {
+            id: quote_res.quote,
+            amount: quote_res.amount.into(),
+            request,
+            unit,
+            fee_reserve: quote_res.fee_reserve.into(),
+            paid: quote_res.paid,
+            expiry: quote_res.expiry,
+        };
+
+        self.melt_quotes.insert(quote.id.clone(), quote.clone());
+
+        Ok(quote)
+    }
+
     /// Melt
-    pub async fn melt(
-        &self,
-        quote: String,
-        proofs: Proofs,
-        fee_reserve: Amount,
-    ) -> Result<Melted, Error> {
-        let blinded = PreMintSecrets::blank((&self.mint_keys).into(), fee_reserve)?;
+    pub async fn melt(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
+        let quote_info = self.melt_quotes.get(quote_id);
+
+        let quote_info = if let Some(quote) = quote_info {
+            if quote.expiry.le(&unix_time()) {
+                return Err(Error::QuoteExpired);
+            }
+
+            quote.clone()
+        } else {
+            return Err(Error::QuoteUnknown);
+        };
+
+        let blinded = PreMintSecrets::blank((&self.mint_keys).into(), quote_info.fee_reserve)?;
+
         let melt_response = self
             .client
             .post_melt(
                 self.mint_url.clone().try_into()?,
-                quote,
+                quote_id.to_string(),
                 proofs,
                 Some(blinded.blinded_messages()),
             )

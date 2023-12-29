@@ -5,12 +5,13 @@ use std::println;
 use async_trait::async_trait;
 use cashu::nuts::{
     nut00, BlindedMessage, CurrencyUnit, Keys, KeysResponse, KeysetResponse, MeltBolt11Request,
-    MeltBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, PreMintSecrets, Proof, SwapRequest, SwapResponse,
+    MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
+    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
+    Proof, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
-use cashu::Amount;
+use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
 use tracing::warn;
 use url::Url;
@@ -100,6 +101,31 @@ impl Client for HttpClient {
         match response {
             Ok(res) => Ok(res),
             Err(_) => Err(Error::from_json(&res.to_string())?),
+        }
+    }
+
+    /// Melt Quote [NUT-05]
+    async fn post_melt_quote(
+        &self,
+        mint_url: Url,
+        unit: CurrencyUnit,
+        request: Bolt11Invoice,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "melt", "quote", "bolt11"])?;
+
+        let request = MeltQuoteBolt11Request { request, unit };
+
+        let value = minreq::post(url)
+            .with_json(&request)?
+            .send()?
+            .json::<Value>()?;
+
+        let response: Result<MeltQuoteBolt11Response, serde_json::Error> =
+            serde_json::from_value(value.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::from_json(&value.to_string())?),
         }
     }
 

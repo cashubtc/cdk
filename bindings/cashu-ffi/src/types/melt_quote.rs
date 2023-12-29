@@ -3,42 +3,44 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cashu::nuts::CurrencyUnit;
-use cashu::types::MintQuote as MintQuoteSdk;
+use cashu::types::MeltQuote as MeltQuoteSdk;
 
 use crate::{Amount, Bolt11Invoice};
 
-pub struct MintQuote {
-    inner: MintQuoteSdk,
+pub struct MeltQuote {
+    inner: MeltQuoteSdk,
 }
 
-impl Deref for MintQuote {
-    type Target = MintQuoteSdk;
+impl Deref for MeltQuote {
+    type Target = MeltQuoteSdk;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl From<MintQuoteSdk> for MintQuote {
-    fn from(inner: MintQuoteSdk) -> MintQuote {
-        MintQuote { inner }
+impl From<MeltQuoteSdk> for MeltQuote {
+    fn from(inner: MeltQuoteSdk) -> MeltQuote {
+        MeltQuote { inner }
     }
 }
 
-impl MintQuote {
+impl MeltQuote {
     pub fn new(
         id: String,
         amount: Arc<Amount>,
         unit: String,
         request: Arc<Bolt11Invoice>,
+        fee_reserve: Arc<Amount>,
         paid: bool,
         expiry: u64,
     ) -> Self {
         Self {
-            inner: MintQuoteSdk {
+            inner: MeltQuoteSdk {
                 id,
                 amount: amount.as_ref().deref().clone(),
                 unit: CurrencyUnit::from_str(&unit).unwrap(),
                 request: request.as_ref().deref().clone(),
+                fee_reserve: fee_reserve.as_ref().deref().clone(),
                 paid,
                 expiry,
             },
