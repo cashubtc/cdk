@@ -38,6 +38,6 @@ impl Bolt11Invoice {
     pub fn amount(&self) -> Option<Arc<Amount>> {
         self.inner
             .amount_milli_satoshis()
-            .map(|a| Arc::new(Amount::from(a / 1000).into()))
+            .map(|a| Arc::new(Amount::from(a / 1000)))
     }
 }

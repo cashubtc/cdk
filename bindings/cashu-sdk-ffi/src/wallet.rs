@@ -1,5 +1,5 @@
 use std::ops::Deref;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use cashu_ffi::{
     BlindedSignature, Bolt11Invoice, CurrencyUnit, MeltQuote, MintQuote, PreMintSecrets, Proof,
@@ -11,6 +11,7 @@ use cashu_sdk::url::UncheckedUrl;
 use cashu_sdk::wallet::Wallet as WalletSdk;
 use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
+use tokio::sync::Mutex;
 
 use crate::error::Result;
 use crate::types::{Melted, SendProofs};
@@ -19,7 +20,7 @@ use crate::{Amount, Keys};
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().expect("Can't start Tokio runtime"));
 
 pub struct Wallet {
-    inner: RwLock<WalletSdk<HttpClient>>,
+    inner: Mutex<WalletSdk<HttpClient>>,
 }
 
 impl Wallet {
@@ -51,8 +52,8 @@ impl Wallet {
     pub fn check_proofs_spent(&self, proofs: Vec<Arc<Proof>>) -> Result<Arc<ProofsStatus>> {
         let proofs = RUNTIME.block_on(async {
             self.inner
-                .read()
-                .unwrap()
+                .lock()
+                .await
                 .check_proofs_spent(proofs.iter().map(|p| p.as_ref().deref().clone()).collect())
                 .await
         })?;
@@ -68,8 +69,8 @@ impl Wallet {
     ) -> Result<Arc<Token>> {
         let token = RUNTIME.block_on(async {
             self.inner
-                .write()
-                .unwrap()
+                .lock()
+                .await
                 .mint_token(*amount.as_ref().deref(), memo, unit.map(|u| u.into()))
                 .await
         })?;
@@ -80,8 +81,8 @@ impl Wallet {
     pub fn mint_quote(&self, amount: Arc<Amount>, unit: CurrencyUnit) -> Result<Arc<MintQuote>> {
         let quote = RUNTIME.block_on(async {
             self.inner
-                .write()
-                .unwrap()
+                .lock()
+                .await
                 .mint_quote(*amount.as_ref().deref(), unit.into())
                 .await
         })?;
@@ -90,14 +91,14 @@ impl Wallet {
     }
 
     pub fn mint(&self, quote: String) -> Result<Vec<Arc<Proof>>> {
-        let proofs = RUNTIME.block_on(async { self.inner.write().unwrap().mint(&quote).await })?;
+        let proofs = RUNTIME.block_on(async { self.inner.lock().await.mint(&quote).await })?;
 
         Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
     }
 
     pub fn receive(&self, encoded_token: String) -> Result<Vec<Arc<Proof>>> {
-        let proofs = RUNTIME
-            .block_on(async { self.inner.write().unwrap().receive(&encoded_token).await })?;
+        let proofs =
+            RUNTIME.block_on(async { self.inner.lock().await.receive(&encoded_token).await })?;
 
         Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
     }
@@ -107,24 +108,20 @@ impl Wallet {
         blinded_messages: Arc<PreMintSecrets>,
         promises: Vec<Arc<BlindedSignature>>,
     ) -> Result<Vec<Arc<Proof>>> {
-        Ok(self
-            .inner
-            .read()
-            .unwrap()
-            .process_split_response(
+        let proofs = RUNTIME.block_on(async {
+            self.inner.lock().await.process_split_response(
                 blinded_messages.as_ref().deref().clone(),
                 promises.iter().map(|p| p.as_ref().into()).collect(),
-            )?
-            .into_iter()
-            .map(|p| Arc::new(p.into()))
-            .collect())
+            )
+        })?;
+        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
     }
 
     pub fn send(&self, amount: Arc<Amount>, proofs: Vec<Arc<Proof>>) -> Result<Arc<SendProofs>> {
         let send_proofs = RUNTIME.block_on(async {
             self.inner
-                .read()
-                .unwrap()
+                .lock()
+                .await
                 .send(
                     *amount.as_ref().deref(),
                     proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
@@ -142,8 +139,8 @@ impl Wallet {
     ) -> Result<Arc<MeltQuote>> {
         let melt_quote = RUNTIME.block_on(async {
             self.inner
-                .write()
-                .unwrap()
+                .lock()
+                .await
                 .melt_quote(unit.into(), request.as_ref().deref().clone())
                 .await
         })?;
@@ -154,8 +151,8 @@ impl Wallet {
     pub fn melt(&self, quote_id: String, proofs: Vec<Arc<Proof>>) -> Result<Arc<Melted>> {
         let melted = RUNTIME.block_on(async {
             self.inner
-                .write()
-                .unwrap()
+                .lock()
+                .await
                 .melt(
                     &quote_id,
                     proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
@@ -172,10 +169,12 @@ impl Wallet {
         unit: Option<CurrencyUnit>,
         memo: Option<String>,
     ) -> Result<String> {
-        Ok(self.inner.read().unwrap().proofs_to_token(
-            proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
-            memo,
-            unit.map(|u| u.into()),
-        )?)
+        Ok(RUNTIME.block_on(async {
+            self.inner.lock().await.proofs_to_token(
+                proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
+                memo,
+                unit.map(|u| u.into()),
+            )
+        })?)
     }
 }

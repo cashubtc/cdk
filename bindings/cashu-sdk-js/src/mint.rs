@@ -65,8 +65,7 @@ impl JsMint {
             .inner
             .keyset(&keyset_id)
             .ok_or(JsError::new("Unknown Keyset"))?
-            .clone()
-            .into();
+            .clone();
 
         Ok(KeysResponse {
             keysets: vec![keyset],

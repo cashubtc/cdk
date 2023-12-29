@@ -36,7 +36,7 @@ impl MintQuote {
         Self {
             inner: MintQuoteSdk {
                 id,
-                amount: amount.as_ref().deref().clone(),
+                amount: *amount.as_ref().deref(),
                 unit: CurrencyUnit::from_str(&unit).unwrap(),
                 request: request.as_ref().deref().clone(),
                 paid,
