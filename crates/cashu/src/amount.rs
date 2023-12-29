@@ -1,3 +1,5 @@
+use std::fmt;
+
 // https://github.com/clarkmoody/cashu-rs
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +61,12 @@ impl std::ops::Sub for Amount {
 
     fn sub(self, rhs: Amount) -> Self::Output {
         Amount(self.0 - rhs.0)
+    }
+}
+
+impl fmt::Display for Amount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

@@ -29,7 +29,7 @@ mod ffi {
     pub use crate::nuts::nut06::{MintInfo, MintVersion};
     pub use crate::nuts::nut07::{CheckSpendableRequest, CheckSpendableResponse};
     pub use crate::nuts::nut08::{MeltBolt11Request, MeltBolt11Response};
-    pub use crate::types::{Amount, Bolt11Invoice, KeySetInfo, MintQuoteInfo, Secret};
+    pub use crate::types::{Amount, Bolt11Invoice, KeySetInfo, MeltQuote, MintQuote, Secret};
 
     // UDL
     uniffi::include_scaffolding!("cashu");

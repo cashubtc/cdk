@@ -36,23 +36,23 @@ pub enum InvoiceStatus {
 
 /// Mint Quote Info
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct MintQuoteInfo {
+pub struct MintQuote {
     pub id: String,
     pub amount: Amount,
     pub unit: CurrencyUnit,
-    pub request: Option<Bolt11Invoice>,
+    pub request: Bolt11Invoice,
     pub paid: bool,
     pub expiry: u64,
 }
 
-/// Quote
+/// Melt Quote Info
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Quote {
+pub struct MeltQuote {
     pub id: String,
-    pub amount: u64,
+    pub amount: Amount,
     pub request: Bolt11Invoice,
     pub unit: CurrencyUnit,
-    pub fee_reserve: u64,
+    pub fee_reserve: Amount,
     pub paid: bool,
     pub expiry: u64,
 }

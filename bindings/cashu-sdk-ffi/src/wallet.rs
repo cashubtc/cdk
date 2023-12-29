@@ -1,7 +1,9 @@
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use cashu_ffi::{BlindedSignature, CurrencyUnit, MintQuoteInfo, PreMintSecrets, Proof, Token};
+use cashu_ffi::{
+    BlindedSignature, CurrencyUnit, MeltQuote, MintQuote, PreMintSecrets, Proof, Token,
+};
 use cashu_sdk::client::minreq_client::HttpClient;
 use cashu_sdk::types::ProofsStatus;
 use cashu_sdk::url::UncheckedUrl;
@@ -20,13 +22,22 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub fn new(mint_url: &str, mint_keys: Arc<Keys>, quotes: Vec<Arc<MintQuoteInfo>>) -> Self {
+    pub fn new(
+        mint_url: String,
+        mint_keys: Arc<Keys>,
+        mint_quotes: Vec<Arc<MintQuote>>,
+        melt_quotes: Vec<Arc<MeltQuote>>,
+    ) -> Self {
         let client = HttpClient {};
         Self {
             inner: WalletSdk::new(
                 client,
                 UncheckedUrl::new(mint_url),
-                quotes
+                mint_quotes
+                    .into_iter()
+                    .map(|q| q.as_ref().deref().clone())
+                    .collect(),
+                melt_quotes
                     .into_iter()
                     .map(|q| q.as_ref().deref().clone())
                     .collect(),
@@ -111,20 +122,14 @@ impl Wallet {
         Ok(Arc::new(send_proofs.into()))
     }
 
-    pub fn melt(
-        &self,
-        quote: String,
-        proofs: Vec<Arc<Proof>>,
-        fee_reserve: Arc<Amount>,
-    ) -> Result<Arc<Melted>> {
+    pub fn melt(&self, quote_id: String, proofs: Vec<Arc<Proof>>) -> Result<Arc<Melted>> {
         let melted = RUNTIME.block_on(async {
             self.inner
                 .write()
                 .unwrap()
                 .melt(
-                    quote,
+                    &quote_id,
                     proofs.iter().map(|p| p.as_ref().deref().clone()).collect(),
-                    *fee_reserve.as_ref().deref(),
                 )
                 .await
         })?;
