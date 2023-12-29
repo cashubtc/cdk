@@ -240,7 +240,7 @@ impl Mint {
 
         let required_total = quote.amount + quote.fee_reserve;
 
-        if proofs_total < required_total.into() {
+        if proofs_total < required_total {
             debug!(
                 "Insufficient Proofs: Got: {}, Required: {}",
                 proofs_total, required_total
