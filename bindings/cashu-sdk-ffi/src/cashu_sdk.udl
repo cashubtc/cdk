@@ -309,7 +309,9 @@ interface Wallet {
 	// ProofsStatus check_proofs_spent(sequence<Proof> proofs);
     [Throws=CashuSdkError]
 	Token mint_token(Amount amount, CurrencyUnit? unit, string? memo);
-    [Throws=CashuSdkError]
+	[Throws=CashuSdkError]
+	MintQuote mint_quote(Amount amount, CurrencyUnit unit);
+	[Throws=CashuSdkError]
 	sequence<Proof> mint(string quote);
     [Throws=CashuSdkError]
 	sequence<Proof> receive(string encoded_token);
@@ -317,6 +319,8 @@ interface Wallet {
 	sequence<Proof> process_swap_response(PreMintSecrets blinded_messages, sequence<BlindedSignature> promises);
     [Throws=CashuSdkError]
 	SendProofs send(Amount amount, sequence<Proof> proofs);
+    [Throws=CashuSdkError]
+	MeltQuote melt_quote(CurrencyUnit unit, Bolt11Invoice request);
     [Throws=CashuSdkError]
 	Melted melt(string quote_id, sequence<Proof> proofs);
     [Throws=CashuSdkError]
