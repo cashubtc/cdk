@@ -59,7 +59,7 @@ impl Token {
         let mint = UncheckedUrl::from_str(&mint)?;
         let proofs = proofs.into_iter().map(|p| p.as_ref().into()).collect();
 
-        let unit = unit.map(|u| CurrencyUnitSdk::from_str(&u).unwrap_or_default().into());
+        let unit = unit.map(|u| CurrencyUnitSdk::from_str(&u).unwrap_or_default());
 
         Ok(Self {
             inner: TokenSdk::new(mint, proofs, memo, unit)?,
@@ -95,7 +95,7 @@ impl Token {
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.inner.to_string())
+        write!(f, "{}", self.inner)
     }
 }
 

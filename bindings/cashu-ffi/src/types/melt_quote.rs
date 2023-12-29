@@ -37,10 +37,10 @@ impl MeltQuote {
         Self {
             inner: MeltQuoteSdk {
                 id,
-                amount: amount.as_ref().deref().clone(),
+                amount: *amount.as_ref().deref(),
                 unit: CurrencyUnit::from_str(&unit).unwrap(),
                 request: request.as_ref().deref().clone(),
-                fee_reserve: fee_reserve.as_ref().deref().clone(),
+                fee_reserve: *fee_reserve.as_ref().deref(),
                 paid,
                 expiry,
             },

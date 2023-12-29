@@ -26,7 +26,7 @@ impl MintQuoteBolt11Request {
     pub fn new(amount: Arc<Amount>, unit: String) -> Self {
         Self {
             inner: MintQuoteBolt11RequestSdk {
-                amount: amount.as_ref().deref().clone(),
+                amount: *amount.as_ref().deref(),
                 unit: CurrencyUnit::from_str(&unit).unwrap(),
             },
         }
@@ -37,7 +37,7 @@ impl MintQuoteBolt11Request {
     }
 
     pub fn unit(&self) -> Arc<CurrencyUnit> {
-        Arc::new(self.inner.clone().unit.into())
+        Arc::new(self.inner.clone().unit)
     }
 }
 
