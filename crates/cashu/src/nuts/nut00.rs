@@ -224,8 +224,8 @@ pub mod wallet {
             let mut counter = counter;
 
             for amount in amount.split() {
-                let secret = Secret::from_seed(&mnemonic, keyset_id, counter);
-                let blinding_factor = SecretKey::from_seed(&mnemonic, keyset_id, counter);
+                let secret = Secret::from_seed(mnemonic, keyset_id, counter);
+                let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, counter);
 
                 let (blinded, r) = blind_message(secret.as_bytes(), Some(blinding_factor.into()))?;
 
