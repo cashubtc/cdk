@@ -6,7 +6,7 @@ use cashu::nuts::nut00;
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckSpendableResponse;
 use cashu::nuts::{
-    BlindedMessage, CurrencyUnit, Keys, KeysetResponse, MeltBolt11Response,
+    BlindedMessage, CurrencyUnit, KeySet, KeysetResponse, MeltBolt11Response,
     MeltQuoteBolt11Response, MintBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
 };
@@ -84,7 +84,7 @@ pub struct MintErrorResponse {
 
 #[async_trait(?Send)]
 pub trait Client {
-    async fn get_mint_keys(&self, mint_url: Url) -> Result<Keys, Error>;
+    async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error>;
 
     async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error>;
 
