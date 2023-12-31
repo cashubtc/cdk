@@ -173,13 +173,12 @@ impl<C: Client> Wallet<C> {
             }
         }
 
-        return None;
+        None
     }
 
     fn active_keys(&self, mint_url: &UncheckedUrl, unit: &CurrencyUnit) -> Option<Keys> {
         self.active_mint_keyset(mint_url, unit)
-            .map(|id| self.mint_keys.get(&id))
-            .flatten()
+            .and_then(|id| self.mint_keys.get(&id))
             .cloned()
     }
 
@@ -274,7 +273,7 @@ impl<C: Client> Wallet<C> {
                 swap_response.signatures,
                 pre_swap.pre_mint_secrets.rs(),
                 pre_swap.pre_mint_secrets.secrets(),
-                &keys.unwrap(),
+                keys.unwrap(),
             )?;
             proofs.push(p);
         }
