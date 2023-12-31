@@ -1,11 +1,13 @@
-// MIT License
-// Copyright (c) 2023 Clark Moody
-// https://github.com/clarkmoody/cashu-rs/blob/master/src/secret.rs
+//! Secret
 
 use std::str::FromStr;
 
+use bip32::{DerivationPath, XPrv};
+use bip39::Mnemonic;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::nuts::Id;
 
 /// The secret data that allows spending ecash
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -39,6 +41,19 @@ impl Secret {
         // The secret string is hex encoded
         let secret = hex::encode(random_bytes);
         Self(secret)
+    }
+
+    pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Self {
+        let path = DerivationPath::from_str(&format!(
+            "m/129372'/0'/{}'/{}'/0",
+            u64::from(keyset_id),
+            counter
+        ))
+        .unwrap();
+
+        let xpriv = XPrv::derive_from_path(mnemonic.to_seed(""), &path).unwrap();
+
+        Self(hex::encode(xpriv.private_key().to_bytes()))
     }
 
     pub fn as_bytes(&self) -> &[u8] {

@@ -30,6 +30,12 @@ impl Default for Amount {
     }
 }
 
+impl Default for &Amount {
+    fn default() -> Self {
+        &Amount::ZERO
+    }
+}
+
 impl From<u64> for Amount {
     fn from(value: u64) -> Self {
         Self(value)
