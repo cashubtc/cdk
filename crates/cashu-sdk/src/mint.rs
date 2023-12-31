@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::types::MeltQuote;
+use crate::utils::unix_time;
 use crate::Mnemonic;
 
 pub struct Mint {
@@ -110,16 +111,32 @@ impl Mint {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     pub fn rotate_keyset(&mut self, unit: CurrencyUnit, derivation_path: &str, max_order: u8) {
-        // TODO: Set old keyset as inactive
-
         let new_keyset = MintKeySet::generate(
             &self.mnemonic.to_seed_normalized(""),
-            unit,
+            unit.clone(),
             derivation_path,
             max_order,
         );
 
-        self.keysets.insert(new_keyset.id, new_keyset);
+        self.keysets.insert(new_keyset.id, new_keyset.clone());
+
+        for mint_keyset_info in self.keysets_info.values_mut() {
+            if mint_keyset_info.active && mint_keyset_info.unit.eq(&unit) {
+                mint_keyset_info.active = false;
+            }
+        }
+
+        let mint_keyset_info = MintKeySetInfo {
+            id: new_keyset.id,
+            unit,
+            derivation_path: derivation_path.to_string(),
+            active: true,
+            valid_from: unix_time(),
+            valid_to: None,
+            max_order,
+        };
+
+        self.keysets_info.insert(new_keyset.id, mint_keyset_info);
     }
 
     pub fn process_mint_request(
