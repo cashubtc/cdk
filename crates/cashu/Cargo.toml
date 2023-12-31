@@ -23,6 +23,9 @@ nut08 = []
 [dependencies]
 base64 = "0.21.0"
 bitcoin = { version = "0.30.0", features=["serde",  "rand"] }
+# TODO: Should be optional
+bip39 = "2.0.0"
+bip32 = "0.5.1"
 hex = "0.4.3"
 k256 = { version = "0.13.1", features=["arithmetic", "serde", "schnorr"] }
 lightning-invoice = { version = "0.25.0", features=["serde"] }

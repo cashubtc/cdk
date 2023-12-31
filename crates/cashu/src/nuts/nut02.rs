@@ -46,6 +46,15 @@ impl Id {
     const STRLEN: usize = 14;
 }
 
+impl From<Id> for u64 {
+    fn from(value: Id) -> Self {
+        value
+            .id
+            .iter()
+            .fold(0, |acc, &byte| (acc << 8) | u64::from(byte))
+    }
+}
+
 impl std::fmt::Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!(

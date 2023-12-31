@@ -2,11 +2,12 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use bip39::Mnemonic;
 use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Keys, PreMintSecrets, PreSwap, Proof, Proofs, SwapRequest,
+    BlindedSignature, CurrencyUnit, Id, Keys, PreMintSecrets, PreSwap, Proof, Proofs, SwapRequest,
     Token,
 };
 #[cfg(feature = "nut07")]
@@ -24,7 +25,7 @@ use crate::utils::unix_time;
 #[derive(Debug, Error)]
 pub enum Error {
     /// Insufficient Funds
-    #[error("Insuddicient Funds")]
+    #[error("Insufficient Funds")]
     InsufficientFunds,
     #[error("`{0}`")]
     Cashu(#[from] cashu::error::wallet::Error),
@@ -42,7 +43,14 @@ pub enum Error {
 }
 
 #[derive(Clone, Debug)]
+pub struct BackupInfo {
+    mnemonic: Mnemonic,
+    counter: HashMap<Id, u64>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Wallet<C: Client> {
+    backup_info: Option<BackupInfo>,
     pub client: C,
     pub mint_url: UncheckedUrl,
     pub mint_quotes: HashMap<String, MintQuote>,
@@ -57,9 +65,11 @@ impl<C: Client> Wallet<C> {
         mint_url: UncheckedUrl,
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
+        backup_info: Option<BackupInfo>,
         mint_keys: Keys,
     ) -> Self {
         Self {
+            backup_info,
             client,
             mint_url,
             mint_keys,
@@ -158,7 +168,18 @@ impl<C: Client> Wallet<C> {
             return Err(Error::QuoteUnknown);
         };
 
-        let premint_secrets = PreMintSecrets::random((&self.mint_keys).into(), quote_info.amount)?;
+        let premint_secrets = match &self.backup_info {
+            Some(backup_info) => PreMintSecrets::from_seed(
+                Id::from(&self.mint_keys),
+                *backup_info
+                    .counter
+                    .get(&Id::from(&self.mint_keys))
+                    .unwrap_or(&0),
+                &backup_info.mnemonic,
+                quote_info.amount,
+            )?,
+            None => PreMintSecrets::random((&self.mint_keys).into(), quote_info.amount)?,
+        };
 
         let mint_res = self
             .client
