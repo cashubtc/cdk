@@ -24,11 +24,12 @@ impl From<KeySetInfoSdk> for KeySetInfo {
 }
 
 impl KeySetInfo {
-    pub fn new(id: Arc<Id>, unit: String) -> Self {
+    pub fn new(id: Arc<Id>, unit: String, active: bool) -> Self {
         Self {
             inner: KeySetInfoSdk {
                 id: *id.as_ref().deref(),
                 unit: CurrencyUnit::from_str(&unit).unwrap(),
+                active,
             },
         }
     }

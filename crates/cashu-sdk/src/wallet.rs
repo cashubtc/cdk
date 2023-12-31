@@ -1,5 +1,5 @@
 //! Cashu Wallet
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use bip39::Mnemonic;
@@ -7,8 +7,8 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Id, Keys, PreMintSecrets, PreSwap, Proof, Proofs, SwapRequest,
-    Token,
+    BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PreMintSecrets, PreSwap, Proof,
+    Proofs, SwapRequest, Token,
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
@@ -52,26 +52,29 @@ pub struct BackupInfo {
 pub struct Wallet<C: Client> {
     backup_info: Option<BackupInfo>,
     pub client: C,
-    pub mint_url: UncheckedUrl,
+    pub mints: HashMap<UncheckedUrl, MintInfo>,
+    pub mint_keysets: HashMap<UncheckedUrl, HashSet<KeySetInfo>>,
     pub mint_quotes: HashMap<String, MintQuote>,
     pub melt_quotes: HashMap<String, MeltQuote>,
-    pub mint_keys: Keys,
+    pub mint_keys: HashMap<Id, Keys>,
     pub balance: Amount,
 }
 
 impl<C: Client> Wallet<C> {
     pub fn new(
         client: C,
-        mint_url: UncheckedUrl,
+        mints: HashMap<UncheckedUrl, MintInfo>,
+        mint_keysets: HashMap<UncheckedUrl, HashSet<KeySetInfo>>,
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
         backup_info: Option<BackupInfo>,
-        mint_keys: Keys,
+        mint_keys: HashMap<Id, Keys>,
     ) -> Self {
         Self {
             backup_info,
             client,
-            mint_url,
+            mints,
+            mint_keysets,
             mint_keys,
             mint_quotes: mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
             melt_quotes: melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
@@ -81,11 +84,15 @@ impl<C: Client> Wallet<C> {
 
     /// Check if a proof is spent
     #[cfg(feature = "nut07")]
-    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<ProofsStatus, Error> {
+    pub async fn check_proofs_spent(
+        &self,
+        mint_url: UncheckedUrl,
+        proofs: Proofs,
+    ) -> Result<ProofsStatus, Error> {
         let spendable = self
             .client
             .post_check_spendable(
-                self.mint_url.clone().try_into()?,
+                mint_url.try_into()?,
                 proofs
                     .clone()
                     .into_iter()
@@ -110,33 +117,36 @@ impl<C: Client> Wallet<C> {
     // Mint a token
     pub async fn mint_token(
         &mut self,
+        mint_url: UncheckedUrl,
         amount: Amount,
         memo: Option<String>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Token, Error> {
         let quote = self
             .mint_quote(
+                mint_url.clone(),
                 amount,
                 unit.clone()
                     .ok_or(Error::Custom("Unit required".to_string()))?,
             )
             .await?;
 
-        let proofs = self.mint(&quote.id).await?;
+        let proofs = self.mint(mint_url.clone(), &quote.id).await?;
 
-        let token = Token::new(self.mint_url.clone(), proofs, memo, unit);
+        let token = Token::new(mint_url.clone(), proofs, memo, unit);
         Ok(token?)
     }
 
     /// Mint Quote
     pub async fn mint_quote(
         &mut self,
+        mint_url: UncheckedUrl,
         amount: Amount,
         unit: CurrencyUnit,
     ) -> Result<MintQuote, Error> {
         let quote_res = self
             .client
-            .post_mint_quote(self.mint_url.clone().try_into()?, amount, unit.clone())
+            .post_mint_quote(mint_url.try_into()?, amount, unit.clone())
             .await?;
 
         let quote = MintQuote {
@@ -154,8 +164,27 @@ impl<C: Client> Wallet<C> {
         Ok(quote)
     }
 
+    fn active_mint_keyset(&self, mint_url: &UncheckedUrl, unit: &CurrencyUnit) -> Option<Id> {
+        if let Some(keysets) = self.mint_keysets.get(mint_url) {
+            for keyset in keysets {
+                if keyset.unit.eq(unit) && keyset.active {
+                    return Some(keyset.id);
+                }
+            }
+        }
+
+        return None;
+    }
+
+    fn active_keys(&self, mint_url: &UncheckedUrl, unit: &CurrencyUnit) -> Option<Keys> {
+        self.active_mint_keyset(mint_url, unit)
+            .map(|id| self.mint_keys.get(&id))
+            .flatten()
+            .cloned()
+    }
+
     /// Mint
-    pub async fn mint(&mut self, quote_id: &str) -> Result<Proofs, Error> {
+    pub async fn mint(&mut self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Proofs, Error> {
         let quote_info = self.mint_quotes.get(quote_id);
 
         let quote_info = if let Some(quote) = quote_info {
@@ -168,33 +197,36 @@ impl<C: Client> Wallet<C> {
             return Err(Error::QuoteUnknown);
         };
 
+        let active_keyset_id = self
+            .active_mint_keyset(&mint_url, &quote_info.unit)
+            .unwrap();
+
         let premint_secrets = match &self.backup_info {
             Some(backup_info) => PreMintSecrets::from_seed(
-                Id::from(&self.mint_keys),
-                *backup_info
-                    .counter
-                    .get(&Id::from(&self.mint_keys))
-                    .unwrap_or(&0),
+                active_keyset_id,
+                *backup_info.counter.get(&active_keyset_id).unwrap_or(&0),
                 &backup_info.mnemonic,
                 quote_info.amount,
             )?,
-            None => PreMintSecrets::random((&self.mint_keys).into(), quote_info.amount)?,
+            None => PreMintSecrets::random(active_keyset_id, quote_info.amount)?,
         };
 
         let mint_res = self
             .client
             .post_mint(
-                self.mint_url.clone().try_into()?,
+                mint_url.clone().try_into()?,
                 quote_id,
                 premint_secrets.clone(),
             )
             .await?;
 
+        let keys = self.mint_keys.get(&active_keyset_id).unwrap();
+
         let proofs = construct_proofs(
             mint_res.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
-            &self.mint_keys,
+            keys,
         )?;
 
         self.mint_quotes.remove(&quote_info.id);
@@ -206,26 +238,35 @@ impl<C: Client> Wallet<C> {
     pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, Error> {
         let token_data = Token::from_str(encoded_token)?;
 
+        let unit = token_data.unit.unwrap_or_default();
+
         let mut proofs: Vec<Proofs> = vec![vec![]];
         for token in token_data.token {
             if token.proofs.is_empty() {
                 continue;
             }
+            /*
+                        let keys = if token.mint.to_string().eq(&self.mint_url.to_string()) {
+                            self.mint_keys.clone()
+                        } else {
+                            self.client.get_mint_keys(token.mint.try_into()?).await?
+                        };
+            */
 
-            let keys = if token.mint.to_string().eq(&self.mint_url.to_string()) {
-                self.mint_keys.clone()
-            } else {
-                self.client.get_mint_keys(token.mint.try_into()?).await?
-            };
+            let active_keyset_id = self.active_mint_keyset(&token.mint, &unit);
+
+            // TODO: if none fetch keyset for mint
+
+            let keys = self.mint_keys.get(&active_keyset_id.unwrap());
 
             // Sum amount of all proofs
-            let _amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
+            let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
 
-            let pre_swap = self.create_split(None, token.proofs)?;
+            let pre_swap = self.create_split(&token.mint, &unit, Some(amount), token.proofs)?;
 
             let swap_response = self
                 .client
-                .post_split(self.mint_url.clone().try_into()?, pre_swap.split_request)
+                .post_split(token.mint.clone().try_into()?, pre_swap.split_request)
                 .await?;
 
             // Proof to keep
@@ -233,7 +274,7 @@ impl<C: Client> Wallet<C> {
                 swap_response.signatures,
                 pre_swap.pre_mint_secrets.rs(),
                 pre_swap.pre_mint_secrets.secrets(),
-                &keys,
+                &keys.unwrap(),
             )?;
             proofs.push(p);
         }
@@ -241,16 +282,24 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Create Split Payload
-    fn create_split(&self, amount: Option<Amount>, proofs: Proofs) -> Result<PreSwap, Error> {
+    fn create_split(
+        &self,
+        mint_url: &UncheckedUrl,
+        unit: &CurrencyUnit,
+        amount: Option<Amount>,
+        proofs: Proofs,
+    ) -> Result<PreSwap, Error> {
         // Since split is used to get the needed combination of tokens for a specific
         // amount first blinded messages are created for the amount
 
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).unwrap();
+
         let pre_mint_secrets = if let Some(amount) = amount {
-            let mut desired_messages = PreMintSecrets::random((&self.mint_keys).into(), amount)?;
+            let mut desired_messages = PreMintSecrets::random(active_keyset_id, amount)?;
 
             let change_amount = proofs.iter().map(|p| p.amount).sum::<Amount>() - amount;
 
-            let change_messages = PreMintSecrets::random((&self.mint_keys).into(), change_amount)?;
+            let change_messages = PreMintSecrets::random(active_keyset_id, change_amount)?;
             // Combine the BlindedMessages totoalling the desired amount with change
             desired_messages.combine(change_messages);
             // Sort the premint secrets to avoid finger printing
@@ -259,7 +308,7 @@ impl<C: Client> Wallet<C> {
         } else {
             let value = proofs.iter().map(|p| p.amount).sum();
 
-            PreMintSecrets::random((&self.mint_keys).into(), value)?
+            PreMintSecrets::random(active_keyset_id, value)?
         };
 
         let split_request = SwapRequest::new(proofs, pre_mint_secrets.blinded_messages());
@@ -280,6 +329,8 @@ impl<C: Client> Wallet<C> {
         for (promise, premint) in promises.iter().zip(blinded_messages) {
             let a = self
                 .mint_keys
+                .get(&promise.keyset_id)
+                .unwrap()
                 .amount_key(promise.amount)
                 .unwrap()
                 .to_owned();
@@ -301,7 +352,13 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Send
-    pub async fn send(&self, amount: Amount, proofs: Proofs) -> Result<SendProofs, Error> {
+    pub async fn send(
+        &self,
+        mint_url: &UncheckedUrl,
+        unit: &CurrencyUnit,
+        amount: Amount,
+        proofs: Proofs,
+    ) -> Result<SendProofs, Error> {
         let amount_available: Amount = proofs.iter().map(|p| p.amount).sum();
 
         if amount_available.lt(&amount) {
@@ -309,11 +366,11 @@ impl<C: Client> Wallet<C> {
             return Err(Error::InsufficientFunds);
         }
 
-        let pre_swap = self.create_split(Some(amount), proofs)?;
+        let pre_swap = self.create_split(mint_url, unit, Some(amount), proofs)?;
 
         let swap_response = self
             .client
-            .post_split(self.mint_url.clone().try_into()?, pre_swap.split_request)
+            .post_split(mint_url.clone().try_into()?, pre_swap.split_request)
             .await?;
 
         let mut keep_proofs = Proofs::new();
@@ -323,7 +380,7 @@ impl<C: Client> Wallet<C> {
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
-            &self.mint_keys,
+            &self.active_keys(mint_url, unit).unwrap(),
         )?;
 
         proofs.reverse();
@@ -357,16 +414,13 @@ impl<C: Client> Wallet<C> {
     /// Melt Quote
     pub async fn melt_quote(
         &mut self,
+        mint_url: UncheckedUrl,
         unit: CurrencyUnit,
         request: Bolt11Invoice,
     ) -> Result<MeltQuote, Error> {
         let quote_res = self
             .client
-            .post_melt_quote(
-                self.mint_url.clone().try_into()?,
-                unit.clone(),
-                request.clone(),
-            )
+            .post_melt_quote(mint_url.clone().try_into()?, unit.clone(), request.clone())
             .await?;
 
         let quote = MeltQuote {
@@ -385,7 +439,12 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Melt
-    pub async fn melt(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
+    pub async fn melt(
+        &self,
+        mint_url: &UncheckedUrl,
+        quote_id: &str,
+        proofs: Proofs,
+    ) -> Result<Melted, Error> {
         let quote_info = self.melt_quotes.get(quote_id);
 
         let quote_info = if let Some(quote) = quote_info {
@@ -398,12 +457,15 @@ impl<C: Client> Wallet<C> {
             return Err(Error::QuoteUnknown);
         };
 
-        let blinded = PreMintSecrets::blank((&self.mint_keys).into(), quote_info.fee_reserve)?;
+        let blinded = PreMintSecrets::blank(
+            self.active_mint_keyset(mint_url, &quote_info.unit).unwrap(),
+            quote_info.fee_reserve,
+        )?;
 
         let melt_response = self
             .client
             .post_melt(
-                self.mint_url.clone().try_into()?,
+                mint_url.clone().try_into()?,
                 quote_id.to_string(),
                 proofs,
                 Some(blinded.blinded_messages()),
@@ -415,7 +477,7 @@ impl<C: Client> Wallet<C> {
                 change,
                 blinded.rs(),
                 blinded.secrets(),
-                &self.mint_keys,
+                &self.active_keys(mint_url, &quote_info.unit).unwrap(),
             )?),
             None => None,
         };
@@ -431,11 +493,12 @@ impl<C: Client> Wallet<C> {
 
     pub fn proofs_to_token(
         &self,
+        mint_url: UncheckedUrl,
         proofs: Proofs,
         memo: Option<String>,
         unit: Option<CurrencyUnit>,
     ) -> Result<String, Error> {
-        Ok(Token::new(self.mint_url.clone(), proofs, memo, unit)?.to_string())
+        Ok(Token::new(mint_url, proofs, memo, unit)?.to_string())
     }
 }
 

@@ -357,6 +357,7 @@ impl From<MintKeySetInfo> for KeySetInfo {
         Self {
             id: keyset_info.id,
             unit: keyset_info.unit,
+            active: keyset_info.active,
         }
     }
 }

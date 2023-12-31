@@ -192,6 +192,7 @@ impl From<mint::KeySet> for KeySet {
 pub struct KeySetInfo {
     pub id: Id,
     pub unit: CurrencyUnit,
+    pub active: bool,
 }
 
 impl From<KeySet> for KeySetInfo {
@@ -199,6 +200,7 @@ impl From<KeySet> for KeySetInfo {
         Self {
             id: keyset.id,
             unit: keyset.unit,
+            active: false,
         }
     }
 }
