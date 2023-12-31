@@ -4,7 +4,7 @@ use std::println;
 
 use async_trait::async_trait;
 use cashu::nuts::{
-    nut00, BlindedMessage, CurrencyUnit, Keys, KeysResponse, KeysetResponse, MeltBolt11Request,
+    nut00, BlindedMessage, CurrencyUnit, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
@@ -25,14 +25,12 @@ pub struct HttpClient {}
 #[async_trait(?Send)]
 impl Client for HttpClient {
     /// Get Mint Keys [NUT-01]
-    async fn get_mint_keys(&self, mint_url: Url) -> Result<Keys, Error> {
+    async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
         let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = minreq::get(url).send()?.json::<Value>()?;
 
-        println!("{}", keys);
-
         let keys: KeysResponse = serde_json::from_str(&keys.to_string())?;
-        Ok(keys.keysets[0].keys.clone())
+        Ok(keys.keysets)
     }
 
     /// Get Keysets [NUT-02]

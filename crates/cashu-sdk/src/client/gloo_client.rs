@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use cashu::nuts::{
-    BlindedMessage, Keys, MeltBolt11Request, MeltBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
+    BlindedMessage, MeltBolt11Request, MeltBolt11Response, MintBolt11Request, MintBolt11Response,
+    MintInfo, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
@@ -21,7 +21,7 @@ pub struct HttpClient {}
 #[async_trait(?Send)]
 impl Client for HttpClient {
     /// Get Mint Keys [NUT-01]
-    async fn get_mint_keys(&self, mint_url: Url) -> Result<Keys, Error> {
+    async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
         let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = Request::get(url.as_str())
             .send()
@@ -31,8 +31,8 @@ impl Client for HttpClient {
             .await
             .map_err(|err| Error::Gloo(err.to_string()))?;
 
-        let keys: Keys = serde_json::from_str(&keys.to_string())?;
-        Ok(keys)
+        let keys: KeysResponse = serde_json::from_str(&keys.to_string())?;
+        Ok(keys.keysets)
     }
 
     /// Get Keysets [NUT-02]

@@ -52,7 +52,7 @@ pub struct BackupInfo {
 pub struct Wallet<C: Client> {
     backup_info: Option<BackupInfo>,
     pub client: C,
-    pub mints: HashMap<UncheckedUrl, MintInfo>,
+    pub mints: HashMap<UncheckedUrl, Option<MintInfo>>,
     pub mint_keysets: HashMap<UncheckedUrl, HashSet<KeySetInfo>>,
     pub mint_quotes: HashMap<String, MintQuote>,
     pub melt_quotes: HashMap<String, MeltQuote>,
@@ -63,7 +63,7 @@ pub struct Wallet<C: Client> {
 impl<C: Client> Wallet<C> {
     pub fn new(
         client: C,
-        mints: HashMap<UncheckedUrl, MintInfo>,
+        mints: HashMap<UncheckedUrl, Option<MintInfo>>,
         mint_keysets: HashMap<UncheckedUrl, HashSet<KeySetInfo>>,
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
@@ -164,22 +164,50 @@ impl<C: Client> Wallet<C> {
         Ok(quote)
     }
 
-    fn active_mint_keyset(&self, mint_url: &UncheckedUrl, unit: &CurrencyUnit) -> Option<Id> {
+    async fn active_mint_keyset(
+        &mut self,
+        mint_url: &UncheckedUrl,
+        unit: &CurrencyUnit,
+    ) -> Result<Option<Id>, Error> {
         if let Some(keysets) = self.mint_keysets.get(mint_url) {
             for keyset in keysets {
                 if keyset.unit.eq(unit) && keyset.active {
-                    return Some(keyset.id);
+                    return Ok(Some(keyset.id));
                 }
+            }
+        } else {
+            let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+
+            self.mint_keysets
+                .insert(mint_url.clone(), keysets.keysets.into_iter().collect());
+        }
+
+        Ok(None)
+    }
+
+    async fn active_keys(
+        &mut self,
+        mint_url: &UncheckedUrl,
+        unit: &CurrencyUnit,
+    ) -> Result<Option<Keys>, Error> {
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
+
+        let mut keys = None;
+
+        if let Some(k) = self.mint_keys.get(&active_keyset_id) {
+            keys = Some(k.clone())
+        } else {
+            let keysets = self.client.get_mint_keys(mint_url.try_into()?).await?;
+
+            for keyset in keysets {
+                if keyset.id.eq(&active_keyset_id) {
+                    keys = Some(keyset.keys.clone())
+                }
+                self.mint_keys.insert(keyset.id, keyset.keys);
             }
         }
 
-        None
-    }
-
-    fn active_keys(&self, mint_url: &UncheckedUrl, unit: &CurrencyUnit) -> Option<Keys> {
-        self.active_mint_keyset(mint_url, unit)
-            .and_then(|id| self.mint_keys.get(&id))
-            .cloned()
+        Ok(keys)
     }
 
     /// Mint
@@ -198,6 +226,7 @@ impl<C: Client> Wallet<C> {
 
         let active_keyset_id = self
             .active_mint_keyset(&mint_url, &quote_info.unit)
+            .await?
             .unwrap();
 
         let premint_secrets = match &self.backup_info {
@@ -234,7 +263,7 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Receive
-    pub async fn receive(&self, encoded_token: &str) -> Result<Proofs, Error> {
+    pub async fn receive(&mut self, encoded_token: &str) -> Result<Proofs, Error> {
         let token_data = Token::from_str(encoded_token)?;
 
         let unit = token_data.unit.unwrap_or_default();
@@ -252,16 +281,18 @@ impl<C: Client> Wallet<C> {
                         };
             */
 
-            let active_keyset_id = self.active_mint_keyset(&token.mint, &unit);
+            let active_keyset_id = self.active_mint_keyset(&token.mint, &unit).await?;
 
             // TODO: if none fetch keyset for mint
 
-            let keys = self.mint_keys.get(&active_keyset_id.unwrap());
+            let keys = self.mint_keys.get(&active_keyset_id.unwrap()).cloned();
 
             // Sum amount of all proofs
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
 
-            let pre_swap = self.create_split(&token.mint, &unit, Some(amount), token.proofs)?;
+            let pre_swap = self
+                .create_split(&token.mint, &unit, Some(amount), token.proofs)
+                .await?;
 
             let swap_response = self
                 .client
@@ -273,7 +304,7 @@ impl<C: Client> Wallet<C> {
                 swap_response.signatures,
                 pre_swap.pre_mint_secrets.rs(),
                 pre_swap.pre_mint_secrets.secrets(),
-                keys.unwrap(),
+                &keys.unwrap(),
             )?;
             proofs.push(p);
         }
@@ -281,8 +312,8 @@ impl<C: Client> Wallet<C> {
     }
 
     /// Create Split Payload
-    fn create_split(
-        &self,
+    async fn create_split(
+        &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Option<Amount>,
@@ -291,7 +322,7 @@ impl<C: Client> Wallet<C> {
         // Since split is used to get the needed combination of tokens for a specific
         // amount first blinded messages are created for the amount
 
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).unwrap();
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
 
         let pre_mint_secrets = if let Some(amount) = amount {
             let mut desired_messages = PreMintSecrets::random(active_keyset_id, amount)?;
@@ -352,7 +383,7 @@ impl<C: Client> Wallet<C> {
 
     /// Send
     pub async fn send(
-        &self,
+        &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Amount,
@@ -365,7 +396,9 @@ impl<C: Client> Wallet<C> {
             return Err(Error::InsufficientFunds);
         }
 
-        let pre_swap = self.create_split(mint_url, unit, Some(amount), proofs)?;
+        let pre_swap = self
+            .create_split(mint_url, unit, Some(amount), proofs)
+            .await?;
 
         let swap_response = self
             .client
@@ -379,7 +412,7 @@ impl<C: Client> Wallet<C> {
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
-            &self.active_keys(mint_url, unit).unwrap(),
+            &self.active_keys(mint_url, unit).await?.unwrap(),
         )?;
 
         proofs.reverse();
@@ -439,7 +472,7 @@ impl<C: Client> Wallet<C> {
 
     /// Melt
     pub async fn melt(
-        &self,
+        &mut self,
         mint_url: &UncheckedUrl,
         quote_id: &str,
         proofs: Proofs,
@@ -457,7 +490,9 @@ impl<C: Client> Wallet<C> {
         };
 
         let blinded = PreMintSecrets::blank(
-            self.active_mint_keyset(mint_url, &quote_info.unit).unwrap(),
+            self.active_mint_keyset(mint_url, &quote_info.unit)
+                .await?
+                .unwrap(),
             quote_info.fee_reserve,
         )?;
 
@@ -476,7 +511,7 @@ impl<C: Client> Wallet<C> {
                 change,
                 blinded.rs(),
                 blinded.secrets(),
-                &self.active_keys(mint_url, &quote_info.unit).unwrap(),
+                &self.active_keys(mint_url, &quote_info.unit).await?.unwrap(),
             )?),
             None => None,
         };
