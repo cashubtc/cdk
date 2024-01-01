@@ -11,6 +11,7 @@ use tokio::runtime::Runtime;
 #[cfg(feature = "wallet")]
 pub mod client;
 
+mod localstore;
 #[cfg(feature = "mint")]
 pub mod mint;
 pub mod utils;
