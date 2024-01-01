@@ -1,5 +1,0 @@
-build:
-	wasm-pack build
-
-pack:
-	npm run package
