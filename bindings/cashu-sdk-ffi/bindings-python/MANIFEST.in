@@ -1,3 +1,0 @@
-include ./src/cashu-sdk/libcashu_sdk_ffi.dylib
-include ./src/cashu-sdk/libcashu_sdk_ffi.so
-

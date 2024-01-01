@@ -154,6 +154,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             Ok(token?)
         }
     */
+
     /// Mint Quote
     pub async fn mint_quote(
         &mut self,
@@ -322,7 +323,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 pre_swap.pre_mint_secrets.secrets(),
                 &keys.unwrap(),
             )?;
-            let mint_proofs = proofs.entry(token.mint).or_insert(Vec::new());
+            let mint_proofs = proofs.entry(token.mint).or_default();
 
             mint_proofs.extend(p);
         }

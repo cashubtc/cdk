@@ -1,2 +1,0 @@
-include ./src/cashu/libcashu_ffi.dylib
-include ./src/cashu/libcashu_ffi.so

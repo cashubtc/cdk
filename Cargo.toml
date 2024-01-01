@@ -3,11 +3,6 @@
 members = [
     "crates/cashu",
     "crates/cashu-sdk",
-    "bindings/uniffi-bindgen",
-    "bindings/cashu-ffi",
-    "bindings/cashu-sdk-ffi",
-    "bindings/cashu-js",
-    "bindings/cashu-sdk-js"
 ]
 resolver = "2"
 
@@ -22,7 +17,7 @@ authors = ["thesimplekid"]
 edition = "2021"
 description = "cashu-crab"
 readme = "README.md"
-repository = "https://github.com/thesimplekid/cashu-rs-mint"
+repository = "https://github.com/thesimplekid/cashu-crab"
 license-file = "LICENSE"
 keywords = ["bitcoin", "e-cash", "cashu"]
 
