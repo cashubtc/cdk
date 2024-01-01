@@ -2,6 +2,7 @@
 // https://github.com/cashubtc/nuts/blob/main/00.md
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -407,6 +408,12 @@ pub struct Proof {
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,
+}
+
+impl Hash for Proof {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.secret.hash(state);
+    }
 }
 
 impl Ord for Proof {

@@ -53,9 +53,9 @@ pub struct BackupInfo {
 
 #[derive(Clone, Debug)]
 pub struct Wallet<C: Client, L: LocalStore> {
-    backup_info: Option<BackupInfo>,
     pub client: C,
-    pub localstore: L,
+    localstore: L,
+    backup_info: Option<BackupInfo>,
 }
 
 impl<C: Client, L: LocalStore> Wallet<C, L> {
@@ -128,29 +128,32 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         })
     }
 
-    // Mint a token
-    pub async fn mint_token(
-        &mut self,
-        mint_url: UncheckedUrl,
-        amount: Amount,
-        memo: Option<String>,
-        unit: Option<CurrencyUnit>,
-    ) -> Result<Token, Error> {
-        let quote = self
-            .mint_quote(
-                mint_url.clone(),
-                amount,
-                unit.clone()
-                    .ok_or(Error::Custom("Unit required".to_string()))?,
-            )
-            .await?;
+    /*
+        // TODO: This should be create token
+        // the requited proofs for the token amount may already be in the wallet and mint is not needed
+        // Mint a token
+        pub async fn mint_token(
+            &mut self,
+            mint_url: UncheckedUrl,
+            amount: Amount,
+            memo: Option<String>,
+            unit: Option<CurrencyUnit>,
+        ) -> Result<Token, Error> {
+            let quote = self
+                .mint_quote(
+                    mint_url.clone(),
+                    amount,
+                    unit.clone()
+                        .ok_or(Error::Custom("Unit required".to_string()))?,
+                )
+                .await?;
 
-        let proofs = self.mint(mint_url.clone(), &quote.id).await?;
+            let proofs = self.mint(mint_url.clone(), &quote.id).await?;
 
-        let token = Token::new(mint_url.clone(), proofs, memo, unit);
-        Ok(token?)
-    }
-
+            let token = Token::new(mint_url.clone(), proofs, memo, unit);
+            Ok(token?)
+        }
+    */
     /// Mint Quote
     pub async fn mint_quote(
         &mut self,
@@ -225,7 +228,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
     }
 
     /// Mint
-    pub async fn mint(&mut self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Proofs, Error> {
+    pub async fn mint(&mut self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Amount, Error> {
         let quote_info = self.localstore.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
@@ -271,29 +274,28 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             &keys,
         )?;
 
+        let minted_amount = proofs.iter().map(|p| p.amount).sum();
+
+        // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
 
-        Ok(proofs)
+        // Add new proofs to store
+        self.localstore.add_proofs(mint_url, proofs).await?;
+
+        Ok(minted_amount)
     }
 
     /// Receive
-    pub async fn receive(&mut self, encoded_token: &str) -> Result<Proofs, Error> {
+    pub async fn receive(&mut self, encoded_token: &str) -> Result<(), Error> {
         let token_data = Token::from_str(encoded_token)?;
 
         let unit = token_data.unit.unwrap_or_default();
 
-        let mut proofs: Vec<Proofs> = vec![vec![]];
+        let mut proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
         for token in token_data.token {
             if token.proofs.is_empty() {
                 continue;
             }
-            /*
-                        let keys = if token.mint.to_string().eq(&self.mint_url.to_string()) {
-                            self.mint_keys.clone()
-                        } else {
-                            self.client.get_mint_keys(token.mint.try_into()?).await?
-                        };
-            */
 
             let active_keyset_id = self.active_mint_keyset(&token.mint, &unit).await?;
 
@@ -305,7 +307,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
 
             let pre_swap = self
-                .create_split(&token.mint, &unit, Some(amount), token.proofs)
+                .create_swap(&token.mint, &unit, Some(amount), token.proofs)
                 .await?;
 
             let swap_response = self
@@ -320,13 +322,20 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 pre_swap.pre_mint_secrets.secrets(),
                 &keys.unwrap(),
             )?;
-            proofs.push(p);
+            let mint_proofs = proofs.entry(token.mint).or_insert(Vec::new());
+
+            mint_proofs.extend(p);
         }
-        Ok(proofs.iter().flatten().cloned().collect())
+
+        for (mint, proofs) in proofs {
+            self.localstore.add_proofs(mint, proofs).await?;
+        }
+
+        Ok(())
     }
 
     /// Create Split Payload
-    async fn create_split(
+    async fn create_swap(
         &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
@@ -363,7 +372,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         })
     }
 
-    pub async fn process_split_response(
+    pub async fn process_swap_response(
         &self,
         blinded_messages: PreMintSecrets,
         promises: Vec<BlindedSignature>,
@@ -412,7 +421,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         }
 
         let pre_swap = self
-            .create_split(mint_url, unit, Some(amount), proofs)
+            .create_swap(mint_url, unit, Some(amount), proofs)
             .await?;
 
         let swap_response = self
