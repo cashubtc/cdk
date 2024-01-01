@@ -1,5 +1,5 @@
 //! Cashu Wallet
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use bip39::Mnemonic;
@@ -7,15 +7,14 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Id, Keys, PreMintSecrets, PreSwap, Proof, Proofs, SwapRequest,
-    Token,
+    BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, PreMintSecrets, PreSwap, Proof, Proofs,
+    SwapRequest, Token,
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
 use cashu::types::{MeltQuote, Melted, MintQuote, SendProofs};
 use cashu::url::UncheckedUrl;
-use cashu::Amount;
-pub use cashu::Bolt11Invoice;
+use cashu::{Amount, Bolt11Invoice};
 use thiserror::Error;
 use tracing::warn;
 
@@ -495,13 +494,64 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         Ok(quote)
     }
 
+    // Select proofs
+    async fn select_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+        unit: &CurrencyUnit,
+        amount: Amount,
+    ) -> Result<Proofs, Error> {
+        let mint_proofs = self
+            .localstore
+            .get_proofs(mint_url.clone())
+            .await?
+            .ok_or(Error::InsufficientFunds)?;
+
+        let mint_keysets = self.localstore.get_mint_keysets(mint_url).await?.unwrap();
+
+        let (active, inactive): (HashSet<KeySetInfo>, HashSet<KeySetInfo>) = mint_keysets
+            .into_iter()
+            .filter(|p| p.unit.eq(unit))
+            .partition(|x| x.active);
+
+        let active: HashSet<Id> = active.iter().map(|k| k.id).collect();
+        let inactive: HashSet<Id> = inactive.iter().map(|k| k.id).collect();
+
+        let mut active_proofs: Proofs = Vec::new();
+        let mut inactive_proofs: Proofs = Vec::new();
+
+        for proof in mint_proofs {
+            if active.contains(&proof.keyset_id) {
+                active_proofs.push(proof);
+            } else if inactive.contains(&proof.keyset_id) {
+                inactive_proofs.push(proof);
+            }
+        }
+
+        active_proofs.reverse();
+        inactive_proofs.reverse();
+
+        inactive_proofs.append(&mut active_proofs);
+
+        let proofs = inactive_proofs;
+
+        let mut selected_proofs: Proofs = Vec::new();
+
+        for proof in proofs {
+            if selected_proofs.iter().map(|p| p.amount).sum::<Amount>() < amount {
+                selected_proofs.push(proof);
+            }
+        }
+
+        if selected_proofs.iter().map(|p| p.amount).sum::<Amount>() < amount {
+            return Err(Error::InsufficientFunds);
+        }
+
+        Ok(selected_proofs)
+    }
+
     /// Melt
-    pub async fn melt(
-        &mut self,
-        mint_url: &UncheckedUrl,
-        quote_id: &str,
-        proofs: Proofs,
-    ) -> Result<Melted, Error> {
+    pub async fn melt(&mut self, mint_url: &UncheckedUrl, quote_id: &str) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
@@ -520,6 +570,10 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 .unwrap(),
             quote_info.fee_reserve,
         )?;
+
+        let proofs = self
+            .select_proofs(mint_url.clone(), &quote_info.unit, quote_info.amount)
+            .await?;
 
         let melt_response = self
             .client
