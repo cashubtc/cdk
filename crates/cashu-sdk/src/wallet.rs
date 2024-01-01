@@ -1,5 +1,5 @@
 //! Cashu Wallet
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use bip39::Mnemonic;
@@ -7,8 +7,8 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut00::mint;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PreMintSecrets, PreSwap, Proof,
-    Proofs, SwapRequest, Token,
+    BlindedSignature, CurrencyUnit, Id, Keys, PreMintSecrets, PreSwap, Proof, Proofs, SwapRequest,
+    Token,
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
@@ -20,6 +20,7 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::client::Client;
+use crate::localstore::LocalStore;
 use crate::utils::unix_time;
 
 #[derive(Debug, Error)]
@@ -39,6 +40,8 @@ pub enum Error {
     #[error("Quote Unknown")]
     QuoteUnknown,
     #[error("`{0}`")]
+    LocalStore(#[from] super::localstore::Error),
+    #[error("`{0}`")]
     Custom(String),
 }
 
@@ -49,36 +52,37 @@ pub struct BackupInfo {
 }
 
 #[derive(Clone, Debug)]
-pub struct Wallet<C: Client> {
+pub struct Wallet<C: Client, L: LocalStore> {
     backup_info: Option<BackupInfo>,
     pub client: C,
-    pub mints: HashMap<UncheckedUrl, Option<MintInfo>>,
-    pub mint_keysets: HashMap<UncheckedUrl, HashSet<KeySetInfo>>,
-    pub mint_quotes: HashMap<String, MintQuote>,
-    pub melt_quotes: HashMap<String, MeltQuote>,
-    pub mint_keys: HashMap<Id, Keys>,
-    pub balance: Amount,
+    pub localstore: L,
 }
 
-impl<C: Client> Wallet<C> {
-    pub fn new(
+impl<C: Client, L: LocalStore> Wallet<C, L> {
+    pub async fn new(
         client: C,
-        mints: HashMap<UncheckedUrl, Option<MintInfo>>,
-        mint_keysets: HashMap<UncheckedUrl, HashSet<KeySetInfo>>,
+        localstore: L,
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
         backup_info: Option<BackupInfo>,
-        mint_keys: HashMap<Id, Keys>,
+        mint_keys: Vec<Keys>,
     ) -> Self {
+        for quote in mint_quotes {
+            localstore.add_mint_quote(quote).await.ok();
+        }
+
+        for quote in melt_quotes {
+            localstore.add_melt_quote(quote).await.ok();
+        }
+
+        for keys in mint_keys {
+            localstore.add_keys(keys).await.ok();
+        }
+
         Self {
             backup_info,
             client,
-            mints,
-            mint_keysets,
-            mint_keys,
-            mint_quotes: mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
-            melt_quotes: melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
-            balance: Amount::ZERO,
+            localstore,
         }
     }
 
@@ -168,8 +172,7 @@ impl<C: Client> Wallet<C> {
             expiry: quote_res.expiry,
         };
 
-        self.mint_quotes
-            .insert(quote_res.quote.clone(), quote.clone());
+        self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -179,7 +182,7 @@ impl<C: Client> Wallet<C> {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
     ) -> Result<Option<Id>, Error> {
-        if let Some(keysets) = self.mint_keysets.get(mint_url) {
+        if let Some(keysets) = self.localstore.get_mint_keysets(mint_url.clone()).await? {
             for keyset in keysets {
                 if keyset.unit.eq(unit) && keyset.active {
                     return Ok(Some(keyset.id));
@@ -188,8 +191,9 @@ impl<C: Client> Wallet<C> {
         } else {
             let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
 
-            self.mint_keysets
-                .insert(mint_url.clone(), keysets.keysets.into_iter().collect());
+            self.localstore
+                .add_mint_keysets(mint_url.clone(), keysets.keysets.into_iter().collect())
+                .await?;
         }
 
         Ok(None)
@@ -204,7 +208,7 @@ impl<C: Client> Wallet<C> {
 
         let mut keys = None;
 
-        if let Some(k) = self.mint_keys.get(&active_keyset_id) {
+        if let Some(k) = self.localstore.get_keys(&active_keyset_id).await? {
             keys = Some(k.clone())
         } else {
             let keysets = self.client.get_mint_keys(mint_url.try_into()?).await?;
@@ -213,7 +217,7 @@ impl<C: Client> Wallet<C> {
                 if keyset.id.eq(&active_keyset_id) {
                     keys = Some(keyset.keys.clone())
                 }
-                self.mint_keys.insert(keyset.id, keyset.keys);
+                self.localstore.add_keys(keyset.keys).await?;
             }
         }
 
@@ -222,7 +226,7 @@ impl<C: Client> Wallet<C> {
 
     /// Mint
     pub async fn mint(&mut self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Proofs, Error> {
-        let quote_info = self.mint_quotes.get(quote_id);
+        let quote_info = self.localstore.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
@@ -258,16 +262,16 @@ impl<C: Client> Wallet<C> {
             )
             .await?;
 
-        let keys = self.mint_keys.get(&active_keyset_id).unwrap();
+        let keys = self.localstore.get_keys(&active_keyset_id).await?.unwrap();
 
         let proofs = construct_proofs(
             mint_res.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
-            keys,
+            &keys,
         )?;
 
-        self.mint_quotes.remove(&quote_info.id);
+        self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         Ok(proofs)
     }
@@ -295,7 +299,7 @@ impl<C: Client> Wallet<C> {
 
             // TODO: if none fetch keyset for mint
 
-            let keys = self.mint_keys.get(&active_keyset_id.unwrap()).cloned();
+            let keys = self.localstore.get_keys(&active_keyset_id.unwrap()).await?;
 
             // Sum amount of all proofs
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
@@ -359,7 +363,7 @@ impl<C: Client> Wallet<C> {
         })
     }
 
-    pub fn process_split_response(
+    pub async fn process_split_response(
         &self,
         blinded_messages: PreMintSecrets,
         promises: Vec<BlindedSignature>,
@@ -368,8 +372,9 @@ impl<C: Client> Wallet<C> {
 
         for (promise, premint) in promises.iter().zip(blinded_messages) {
             let a = self
-                .mint_keys
-                .get(&promise.keyset_id)
+                .localstore
+                .get_keys(&promise.keyset_id)
+                .await?
                 .unwrap()
                 .amount_key(promise.amount)
                 .unwrap()
@@ -475,7 +480,7 @@ impl<C: Client> Wallet<C> {
             expiry: quote_res.expiry,
         };
 
-        self.melt_quotes.insert(quote.id.clone(), quote.clone());
+        self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -487,7 +492,7 @@ impl<C: Client> Wallet<C> {
         quote_id: &str,
         proofs: Proofs,
     ) -> Result<Melted, Error> {
-        let quote_info = self.melt_quotes.get(quote_id);
+        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
@@ -531,6 +536,8 @@ impl<C: Client> Wallet<C> {
             preimage: melt_response.payment_preimage,
             change: change_proofs,
         };
+
+        self.localstore.remove_melt_quote(&quote_info.id).await?;
 
         Ok(melted)
     }
