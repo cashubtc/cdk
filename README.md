@@ -6,6 +6,8 @@ Modeled after [Cashu-ts](https://github.com/cashubtc/cashu-ts).
 
 **ALPHA** This library is in early development, the api will change.
 
+Experimental for this project can be found in the [cashu-crab-bindings](https://github.com/thesimplekid/cashu-crab-bindings) repository.
+
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
 - :heavy_check_mark: [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
