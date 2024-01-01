@@ -127,12 +127,12 @@ impl LocalStore for MemoryLocalStore {
             .map(|p| p.iter().cloned().collect()))
     }
 
-    async fn remove_proofs(&self, mint_url: UncheckedUrl, proofs: Proofs) -> Result<(), Error> {
+    async fn remove_proofs(&self, mint_url: UncheckedUrl, proofs: &Proofs) -> Result<(), Error> {
         let mut mint_proofs = self.proofs.lock().await;
 
         if let Some(mint_proofs) = mint_proofs.get_mut(&mint_url) {
             for proof in proofs {
-                mint_proofs.remove(&proof);
+                mint_proofs.remove(proof);
             }
         }
 
