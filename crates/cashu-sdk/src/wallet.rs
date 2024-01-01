@@ -12,7 +12,7 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::types::ProofsStatus;
-use cashu::types::{MeltQuote, Melted, MintQuote, SendProofs};
+use cashu::types::{MeltQuote, Melted, MintQuote};
 use cashu::url::UncheckedUrl;
 use cashu::{Amount, Bolt11Invoice};
 use thiserror::Error;
@@ -411,17 +411,11 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Amount,
-        proofs: Proofs,
-    ) -> Result<SendProofs, Error> {
-        let amount_available: Amount = proofs.iter().map(|p| p.amount).sum();
-
-        if amount_available.lt(&amount) {
-            println!("Not enough funds");
-            return Err(Error::InsufficientFunds);
-        }
+    ) -> Result<Proofs, Error> {
+        let proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
 
         let pre_swap = self
-            .create_swap(mint_url, unit, Some(amount), proofs)
+            .create_swap(mint_url, unit, Some(amount), proofs.clone())
             .await?;
 
         let swap_response = self
@@ -432,25 +426,22 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         let mut keep_proofs = Proofs::new();
         let mut send_proofs = Proofs::new();
 
-        let mut proofs = construct_proofs(
+        let mut post_swap_proofs = construct_proofs(
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
             &self.active_keys(mint_url, unit).await?.unwrap(),
         )?;
 
-        proofs.reverse();
+        post_swap_proofs.reverse();
 
-        for proof in proofs {
+        for proof in post_swap_proofs {
             if (proof.amount + send_proofs.iter().map(|p| p.amount).sum()).gt(&amount) {
                 keep_proofs.push(proof);
             } else {
                 send_proofs.push(proof);
             }
         }
-
-        // println!("Send Proofs: {:#?}", send_proofs);
-        // println!("Keep Proofs: {:#?}", keep_proofs);
 
         let send_amount: Amount = send_proofs.iter().map(|p| p.amount).sum();
 
@@ -461,10 +452,19 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             );
         }
 
-        Ok(SendProofs {
-            change_proofs: keep_proofs,
-            send_proofs,
-        })
+        self.localstore
+            .remove_proofs(mint_url.clone(), &proofs)
+            .await?;
+
+        self.localstore
+            .add_proofs(mint_url.clone(), keep_proofs)
+            .await?;
+
+        // REVIEW: send proofs are not added to the store since they should be
+        // used. but if they are not they will be lost. There should likely be a
+        // pendiing proof store
+
+        Ok(send_proofs)
     }
 
     /// Melt Quote

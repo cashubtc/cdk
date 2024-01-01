@@ -11,12 +11,6 @@ pub struct ProofsStatus {
     pub spent: Proofs,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SendProofs {
-    pub change_proofs: Proofs,
-    pub send_proofs: Proofs,
-}
-
 /// Melt response with proofs
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Melted {
