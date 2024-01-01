@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::str::FromStr;
 
@@ -7,7 +8,8 @@ use cashu_js::JsAmount;
 #[cfg(feature = "nut07")]
 use cashu_js::JsProofsStatus;
 use cashu_sdk::client::gloo_client::HttpClient;
-use cashu_sdk::nuts::CurrencyUnit;
+use cashu_sdk::nuts::{CurrencyUnit, Id};
+use cashu_sdk::url::UncheckedUrl;
 use cashu_sdk::wallet::Wallet;
 use wasm_bindgen::prelude::*;
 
@@ -36,17 +38,21 @@ impl From<Wallet<HttpClient>> for JsWallet {
 impl JsWallet {
     // TODO: Quotes
     #[wasm_bindgen(constructor)]
-    pub fn new(mint_url: String, mint_keys: JsKeys) -> JsWallet {
+    pub fn new(mint_urls: Vec<String>, mint_keys: Vec<JsKeys>) -> JsWallet {
         let client = HttpClient {};
 
+        let mints = mint_urls
+            .iter()
+            .map(|u| (UncheckedUrl::from_str(u).unwrap(), None))
+            .collect();
+
+        let keys = mint_keys
+            .iter()
+            .map(|k| (Id::from(k.deref()), k.deref().clone()))
+            .collect();
+
         JsWallet {
-            inner: Wallet::new(
-                client,
-                mint_url.into(),
-                vec![],
-                vec![],
-                mint_keys.deref().clone(),
-            ),
+            inner: Wallet::new(client, mints, HashMap::new(), vec![], vec![], None, keys),
         }
     }
 
@@ -68,15 +74,17 @@ impl JsWallet {
     #[wasm_bindgen(js_name = mintToken)]
     pub async fn mint_token(
         &mut self,
+        mint_url: String,
         amount: JsAmount,
         memo: Option<String>,
         unit: Option<String>,
     ) -> Result<JsToken> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let unit = unit.map(|u| CurrencyUnit::from_str(&u).unwrap_or_default());
 
         Ok(self
             .inner
-            .mint_token(*amount.deref(), memo, unit)
+            .mint_token(mint_url, *amount.deref(), memo, unit)
             .await
             .map_err(into_err)?
             .into())
@@ -84,14 +92,15 @@ impl JsWallet {
 
     /// Mint
     #[wasm_bindgen(js_name = mint)]
-    pub async fn mint(&mut self, quote: String) -> Result<JsValue> {
-        serde_wasm_bindgen::to_value(&self.inner.mint(&quote).await.map_err(into_err)?)
+    pub async fn mint(&mut self, mint_url: String, quote: String) -> Result<JsValue> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+        serde_wasm_bindgen::to_value(&self.inner.mint(mint_url, &quote).await.map_err(into_err)?)
             .map_err(into_err)
     }
 
     /// Receive
     #[wasm_bindgen(js_name = receive)]
-    pub async fn receive(&self, token: String) -> Result<JsValue> {
+    pub async fn receive(&mut self, token: String) -> Result<JsValue> {
         serde_wasm_bindgen::to_value(&self.inner.receive(&token).await.map_err(into_err)?)
             .map_err(into_err)
     }
@@ -116,12 +125,20 @@ impl JsWallet {
 
     /// Send
     #[wasm_bindgen(js_name = send)]
-    pub async fn send(&self, amount: JsAmount, proofs: JsValue) -> Result<JsSendProofs> {
+    pub async fn send(
+        &mut self,
+        mint_url: String,
+        amount: JsAmount,
+        unit: String,
+        proofs: JsValue,
+    ) -> Result<JsSendProofs> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+        let unit = CurrencyUnit::from_str(&unit).map_err(into_err)?;
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
         Ok(self
             .inner
-            .send(*amount.deref(), proofs)
+            .send(&mint_url, &unit, *amount.deref(), proofs)
             .await
             .map_err(into_err)?
             .into())
@@ -129,12 +146,18 @@ impl JsWallet {
 
     /// Melt
     #[wasm_bindgen(js_name = melt)]
-    pub async fn melt(&self, quote: String, proofs: JsValue) -> Result<JsMelted> {
+    pub async fn melt(
+        &mut self,
+        mint_url: String,
+        quote: String,
+        proofs: JsValue,
+    ) -> Result<JsMelted> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
         Ok(self
             .inner
-            .melt(&quote, proofs)
+            .melt(&mint_url, &quote, proofs)
             .await
             .map_err(into_err)?
             .into())
@@ -144,10 +167,12 @@ impl JsWallet {
     #[wasm_bindgen(js_name = proofsToToken)]
     pub fn proofs_to_token(
         &self,
+        mint_url: String,
         proofs: JsValue,
         unit: Option<String>,
         memo: Option<String>,
     ) -> Result<String> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let proofs = serde_wasm_bindgen::from_value(proofs).map_err(into_err)?;
 
         let unit = unit.map(|u| {
@@ -157,7 +182,7 @@ impl JsWallet {
         });
 
         self.inner
-            .proofs_to_token(proofs, memo, unit)
+            .proofs_to_token(mint_url, proofs, memo, unit)
             .map_err(into_err)
     }
 }

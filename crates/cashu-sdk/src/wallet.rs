@@ -82,6 +82,16 @@ impl<C: Client> Wallet<C> {
         }
     }
 
+    /// Back up seed
+    pub fn mnemonic(&self) -> Option<Mnemonic> {
+        self.backup_info.clone().map(|b| b.mnemonic)
+    }
+
+    /// Back up keyset counters
+    pub fn keyset_counters(&self) -> Option<HashMap<Id, u64>> {
+        self.backup_info.clone().map(|b| b.counter)
+    }
+
     /// Check if a proof is spent
     #[cfg(feature = "nut07")]
     pub async fn check_proofs_spent(
