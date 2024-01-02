@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -78,6 +79,25 @@ impl LocalStore for RedbLocalStore {
         }
 
         Ok(None)
+    }
+
+    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(MINTS_TABLE)?;
+
+        let mints = table
+            .iter()?
+            .flatten()
+            .map(|(mint, mint_info)| {
+                (
+                    serde_json::from_str(mint.value()).unwrap(),
+                    serde_json::from_str(mint_info.value()).unwrap(),
+                )
+            })
+            .collect();
+
+        Ok(mints)
     }
 
     async fn add_mint_keysets(

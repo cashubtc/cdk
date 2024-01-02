@@ -95,6 +95,28 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         self.backup_info.clone().map(|b| b.counter)
     }
 
+    pub async fn mint_balances(&self) -> Result<HashMap<UncheckedUrl, Amount>, Error> {
+        let mints = self.localstore.get_mints().await?;
+
+        let mut balances = HashMap::new();
+
+        for (mint, _) in mints {
+            if let Some(proofs) = self.localstore.get_proofs(mint.clone()).await? {
+                let amount = proofs.iter().map(|p| p.amount).sum();
+
+                balances.insert(mint, amount);
+            } else {
+                balances.insert(mint, Amount::ZERO);
+            }
+        }
+
+        Ok(balances)
+    }
+
+    pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
+        Ok(self.localstore.get_proofs(mint_url).await?)
+    }
+
     /// Check if a proof is spent
     #[cfg(feature = "nut07")]
     pub async fn check_proofs_spent(

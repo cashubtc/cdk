@@ -34,6 +34,10 @@ impl LocalStore for MemoryLocalStore {
         Ok(self.mints.lock().await.get(&mint_url).cloned().flatten())
     }
 
+    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Error> {
+        Ok(self.mints.lock().await.clone())
+    }
+
     async fn add_mint_keysets(
         &self,
         mint_url: UncheckedUrl,
