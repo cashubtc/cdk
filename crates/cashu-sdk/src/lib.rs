@@ -20,6 +20,8 @@ pub mod wallet;
 
 pub use bip39::Mnemonic;
 pub use cashu::{self, *};
+#[cfg(not(target_arch = "wasm32"))]
+pub use localstore::redb_store::RedbLocalStore;
 
 #[cfg(feature = "blocking")]
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().expect("Can't start Tokio runtime"));

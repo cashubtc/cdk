@@ -1,4 +1,8 @@
 mod memory;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod redb_store;
+
 use async_trait::async_trait;
 use cashu::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cashu::types::{MeltQuote, MintQuote};
@@ -6,7 +10,22 @@ use cashu::url::UncheckedUrl;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Error {}
+pub enum Error {
+    #[error("`{0}`")]
+    Redb(#[from] redb::Error),
+    #[error("`{0}`")]
+    Database(#[from] redb::DatabaseError),
+    #[error("`{0}`")]
+    Transaction(#[from] redb::TransactionError),
+    #[error("`{0}`")]
+    Commit(#[from] redb::CommitError),
+    #[error("`{0}`")]
+    Table(#[from] redb::TableError),
+    #[error("`{0}`")]
+    Storage(#[from] redb::StorageError),
+    #[error("`{0}`")]
+    Serde(#[from] serde_json::Error),
+}
 
 #[async_trait(?Send)]
 pub trait LocalStore {
