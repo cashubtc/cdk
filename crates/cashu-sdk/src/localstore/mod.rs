@@ -3,6 +3,8 @@ mod memory;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod redb_store;
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use cashu::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cashu::types::{MeltQuote, MintQuote};
@@ -35,6 +37,7 @@ pub trait LocalStore {
         mint_info: Option<MintInfo>,
     ) -> Result<(), Error>;
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Error>;
+    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Error>;
 
     async fn add_mint_keysets(
         &self,
