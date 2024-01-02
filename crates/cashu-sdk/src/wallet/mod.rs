@@ -15,12 +15,14 @@ use cashu::types::ProofsStatus;
 use cashu::types::{MeltQuote, Melted, MintQuote};
 use cashu::url::UncheckedUrl;
 use cashu::{Amount, Bolt11Invoice};
+use localstore::LocalStore;
 use thiserror::Error;
 use tracing::warn;
 
 use crate::client::Client;
-use crate::localstore::LocalStore;
 use crate::utils::unix_time;
+
+pub mod localstore;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -39,7 +41,7 @@ pub enum Error {
     #[error("Quote Unknown")]
     QuoteUnknown,
     #[error("`{0}`")]
-    LocalStore(#[from] super::localstore::Error),
+    LocalStore(#[from] localstore::Error),
     #[error("`{0}`")]
     Custom(String),
 }

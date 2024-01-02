@@ -11,7 +11,6 @@ use tokio::runtime::Runtime;
 #[cfg(feature = "wallet")]
 pub mod client;
 
-mod localstore;
 #[cfg(feature = "mint")]
 pub mod mint;
 pub mod utils;
@@ -20,8 +19,6 @@ pub mod wallet;
 
 pub use bip39::Mnemonic;
 pub use cashu::{self, *};
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-pub use localstore::redb_store::RedbLocalStore;
 
 #[cfg(feature = "blocking")]
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().expect("Can't start Tokio runtime"));
