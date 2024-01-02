@@ -9,6 +9,8 @@ use async_trait::async_trait;
 use cashu::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::url::UncheckedUrl;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub use redb_store::RedbLocalStore;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
