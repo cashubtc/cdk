@@ -1,6 +1,6 @@
 mod memory;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
 pub mod redb_store;
 
 use std::collections::HashMap;
@@ -13,18 +13,25 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Redb(#[from] redb::Error),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Database(#[from] redb::DatabaseError),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Transaction(#[from] redb::TransactionError),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Commit(#[from] redb::CommitError),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Table(#[from] redb::TableError),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Storage(#[from] redb::StorageError),
+    #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Serde(#[from] serde_json::Error),
 }
