@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use cashu::dhke::{sign_message, verify_message};
-pub use cashu::error::mint::Error;
 use cashu::nuts::{
     BlindedMessage, BlindedSignature, MeltBolt11Request, MeltBolt11Response, Proof, SwapRequest,
     SwapResponse, *,
@@ -11,39 +10,60 @@ use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::secret::Secret;
 use cashu::Amount;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tracing::{debug, info};
 
-use crate::types::MeltQuote;
 use crate::utils::unix_time;
 use crate::Mnemonic;
 
-pub struct Mint {
+mod localstore;
+
+use localstore::LocalStore;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Unknown Keyset
+    #[error("Unknown Keyset")]
+    UnknownKeySet,
+    /// Inactive Keyset
+    #[error("Inactive Keyset")]
+    InactiveKeyset,
+    #[error("No key for amount")]
+    AmountKey,
+    #[error("Amount")]
+    Amount,
+    #[error("Duplicate proofs")]
+    DuplicateProofs,
+    #[error("Token Spent")]
+    TokenSpent,
+    #[error("`{0}`")]
+    Custom(String),
+    #[error("`{0}`")]
+    Cashu(#[from] cashu::error::mint::Error),
+    #[error("`{0}`")]
+    Localstore(#[from] localstore::Error),
+}
+
+pub struct Mint<L: LocalStore> {
     //    pub pubkey: PublicKey
-    pub keysets: HashMap<Id, nut02::mint::KeySet>,
     pub keysets_info: HashMap<Id, MintKeySetInfo>,
     //    pub pubkey: PublicKey,
     mnemonic: Mnemonic,
-    pub spent_secrets: HashSet<Secret>,
-    pub pending_secrets: HashSet<Secret>,
     pub fee_reserve: FeeReserve,
-    pub melt_quotes: HashMap<String, MeltQuote>,
+    localstore: L,
 }
 
-impl Mint {
-    pub fn new(
+impl<L: LocalStore> Mint<L> {
+    pub async fn new(
+        localstore: L,
         mnemonic: Mnemonic,
         keysets_info: HashSet<MintKeySetInfo>,
-        spent_secrets: HashSet<Secret>,
-        melt_quotes: Vec<MeltQuote>,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
-    ) -> Self {
-        let mut keysets = HashMap::default();
+    ) -> Result<Self, Error> {
         let mut info = HashMap::default();
 
         let mut active_units: HashSet<CurrencyUnit> = HashSet::default();
-
-        let melt_quotes = melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect();
 
         // Check that there is only one active keyset per unit
         for keyset_info in keysets_info {
@@ -59,38 +79,35 @@ impl Mint {
                 keyset_info.max_order,
             );
 
-            keysets.insert(keyset.id, keyset);
-
             info.insert(keyset_info.id, keyset_info);
+
+            localstore.add_keyset(keyset).await?;
         }
 
-        Self {
+        Ok(Self {
+            localstore,
             mnemonic,
-            keysets,
-            melt_quotes,
             keysets_info: info,
-            spent_secrets,
-            pending_secrets: HashSet::new(),
             fee_reserve: FeeReserve {
                 min_fee_reserve,
                 percent_fee_reserve,
             },
-        }
+        })
     }
 
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
-    pub fn keyset_pubkeys(&self, keyset_id: &Id) -> Option<KeysResponse> {
-        let keyset = match self.keysets.get(keyset_id) {
+    pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<Option<KeysResponse>, Error> {
+        let keyset = match self.localstore.get_keyset(keyset_id).await? {
             Some(keyset) => keyset.clone(),
             None => {
-                return None;
+                return Ok(None);
             }
         };
 
-        Some(KeysResponse {
+        Ok(Some(KeysResponse {
             keysets: vec![keyset.into()],
-        })
+        }))
     }
 
     /// Return a list of all supported keysets
@@ -104,13 +121,22 @@ impl Mint {
         KeysetResponse { keysets }
     }
 
-    pub fn keyset(&self, id: &Id) -> Option<KeySet> {
-        self.keysets.get(id).map(|ks| ks.clone().into())
+    pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
+        Ok(self
+            .localstore
+            .get_keyset(id)
+            .await?
+            .map(|ks| ks.clone().into()))
     }
 
     /// Add current keyset to inactive keysets
     /// Generate new keyset
-    pub fn rotate_keyset(&mut self, unit: CurrencyUnit, derivation_path: &str, max_order: u8) {
+    pub async fn rotate_keyset(
+        &mut self,
+        unit: CurrencyUnit,
+        derivation_path: &str,
+        max_order: u8,
+    ) -> Result<(), Error> {
         let new_keyset = MintKeySet::generate(
             &self.mnemonic.to_seed_normalized(""),
             unit.clone(),
@@ -118,7 +144,7 @@ impl Mint {
             max_order,
         );
 
-        self.keysets.insert(new_keyset.id, new_keyset.clone());
+        self.localstore.add_keyset(new_keyset.clone()).await?;
 
         for mint_keyset_info in self.keysets_info.values_mut() {
             if mint_keyset_info.active && mint_keyset_info.unit.eq(&unit) {
@@ -137,16 +163,17 @@ impl Mint {
         };
 
         self.keysets_info.insert(new_keyset.id, mint_keyset_info);
+        Ok(())
     }
 
-    pub fn process_mint_request(
+    pub async fn process_mint_request(
         &mut self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
         for blinded_message in mint_request.outputs {
-            blind_signatures.push(self.blind_sign(&blinded_message)?);
+            blind_signatures.push(self.blind_sign(&blinded_message).await?);
         }
 
         Ok(nut04::MintBolt11Response {
@@ -154,14 +181,21 @@ impl Mint {
         })
     }
 
-    fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindedSignature, Error> {
+    async fn blind_sign(
+        &self,
+        blinded_message: &BlindedMessage,
+    ) -> Result<BlindedSignature, Error> {
         let BlindedMessage {
             amount,
             b,
             keyset_id,
         } = blinded_message;
 
-        let keyset = self.keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
+        let keyset = self
+            .localstore
+            .get_keyset(keyset_id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
 
         // Check that the keyset is active and should be used to sign
         if !self
@@ -187,7 +221,7 @@ impl Mint {
         })
     }
 
-    pub fn process_swap_request(
+    pub async fn process_swap_request(
         &mut self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
@@ -213,30 +247,41 @@ impl Mint {
         }
 
         for proof in &swap_request.inputs {
-            self.verify_proof(proof)?
+            self.verify_proof(proof).await?
         }
 
-        for secret in secrets {
-            self.spent_secrets.insert(secret);
+        for (secret, proof) in secrets.iter().zip(swap_request.inputs) {
+            self.localstore
+                .add_spent_proof(secret.clone(), proof)
+                .await
+                .unwrap();
         }
 
-        let promises: Vec<BlindedSignature> = swap_request
-            .outputs
-            .iter()
-            .map(|b| self.blind_sign(b).unwrap())
-            .collect();
+        let mut promises = Vec::with_capacity(swap_request.outputs.len());
+
+        for output in swap_request.outputs {
+            let promise = self.blind_sign(&output).await?;
+            promises.push(promise);
+        }
 
         Ok(SwapResponse::new(promises))
     }
 
-    fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
-        if self.spent_secrets.contains(&proof.secret) {
+    async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+        if self
+            .localstore
+            .get_spent_proof(&proof.secret)
+            .await
+            .unwrap()
+            .is_some()
+        {
             return Err(Error::TokenSpent);
         }
 
         let keyset = self
-            .keysets
-            .get(&proof.keyset_id)
+            .localstore
+            .get_keyset(&proof.keyset_id)
+            .await?
             .ok_or(Error::UnknownKeySet)?;
 
         let Some(keypair) = keyset.keys.0.get(&proof.amount) else {
@@ -253,7 +298,7 @@ impl Mint {
     }
 
     #[cfg(feature = "nut07")]
-    pub fn check_spendable(
+    pub async fn check_spendable(
         &self,
         check_spendable: &CheckSpendableRequest,
     ) -> Result<CheckSpendableResponse, Error> {
@@ -261,15 +306,40 @@ impl Mint {
         let mut pending = Vec::with_capacity(check_spendable.proofs.len());
 
         for proof in &check_spendable.proofs {
-            spendable.push(!self.spent_secrets.contains(&proof.secret));
-            pending.push(self.pending_secrets.contains(&proof.secret));
+            spendable.push(
+                self.localstore
+                    .get_spent_proof(&proof.secret)
+                    .await
+                    .unwrap()
+                    .is_none(),
+            );
+            pending.push(
+                self.localstore
+                    .get_pending_proof(&proof.secret)
+                    .await
+                    .unwrap()
+                    .is_some(),
+            );
         }
 
         Ok(CheckSpendableResponse { spendable, pending })
     }
 
-    pub fn verify_melt_request(&mut self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let quote = self.melt_quotes.get(&melt_request.quote).unwrap();
+    pub async fn verify_melt_request(
+        &mut self,
+        melt_request: &MeltBolt11Request,
+    ) -> Result<(), Error> {
+        let quote = self
+            .localstore
+            .get_melt_quote(&melt_request.quote)
+            .await
+            .unwrap();
+        let quote = if let Some(quote) = quote {
+            quote
+        } else {
+            return Err(Error::Custom("Unknown Quote".to_string()));
+        };
+
         let proofs_total = melt_request.proofs_amount();
 
         let required_total = quote.amount + quote.fee_reserve;
@@ -290,23 +360,25 @@ impl Mint {
         }
 
         for proof in &melt_request.inputs {
-            self.verify_proof(proof)?
+            self.verify_proof(proof).await?
         }
 
         Ok(())
     }
 
-    pub fn process_melt_request(
+    pub async fn process_melt_request(
         &mut self,
         melt_request: &MeltBolt11Request,
         preimage: &str,
         total_spent: Amount,
     ) -> Result<MeltBolt11Response, Error> {
-        self.verify_melt_request(melt_request)?;
+        self.verify_melt_request(melt_request).await?;
 
-        let secrets = Vec::with_capacity(melt_request.inputs.len());
-        for secret in secrets {
-            self.spent_secrets.insert(secret);
+        for input in &melt_request.inputs {
+            self.localstore
+                .add_spent_proof(input.secret.clone(), input.clone())
+                .await
+                .unwrap();
         }
 
         let mut change = None;
@@ -333,7 +405,7 @@ impl Mint {
                 let mut blinded_message = blinded_message;
                 blinded_message.amount = *amount;
 
-                let signature = self.blind_sign(&blinded_message)?;
+                let signature = self.blind_sign(&blinded_message).await?;
                 change_sigs.push(signature)
             }
 
