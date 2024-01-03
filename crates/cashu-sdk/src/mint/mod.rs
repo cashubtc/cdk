@@ -302,17 +302,6 @@ impl<L: LocalStore> Mint<L> {
                 .await?
                 .ok_or(Error::UnknownKeySet)?;
 
-            // Get the active keyset for the unit
-            let active_keyset_id = self
-                .localstore
-                .get_active_keyset_id(&keyset.unit)
-                .await?
-                .ok_or(Error::InactiveKeyset)?;
-
-            // Check output is for current active keyset
-            if id.ne(&active_keyset_id) {
-                return Err(Error::InactiveKeyset);
-            }
             keyset_units.push(keyset.unit);
         }
 
