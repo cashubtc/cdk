@@ -256,9 +256,53 @@ impl<L: LocalStore> Mint<L> {
             self.verify_proof(proof).await?
         }
 
-        for (secret, proof) in secrets.iter().zip(swap_request.inputs) {
+        let input_keyset_ids: HashSet<Id> =
+            swap_request.inputs.iter().map(|p| p.keyset_id).collect();
+
+        let mut keyset_units = Vec::with_capacity(input_keyset_ids.capacity());
+
+        for id in input_keyset_ids {
+            let keyset = self
+                .localstore
+                .get_keyset(&id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+            keyset_units.push(keyset.unit);
+        }
+
+        let output_keyset_ids: HashSet<Id> =
+            swap_request.outputs.iter().map(|p| p.keyset_id).collect();
+
+        for id in &output_keyset_ids {
+            let keyset = self
+                .localstore
+                .get_keyset(&id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+
+            // Get the active keyset for the unit
+            let active_keyset_id = self
+                .localstore
+                .get_active_keyset_id(&keyset.unit)
+                .await?
+                .ok_or(Error::InactiveKeyset)?;
+
+            // Check output is for current active keyset
+            if id.ne(&active_keyset_id) {
+                return Err(Error::InactiveKeyset);
+            }
+            keyset_units.push(keyset.unit);
+        }
+
+        // Check that all input and output proofs are the same unit
+        let seen_units: HashSet<CurrencyUnit> = HashSet::new();
+        if keyset_units.iter().any(|unit| !seen_units.contains(unit)) && seen_units.len() != 1 {
+            return Err(Error::MultipleUnits);
+        }
+
+        for proof in swap_request.inputs {
             self.localstore
-                .add_spent_proof(secret.clone(), proof)
+                .add_spent_proof(proof.secret.clone(), proof)
                 .await
                 .unwrap();
         }
