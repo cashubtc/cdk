@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{Id, Proof};
+use cashu::nuts::{CurrencyUnit, Id, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use tokio::sync::Mutex;
@@ -12,6 +12,7 @@ use super::{Error, LocalStore};
 
 #[derive(Default, Debug, Clone)]
 pub struct MemoryLocalStore {
+    active_keysets: Arc<Mutex<HashMap<CurrencyUnit, Id>>>,
     keysets: Arc<Mutex<HashMap<Id, KeySet>>>,
     mint_quotes: Arc<Mutex<HashMap<String, MintQuote>>>,
     melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
@@ -21,6 +22,15 @@ pub struct MemoryLocalStore {
 
 #[async_trait(?Send)]
 impl LocalStore for MemoryLocalStore {
+    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
+        self.active_keysets.lock().await.insert(unit, id);
+        Ok(())
+    }
+
+    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Error> {
+        Ok(self.active_keysets.lock().await.get(unit).cloned())
+    }
+
     async fn add_keyset(&self, keyset: KeySet) -> Result<(), Error> {
         self.keysets.lock().await.insert(keyset.id, keyset);
         Ok(())
