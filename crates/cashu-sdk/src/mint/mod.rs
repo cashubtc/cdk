@@ -8,6 +8,7 @@ use cashu::nuts::{
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
 use cashu::secret::Secret;
+use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -99,6 +100,35 @@ impl<L: LocalStore> Mint<L> {
                 percent_fee_reserve,
             },
         })
+    }
+
+    pub async fn new_mint_quote(
+        &self,
+        request: String,
+        unit: CurrencyUnit,
+        amount: Amount,
+        expiry: u64,
+    ) -> Result<MintQuote, Error> {
+        let quote = MintQuote::new(request, unit, amount, expiry);
+
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
+
+    pub async fn new_melt_quote(
+        &self,
+        request: String,
+        unit: CurrencyUnit,
+        amount: Amount,
+        fee_reserve: Amount,
+        expiry: u64,
+    ) -> Result<MeltQuote, Error> {
+        let quote = MeltQuote::new(request, unit, amount, fee_reserve, expiry);
+
+        self.localstore.add_melt_quote(quote.clone()).await?;
+
+        Ok(quote)
     }
 
     /// Retrieve the public keys of the active keyset for distribution to

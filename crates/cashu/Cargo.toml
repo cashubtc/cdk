@@ -38,6 +38,7 @@ url = { workspace = true }
 regex = "1.8.4"
 itertools = "0.11.0"
 thiserror = { workspace = true }
+uuid = { version = "1.6.1", features = ["v4"] }
 
 [dev-dependencies]
 # tokio = {version = "1.27.0", features = ["rt", "macros"] }
