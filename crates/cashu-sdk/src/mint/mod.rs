@@ -44,6 +44,10 @@ pub enum Error {
     Cashu(#[from] cashu::error::mint::Error),
     #[error("`{0}`")]
     Localstore(#[from] localstore::Error),
+    #[error("Unknown quote")]
+    UnknownQuote,
+    #[error("Cannot have multiple units")]
+    MultipleUnits,
 }
 
 pub struct Mint<L: LocalStore> {
@@ -342,13 +346,8 @@ impl<L: LocalStore> Mint<L> {
         let quote = self
             .localstore
             .get_melt_quote(&melt_request.quote)
-            .await
-            .unwrap();
-        let quote = if let Some(quote) = quote {
-            quote
-        } else {
-            return Err(Error::Custom("Unknown Quote".to_string()));
-        };
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
         let proofs_total = melt_request.proofs_amount();
 
@@ -360,6 +359,50 @@ impl<L: LocalStore> Mint<L> {
                 proofs_total, required_total
             );
             return Err(Error::Amount);
+        }
+
+        let input_keyset_ids: HashSet<Id> =
+            melt_request.inputs.iter().map(|p| p.keyset_id).collect();
+
+        let mut keyset_units = Vec::with_capacity(input_keyset_ids.capacity());
+
+        for id in input_keyset_ids {
+            let keyset = self
+                .localstore
+                .get_keyset(&id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+            keyset_units.push(keyset.unit);
+        }
+
+        if let Some(outputs) = &melt_request.outputs {
+            let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
+            for id in output_keysets_ids {
+                let keyset = self
+                    .localstore
+                    .get_keyset(&id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?;
+
+                // Get the active keyset for the unit
+                let active_keyset_id = self
+                    .localstore
+                    .get_active_keyset_id(&keyset.unit)
+                    .await?
+                    .ok_or(Error::InactiveKeyset)?;
+
+                // Check output is for current active keyset
+                if id.ne(&active_keyset_id) {
+                    return Err(Error::InactiveKeyset);
+                }
+                keyset_units.push(keyset.unit);
+            }
+        }
+
+        // Check that all input and output proofs are the same unit
+        let seen_units: HashSet<CurrencyUnit> = HashSet::new();
+        if keyset_units.iter().any(|unit| !seen_units.contains(unit)) && seen_units.len() != 1 {
+            return Err(Error::MultipleUnits);
         }
 
         let secrets: HashSet<&Secret> = melt_request.inputs.iter().map(|p| &p.secret).collect();

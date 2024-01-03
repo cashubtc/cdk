@@ -2,7 +2,7 @@ mod memory;
 
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{Id, Proof};
+use cashu::nuts::{CurrencyUnit, Id, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use thiserror::Error;
@@ -34,6 +34,9 @@ pub enum Error {
 
 #[async_trait(?Send)]
 pub trait LocalStore {
+    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
+    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Error>;
+
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error>;
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error>;
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error>;
