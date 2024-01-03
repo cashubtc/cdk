@@ -1,9 +1,10 @@
 //! Types for `cashu-crab`
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::nuts::{CurrencyUnit, Id, Proofs};
-use crate::{Amount, Bolt11Invoice};
+use crate::Amount;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofsStatus {
@@ -34,21 +35,58 @@ pub struct MintQuote {
     pub id: String,
     pub amount: Amount,
     pub unit: CurrencyUnit,
-    pub request: Bolt11Invoice,
+    pub request: String,
     pub paid: bool,
     pub expiry: u64,
+}
+
+impl MintQuote {
+    pub fn new(request: String, unit: CurrencyUnit, amount: Amount, expiry: u64) -> Self {
+        let id = Uuid::new_v4();
+
+        Self {
+            id: id.to_string(),
+            amount,
+            unit,
+            request,
+            paid: false,
+            expiry,
+        }
+    }
 }
 
 /// Melt Quote Info
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct MeltQuote {
     pub id: String,
-    pub amount: Amount,
-    pub request: Bolt11Invoice,
     pub unit: CurrencyUnit,
+    pub amount: Amount,
+    pub request: String,
     pub fee_reserve: Amount,
     pub paid: bool,
     pub expiry: u64,
+}
+
+impl MeltQuote {
+    pub fn new(
+        request: String,
+        unit: CurrencyUnit,
+        amount: Amount,
+        fee_reserve: Amount,
+        expiry: u64,
+    ) -> Self {
+        let id = Uuid::new_v4();
+
+        Self {
+            id: id.to_string(),
+            amount,
+            unit,
+            request,
+            fee_reserve,
+            paid: false,
+            expiry,
+        }
+    }
 }
 
 /// Keyset id

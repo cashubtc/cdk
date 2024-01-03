@@ -194,7 +194,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             id: quote_res.quote.clone(),
             amount,
             unit: unit.clone(),
-            request: Bolt11Invoice::from_str(&quote_res.request).unwrap(),
+            request: quote_res.request,
             paid: quote_res.paid,
             expiry: quote_res.expiry,
         };
@@ -496,11 +496,15 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         &mut self,
         mint_url: UncheckedUrl,
         unit: CurrencyUnit,
-        request: Bolt11Invoice,
+        request: String,
     ) -> Result<MeltQuote, Error> {
         let quote_res = self
             .client
-            .post_melt_quote(mint_url.clone().try_into()?, unit.clone(), request.clone())
+            .post_melt_quote(
+                mint_url.clone().try_into()?,
+                unit.clone(),
+                Bolt11Invoice::from_str(&request.clone()).unwrap(),
+            )
             .await?;
 
         let quote = MeltQuote {
