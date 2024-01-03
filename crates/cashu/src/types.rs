@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::nuts::{CurrencyUnit, Id, Proofs};
+use crate::nuts::{CurrencyUnit, Proofs};
 use crate::Amount;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,14 +87,4 @@ impl MeltQuote {
             expiry,
         }
     }
-}
-
-/// Keyset id
-#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KeysetInfo {
-    pub id: Id,
-    pub valid_from: u64,
-    pub valid_to: Option<u64>,
-    pub derivation_path: String,
-    pub max_order: u8,
 }

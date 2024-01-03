@@ -31,6 +31,10 @@ impl LocalStore for MemoryLocalStore {
         Ok(self.active_keysets.lock().await.get(unit).cloned())
     }
 
+    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Error> {
+        Ok(self.active_keysets.lock().await.clone())
+    }
+
     async fn add_keyset(&self, keyset: KeySet) -> Result<(), Error> {
         self.keysets.lock().await.insert(keyset.id, keyset);
         Ok(())
@@ -38,6 +42,10 @@ impl LocalStore for MemoryLocalStore {
 
     async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<KeySet>, Error> {
         Ok(self.keysets.lock().await.get(keyset_id).cloned())
+    }
+
+    async fn get_keysets(&self) -> Result<Vec<KeySet>, Error> {
+        Ok(self.keysets.lock().await.values().cloned().collect())
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {

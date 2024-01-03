@@ -1,5 +1,7 @@
 mod memory;
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::{CurrencyUnit, Id, Proof};
@@ -36,6 +38,7 @@ pub enum Error {
 pub trait LocalStore {
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Error>;
+    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Error>;
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error>;
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error>;
@@ -47,6 +50,7 @@ pub trait LocalStore {
 
     async fn add_keyset(&self, keyset: KeySet) -> Result<(), Error>;
     async fn get_keyset(&self, id: &Id) -> Result<Option<KeySet>, Error>;
+    async fn get_keysets(&self) -> Result<Vec<KeySet>, Error>;
 
     async fn add_spent_proof(&self, secret: Secret, proof: Proof) -> Result<(), Error>;
     async fn get_spent_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error>;

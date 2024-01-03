@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use cashu::dhke::{sign_message, verify_message};
 use cashu::nuts::{
@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
 
-use crate::utils::unix_time;
 use crate::Mnemonic;
 
 mod localstore;
@@ -53,8 +52,6 @@ pub enum Error {
 
 pub struct Mint<L: LocalStore> {
     //    pub pubkey: PublicKey
-    pub keysets_info: HashMap<Id, MintKeySetInfo>,
-    //    pub pubkey: PublicKey,
     mnemonic: Mnemonic,
     pub fee_reserve: FeeReserve,
     localstore: L,
@@ -68,8 +65,6 @@ impl<L: LocalStore> Mint<L> {
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
     ) -> Result<Self, Error> {
-        let mut info = HashMap::default();
-
         let mut active_units: HashSet<CurrencyUnit> = HashSet::default();
 
         // Check that there is only one active keyset per unit
@@ -86,15 +81,12 @@ impl<L: LocalStore> Mint<L> {
                 keyset_info.max_order,
             );
 
-            info.insert(keyset_info.id, keyset_info);
-
             localstore.add_keyset(keyset).await?;
         }
 
         Ok(Self {
             localstore,
             mnemonic,
-            keysets_info: info,
             fee_reserve: FeeReserve {
                 min_fee_reserve,
                 percent_fee_reserve,
@@ -147,14 +139,26 @@ impl<L: LocalStore> Mint<L> {
     }
 
     /// Return a list of all supported keysets
-    pub fn keysets(&self) -> KeysetResponse {
-        let keysets = self
-            .keysets_info
+    pub async fn keysets(&self) -> Result<KeysetResponse, Error> {
+        let keysets = self.localstore.get_keysets().await?;
+        let active_keysets: HashSet<Id> = self
+            .localstore
+            .get_active_keysets()
+            .await?
             .values()
-            .map(|k| k.clone().into())
+            .cloned()
             .collect();
 
-        KeysetResponse { keysets }
+        let keysets = keysets
+            .into_iter()
+            .map(|k| KeySetInfo {
+                id: k.id,
+                unit: k.unit,
+                active: active_keysets.contains(&k.id),
+            })
+            .collect();
+
+        Ok(KeysetResponse { keysets })
     }
 
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
@@ -182,23 +186,10 @@ impl<L: LocalStore> Mint<L> {
 
         self.localstore.add_keyset(new_keyset.clone()).await?;
 
-        for mint_keyset_info in self.keysets_info.values_mut() {
-            if mint_keyset_info.active && mint_keyset_info.unit.eq(&unit) {
-                mint_keyset_info.active = false;
-            }
-        }
+        self.localstore
+            .add_active_keyset(unit, new_keyset.id)
+            .await?;
 
-        let mint_keyset_info = MintKeySetInfo {
-            id: new_keyset.id,
-            unit,
-            derivation_path: derivation_path.to_string(),
-            active: true,
-            valid_from: unix_time(),
-            valid_to: None,
-            max_order,
-        };
-
-        self.keysets_info.insert(new_keyset.id, mint_keyset_info);
         Ok(())
     }
 
@@ -233,13 +224,14 @@ impl<L: LocalStore> Mint<L> {
             .await?
             .ok_or(Error::UnknownKeySet)?;
 
+        let active = self
+            .localstore
+            .get_active_keyset_id(&keyset.unit)
+            .await?
+            .ok_or(Error::InactiveKeyset)?;
+
         // Check that the keyset is active and should be used to sign
-        if !self
-            .keysets_info
-            .get(keyset_id)
-            .ok_or(Error::UnknownKeySet)?
-            .active
-        {
+        if keyset.id.ne(&active) {
             return Err(Error::InactiveKeyset);
         }
 
