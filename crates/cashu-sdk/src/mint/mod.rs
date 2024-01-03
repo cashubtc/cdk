@@ -276,7 +276,7 @@ impl<L: LocalStore> Mint<L> {
         for id in &output_keyset_ids {
             let keyset = self
                 .localstore
-                .get_keyset(&id)
+                .get_keyset(id)
                 .await?
                 .ok_or(Error::UnknownKeySet)?;
 
