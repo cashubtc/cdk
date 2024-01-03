@@ -36,6 +36,8 @@ pub enum Error {
     DuplicateProofs,
     #[error("Token Spent")]
     TokenSpent,
+    #[error("Token Pending")]
+    TokenPending,
     #[error("`{0}`")]
     Custom(String),
     #[error("`{0}`")]
@@ -271,11 +273,19 @@ impl<L: LocalStore> Mint<L> {
         if self
             .localstore
             .get_spent_proof(&proof.secret)
-            .await
-            .unwrap()
+            .await?
             .is_some()
         {
             return Err(Error::TokenSpent);
+        }
+
+        if self
+            .localstore
+            .get_pending_proof(&proof.secret)
+            .await?
+            .is_some()
+        {
+            return Err(Error::TokenPending);
         }
 
         let keyset = self
