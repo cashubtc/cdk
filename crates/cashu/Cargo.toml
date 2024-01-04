@@ -34,6 +34,7 @@ rand = "0.8.5"
 getrandom = { version = "0.2", features = ["js"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = "3.4.0"
 url = { workspace = true }
 regex = "1.8.4"
 itertools = "0.11.0"

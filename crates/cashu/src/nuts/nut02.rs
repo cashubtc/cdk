@@ -7,6 +7,7 @@ use std::str::FromStr;
 use bitcoin::hashes::{sha256, Hash};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
 use super::nut01::Keys;
@@ -157,9 +158,11 @@ impl From<&Keys> for Id {
 
 /// Mint Keysets [NUT-02]
 /// Ids of mints keyset ids
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
+    #[serde_as(as = "VecSkipError<_>")]
     pub keysets: Vec<KeySetInfo>,
 }
 
@@ -290,7 +293,7 @@ mod test {
 
     use std::str::FromStr;
 
-    use super::Keys;
+    use super::{KeySetInfo, Keys, KeysetResponse};
     use crate::nuts::nut02::Id;
 
     const SHORT_KEYSET_ID: &str = "00456a94ab4e1c46";
@@ -388,5 +391,19 @@ mod test {
         let id: Id = (&keys).into();
 
         assert_eq!(id, Id::from_str(KEYSET_ID).unwrap());
+    }
+
+    #[test]
+    fn de_keyset_info() {
+        let h = r#"{"id":"009a1f293253e41e","unit":"sat","active":true}"#;
+
+        let _keyset_response: KeySetInfo = serde_json::from_str(h).unwrap();
+    }
+
+    #[test]
+    fn test_deserialization_of_keyset_response() {
+        let h = r#"{"keysets":[{"id":"009a1f293253e41e","unit":"sat","active":true},{"id":"eGnEWtdJ0PIM","unit":"sat","active":true},{"id":"003dfdf4e5e35487","unit":"sat","active":true},{"id":"0066ad1a4b6fc57c","unit":"sat","active":true},{"id":"00f7ca24d44c3e5e","unit":"sat","active":true},{"id":"001fcea2931f2d85","unit":"sat","active":true},{"id":"00d095959d940edb","unit":"sat","active":true},{"id":"000d7f730d657125","unit":"sat","active":true},{"id":"0007208d861d7295","unit":"sat","active":true},{"id":"00bfdf8889b719dd","unit":"sat","active":true},{"id":"00ca9b17da045f21","unit":"sat","active":true}]}"#;
+
+        let _keyset_response: KeysetResponse = serde_json::from_str(h).unwrap();
     }
 }
