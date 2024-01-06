@@ -5,13 +5,13 @@ use std::str::FromStr;
 use bip39::Mnemonic;
 use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
-use cashu::nuts::nut00::mint;
+use cashu::nuts::nut07::ProofState;
 use cashu::nuts::{
     BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, PreMintSecrets, PreSwap, Proof, Proofs,
     SwapRequest, Token,
 };
 #[cfg(feature = "nut07")]
-use cashu::types::ProofsStatus;
+use cashu::secret::Secret;
 use cashu::types::{MeltQuote, Melted, MintQuote};
 use cashu::url::UncheckedUrl;
 use cashu::{Amount, Bolt11Invoice};
@@ -125,30 +125,23 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         &self,
         mint_url: UncheckedUrl,
         proofs: Proofs,
-    ) -> Result<ProofsStatus, Error> {
+    ) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
-            .post_check_spendable(
+            .post_check_state(
                 mint_url.try_into()?,
                 proofs
                     .clone()
                     .into_iter()
-                    .map(|p| p.into())
-                    .collect::<mint::Proofs>()
+                    .map(|p| p.secret)
+                    .collect::<Vec<Secret>>()
                     .clone(),
             )
             .await?;
 
         // Separate proofs in spent and unspent based on mint response
-        let (spendable, spent): (Vec<_>, Vec<_>) = proofs
-            .iter()
-            .zip(spendable.spendable.iter())
-            .partition(|(_, &b)| b);
 
-        Ok(ProofsStatus {
-            spendable: spendable.into_iter().map(|(s, _)| s).cloned().collect(),
-            spent: spent.into_iter().map(|(s, _)| s).cloned().collect(),
-        })
+        Ok(spendable.states)
     }
 
     /*

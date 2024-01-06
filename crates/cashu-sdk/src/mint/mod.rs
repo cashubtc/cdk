@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 
 use cashu::dhke::{sign_message, verify_message};
+#[cfg(feature = "nut07")]
+use cashu::nuts::nut07::State;
 use cashu::nuts::{
     BlindedMessage, BlindedSignature, MeltBolt11Request, MeltBolt11Response, Proof, SwapRequest,
     SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
-use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
+use cashu::nuts::{CheckStateRequest, CheckStateResponse};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
@@ -369,29 +371,41 @@ impl<L: LocalStore> Mint<L> {
     #[cfg(feature = "nut07")]
     pub async fn check_spendable(
         &self,
-        check_spendable: &CheckSpendableRequest,
-    ) -> Result<CheckSpendableResponse, Error> {
-        let mut spendable = Vec::with_capacity(check_spendable.proofs.len());
-        let mut pending = Vec::with_capacity(check_spendable.proofs.len());
+        check_spendable: &CheckStateRequest,
+    ) -> Result<CheckStateResponse, Error> {
+        use cashu::nuts::nut07::ProofState;
 
-        for proof in &check_spendable.proofs {
-            spendable.push(
-                self.localstore
-                    .get_spent_proof(&proof.secret)
-                    .await
-                    .unwrap()
-                    .is_none(),
-            );
-            pending.push(
-                self.localstore
-                    .get_pending_proof(&proof.secret)
-                    .await
-                    .unwrap()
-                    .is_some(),
-            );
+        let mut states = Vec::with_capacity(check_spendable.secrets.len());
+
+        for secret in &check_spendable.secrets {
+            let state = if self
+                .localstore
+                .get_spent_proof(secret)
+                .await
+                .unwrap()
+                .is_some()
+            {
+                State::Spent
+            } else if self
+                .localstore
+                .get_pending_proof(secret)
+                .await
+                .unwrap()
+                .is_some()
+            {
+                State::Pending
+            } else {
+                State::Unspent
+            };
+
+            states.push(ProofState {
+                secret: secret.clone(),
+                state,
+                witness: None,
+            })
         }
 
-        Ok(CheckSpendableResponse { spendable, pending })
+        Ok(CheckStateResponse { states })
     }
 
     pub async fn verify_melt_request(

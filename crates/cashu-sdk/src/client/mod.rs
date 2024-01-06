@@ -1,15 +1,14 @@
 //! Client to connet to mint
 
 use async_trait::async_trait;
-#[cfg(feature = "mint")]
-use cashu::nuts::nut00;
 #[cfg(feature = "nut07")]
-use cashu::nuts::CheckSpendableResponse;
+use cashu::nuts::CheckStateResponse;
 use cashu::nuts::{
     BlindedMessage, CurrencyUnit, KeySet, KeysetResponse, MeltBolt11Response,
     MeltQuoteBolt11Response, MintBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
 };
+use cashu::secret::Secret;
 use cashu::{utils, Amount};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -127,11 +126,11 @@ pub trait Client {
     ) -> Result<SwapResponse, Error>;
 
     #[cfg(feature = "nut07")]
-    async fn post_check_spendable(
+    async fn post_check_state(
         &self,
         mint_url: Url,
-        proofs: Vec<nut00::mint::Proof>,
-    ) -> Result<CheckSpendableResponse, Error>;
+        secrets: Vec<Secret>,
+    ) -> Result<CheckStateResponse, Error>;
 
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error>;
 }
