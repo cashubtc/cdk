@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use cashu::dhke::{sign_message, verify_message};
 #[cfg(feature = "nut07")]
-use cashu::nuts::nut07::State;
+use cashu::nuts::nut07::{ProofState, State};
 use cashu::nuts::{
     BlindedMessage, BlindedSignature, MeltBolt11Request, MeltBolt11Response, Proof, SwapRequest,
     SwapResponse, *,
@@ -373,26 +373,12 @@ impl<L: LocalStore> Mint<L> {
         &self,
         check_spendable: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        use cashu::nuts::nut07::ProofState;
-
         let mut states = Vec::with_capacity(check_spendable.secrets.len());
 
         for secret in &check_spendable.secrets {
-            let state = if self
-                .localstore
-                .get_spent_proof(secret)
-                .await
-                .unwrap()
-                .is_some()
-            {
+            let state = if self.localstore.get_spent_proof(secret).await?.is_some() {
                 State::Spent
-            } else if self
-                .localstore
-                .get_pending_proof(secret)
-                .await
-                .unwrap()
-                .is_some()
-            {
+            } else if self.localstore.get_pending_proof(secret).await?.is_some() {
                 State::Pending
             } else {
                 State::Unspent

@@ -428,64 +428,6 @@ impl PartialOrd for Proof {
     }
 }
 
-impl From<Proof> for mint::Proof {
-    fn from(proof: Proof) -> Self {
-        Self {
-            amount: Some(proof.amount),
-            secret: proof.secret,
-            c: Some(proof.c),
-            keyset_id: Some(proof.keyset_id),
-        }
-    }
-}
-
-impl TryFrom<mint::Proof> for Proof {
-    type Error = Error;
-
-    fn try_from(mint_proof: mint::Proof) -> Result<Proof, Self::Error> {
-        Ok(Self {
-            keyset_id: mint_proof.keyset_id.ok_or(Error::MissingProofField)?,
-            amount: mint_proof.amount.ok_or(Error::MissingProofField)?,
-            secret: mint_proof.secret,
-            c: mint_proof.c.ok_or(Error::MissingProofField)?,
-        })
-    }
-}
-
-pub mod mint {
-    use serde::{Deserialize, Serialize};
-
-    use super::PublicKey;
-    use crate::nuts::nut02::Id;
-    use crate::secret::Secret;
-    use crate::Amount;
-
-    /// Proofs [NUT-00]
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Proof {
-        /// Amount in satoshi
-        #[serde(skip_serializing)]
-        pub amount: Option<Amount>,
-        /// Secret message
-        #[serde(skip_serializing)]
-        pub secret: Secret,
-        /// Unblinded signature
-        #[serde(rename = "C")]
-        pub c: Option<PublicKey>,
-        /// `Keyset id`
-        #[serde(skip_serializing)]
-        #[serde(rename = "id")]
-        pub keyset_id: Option<Id>,
-    }
-
-    /// List of proofs
-    pub type Proofs = Vec<Proof>;
-
-    pub fn mint_proofs_from_proofs(proofs: crate::nuts::Proofs) -> Proofs {
-        proofs.iter().map(|p| p.to_owned().into()).collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
