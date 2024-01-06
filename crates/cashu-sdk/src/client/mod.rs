@@ -8,6 +8,7 @@ use cashu::nuts::{
     MeltQuoteBolt11Response, MintBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
 };
+#[cfg(feature = "nut07")]
 use cashu::secret::Secret;
 use cashu::{utils, Amount};
 use serde::{Deserialize, Serialize};

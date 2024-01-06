@@ -1,7 +1,5 @@
 //! Minreq http Client
 
-use std::println;
-
 use async_trait::async_trait;
 use cashu::nuts::{
     BlindedMessage, CurrencyUnit, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
@@ -11,6 +9,7 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckStateRequest, CheckStateResponse};
+#[cfg(feature = "nut07")]
 use cashu::secret::Secret;
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
