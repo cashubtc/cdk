@@ -3,21 +3,37 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::nut00::mint;
+use crate::secret::Secret;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum State {
+    Spent,
+    Unspent,
+    Pending,
+}
 
 /// Check spendabale request [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckSpendableRequest {
-    pub proofs: mint::Proofs,
+pub struct CheckStateRequest {
+    pub secrets: Vec<Secret>,
+}
+
+/// Proof state [NUT-07]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofState {
+    /// Secret of proof
+    pub secret: Secret,
+    /// State of proof
+    pub state: State,
+    /// Witness data if it is supplied
+    pub witness: Option<String>,
 }
 
 /// Check Spendable Response [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckSpendableResponse {
-    /// booleans indicating whether the provided Proof is still spendable.
-    /// In same order as provided proofs
-    pub spendable: Vec<bool>,
-    pub pending: Vec<bool>,
+pub struct CheckStateResponse {
+    pub states: Vec<ProofState>,
 }
 
 /// Spendable Settings

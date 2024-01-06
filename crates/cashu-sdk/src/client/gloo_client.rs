@@ -209,15 +209,13 @@ impl Client for HttpClient {
 
     /// Spendable check [NUT-07]
     #[cfg(feature = "nut07")]
-    async fn post_check_spendable(
+    async fn post_check_state(
         &self,
         mint_url: Url,
-        proofs: Vec<nut00::mint::Proof>,
-    ) -> Result<CheckSpendableResponse, Error> {
+        secrets: Vec<Secret>,
+    ) -> Result<CheckStateResponse, Error> {
         let url = join_url(mint_url, &["v1", "check"])?;
-        let request = CheckSpendableRequest {
-            proofs: proofs.to_owned(),
-        };
+        let request = CheckSpendableRequest { secrets };
 
         let res = Request::post(url.as_str())
             .json(&request)

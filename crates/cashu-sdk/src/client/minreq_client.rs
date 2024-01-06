@@ -4,13 +4,14 @@ use std::println;
 
 use async_trait::async_trait;
 use cashu::nuts::{
-    nut00, BlindedMessage, CurrencyUnit, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
+    BlindedMessage, CurrencyUnit, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "nut07")]
-use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
+use cashu::nuts::{CheckStateRequest, CheckStateResponse};
+use cashu::secret::Secret;
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
 use tracing::warn;
@@ -179,20 +180,20 @@ impl Client for HttpClient {
 
     /// Spendable check [NUT-07]
     #[cfg(feature = "nut07")]
-    async fn post_check_spendable(
+    async fn post_check_state(
         &self,
         mint_url: Url,
-        proofs: Vec<nut00::mint::Proof>,
-    ) -> Result<CheckSpendableResponse, Error> {
-        let url = join_url(mint_url, &["v1", "check"])?;
-        let request = CheckSpendableRequest { proofs };
+        secrets: Vec<Secret>,
+    ) -> Result<CheckStateResponse, Error> {
+        let url = join_url(mint_url, &["v1", "checkstate"])?;
+        let request = CheckStateRequest { secrets };
 
         let res = minreq::post(url)
             .with_json(&request)?
             .send()?
             .json::<Value>()?;
 
-        let response: Result<CheckSpendableResponse, serde_json::Error> =
+        let response: Result<CheckStateResponse, serde_json::Error> =
             serde_json::from_value(res.clone());
 
         match response {
