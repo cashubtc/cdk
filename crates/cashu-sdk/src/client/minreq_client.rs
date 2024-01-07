@@ -36,13 +36,10 @@ impl Client for HttpClient {
     /// Get Keyset Keys [NUT-01]
     async fn get_mint_keyset(&self, mint_url: Url, keyset_id: Id) -> Result<KeySet, Error> {
         let url = join_url(mint_url, &["v1", "keys", &keyset_id.to_string()])?;
-        println!("{url}");
         let keys = minreq::get(url).send()?.json::<KeysResponse>()?;
-        println!("{keys:?}");
 
         // let keys: KeysResponse = serde_json::from_value(keys)?; //
         // serde_json::from_str(&keys.to_string())?;
-        println!("{keys:?}");
         Ok(keys.keysets[0].clone())
     }
 
@@ -180,8 +177,6 @@ impl Client for HttpClient {
 
         let res = minreq::post(url).with_json(&split_request)?.send()?;
 
-        println!("{:?}", res.json::<Value>());
-
         let response: Result<SwapResponse, serde_json::Error> =
             serde_json::from_value(res.json::<Value>()?.clone());
 
@@ -216,18 +211,13 @@ impl Client for HttpClient {
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
         let url = join_url(mint_url, &["v1", "info"])?;
 
-        println!("{}", url);
-
         let res = minreq::get(url).send()?.json::<Value>()?;
 
         let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => {
-                println!("{:?}", response);
-                Err(Error::from_json(&res.to_string())?)
-            }
+            Err(_) => Err(Error::from_json(&res.to_string())?),
         }
     }
 }
