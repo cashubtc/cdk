@@ -7,8 +7,8 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut07::ProofState;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, PreMintSecrets, PreSwap, Proof, Proofs,
-    SwapRequest, Token,
+    BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PreMintSecrets, PreSwap, Proof,
+    Proofs, SwapRequest, Token,
 };
 #[cfg(feature = "nut07")]
 use cashu::secret::Secret;
@@ -119,6 +119,47 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         Ok(self.localstore.get_proofs(mint_url).await?)
     }
 
+    pub async fn add_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Error> {
+        let mint_info = match self
+            .client
+            .get_mint_info(mint_url.clone().try_into()?)
+            .await
+        {
+            Ok(mint_info) => Some(mint_info),
+            Err(err) => {
+                warn!("Could not get mint info {}", err);
+                None
+            }
+        };
+
+        self.localstore
+            .add_mint(mint_url, mint_info.clone())
+            .await?;
+
+        Ok(mint_info)
+    }
+
+    pub async fn get_mint_keys(
+        &self,
+        mint_url: &UncheckedUrl,
+        keyset_id: Id,
+    ) -> Result<Keys, Error> {
+        let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
+            keys
+        } else {
+            let keys = self
+                .client
+                .get_mint_keyset(mint_url.try_into()?, keyset_id)
+                .await?;
+
+            self.localstore.add_keys(keys.keys.clone()).await?;
+
+            keys.keys
+        };
+
+        Ok(keys)
+    }
+
     /// Check if a proof is spent
     #[cfg(feature = "nut07")]
     pub async fn check_proofs_spent(
@@ -208,12 +249,20 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                     return Ok(Some(keyset.id));
                 }
             }
-        } else {
-            let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+        }
 
-            self.localstore
-                .add_mint_keysets(mint_url.clone(), keysets.keysets.into_iter().collect())
-                .await?;
+        let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+
+        self.localstore
+            .add_mint_keysets(
+                mint_url.clone(),
+                keysets.keysets.clone().into_iter().collect(),
+            )
+            .await?;
+        for keyset in &keysets.keysets {
+            if keyset.unit.eq(unit) && keyset.active {
+                return Ok(Some(keyset.id));
+            }
         }
 
         Ok(None)
@@ -226,19 +275,18 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
     ) -> Result<Option<Keys>, Error> {
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
 
-        let mut keys = None;
+        let keys;
 
         if let Some(k) = self.localstore.get_keys(&active_keyset_id).await? {
             keys = Some(k.clone())
         } else {
-            let keysets = self.client.get_mint_keys(mint_url.try_into()?).await?;
+            let keyset = self
+                .client
+                .get_mint_keyset(mint_url.try_into()?, active_keyset_id)
+                .await?;
 
-            for keyset in keysets {
-                if keyset.id.eq(&active_keyset_id) {
-                    keys = Some(keyset.keys.clone())
-                }
-                self.localstore.add_keys(keyset.keys).await?;
-            }
+            self.localstore.add_keys(keyset.keys.clone()).await?;
+            keys = Some(keyset.keys);
         }
 
         Ok(keys)
@@ -246,10 +294,15 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
     /// Mint
     pub async fn mint(&mut self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Amount, Error> {
+        // Check that mint is in store of mints
+        if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
+            self.add_mint(mint_url.clone()).await?;
+        }
+
         let quote_info = self.localstore.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) {
+            if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
                 return Err(Error::QuoteExpired);
             }
 
@@ -282,7 +335,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             )
             .await?;
 
-        let keys = self.localstore.get_keys(&active_keyset_id).await?.unwrap();
+        let keys = self.get_mint_keys(&mint_url, active_keyset_id).await?;
 
         let proofs = construct_proofs(
             mint_res.signatures,
@@ -329,7 +382,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
             let swap_response = self
                 .client
-                .post_split(token.mint.clone().try_into()?, pre_swap.split_request)
+                .post_swap(token.mint.clone().try_into()?, pre_swap.split_request)
                 .await?;
 
             // Proof to keep
@@ -437,7 +490,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         let swap_response = self
             .client
-            .post_split(mint_url.clone().try_into()?, pre_swap.split_request)
+            .post_swap(mint_url.clone().try_into()?, pre_swap.split_request)
             .await?;
 
         let mut keep_proofs = Proofs::new();

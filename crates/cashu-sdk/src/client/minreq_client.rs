@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use cashu::nuts::{
-    BlindedMessage, CurrencyUnit, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
+    BlindedMessage, CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
@@ -33,6 +33,19 @@ impl Client for HttpClient {
         Ok(keys.keysets)
     }
 
+    /// Get Keyset Keys [NUT-01]
+    async fn get_mint_keyset(&self, mint_url: Url, keyset_id: Id) -> Result<KeySet, Error> {
+        let url = join_url(mint_url, &["v1", "keys", &keyset_id.to_string()])?;
+        println!("{url}");
+        let keys = minreq::get(url).send()?.json::<KeysResponse>()?;
+        println!("{keys:?}");
+
+        // let keys: KeysResponse = serde_json::from_value(keys)?; //
+        // serde_json::from_str(&keys.to_string())?;
+        println!("{keys:?}");
+        Ok(keys.keysets[0].clone())
+    }
+
     /// Get Keysets [NUT-02]
     async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error> {
         let url = join_url(mint_url, &["v1", "keysets"])?;
@@ -59,8 +72,6 @@ impl Client for HttpClient {
         let request = MintQuoteBolt11Request { amount, unit };
 
         let res = minreq::post(url).with_json(&request)?.send()?;
-
-        print!("r: {:?}", res);
 
         let response: Result<MintQuoteBolt11Response, serde_json::Error> =
             serde_json::from_value(res.json()?);
@@ -159,7 +170,7 @@ impl Client for HttpClient {
     }
 
     /// Split Token [NUT-06]
-    async fn post_split(
+    async fn post_swap(
         &self,
         mint_url: Url,
         split_request: SwapRequest,
@@ -169,7 +180,7 @@ impl Client for HttpClient {
 
         let res = minreq::post(url).with_json(&split_request)?.send()?;
 
-        println!("{:?}", res);
+        println!("{:?}", res.json::<Value>());
 
         let response: Result<SwapResponse, serde_json::Error> =
             serde_json::from_value(res.json::<Value>()?.clone());

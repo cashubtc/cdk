@@ -147,7 +147,7 @@ impl Keys {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysResponse {
-    #[serde_as(as = "VecSkipError<_>")]
+    // #[serde_as(as = "VecSkipError<_>")]
     pub keysets: Vec<KeySet>,
 }
 
