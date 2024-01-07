@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -91,8 +92,8 @@ impl LocalStore for RedbLocalStore {
             .flatten()
             .map(|(mint, mint_info)| {
                 (
-                    serde_json::from_str(mint.value()).unwrap(),
-                    serde_json::from_str(mint_info.value()).unwrap(),
+                    UncheckedUrl::from_str(mint.value()).unwrap(),
+                    serde_json::from_str(mint_info.value()).ok(),
                 )
             })
             .collect();

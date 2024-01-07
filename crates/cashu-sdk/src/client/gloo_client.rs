@@ -182,7 +182,7 @@ impl Client for HttpClient {
     }
 
     /// Split Token [NUT-06]
-    async fn post_split(
+    async fn post_swap(
         &self,
         mint_url: Url,
         split_request: SwapRequest,

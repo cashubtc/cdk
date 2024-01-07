@@ -4,7 +4,7 @@ use async_trait::async_trait;
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckStateResponse;
 use cashu::nuts::{
-    BlindedMessage, CurrencyUnit, KeySet, KeysetResponse, MeltBolt11Response,
+    BlindedMessage, CurrencyUnit, Id, KeySet, KeysetResponse, MeltBolt11Response,
     MeltQuoteBolt11Response, MintBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
 };
@@ -88,6 +88,8 @@ pub trait Client {
 
     async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error>;
 
+    async fn get_mint_keyset(&self, mint_url: Url, keyset_id: Id) -> Result<KeySet, Error>;
+
     async fn post_mint_quote(
         &self,
         mint_url: Url,
@@ -120,7 +122,7 @@ pub trait Client {
     // REVIEW: Should be consistent aboue passing in the Request struct or the
     // compnatants and making it within the function. Here the struct is passed
     // in but in check spendable and melt the compants are passed in
-    async fn post_split(
+    async fn post_swap(
         &self,
         mint_url: Url,
         split_request: SwapRequest,
