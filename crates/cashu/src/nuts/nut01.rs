@@ -7,7 +7,6 @@ use std::str::FromStr;
 use bip32::{DerivationPath, XPrv};
 use bip39::Mnemonic;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, VecSkipError};
 
 use super::{Id, KeySet};
 use crate::error::Error;
@@ -144,10 +143,8 @@ impl Keys {
 }
 
 /// Mint Public Keys [NUT-01]
-#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysResponse {
-    // #[serde_as(as = "VecSkipError<_>")]
     pub keysets: Vec<KeySet>,
 }
 
