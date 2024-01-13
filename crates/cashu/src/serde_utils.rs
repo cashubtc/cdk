@@ -120,9 +120,9 @@ pub mod serde_secret_key {
         D: serde::Deserializer<'de>,
     {
         let encoded = String::deserialize(deserializer)?;
-        Ok(
-            k256::SecretKey::from_bytes(GenericArray::from_slice(&hex::decode(encoded).unwrap()))
-                .unwrap(),
-        )
+        Ok(k256::SecretKey::from_bytes(GenericArray::from_slice(
+            &hex::decode(encoded).map_err(serde::de::Error::custom)?,
+        ))
+        .map_err(serde::de::Error::custom))?
     }
 }
