@@ -56,7 +56,7 @@ impl std::fmt::Display for PublicKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretKey(#[serde(with = "crate::serde_utils::serde_secret_key")] k256::SecretKey);
 
@@ -97,6 +97,11 @@ impl SecretKey {
         let private_key = signing_key.private_key();
 
         Self(private_key.into())
+    }
+
+    pub fn random() -> Self {
+        let mut rng = rand::thread_rng();
+        SecretKey(k256::SecretKey::random(&mut rng))
     }
 }
 
@@ -193,15 +198,15 @@ impl<'de> serde::de::Deserialize<'de> for KeysResponse {
 pub mod mint {
     use std::collections::BTreeMap;
 
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
     use super::{PublicKey, SecretKey};
     use crate::Amount;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Keys(pub BTreeMap<Amount, KeyPair>);
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct KeyPair {
         pub public_key: PublicKey,
         pub secret_key: SecretKey,
@@ -237,5 +242,16 @@ mod tests {
         let response: Keys = serde_json::from_str(&res).unwrap();
 
         assert_eq!(&serde_json::to_string(&response).unwrap(), &res)
+    }
+
+    #[test]
+    fn test_ser_der_secret() {
+        let secret = SecretKey::random();
+
+        let json = serde_json::to_string(&secret).unwrap();
+
+        let sec: SecretKey = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(sec, secret);
     }
 }
