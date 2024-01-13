@@ -103,7 +103,9 @@ pub mod serde_public_key {
 }
 
 pub mod serde_secret_key {
+    use k256::elliptic_curve::generic_array::GenericArray;
     use k256::SecretKey;
+    use serde::Deserialize;
 
     pub fn serialize<S>(seckey: &SecretKey, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -112,14 +114,15 @@ pub mod serde_secret_key {
         let encoded = hex::encode(seckey.to_bytes());
         serializer.serialize_str(&encoded)
     }
-    /*
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<SecretKey, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            let encoded = String::deserialize(deserializer)?;
-            let decoded = hex::decode(encoded).map_err(serde::de::Error::custom)?;
-            SecretKey::from_slice(&decoded).map_err(serde::de::Error::custom)
-        }
-    */
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SecretKey, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        Ok(
+            k256::SecretKey::from_bytes(GenericArray::from_slice(&hex::decode(encoded).unwrap()))
+                .unwrap(),
+        )
+    }
 }

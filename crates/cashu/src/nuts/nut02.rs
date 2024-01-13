@@ -214,14 +214,14 @@ pub mod mint {
     use bitcoin::hashes::sha256::Hash as Sha256;
     use bitcoin::hashes::{Hash, HashEngine};
     use k256::SecretKey;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
     use super::Id;
     use crate::nuts::nut01::mint::{KeyPair, Keys};
     use crate::nuts::CurrencyUnit;
     use crate::Amount;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct KeySet {
         pub id: Id,
         pub unit: CurrencyUnit,
