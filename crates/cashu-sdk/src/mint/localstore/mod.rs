@@ -1,4 +1,6 @@
 mod memory;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+mod redb_store;
 
 use std::collections::HashMap;
 
@@ -7,6 +9,8 @@ use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::{CurrencyUnit, Id, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub use redb_store::RedbLocalStore;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -52,10 +56,10 @@ pub trait LocalStore {
     async fn get_keyset(&self, id: &Id) -> Result<Option<KeySet>, Error>;
     async fn get_keysets(&self) -> Result<Vec<KeySet>, Error>;
 
-    async fn add_spent_proof(&self, secret: Secret, proof: Proof) -> Result<(), Error>;
+    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error>;
     async fn get_spent_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
 
-    async fn add_pending_proof(&self, secret: Secret, proof: Proof) -> Result<(), Error>;
+    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error>;
     async fn get_pending_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error>;
 }

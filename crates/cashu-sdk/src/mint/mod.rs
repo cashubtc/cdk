@@ -20,7 +20,9 @@ use crate::Mnemonic;
 
 mod localstore;
 
-use localstore::LocalStore;
+pub use localstore::LocalStore;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub use localstore::RedbLocalStore;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -314,10 +316,7 @@ impl<L: LocalStore> Mint<L> {
         }
 
         for proof in swap_request.inputs {
-            self.localstore
-                .add_spent_proof(proof.secret.clone(), proof)
-                .await
-                .unwrap();
+            self.localstore.add_spent_proof(proof).await.unwrap();
         }
 
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
@@ -484,7 +483,7 @@ impl<L: LocalStore> Mint<L> {
 
         for input in &melt_request.inputs {
             self.localstore
-                .add_spent_proof(input.secret.clone(), input.clone())
+                .add_spent_proof(input.clone())
                 .await
                 .unwrap();
         }
