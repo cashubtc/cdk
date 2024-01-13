@@ -84,8 +84,11 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
-    async fn add_spent_proof(&self, secret: Secret, proof: Proof) -> Result<(), Error> {
-        self.spent_proofs.lock().await.insert(secret, proof);
+    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error> {
+        self.spent_proofs
+            .lock()
+            .await
+            .insert(proof.secret.clone(), proof);
         Ok(())
     }
 
@@ -93,8 +96,11 @@ impl LocalStore for MemoryLocalStore {
         Ok(self.spent_proofs.lock().await.get(secret).cloned())
     }
 
-    async fn add_pending_proof(&self, secret: Secret, proof: Proof) -> Result<(), Error> {
-        self.pending_proofs.lock().await.insert(secret, proof);
+    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
+        self.pending_proofs
+            .lock()
+            .await
+            .insert(proof.secret.clone(), proof);
         Ok(())
     }
 
