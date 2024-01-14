@@ -1,6 +1,6 @@
-mod memory;
+pub mod memory;
 #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-mod redb_store;
+pub mod redb_store;
 
 use std::collections::HashMap;
 
@@ -9,7 +9,7 @@ use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::{CurrencyUnit, Id, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub use memory::MemoryLocalStore;
 pub use redb_store::RedbLocalStore;
 use thiserror::Error;
 

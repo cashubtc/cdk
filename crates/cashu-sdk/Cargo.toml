@@ -10,7 +10,7 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet", "all-nuts"]
+default = ["mint", "wallet", "all-nuts", "redb"]
 mint = ["cashu/mint"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
 gloo = ["dep:gloo"]

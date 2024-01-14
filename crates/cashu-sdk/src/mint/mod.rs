@@ -19,8 +19,8 @@ use tracing::{debug, info};
 use crate::Mnemonic;
 
 mod localstore;
-
-pub use localstore::LocalStore;
+use localstore::LocalStore;
+pub use localstore::MemoryLocalStore;
 #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
 pub use localstore::RedbLocalStore;
 

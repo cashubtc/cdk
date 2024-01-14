@@ -60,26 +60,7 @@ pub struct Wallet<C: Client, L: LocalStore> {
 }
 
 impl<C: Client, L: LocalStore> Wallet<C, L> {
-    pub async fn new(
-        client: C,
-        localstore: L,
-        mint_quotes: Vec<MintQuote>,
-        melt_quotes: Vec<MeltQuote>,
-        backup_info: Option<BackupInfo>,
-        mint_keys: Vec<Keys>,
-    ) -> Self {
-        for quote in mint_quotes {
-            localstore.add_mint_quote(quote).await.ok();
-        }
-
-        for quote in melt_quotes {
-            localstore.add_melt_quote(quote).await.ok();
-        }
-
-        for keys in mint_keys {
-            localstore.add_keys(keys).await.ok();
-        }
-
+    pub async fn new(client: C, localstore: L, backup_info: Option<BackupInfo>) -> Self {
         Self {
             backup_info,
             client,
