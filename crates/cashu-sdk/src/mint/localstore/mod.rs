@@ -10,6 +10,7 @@ use cashu::nuts::{CurrencyUnit, Id, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 pub use memory::MemoryLocalStore;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
 pub use redb_store::RedbLocalStore;
 use thiserror::Error;
 
