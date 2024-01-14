@@ -30,3 +30,11 @@ tracing = { version = "0.1", default-features = false }
 tracing-subscriber = "0.3"
 uniffi = "0.24"
 thiserror = "1.0.50"
+
+[profile]
+
+[profile.ci]
+inherits = "dev"
+incremental = false
+debug = "line-tables-only"
+lto = "off"
