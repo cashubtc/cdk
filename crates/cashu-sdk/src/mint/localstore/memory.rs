@@ -94,6 +94,10 @@ impl LocalStore for MemoryLocalStore {
         Ok(self.mint_quotes.lock().await.get(quote_id).cloned())
     }
 
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        Ok(self.mint_quotes.lock().await.values().cloned().collect())
+    }
+
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
         self.mint_quotes.lock().await.remove(quote_id);
 
@@ -110,6 +114,10 @@ impl LocalStore for MemoryLocalStore {
 
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Error> {
         Ok(self.melt_quotes.lock().await.get(quote_id).cloned())
+    }
+
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
+        Ok(self.melt_quotes.lock().await.values().cloned().collect())
     }
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
