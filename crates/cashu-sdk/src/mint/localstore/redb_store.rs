@@ -79,13 +79,11 @@ impl LocalStore for RedbLocalStore {
 
         let mut active_keysets = HashMap::new();
 
-        for keyset in table.iter()? {
-            if let Ok((unit, id)) = keyset {
-                let unit = serde_json::from_str(unit.value())?;
-                let id = serde_json::from_str(id.value())?;
+        for (unit, id) in (table.iter()?).flatten() {
+            let unit = serde_json::from_str(unit.value())?;
+            let id = serde_json::from_str(id.value())?;
 
-                active_keysets.insert(unit, id);
-            }
+            active_keysets.insert(unit, id);
         }
 
         Ok(active_keysets)
@@ -115,7 +113,7 @@ impl LocalStore for RedbLocalStore {
 
         let keyset = table.get(keyset_id.to_string().as_str())?;
 
-        Ok(keyset.map(|k| serde_json::from_str(&k.value()).unwrap()))
+        Ok(keyset.map(|k| serde_json::from_str(k.value()).unwrap()))
     }
 
     async fn get_keysets(&self) -> Result<Vec<KeySet>, Error> {
@@ -125,12 +123,10 @@ impl LocalStore for RedbLocalStore {
 
         let mut keysets = Vec::new();
 
-        for keyset in table.iter()? {
-            if let Ok((_id, keyset)) = keyset {
-                let keyset = serde_json::from_str(keyset.value())?;
+        for (_id, keyset) in (table.iter()?).flatten() {
+            let keyset = serde_json::from_str(keyset.value())?;
 
-                keysets.push(keyset)
-            }
+            keysets.push(keyset)
         }
 
         Ok(keysets)
@@ -157,7 +153,7 @@ impl LocalStore for RedbLocalStore {
 
         let quote = table.get(quote_id)?;
 
-        Ok(quote.map(|q| serde_json::from_str(&q.value()).unwrap()))
+        Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
@@ -195,7 +191,7 @@ impl LocalStore for RedbLocalStore {
 
         let quote = table.get(quote_id)?;
 
-        Ok(quote.map(|q| serde_json::from_str(&q.value()).unwrap()))
+        Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
@@ -236,7 +232,7 @@ impl LocalStore for RedbLocalStore {
 
         let quote = table.get(secret.to_string().as_str())?;
 
-        Ok(quote.map(|q| serde_json::from_str(&q.value()).unwrap()))
+        Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
@@ -263,7 +259,7 @@ impl LocalStore for RedbLocalStore {
 
         let quote = table.get(secret.to_string().as_str())?;
 
-        Ok(quote.map(|q| serde_json::from_str(&q.value()).unwrap()))
+        Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }
 
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error> {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{CurrencyUnit, Id, Proof};
+use cashu::nuts::{CurrencyUnit, Id, Proof, Proofs};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use tokio::sync::Mutex;
@@ -18,6 +18,40 @@ pub struct MemoryLocalStore {
     melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
     pending_proofs: Arc<Mutex<HashMap<Secret, Proof>>>,
     spent_proofs: Arc<Mutex<HashMap<Secret, Proof>>>,
+}
+
+impl MemoryLocalStore {
+    pub fn new(
+        active_keysets: HashMap<CurrencyUnit, Id>,
+        keysets: Vec<KeySet>,
+        mint_quotes: Vec<MintQuote>,
+        melt_quotes: Vec<MeltQuote>,
+        pending_proofs: Proofs,
+        spent_proofs: Proofs,
+    ) -> Self {
+        Self {
+            active_keysets: Arc::new(Mutex::new(active_keysets)),
+            keysets: Arc::new(Mutex::new(keysets.into_iter().map(|k| (k.id, k)).collect())),
+            mint_quotes: Arc::new(Mutex::new(
+                mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+            )),
+            melt_quotes: Arc::new(Mutex::new(
+                melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+            )),
+            pending_proofs: Arc::new(Mutex::new(
+                pending_proofs
+                    .into_iter()
+                    .map(|p| (p.secret.clone(), p))
+                    .collect(),
+            )),
+            spent_proofs: Arc::new(Mutex::new(
+                spent_proofs
+                    .into_iter()
+                    .map(|p| (p.secret.clone(), p))
+                    .collect(),
+            )),
+        }
+    }
 }
 
 #[async_trait(?Send)]

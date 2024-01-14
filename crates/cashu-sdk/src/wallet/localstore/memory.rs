@@ -19,6 +19,29 @@ pub struct MemoryLocalStore {
     proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
 }
 
+impl MemoryLocalStore {
+    pub fn new(
+        mint_quotes: Vec<MintQuote>,
+        melt_quotes: Vec<MeltQuote>,
+        mint_keys: Vec<Keys>,
+    ) -> Self {
+        Self {
+            mints: Arc::new(Mutex::new(HashMap::new())),
+            mint_keysets: Arc::new(Mutex::new(HashMap::new())),
+            mint_quotes: Arc::new(Mutex::new(
+                mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+            )),
+            melt_quotes: Arc::new(Mutex::new(
+                melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+            )),
+            mint_keys: Arc::new(Mutex::new(
+                mint_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
+            )),
+            proofs: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
 #[async_trait(?Send)]
 impl LocalStore for MemoryLocalStore {
     async fn add_mint(
