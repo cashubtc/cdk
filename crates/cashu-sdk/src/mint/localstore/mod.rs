@@ -47,10 +47,12 @@ pub trait LocalStore {
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error>;
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error>;
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error>;
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error>;
 
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Error>;
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Error>;
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error>;
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error>;
 
     async fn add_keyset(&self, keyset: KeySet) -> Result<(), Error>;

@@ -156,6 +156,22 @@ impl LocalStore for RedbLocalStore {
         Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }
 
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(MINT_QUOTES_TABLE)?;
+
+        let mut quotes = Vec::new();
+
+        for (_id, quote) in (table.iter()?).flatten() {
+            let quote = serde_json::from_str(quote.value())?;
+
+            quotes.push(quote)
+        }
+
+        Ok(quotes)
+    }
+
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
         let db = self.db.lock().await;
 
@@ -192,6 +208,22 @@ impl LocalStore for RedbLocalStore {
         let quote = table.get(quote_id)?;
 
         Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
+    }
+
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(MELT_QUOTES_TABLE)?;
+
+        let mut quotes = Vec::new();
+
+        for (_id, quote) in (table.iter()?).flatten() {
+            let quote = serde_json::from_str(quote.value())?;
+
+            quotes.push(quote)
+        }
+
+        Ok(quotes)
     }
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {

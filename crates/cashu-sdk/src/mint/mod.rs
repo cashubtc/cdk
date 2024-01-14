@@ -19,10 +19,9 @@ use tracing::{debug, info};
 use crate::Mnemonic;
 
 mod localstore;
-use localstore::LocalStore;
-pub use localstore::MemoryLocalStore;
 #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
 pub use localstore::RedbLocalStore;
+pub use localstore::{LocalStore, MemoryLocalStore};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -58,7 +57,7 @@ pub struct Mint<L: LocalStore> {
     //    pub pubkey: PublicKey
     mnemonic: Mnemonic,
     pub fee_reserve: FeeReserve,
-    localstore: L,
+    pub localstore: L,
 }
 
 impl<L: LocalStore> Mint<L> {
@@ -140,6 +139,16 @@ impl<L: LocalStore> Mint<L> {
         Ok(Some(KeysResponse {
             keysets: vec![keyset.into()],
         }))
+    }
+
+    /// Retrieve the public keys of the active keyset for distribution to
+    /// wallet clients
+    pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
+        let keysets = self.localstore.get_keysets().await?;
+
+        Ok(KeysResponse {
+            keysets: keysets.into_iter().map(|k| k.into()).collect(),
+        })
     }
 
     /// Return a list of all supported keysets
