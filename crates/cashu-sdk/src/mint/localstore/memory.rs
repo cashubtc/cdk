@@ -54,7 +54,7 @@ impl MemoryLocalStore {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl LocalStore for MemoryLocalStore {
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
         self.active_keysets.lock().await.insert(unit, id);

@@ -44,7 +44,7 @@ impl RedbLocalStore {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl LocalStore for RedbLocalStore {
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
         let db = self.db.lock().await;

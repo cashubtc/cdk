@@ -39,7 +39,7 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 pub trait LocalStore {
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Error>;
