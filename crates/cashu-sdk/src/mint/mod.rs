@@ -54,6 +54,7 @@ pub enum Error {
     MultipleUnits,
 }
 
+#[derive(Clone)]
 pub struct Mint {
     //    pub pubkey: PublicKey
     mnemonic: Mnemonic,
@@ -559,6 +560,7 @@ impl Mint {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeeReserve {
     pub min_fee_reserve: Amount,
     pub percent_fee_reserve: f32,
