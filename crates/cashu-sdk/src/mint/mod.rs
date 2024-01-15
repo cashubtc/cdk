@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use cashu::dhke::{sign_message, verify_message};
 #[cfg(feature = "nut07")]
@@ -53,16 +54,16 @@ pub enum Error {
     MultipleUnits,
 }
 
-pub struct Mint<L: LocalStore> {
+pub struct Mint {
     //    pub pubkey: PublicKey
     mnemonic: Mnemonic,
     pub fee_reserve: FeeReserve,
-    pub localstore: L,
+    pub localstore: Arc<dyn LocalStore + Send + Sync>,
 }
 
-impl<L: LocalStore> Mint<L> {
+impl Mint {
     pub async fn new(
-        localstore: L,
+        localstore: Arc<dyn LocalStore + Send + Sync>,
         mnemonic: Mnemonic,
         keysets_info: HashSet<MintKeySetInfo>,
         min_fee_reserve: Amount,
@@ -109,6 +110,23 @@ impl<L: LocalStore> Mint<L> {
         self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
+    }
+
+    pub async fn update_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
+        self.localstore.add_mint_quote(quote).await?;
+
+        Ok(())
+    }
+
+    pub async fn mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let quotes = self.localstore.get_mint_quotes().await?;
+        Ok(quotes)
+    }
+
+    pub async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+        self.localstore.remove_mint_quote(quote_id).await?;
+
+        Ok(())
     }
 
     pub async fn new_melt_quote(
