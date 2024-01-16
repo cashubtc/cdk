@@ -1,8 +1,9 @@
-//! Mint Tokens
+//! Mint Tokens via Bolt11
 // https://github.com/cashubtc/nuts/blob/main/04.md
 use serde::{Deserialize, Serialize};
 
 use super::{BlindedMessage, BlindedSignature, CurrencyUnit, PaymentMethod};
+use crate::types::MintQuote;
 use crate::Amount;
 
 /// Mint quote request [NUT-04]
@@ -25,6 +26,17 @@ pub struct MintQuoteBolt11Response {
     pub paid: bool,
     /// Unix timestamp until the quote is valid
     pub expiry: u64,
+}
+
+impl From<MintQuote> for MintQuoteBolt11Response {
+    fn from(mint_quote: MintQuote) -> MintQuoteBolt11Response {
+        MintQuoteBolt11Response {
+            quote: mint_quote.id,
+            request: mint_quote.request,
+            paid: mint_quote.paid,
+            expiry: mint_quote.expiry,
+        }
+    }
 }
 
 /// Mint request [NUT-04]

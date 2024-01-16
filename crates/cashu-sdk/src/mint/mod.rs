@@ -443,7 +443,6 @@ impl Mint {
                 witness: None,
             })
         }
-
         Ok(CheckStateResponse { states })
     }
 
