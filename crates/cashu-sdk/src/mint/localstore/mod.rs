@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{CurrencyUnit, Id, Proof};
+use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 pub use memory::MemoryLocalStore;
@@ -37,10 +37,15 @@ pub enum Error {
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Serde(#[from] serde_json::Error),
+    #[error("Unknown Mint Info")]
+    UnknownMintInfo,
 }
 
 #[async_trait]
 pub trait LocalStore {
+    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Error>;
+    async fn get_mint_info(&self) -> Result<MintInfo, Error>;
+
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Error>;
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Error>;

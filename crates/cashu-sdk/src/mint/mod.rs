@@ -599,6 +599,10 @@ impl Mint {
             fee_reserve: u64::from(quote.fee_reserve),
         })
     }
+
+    pub async fn mint_info(&self) -> Result<MintInfo, Error> {
+        Ok(self.localstore.get_mint_info().await?)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
