@@ -45,7 +45,7 @@ impl<'de> Deserialize<'de> for MintVersion {
 }
 
 /// Mint Info [NIP-09]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     #[serde(skip_serializing_if = "Option::is_none")]
