@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu::nuts::{CurrencyUnit, Id, MintKeySet as KeySet, Proof};
+use cashu::nuts::{CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -17,6 +17,7 @@ const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("min
 const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
 const PENDING_PROOFS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("pending_proofs");
 const SPENT_PROOFS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("spent_proofs");
+const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 
 #[derive(Debug, Clone)]
 pub struct RedbLocalStore {
@@ -35,6 +36,7 @@ impl RedbLocalStore {
             let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
             let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
             let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
+            let _ = write_txn.open_table(CONFIG_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -46,6 +48,30 @@ impl RedbLocalStore {
 
 #[async_trait]
 impl LocalStore for RedbLocalStore {
+    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Error> {
+        let db = self.db.lock().await;
+
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(CONFIG_TABLE)?;
+            table.insert("mint_info", serde_json::to_string(mint_info)?.as_str())?;
+        }
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
+    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(CONFIG_TABLE)?;
+
+        let mint_info = table.get("mint_info")?.ok_or(Error::UnknownMintInfo)?;
+
+        Ok(serde_json::from_str(mint_info.value())?)
+    }
+
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
         let db = self.db.lock().await;
 

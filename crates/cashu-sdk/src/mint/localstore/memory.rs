@@ -3,15 +3,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{CurrencyUnit, Id, Proof, Proofs};
+use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof, Proofs};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use tokio::sync::Mutex;
 
 use super::{Error, LocalStore};
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct MemoryLocalStore {
+    mint_info: Arc<Mutex<MintInfo>>,
     active_keysets: Arc<Mutex<HashMap<CurrencyUnit, Id>>>,
     keysets: Arc<Mutex<HashMap<Id, KeySet>>>,
     mint_quotes: Arc<Mutex<HashMap<String, MintQuote>>>,
@@ -22,6 +23,7 @@ pub struct MemoryLocalStore {
 
 impl MemoryLocalStore {
     pub fn new(
+        mint_info: MintInfo,
         active_keysets: HashMap<CurrencyUnit, Id>,
         keysets: Vec<KeySet>,
         mint_quotes: Vec<MintQuote>,
@@ -30,6 +32,7 @@ impl MemoryLocalStore {
         spent_proofs: Proofs,
     ) -> Self {
         Self {
+            mint_info: Arc::new(Mutex::new(mint_info)),
             active_keysets: Arc::new(Mutex::new(active_keysets)),
             keysets: Arc::new(Mutex::new(keysets.into_iter().map(|k| (k.id, k)).collect())),
             mint_quotes: Arc::new(Mutex::new(
@@ -56,6 +59,14 @@ impl MemoryLocalStore {
 
 #[async_trait]
 impl LocalStore for MemoryLocalStore {
+    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Error> {
+        let mut mi = self.mint_info.lock().await;
+        *mi = mint_info.clone();
+        Ok(())
+    }
+    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+        Ok(self.mint_info.lock().await.clone())
+    }
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
         self.active_keysets.lock().await.insert(unit, id);
         Ok(())
