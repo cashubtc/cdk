@@ -1,4 +1,4 @@
-//! Request mint
+//! Swap
 // https://github.com/cashubtc/nuts/blob/main/03.md
 
 use serde::{Deserialize, Serialize};

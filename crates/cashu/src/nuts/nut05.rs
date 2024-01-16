@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::CurrencyUnit;
 use crate::nuts::Proofs;
+use crate::types::MeltQuote;
 use crate::{Amount, Bolt11Invoice};
 
 /// Melt quote request [NUT-05]
@@ -29,6 +30,18 @@ pub struct MeltQuoteBolt11Response {
     pub paid: bool,
     /// Unix timestamp until the quote is valid
     pub expiry: u64,
+}
+
+impl From<MeltQuote> for MeltQuoteBolt11Response {
+    fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response {
+        MeltQuoteBolt11Response {
+            quote: melt_quote.id,
+            amount: u64::from(melt_quote.amount),
+            fee_reserve: u64::from(melt_quote.fee_reserve),
+            paid: melt_quote.paid,
+            expiry: melt_quote.expiry,
+        }
+    }
 }
 
 /// Melt Bolt11 Request [NUT-05]
