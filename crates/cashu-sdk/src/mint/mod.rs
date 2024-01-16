@@ -42,6 +42,8 @@ pub enum Error {
     TokenSpent,
     #[error("Token Pending")]
     TokenPending,
+    #[error("Quote not paid")]
+    UnpaidQuote,
     #[error("`{0}`")]
     Custom(String),
     #[error("`{0}`")]
@@ -113,9 +115,23 @@ impl Mint {
         Ok(quote)
     }
 
+    pub async fn check_mint_quote(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
+        let quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(MintQuoteBolt11Response {
+            quote: quote.id,
+            request: quote.request,
+            paid: quote.paid,
+            expiry: quote.expiry,
+        })
+    }
+
     pub async fn update_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
         self.localstore.add_mint_quote(quote).await?;
-
         Ok(())
     }
 
@@ -229,6 +245,16 @@ impl Mint {
         &mut self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
+        let quote = self
+            .localstore
+            .get_mint_quote(&mint_request.quote)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if !quote.paid {
+            return Err(Error::UnpaidQuote);
+        }
+
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
         for blinded_message in mint_request.outputs {
@@ -396,13 +422,13 @@ impl Mint {
     }
 
     #[cfg(feature = "nut07")]
-    pub async fn check_spendable(
+    pub async fn check_state(
         &self,
-        check_spendable: &CheckStateRequest,
+        check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        let mut states = Vec::with_capacity(check_spendable.secrets.len());
+        let mut states = Vec::with_capacity(check_state.secrets.len());
 
-        for secret in &check_spendable.secrets {
+        for secret in &check_state.secrets {
             let state = if self.localstore.get_spent_proof(secret).await?.is_some() {
                 State::Spent
             } else if self.localstore.get_pending_proof(secret).await?.is_some() {
@@ -556,6 +582,22 @@ impl Mint {
             paid: true,
             payment_preimage: Some(preimage.to_string()),
             change,
+        })
+    }
+
+    pub async fn check_melt_quote(&self, quote_id: &str) -> Result<MeltQuoteBolt11Response, Error> {
+        let quote = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(MeltQuoteBolt11Response {
+            quote: quote.id,
+            paid: quote.paid,
+            expiry: quote.expiry,
+            amount: u64::from(quote.amount),
+            fee_reserve: u64::from(quote.fee_reserve),
         })
     }
 }
