@@ -15,9 +15,10 @@ description = "Cashu rust wallet and mint library"
 default = ["mint", "wallet", "all-nuts"]
 mint = []
 wallet = []
-all-nuts = ["nut07", "nut08"]
+all-nuts = ["nut07", "nut08", "nut10"]
 nut07 = []
 nut08 = []
+nut10 = []
 
 
 [dependencies]

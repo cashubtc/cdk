@@ -9,6 +9,8 @@ pub mod nut06;
 pub mod nut07;
 #[cfg(feature = "nut08")]
 pub mod nut08;
+#[cfg(feature = "nut10")]
+pub mod nut10;
 
 #[cfg(feature = "wallet")]
 pub use nut00::wallet::{PreMint, PreMintSecrets, Token};
