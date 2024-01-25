@@ -63,6 +63,12 @@ pub mod serde_public_key {
     {
         let encoded = String::deserialize(deserializer)?;
         let decoded = hex::decode(encoded).map_err(serde::de::Error::custom)?;
+        if decoded.len().ne(&33) {
+            return Err(serde::de::Error::custom(format!(
+                "Invalid key length: {}",
+                decoded.len()
+            )));
+        }
         PublicKey::from_sec1_bytes(&decoded).map_err(serde::de::Error::custom)
     }
 
