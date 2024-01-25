@@ -194,24 +194,59 @@ mod tests {
 
         #[test]
         fn test_blind_message() {
-            let message = "test_message";
-            let sec = SecretKey::new(ScalarPrimitive::ONE);
+            let message = "d341ee4871f1f889041e63cf0d3823c713eea6aff01e80f1719f08f9e5be98f6";
+            let sec: crate::nuts::SecretKey = crate::nuts::SecretKey::from_hex(
+                "99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a",
+            )
+            .unwrap();
 
-            let (b, r) = blind_message(message.as_bytes(), Some(sec.clone())).unwrap();
+            println!("{}", sec.to_hex());
+
+            let (b, r) =
+                blind_message(&hex::decode(message).unwrap(), Some(sec.clone().into())).unwrap();
+
+            assert_eq!(sec, r.into());
 
             assert_eq!(
-                b,
-                k256::PublicKey::from_sec1_bytes(
-                    &hex::decode(
-                        "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2"
+                b.to_hex(),
+                PublicKey::from(
+                    k256::PublicKey::from_sec1_bytes(
+                        &hex::decode(
+                            "026a0019ed7dd2fc84aec809a7d937da0dd6cca6693bfea9a887be33119c153ee9"
+                        )
+                        .unwrap()
                     )
                     .unwrap()
                 )
-                .unwrap()
-                .into()
+                .to_hex()
             );
 
-            assert_eq!(r, sec);
+            let message = "f1aaf16c2239746f369572c0784d9dd3d032d952c2d992175873fb58fae31a60";
+            let sec: crate::nuts::SecretKey = crate::nuts::SecretKey::from_hex(
+                "f78476ea7cc9ade20f9e05e58a804cf19533f03ea805ece5fee88c8e2874ba50",
+            )
+            .unwrap();
+
+            println!("{}", sec.to_hex());
+
+            let (b, r) =
+                blind_message(&hex::decode(message).unwrap(), Some(sec.clone().into())).unwrap();
+
+            assert_eq!(sec, r.into());
+
+            assert_eq!(
+                b.to_hex(),
+                PublicKey::from(
+                    k256::PublicKey::from_sec1_bytes(
+                        &hex::decode(
+                            "02be78ed8172c85cec8e7aacb6d38fbde518d726daa27d3d1144193e0ce474b681"
+                        )
+                        .unwrap()
+                    )
+                    .unwrap()
+                )
+                .to_hex()
+            );
         }
 
         #[test]
@@ -266,13 +301,33 @@ mod tests {
             let bob_sec = SecretKey::new(ScalarPrimitive::ONE);
 
             // C_
-            let signed = sign_message(bob_sec, blinded_message.into()).unwrap();
+            let signed = sign_message(bob_sec, blinded_message.clone().into()).unwrap();
 
             assert_eq!(
                 signed,
                 k256::PublicKey::from_sec1_bytes(
                     &hex::decode(
                         "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2"
+                    )
+                    .unwrap()
+                )
+                .unwrap()
+            );
+
+            // A
+            let bob_sec = crate::nuts::SecretKey::from_hex(
+                "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+            )
+            .unwrap();
+
+            // C_
+            let signed = sign_message(bob_sec.into(), blinded_message.into()).unwrap();
+
+            assert_eq!(
+                signed,
+                k256::PublicKey::from_sec1_bytes(
+                    &hex::decode(
+                        "0398bc70ce8184d27ba89834d19f5199c84443c31131e48d3c1214db24247d005d"
                     )
                     .unwrap()
                 )
