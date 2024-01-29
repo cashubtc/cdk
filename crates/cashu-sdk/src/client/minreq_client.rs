@@ -13,7 +13,7 @@ use cashu::nuts::{CheckStateRequest, CheckStateResponse};
 use cashu::secret::Secret;
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
-use tracing::warn;
+use tracing::{error, warn};
 use url::Url;
 
 use super::join_url;
@@ -179,6 +179,10 @@ impl Client for HttpClient {
 
         let response: Result<SwapResponse, serde_json::Error> =
             serde_json::from_value(res.json::<Value>()?.clone());
+
+        if let Err(err) = &response {
+            error!("{}", err)
+        }
 
         Ok(response?)
     }

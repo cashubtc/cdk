@@ -106,8 +106,8 @@ impl LocalStore for RedbLocalStore {
         let mut active_keysets = HashMap::new();
 
         for (unit, id) in (table.iter()?).flatten() {
-            let unit = serde_json::from_str(unit.value())?;
-            let id = serde_json::from_str(id.value())?;
+            let unit = CurrencyUnit::from_str(unit.value())?;
+            let id = Id::from_str(id.value())?;
 
             active_keysets.insert(unit, id);
         }
