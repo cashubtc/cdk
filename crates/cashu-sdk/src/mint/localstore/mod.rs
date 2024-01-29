@@ -39,6 +39,10 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
     #[error("Unknown Mint Info")]
     UnknownMintInfo,
+    #[error("`{0}`")]
+    Cashu(#[from] cashu::error::Error),
+    #[error("`{0}`")]
+    CashuNut02(#[from] cashu::nuts::nut02::Error),
 }
 
 #[async_trait]
