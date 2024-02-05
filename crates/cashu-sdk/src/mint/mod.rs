@@ -83,7 +83,7 @@ impl Mint {
             );
 
             localstore
-                .add_active_keyset(CurrencyUnit::Sat, keyset.id.clone())
+                .add_active_keyset(CurrencyUnit::Sat, keyset.id)
                 .await?;
             localstore.add_keyset(keyset).await?;
         } else {
