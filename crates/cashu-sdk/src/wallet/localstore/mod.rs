@@ -74,4 +74,12 @@ pub trait LocalStore {
     async fn add_proofs(&self, mint_url: UncheckedUrl, proof: Proofs) -> Result<(), Error>;
     async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error>;
     async fn remove_proofs(&self, mint_url: UncheckedUrl, proofs: &Proofs) -> Result<(), Error>;
+
+    async fn add_pending_proofs(&self, mint_url: UncheckedUrl, proof: Proofs) -> Result<(), Error>;
+    async fn get_pending_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error>;
+    async fn remove_pending_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+        proofs: &Proofs,
+    ) -> Result<(), Error>;
 }

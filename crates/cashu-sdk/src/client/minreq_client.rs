@@ -121,10 +121,9 @@ impl Client for HttpClient {
 
         let request = MeltQuoteBolt11Request { request, unit };
 
-        let value = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
+        let value = minreq::post(url).with_json(&request)?.send()?;
+
+        let value = value.json::<Value>()?;
 
         let response: Result<MeltQuoteBolt11Response, serde_json::Error> =
             serde_json::from_value(value.clone());
@@ -152,11 +151,9 @@ impl Client for HttpClient {
             outputs,
         };
 
-        let value = minreq::post(url)
-            .with_json(&request)?
-            .send()?
-            .json::<Value>()?;
+        let value = minreq::post(url).with_json(&request)?.send()?;
 
+        let value = value.json::<Value>()?;
         let response: Result<MeltBolt11Response, serde_json::Error> =
             serde_json::from_value(value.clone());
 
