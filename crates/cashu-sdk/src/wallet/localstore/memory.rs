@@ -17,6 +17,7 @@ pub struct MemoryLocalStore {
     melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
     mint_keys: Arc<Mutex<HashMap<Id, Keys>>>,
     proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
+    pending_proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
 }
 
 impl MemoryLocalStore {
@@ -38,6 +39,7 @@ impl MemoryLocalStore {
                 mint_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
             )),
             proofs: Arc::new(Mutex::new(HashMap::new())),
+            pending_proofs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -156,6 +158,44 @@ impl LocalStore for MemoryLocalStore {
 
     async fn remove_proofs(&self, mint_url: UncheckedUrl, proofs: &Proofs) -> Result<(), Error> {
         let mut mint_proofs = self.proofs.lock().await;
+
+        if let Some(mint_proofs) = mint_proofs.get_mut(&mint_url) {
+            for proof in proofs {
+                mint_proofs.remove(proof);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn add_pending_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+        proofs: Proofs,
+    ) -> Result<(), Error> {
+        let mut all_proofs = self.pending_proofs.lock().await;
+
+        let mint_proofs = all_proofs.entry(mint_url).or_insert(HashSet::new());
+        mint_proofs.extend(proofs);
+
+        Ok(())
+    }
+
+    async fn get_pending_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
+        Ok(self
+            .pending_proofs
+            .lock()
+            .await
+            .get(&mint_url)
+            .map(|p| p.iter().cloned().collect()))
+    }
+
+    async fn remove_pending_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+        proofs: &Proofs,
+    ) -> Result<(), Error> {
+        let mut mint_proofs = self.pending_proofs.lock().await;
 
         if let Some(mint_proofs) = mint_proofs.get_mut(&mint_url) {
             for proof in proofs {

@@ -17,7 +17,7 @@ use cashu::url::UncheckedUrl;
 use cashu::{Amount, Bolt11Invoice};
 use localstore::LocalStore;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::client::Client;
 use crate::utils::unix_time;
@@ -508,12 +508,12 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             .await?;
 
         self.localstore
-            .add_proofs(mint_url.clone(), keep_proofs)
+            .add_pending_proofs(mint_url.clone(), proofs)
             .await?;
 
-        // REVIEW: send proofs are not added to the store since they should be
-        // used. but if they are not they will be lost. There should likely be a
-        // pendiing proof store
+        self.localstore
+            .add_proofs(mint_url.clone(), keep_proofs)
+            .await?;
 
         Ok(send_proofs)
     }
@@ -635,7 +635,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             .post_melt(
                 mint_url.clone().try_into()?,
                 quote_id.to_string(),
-                proofs,
+                proofs.clone(),
                 Some(blinded.blinded_messages()),
             )
             .await?;
@@ -653,10 +653,20 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         let melted = Melted {
             paid: true,
             preimage: melt_response.payment_preimage,
-            change: change_proofs,
+            change: change_proofs.clone(),
         };
 
+        if let Some(change_proofs) = change_proofs {
+            self.localstore
+                .add_proofs(mint_url.clone(), change_proofs)
+                .await?;
+        }
+
         self.localstore.remove_melt_quote(&quote_info.id).await?;
+
+        self.localstore
+            .remove_proofs(mint_url.clone(), &proofs)
+            .await?;
 
         Ok(melted)
     }

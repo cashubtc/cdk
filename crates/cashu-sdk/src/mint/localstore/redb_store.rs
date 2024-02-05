@@ -8,6 +8,7 @@ use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
+use tracing::debug;
 
 use super::{Error, LocalStore};
 
@@ -280,15 +281,19 @@ impl LocalStore for RedbLocalStore {
         }
         write_txn.commit()?;
 
+        debug!("Added spend secret: {}", proof.secret.to_string());
+
         Ok(())
     }
 
     async fn get_spent_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(MELT_QUOTES_TABLE)?;
+        let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
 
         let quote = table.get(secret.to_string().as_str())?;
+
+        debug!("Checking secret: {}", secret.to_string());
 
         Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }

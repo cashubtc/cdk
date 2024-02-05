@@ -20,6 +20,8 @@ const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("min
 const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
 const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_keys");
 const PROOFS_TABLE: MultimapTableDefinition<&str, &str> = MultimapTableDefinition::new("proofs");
+const PENDING_PROOFS_TABLE: MultimapTableDefinition<&str, &str> =
+    MultimapTableDefinition::new("pending_proofs");
 
 #[derive(Debug, Clone)]
 pub struct RedbLocalStore {
@@ -307,6 +309,68 @@ impl LocalStore for RedbLocalStore {
 
         {
             let mut table = write_txn.open_multimap_table(PROOFS_TABLE)?;
+
+            for proof in proofs {
+                table.remove(
+                    mint_url.to_string().as_str(),
+                    serde_json::to_string(&proof)?.as_str(),
+                )?;
+            }
+        }
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
+    async fn add_pending_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+        proofs: Proofs,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().await;
+
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_multimap_table(PENDING_PROOFS_TABLE)?;
+
+            for proof in proofs {
+                table.insert(
+                    mint_url.to_string().as_str(),
+                    serde_json::to_string(&proof)?.as_str(),
+                )?;
+            }
+        }
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
+    async fn get_pending_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_multimap_table(PENDING_PROOFS_TABLE)?;
+
+        let proofs = table
+            .get(mint_url.to_string().as_str())?
+            .flatten()
+            .flat_map(|k| serde_json::from_str(k.value()))
+            .collect();
+
+        Ok(proofs)
+    }
+
+    async fn remove_pending_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+        proofs: &Proofs,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().await;
+
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_multimap_table(PENDING_PROOFS_TABLE)?;
 
             for proof in proofs {
                 table.remove(

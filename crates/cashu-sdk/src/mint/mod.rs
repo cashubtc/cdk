@@ -15,7 +15,7 @@ use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::Mnemonic;
 
@@ -381,6 +381,7 @@ impl Mint {
         // in the future it maybe possible to support multiple units but unsupported for
         // now
         if keyset_units.len().gt(&1) {
+            error!("Only one unit is allowed in request: {:?}", keyset_units);
             return Err(Error::MultipleUnits);
         }
 
@@ -464,7 +465,7 @@ impl Mint {
     pub async fn verify_melt_request(
         &mut self,
         melt_request: &MeltBolt11Request,
-    ) -> Result<(), Error> {
+    ) -> Result<MeltQuote, Error> {
         let quote = self
             .localstore
             .get_melt_quote(&melt_request.quote)
@@ -486,7 +487,7 @@ impl Mint {
         let input_keyset_ids: HashSet<Id> =
             melt_request.inputs.iter().map(|p| p.keyset_id).collect();
 
-        let mut keyset_units = Vec::with_capacity(input_keyset_ids.capacity());
+        let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
 
         for id in input_keyset_ids {
             let keyset = self
@@ -494,7 +495,7 @@ impl Mint {
                 .get_keyset(&id)
                 .await?
                 .ok_or(Error::UnknownKeySet)?;
-            keyset_units.push(keyset.unit);
+            keyset_units.insert(keyset.unit);
         }
 
         if let Some(outputs) = &melt_request.outputs {
@@ -517,13 +518,12 @@ impl Mint {
                 if id.ne(&active_keyset_id) {
                     return Err(Error::InactiveKeyset);
                 }
-                keyset_units.push(keyset.unit);
+                keyset_units.insert(keyset.unit);
             }
         }
 
         // Check that all input and output proofs are the same unit
-        let seen_units: HashSet<CurrencyUnit> = HashSet::new();
-        if keyset_units.iter().any(|unit| !seen_units.contains(unit)) && seen_units.len() != 1 {
+        if keyset_units.len().gt(&1) {
             return Err(Error::MultipleUnits);
         }
 
@@ -535,10 +535,10 @@ impl Mint {
         }
 
         for proof in &melt_request.inputs {
-            self.verify_proof(proof).await?
+            self.verify_proof(proof).await?;
         }
 
-        Ok(())
+        Ok(quote)
     }
 
     pub async fn process_melt_request(
