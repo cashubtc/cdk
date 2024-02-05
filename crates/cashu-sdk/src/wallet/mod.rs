@@ -17,7 +17,7 @@ use cashu::url::UncheckedUrl;
 use cashu::{Amount, Bolt11Invoice};
 use localstore::LocalStore;
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::client::Client;
 use crate::utils::unix_time;
@@ -619,16 +619,18 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             return Err(Error::QuoteUnknown);
         };
 
+        let proofs = self
+            .select_proofs(mint_url.clone(), &quote_info.unit, quote_info.amount)
+            .await?;
+
+        let proofs_amount = proofs.iter().map(|p| p.amount).sum();
+
         let blinded = PreMintSecrets::blank(
             self.active_mint_keyset(mint_url, &quote_info.unit)
                 .await?
                 .unwrap(),
-            quote_info.fee_reserve,
+            proofs_amount,
         )?;
-
-        let proofs = self
-            .select_proofs(mint_url.clone(), &quote_info.unit, quote_info.amount)
-            .await?;
 
         let melt_response = self
             .client
