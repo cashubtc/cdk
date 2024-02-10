@@ -184,6 +184,33 @@ pub mod wallet {
             Ok(PreMintSecrets { secrets: output })
         }
 
+        pub fn from_secrets(
+            keyset_id: Id,
+            amounts: Vec<Amount>,
+            secrets: Vec<Secret>,
+        ) -> Result<Self, wallet::Error> {
+            let mut output = Vec::with_capacity(secrets.len());
+
+            for (secret, amount) in secrets.into_iter().zip(amounts) {
+                let (blinded, r) = blind_message(secret.as_bytes(), None)?;
+
+                let blinded_message = BlindedMessage {
+                    amount,
+                    b: blinded,
+                    keyset_id,
+                };
+
+                output.push(PreMint {
+                    secret,
+                    blinded_message,
+                    r: r.into(),
+                    amount,
+                });
+            }
+
+            Ok(PreMintSecrets { secrets: output })
+        }
+
         /// Blank Outputs used for NUT-08 change
         pub fn blank(keyset_id: Id, fee_reserve: Amount) -> Result<Self, wallet::Error> {
             let count = ((u64::from(fee_reserve) as f64).log2().ceil() as u64).max(1);
