@@ -69,6 +69,8 @@ pub mod wallet {
         /// Url Parse error
         #[error("Url Parse")]
         UrlParse,
+        #[error("`{0}`")]
+        Secret(#[from] crate::secret::Error),
         /// Custom Error message
         #[error("`{0}`")]
         CustomError(String),
@@ -109,6 +111,8 @@ pub mod mint {
         /// Keyset is not known
         #[error("Unknown Keyset")]
         UnknownKeySet,
+        #[error("`{0}`")]
+        Secret(#[from] crate::secret::Error),
         #[error("`{0}`")]
         CustomError(String),
     }

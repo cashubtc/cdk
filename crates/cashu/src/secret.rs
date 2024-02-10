@@ -18,6 +18,8 @@ pub struct Secret(String);
 pub enum Error {
     #[error("Invalid secret length: `{0}`")]
     InvalidLength(u64),
+    #[error("Hex error: `{0}`")]
+    Hex(#[from] hex::FromHexError),
 }
 
 impl Default for Secret {
@@ -56,8 +58,8 @@ impl Secret {
         Self(hex::encode(xpriv.private_key().to_bytes()))
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        Ok(hex::decode(&self.0)?)
     }
 }
 
