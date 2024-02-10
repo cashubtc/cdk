@@ -3,6 +3,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cashu::dhke::hash_to_curve;
+use cashu::k256;
 use cashu::nuts::{CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
@@ -16,8 +18,8 @@ const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");
 const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
 const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
-const PENDING_PROOFS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("pending_proofs");
-const SPENT_PROOFS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("spent_proofs");
+const PENDING_PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("pending_proofs");
+const SPENT_PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("spent_proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 
 #[derive(Debug, Clone)]
@@ -275,7 +277,9 @@ impl LocalStore for RedbLocalStore {
         {
             let mut table = write_txn.open_table(SPENT_PROOFS_TABLE)?;
             table.insert(
-                proof.secret.to_string().as_str(),
+                hash_to_curve(&proof.secret.to_bytes()?)
+                    .to_sec1_bytes()
+                    .as_ref(),
                 serde_json::to_string(&proof)?.as_str(),
             )?;
         }
@@ -286,16 +290,31 @@ impl LocalStore for RedbLocalStore {
         Ok(())
     }
 
-    async fn get_spent_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+    async fn get_spent_proof_by_hash(
+        &self,
+        secret_point: &k256::PublicKey,
+    ) -> Result<Option<Proof>, Error> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
 
-        let quote = table.get(secret.to_string().as_str())?;
+        let proof = table.get(secret_point.to_sec1_bytes().as_ref())?;
+
+        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
+    }
+
+    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
+
+        let secret_hash = hash_to_curve(&secret.to_bytes()?);
+
+        let proof = table.get(secret_hash.to_sec1_bytes().as_ref())?;
 
         debug!("Checking secret: {}", secret.to_string());
 
-        Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
+        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
     }
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
@@ -306,7 +325,9 @@ impl LocalStore for RedbLocalStore {
         {
             let mut table = write_txn.open_table(PENDING_PROOFS_TABLE)?;
             table.insert(
-                proof.secret.to_string().as_str(),
+                hash_to_curve(&proof.secret.to_bytes()?)
+                    .to_sec1_bytes()
+                    .as_ref(),
                 serde_json::to_string(&proof)?.as_str(),
             )?;
         }
@@ -315,14 +336,29 @@ impl LocalStore for RedbLocalStore {
         Ok(())
     }
 
-    async fn get_pending_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+    async fn get_pending_proof_by_hash(
+        &self,
+        secret_point: &k256::PublicKey,
+    ) -> Result<Option<Proof>, Error> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(MELT_QUOTES_TABLE)?;
+        let table = read_txn.open_table(PENDING_PROOFS_TABLE)?;
 
-        let quote = table.get(secret.to_string().as_str())?;
+        let proof = table.get(secret_point.to_sec1_bytes().as_ref())?;
 
-        Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
+        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
+    }
+
+    async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(PENDING_PROOFS_TABLE)?;
+
+        let secret_hash = hash_to_curve(&secret.to_bytes()?);
+
+        let proof = table.get(secret_hash.to_sec1_bytes().as_ref())?;
+
+        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
     }
 
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error> {
@@ -332,7 +368,8 @@ impl LocalStore for RedbLocalStore {
 
         {
             let mut table = write_txn.open_table(PENDING_PROOFS_TABLE)?;
-            table.remove(secret.to_string().as_str())?;
+            let secret_hash = hash_to_curve(&secret.to_bytes()?);
+            table.remove(secret_hash.to_sec1_bytes().as_ref())?;
         }
         write_txn.commit()?;
 

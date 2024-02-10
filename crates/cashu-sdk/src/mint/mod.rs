@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use cashu::dhke::{sign_message, verify_message};
+use cashu::dhke::{hash_to_curve, sign_message, verify_message};
 use cashu::error::ErrorResponse;
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut07::{ProofState, State};
@@ -11,7 +11,6 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckStateRequest, CheckStateResponse};
-use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
 use http::StatusCode;
@@ -52,6 +51,8 @@ pub enum Error {
     Cashu(#[from] cashu::error::mint::Error),
     #[error("`{0}`")]
     Localstore(#[from] localstore::Error),
+    #[error("`{0}`")]
+    Secret(#[from] cashu::secret::Error),
     #[error("Unknown quote")]
     UnknownQuote,
     #[error("Cannot have multiple units")]
@@ -353,10 +354,11 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let secrets: HashSet<Secret> = swap_request
+        let secrets: HashSet<Vec<u8>> = swap_request
             .inputs
             .iter()
-            .map(|p| p.secret.clone())
+            .flat_map(|p| p.secret.to_bytes())
+            .map(|p| hash_to_curve(&p).to_sec1_bytes().to_vec())
             .collect();
 
         // Check that there are no duplicate proofs in request
@@ -420,7 +422,7 @@ impl Mint {
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         if self
             .localstore
-            .get_spent_proof(&proof.secret)
+            .get_spent_proof_by_secret(&proof.secret)
             .await?
             .is_some()
         {
@@ -429,7 +431,7 @@ impl Mint {
 
         if self
             .localstore
-            .get_pending_proof(&proof.secret)
+            .get_pending_proof_by_secret(&proof.secret)
             .await?
             .is_some()
         {
@@ -463,9 +465,19 @@ impl Mint {
         let mut states = Vec::with_capacity(check_state.secrets.len());
 
         for secret in &check_state.secrets {
-            let state = if self.localstore.get_spent_proof(secret).await?.is_some() {
+            let state = if self
+                .localstore
+                .get_spent_proof_by_secret(secret)
+                .await?
+                .is_some()
+            {
                 State::Spent
-            } else if self.localstore.get_pending_proof(secret).await?.is_some() {
+            } else if self
+                .localstore
+                .get_pending_proof_by_secret(secret)
+                .await?
+                .is_some()
+            {
                 State::Pending
             } else {
                 State::Unspent
@@ -545,7 +557,12 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        let secrets: HashSet<&Secret> = melt_request.inputs.iter().map(|p| &p.secret).collect();
+        let secrets: HashSet<Vec<u8>> = melt_request
+            .inputs
+            .iter()
+            .flat_map(|p| p.secret.to_bytes())
+            .map(|p| hash_to_curve(&p).to_sec1_bytes().to_vec())
+            .collect();
 
         // Ensure proofs are unique and not being double spent
         if melt_request.inputs.len().ne(&secrets.len()) {

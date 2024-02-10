@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cashu::dhke::hash_to_curve;
+use cashu::k256;
 use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof, Proofs};
 use cashu::secret::Secret;
@@ -17,8 +19,8 @@ pub struct MemoryLocalStore {
     keysets: Arc<Mutex<HashMap<Id, KeySet>>>,
     mint_quotes: Arc<Mutex<HashMap<String, MintQuote>>>,
     melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
-    pending_proofs: Arc<Mutex<HashMap<Secret, Proof>>>,
-    spent_proofs: Arc<Mutex<HashMap<Secret, Proof>>>,
+    pending_proofs: Arc<Mutex<HashMap<Vec<u8>, Proof>>>,
+    spent_proofs: Arc<Mutex<HashMap<Vec<u8>, Proof>>>,
 }
 
 impl MemoryLocalStore {
@@ -30,8 +32,8 @@ impl MemoryLocalStore {
         melt_quotes: Vec<MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        Ok(Self {
             mint_info: Arc::new(Mutex::new(mint_info)),
             active_keysets: Arc::new(Mutex::new(active_keysets)),
             keysets: Arc::new(Mutex::new(keysets.into_iter().map(|k| (k.id, k)).collect())),
@@ -44,16 +46,30 @@ impl MemoryLocalStore {
             pending_proofs: Arc::new(Mutex::new(
                 pending_proofs
                     .into_iter()
-                    .map(|p| (p.secret.clone(), p))
+                    .map(|p| {
+                        (
+                            hash_to_curve(&p.secret.to_bytes().unwrap())
+                                .to_sec1_bytes()
+                                .to_vec(),
+                            p,
+                        )
+                    })
                     .collect(),
             )),
             spent_proofs: Arc::new(Mutex::new(
                 spent_proofs
                     .into_iter()
-                    .map(|p| (p.secret.clone(), p))
+                    .map(|p| {
+                        (
+                            hash_to_curve(&p.secret.to_bytes().unwrap())
+                                .to_sec1_bytes()
+                                .to_vec(),
+                            p,
+                        )
+                    })
                     .collect(),
             )),
-        }
+        })
     }
 }
 
@@ -138,31 +154,73 @@ impl LocalStore for MemoryLocalStore {
     }
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error> {
+        let secret_point = hash_to_curve(&proof.secret.to_bytes()?);
         self.spent_proofs
             .lock()
             .await
-            .insert(proof.secret.clone(), proof);
+            .insert(secret_point.to_sec1_bytes().to_vec(), proof);
         Ok(())
     }
 
-    async fn get_spent_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
-        Ok(self.spent_proofs.lock().await.get(secret).cloned())
+    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+        Ok(self
+            .spent_proofs
+            .lock()
+            .await
+            .get(&hash_to_curve(&secret.to_bytes()?).to_sec1_bytes().to_vec())
+            .cloned())
+    }
+
+    async fn get_spent_proof_by_hash(
+        &self,
+        secret: &k256::PublicKey,
+    ) -> Result<Option<Proof>, Error> {
+        Ok(self
+            .spent_proofs
+            .lock()
+            .await
+            .get(&secret.to_sec1_bytes().to_vec())
+            .cloned())
     }
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
-        self.pending_proofs
-            .lock()
-            .await
-            .insert(proof.secret.clone(), proof);
+        self.pending_proofs.lock().await.insert(
+            hash_to_curve(&proof.secret.to_bytes()?)
+                .to_sec1_bytes()
+                .to_vec(),
+            proof,
+        );
         Ok(())
     }
 
-    async fn get_pending_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
-        Ok(self.pending_proofs.lock().await.get(secret).cloned())
+    async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+        let secret_point = hash_to_curve(&secret.to_bytes()?);
+        Ok(self
+            .pending_proofs
+            .lock()
+            .await
+            .get(&secret_point.to_sec1_bytes().to_vec())
+            .cloned())
+    }
+
+    async fn get_pending_proof_by_hash(
+        &self,
+        secret: &k256::PublicKey,
+    ) -> Result<Option<Proof>, Error> {
+        Ok(self
+            .pending_proofs
+            .lock()
+            .await
+            .get(&secret.to_sec1_bytes().to_vec())
+            .cloned())
     }
 
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error> {
-        self.pending_proofs.lock().await.remove(secret);
+        let secret_point = hash_to_curve(&secret.to_bytes()?);
+        self.pending_proofs
+            .lock()
+            .await
+            .remove(&secret_point.to_sec1_bytes().to_vec());
         Ok(())
     }
 }
