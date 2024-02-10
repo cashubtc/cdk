@@ -1,4 +1,2 @@
-[[language]]
-name = "rust"
-config = { cargo = { features = [ "wallet", "mint", "redb" ] } }
-
+[language-server.rust-analyzer.config]
+cargo = { features = [ "wallet", "mint", "redb" ] }
