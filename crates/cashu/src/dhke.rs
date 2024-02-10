@@ -6,11 +6,15 @@ pub use mint::{sign_message, verify_message};
 #[cfg(feature = "wallet")]
 pub use wallet::{blind_message, construct_proofs, unblind_message};
 
-pub fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
-    let mut msg_to_hash = message.to_vec();
+const DOMAIN_SEPARATOR: &[u8; 28] = b"Secp256k1_HashToCurve_Cashu_";
 
+pub fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
+    let mut msg_to_hash = [DOMAIN_SEPARATOR, message].concat();
+
+    let mut counter = 0;
     loop {
-        let hash = sha256::Hash::hash(&msg_to_hash);
+        let hash =
+            sha256::Hash::hash(&vec![msg_to_hash, counter.to_string().into_bytes()].concat());
         match k256::PublicKey::from_sec1_bytes(
             &[0x02u8]
                 .iter()
@@ -19,7 +23,10 @@ pub fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
                 .collect::<Vec<u8>>(),
         ) {
             Ok(pubkey) => return pubkey,
-            Err(_) => msg_to_hash = hash.to_byte_array().to_vec(),
+            Err(_) => {
+                counter += 1;
+                msg_to_hash = hash.to_byte_array().to_vec();
+            }
         }
     }
 }
@@ -163,20 +170,22 @@ mod tests {
 
             let y = hash_to_curve(&sec_hex);
             let expected_y = k256::PublicKey::from_sec1_bytes(
-                &hex::decode("0266687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925")
+                &hex::decode("02c03ade6f7345a213ea11acde3fda8514f2b7d836a32dfac38f9596c07258f9a9")
                     .unwrap(),
             )
             .unwrap();
+            println!("{}", hex::encode(y.to_sec1_bytes()));
             assert_eq!(y, expected_y);
 
             let secret = "0000000000000000000000000000000000000000000000000000000000000001";
             let sec_hex = decode(secret).unwrap();
             let y = hash_to_curve(&sec_hex);
             let expected_y = k256::PublicKey::from_sec1_bytes(
-                &hex::decode("02ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5")
+                &hex::decode("02a5525df57a880f880f28903f32b421df848b3dc1d2cf0bf3d718d7bd772c2df9")
                     .unwrap(),
             )
             .unwrap();
+            println!("{}", hex::encode(y.to_sec1_bytes()));
             assert_eq!(y, expected_y);
 
             // Note that this message will take a few iterations of the loop before finding
@@ -185,10 +194,11 @@ mod tests {
             let sec_hex = decode(secret).unwrap();
             let y = hash_to_curve(&sec_hex);
             let expected_y = k256::PublicKey::from_sec1_bytes(
-                &hex::decode("02076c988b353fcbb748178ecb286bc9d0b4acf474d4ba31ba62334e46c97c416a")
+                &hex::decode("0277834447374a42908b34940dc2affc5f0fc4bbddb2e3b209c5c0b18438abf764")
                     .unwrap(),
             )
             .unwrap();
+            println!("{}", hex::encode(y.to_sec1_bytes()));
             assert_eq!(y, expected_y);
         }
 
@@ -212,7 +222,7 @@ mod tests {
                 PublicKey::from(
                     k256::PublicKey::from_sec1_bytes(
                         &hex::decode(
-                            "026a0019ed7dd2fc84aec809a7d937da0dd6cca6693bfea9a887be33119c153ee9"
+                            "03039eb7fb76a0db827d7b978a508e3319db03cde6ca8744ef32d0b4e4f455f5dc"
                         )
                         .unwrap()
                     )
@@ -239,7 +249,7 @@ mod tests {
                 PublicKey::from(
                     k256::PublicKey::from_sec1_bytes(
                         &hex::decode(
-                            "02be78ed8172c85cec8e7aacb6d38fbde518d726daa27d3d1144193e0ce474b681"
+                            "036498fe9280b09e071c6f838a185d9f0caa1bf84fe9b5cafe595f1898c8c23f9e"
                         )
                         .unwrap()
                     )
@@ -307,7 +317,7 @@ mod tests {
                 signed,
                 k256::PublicKey::from_sec1_bytes(
                     &hex::decode(
-                        "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2"
+                        "03342e7f3dd691e1e82ede680f51a826991fb9b261a051860dd493a713ae61a84b"
                     )
                     .unwrap()
                 )
@@ -323,11 +333,12 @@ mod tests {
             // C_
             let signed = sign_message(bob_sec.into(), blinded_message.into()).unwrap();
 
+            println!("{}", hex::encode(signed.to_sec1_bytes()));
             assert_eq!(
                 signed,
                 k256::PublicKey::from_sec1_bytes(
                     &hex::decode(
-                        "0398bc70ce8184d27ba89834d19f5199c84443c31131e48d3c1214db24247d005d"
+                        "039387dbf13b55919606ba42b5302bd97895bf0ee6bfcff5c0fe8efe5eb2ce50da"
                     )
                     .unwrap()
                 )
