@@ -5,6 +5,7 @@ pub mod redb_store;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::k256;
 use cashu::nuts::nut02::mint::KeySet;
 use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof};
 use cashu::secret::Secret;
@@ -43,6 +44,8 @@ pub enum Error {
     Cashu(#[from] cashu::error::Error),
     #[error("`{0}`")]
     CashuNut02(#[from] cashu::nuts::nut02::Error),
+    #[error("`{0}`")]
+    Secret(#[from] cashu::secret::Error),
 }
 
 #[async_trait]
@@ -69,9 +72,17 @@ pub trait LocalStore {
     async fn get_keysets(&self) -> Result<Vec<KeySet>, Error>;
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error>;
-    async fn get_spent_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
+    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
+    async fn get_spent_proof_by_hash(
+        &self,
+        secret: &k256::PublicKey,
+    ) -> Result<Option<Proof>, Error>;
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error>;
-    async fn get_pending_proof(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
+    async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
+    async fn get_pending_proof_by_hash(
+        &self,
+        secret: &k256::PublicKey,
+    ) -> Result<Option<Proof>, Error>;
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error>;
 }
