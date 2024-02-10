@@ -6,7 +6,7 @@ pub use mint::{sign_message, verify_message};
 #[cfg(feature = "wallet")]
 pub use wallet::{blind_message, construct_proofs, unblind_message};
 
-fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
+pub fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
     let mut msg_to_hash = message.to_vec();
 
     loop {
@@ -130,7 +130,7 @@ mod mint {
         msg: &Secret,
     ) -> Result<(), error::mint::Error> {
         // Y
-        let y = hash_to_curve(msg.as_bytes());
+        let y = hash_to_curve(&msg.to_bytes()?);
 
         if unblinded_message
             == k256::PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive()))?
@@ -144,6 +144,8 @@ mod mint {
 
 #[cfg(test)]
 mod tests {
+    use core::panic;
+
     use hex::decode;
     use k256::elliptic_curve::scalar::ScalarPrimitive;
 
@@ -349,7 +351,7 @@ mod tests {
             let x = Secret::new();
 
             // Y
-            let y = hash_to_curve(x.as_bytes());
+            let y = hash_to_curve(&x.to_bytes().unwrap());
 
             // B_
             let blinded = blind_message(&y.to_sec1_bytes(), None).unwrap();
