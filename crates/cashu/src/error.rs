@@ -1,5 +1,6 @@
 use std::string::FromUtf8Error;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,8 +17,6 @@ pub enum Error {
     /// Base64 error
     #[error("`{0}`")]
     Base64Error(#[from] base64::DecodeError),
-    #[error("`{0}`")]
-    CustomError(String),
     /// From hex error
     #[error("`{0}`")]
     HexError(#[from] hex::FromHexError),
@@ -35,6 +34,22 @@ pub enum Error {
     InvoiceAmountUndefined,
     #[error("Proof missing required field")]
     MissingProofField,
+    /// Custom error
+    #[error("`{0}`")]
+    CustomError(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub code: u32,
+    pub error: Option<String>,
+    pub detail: Option<String>,
+}
+
+impl ErrorResponse {
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
 }
 
 #[cfg(feature = "wallet")]
