@@ -13,8 +13,7 @@ pub fn hash_to_curve(message: &[u8]) -> k256::PublicKey {
 
     let mut counter = 0;
     loop {
-        let hash =
-            sha256::Hash::hash(&vec![msg_to_hash, counter.to_string().into_bytes()].concat());
+        let hash = sha256::Hash::hash(&[msg_to_hash, counter.to_string().into_bytes()].concat());
         match k256::PublicKey::from_sec1_bytes(
             &[0x02u8]
                 .iter()
