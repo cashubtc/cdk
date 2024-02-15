@@ -144,8 +144,6 @@ mod mint {
 
 #[cfg(test)]
 mod tests {
-    use core::panic;
-
     use hex::decode;
     use k256::elliptic_curve::scalar::ScalarPrimitive;
 

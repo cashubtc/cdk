@@ -1,6 +1,7 @@
 //! Minreq http Client
 
 use async_trait::async_trait;
+use cashu::error::ErrorResponse;
 use cashu::nuts::{
     BlindedMessage, CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
@@ -53,7 +54,7 @@ impl Client for HttpClient {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&res.to_string())?),
+            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -77,7 +78,7 @@ impl Client for HttpClient {
             Ok(res) => Ok(res),
             Err(_) => {
                 warn!("Bolt11 Mint Quote Unexpected response: {:?}", res);
-                Err(Error::from_json(&res.status_code.to_string())?)
+                Err(ErrorResponse::from_json(&res.status_code.to_string())?.into())
             }
         }
     }
@@ -106,7 +107,7 @@ impl Client for HttpClient {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&res.to_string())?),
+            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -130,7 +131,7 @@ impl Client for HttpClient {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&value.to_string())?),
+            Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),
         }
     }
 
@@ -159,7 +160,7 @@ impl Client for HttpClient {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&value.to_string())?),
+            Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),
         }
     }
 
@@ -204,7 +205,7 @@ impl Client for HttpClient {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&res.to_string())?),
+            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
         }
     }
 
@@ -218,7 +219,7 @@ impl Client for HttpClient {
 
         match response {
             Ok(res) => Ok(res),
-            Err(_) => Err(Error::from_json(&res.to_string())?),
+            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
         }
     }
 }

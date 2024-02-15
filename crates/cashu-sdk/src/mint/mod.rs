@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use cashu::dhke::{sign_message, verify_message};
+use cashu::error::ErrorResponse;
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut07::{ProofState, State};
 use cashu::nuts::{
@@ -13,6 +14,7 @@ use cashu::nuts::{CheckStateRequest, CheckStateResponse};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
+use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info};
@@ -54,6 +56,22 @@ pub enum Error {
     UnknownQuote,
     #[error("Cannot have multiple units")]
     MultipleUnits,
+}
+
+impl From<Error> for ErrorResponse {
+    fn from(_err: Error) -> ErrorResponse {
+        ErrorResponse {
+            code: 9999,
+            error: None,
+            detail: None,
+        }
+    }
+}
+
+impl From<Error> for (StatusCode, ErrorResponse) {
+    fn from(err: Error) -> (StatusCode, ErrorResponse) {
+        (StatusCode::NOT_FOUND, err.into())
+    }
 }
 
 #[derive(Clone)]
@@ -177,17 +195,17 @@ impl Mint {
 
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
-    pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<Option<KeysResponse>, Error> {
+    pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         let keyset = match self.localstore.get_keyset(keyset_id).await? {
             Some(keyset) => keyset.clone(),
             None => {
-                return Ok(None);
+                return Err(Error::UnknownKeySet);
             }
         };
 
-        Ok(Some(KeysResponse {
+        Ok(KeysResponse {
             keysets: vec![keyset.into()],
-        }))
+        })
     }
 
     /// Retrieve the public keys of the active keyset for distribution to

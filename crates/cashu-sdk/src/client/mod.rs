@@ -1,6 +1,7 @@
 //! Client to connet to mint
 
 use async_trait::async_trait;
+use cashu::error::ErrorResponse;
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckStateResponse;
 use cashu::nuts::{
@@ -10,8 +11,7 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::secret::Secret;
-use cashu::{utils, Amount};
-use serde::{Deserialize, Serialize};
+use cashu::Amount;
 use thiserror::Error;
 use url::Url;
 
@@ -44,42 +44,17 @@ pub enum Error {
     #[cfg(feature = "gloo")]
     #[error("`{0}`")]
     Gloo(String),
+    #[error("Unknown Error response")]
+    UnknownErrorResponse(cashu::error::ErrorResponse),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
 }
 
-impl Error {
-    pub fn from_json(json: &str) -> Result<Self, Error> {
-        if let Ok(mint_res) = serde_json::from_str::<MintErrorResponse>(json) {
-            let err = mint_res
-                .error
-                .as_deref()
-                .or(mint_res.detail.as_deref())
-                .unwrap_or_default();
-
-            let mint_error = match err {
-                error if error.starts_with("Lightning invoice not paid yet.") => {
-                    Error::InvoiceNotPaid
-                }
-                error if error.starts_with("Lightning wallet not responding") => {
-                    let mint = utils::extract_url_from_error(error);
-                    Error::LightingWalletNotResponding(mint)
-                }
-                error => Error::Custom(error.to_owned()),
-            };
-            Ok(mint_error)
-        } else {
-            Ok(Error::Custom(json.to_string()))
-        }
+impl From<ErrorResponse> for Error {
+    fn from(err: ErrorResponse) -> Error {
+        Self::UnknownErrorResponse(err)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintErrorResponse {
-    code: u32,
-    error: Option<String>,
-    detail: Option<String>,
 }
 
 #[async_trait(?Send)]
@@ -159,6 +134,7 @@ fn join_url(url: Url, paths: &[&str]) -> Result<Url, Error> {
 
 #[cfg(test)]
 mod tests {
+    /*
     use super::*;
 
     #[test]
@@ -181,4 +157,5 @@ mod tests {
             _ => panic!("Wrong error"),
         }
     }
+    */
 }
