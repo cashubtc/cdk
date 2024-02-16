@@ -358,7 +358,8 @@ impl Mint {
             .inputs
             .iter()
             .flat_map(|p| p.secret.to_bytes())
-            .map(|p| hash_to_curve(&p).to_sec1_bytes().to_vec())
+            .flat_map(|p| hash_to_curve(&p))
+            .map(|p| p.to_sec1_bytes().to_vec())
             .collect();
 
         // Check that there are no duplicate proofs in request
@@ -561,7 +562,8 @@ impl Mint {
             .inputs
             .iter()
             .flat_map(|p| p.secret.to_bytes())
-            .map(|p| hash_to_curve(&p).to_sec1_bytes().to_vec())
+            .flat_map(|p| hash_to_curve(&p))
+            .map(|p| p.to_sec1_bytes().to_vec())
             .collect();
 
         // Ensure proofs are unique and not being double spent

@@ -49,6 +49,7 @@ impl MemoryLocalStore {
                     .map(|p| {
                         (
                             hash_to_curve(&p.secret.to_bytes().unwrap())
+                                .unwrap()
                                 .to_sec1_bytes()
                                 .to_vec(),
                             p,
@@ -62,6 +63,7 @@ impl MemoryLocalStore {
                     .map(|p| {
                         (
                             hash_to_curve(&p.secret.to_bytes().unwrap())
+                                .unwrap()
                                 .to_sec1_bytes()
                                 .to_vec(),
                             p,
@@ -154,7 +156,7 @@ impl LocalStore for MemoryLocalStore {
     }
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error> {
-        let secret_point = hash_to_curve(&proof.secret.to_bytes()?);
+        let secret_point = hash_to_curve(&proof.secret.to_bytes()?)?;
         self.spent_proofs
             .lock()
             .await
@@ -167,7 +169,7 @@ impl LocalStore for MemoryLocalStore {
             .spent_proofs
             .lock()
             .await
-            .get(&hash_to_curve(&secret.to_bytes()?).to_sec1_bytes().to_vec())
+            .get(&hash_to_curve(&secret.to_bytes()?)?.to_sec1_bytes().to_vec())
             .cloned())
     }
 
@@ -185,7 +187,7 @@ impl LocalStore for MemoryLocalStore {
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
         self.pending_proofs.lock().await.insert(
-            hash_to_curve(&proof.secret.to_bytes()?)
+            hash_to_curve(&proof.secret.to_bytes()?)?
                 .to_sec1_bytes()
                 .to_vec(),
             proof,
@@ -194,7 +196,7 @@ impl LocalStore for MemoryLocalStore {
     }
 
     async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
-        let secret_point = hash_to_curve(&secret.to_bytes()?);
+        let secret_point = hash_to_curve(&secret.to_bytes()?)?;
         Ok(self
             .pending_proofs
             .lock()
@@ -216,7 +218,7 @@ impl LocalStore for MemoryLocalStore {
     }
 
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error> {
-        let secret_point = hash_to_curve(&secret.to_bytes()?);
+        let secret_point = hash_to_curve(&secret.to_bytes()?)?;
         self.pending_proofs
             .lock()
             .await
