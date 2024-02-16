@@ -277,7 +277,7 @@ impl LocalStore for RedbLocalStore {
         {
             let mut table = write_txn.open_table(SPENT_PROOFS_TABLE)?;
             table.insert(
-                hash_to_curve(&proof.secret.to_bytes()?)
+                hash_to_curve(&proof.secret.to_bytes()?)?
                     .to_sec1_bytes()
                     .as_ref(),
                 serde_json::to_string(&proof)?.as_str(),
@@ -308,7 +308,7 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
 
-        let secret_hash = hash_to_curve(&secret.to_bytes()?);
+        let secret_hash = hash_to_curve(&secret.to_bytes()?)?;
 
         let proof = table.get(secret_hash.to_sec1_bytes().as_ref())?;
 
@@ -325,7 +325,7 @@ impl LocalStore for RedbLocalStore {
         {
             let mut table = write_txn.open_table(PENDING_PROOFS_TABLE)?;
             table.insert(
-                hash_to_curve(&proof.secret.to_bytes()?)
+                hash_to_curve(&proof.secret.to_bytes()?)?
                     .to_sec1_bytes()
                     .as_ref(),
                 serde_json::to_string(&proof)?.as_str(),
@@ -354,7 +354,7 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(PENDING_PROOFS_TABLE)?;
 
-        let secret_hash = hash_to_curve(&secret.to_bytes()?);
+        let secret_hash = hash_to_curve(&secret.to_bytes()?)?;
 
         let proof = table.get(secret_hash.to_sec1_bytes().as_ref())?;
 
@@ -368,7 +368,7 @@ impl LocalStore for RedbLocalStore {
 
         {
             let mut table = write_txn.open_table(PENDING_PROOFS_TABLE)?;
-            let secret_hash = hash_to_curve(&secret.to_bytes()?);
+            let secret_hash = hash_to_curve(&secret.to_bytes()?)?;
             table.remove(secret_hash.to_sec1_bytes().as_ref())?;
         }
         write_txn.commit()?;

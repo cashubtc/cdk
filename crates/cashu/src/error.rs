@@ -34,6 +34,8 @@ pub enum Error {
     InvoiceAmountUndefined,
     #[error("Proof missing required field")]
     MissingProofField,
+    #[error("No valid point found")]
+    NoValidPoint,
     /// Custom error
     #[error("`{0}`")]
     CustomError(String),
@@ -86,6 +88,8 @@ pub mod wallet {
         UrlParse,
         #[error("`{0}`")]
         Secret(#[from] crate::secret::Error),
+        #[error("`{0}`")]
+        Cashu(#[from] super::Error),
         /// Custom Error message
         #[error("`{0}`")]
         CustomError(String),
@@ -128,6 +132,8 @@ pub mod mint {
         UnknownKeySet,
         #[error("`{0}`")]
         Secret(#[from] crate::secret::Error),
+        #[error("`{0}`")]
+        Cashu(#[from] super::Error),
         #[error("`{0}`")]
         CustomError(String),
     }
