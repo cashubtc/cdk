@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use cashu::dhke::{hash_to_curve, sign_message, verify_message};
@@ -11,6 +12,7 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckStateRequest, CheckStateResponse};
+use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
 use http::StatusCode;
@@ -357,7 +359,8 @@ impl Mint {
         let secrets: HashSet<Vec<u8>> = swap_request
             .inputs
             .iter()
-            .flat_map(|p| p.secret.to_bytes())
+            .flat_map(|p| Secret::from_str(&p.secret))
+            .flat_map(|p| p.to_bytes())
             .flat_map(|p| hash_to_curve(&p))
             .map(|p| p.to_sec1_bytes().to_vec())
             .collect();
@@ -421,9 +424,10 @@ impl Mint {
     }
 
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+        let secret = Secret::from_str(&proof.secret)?;
         if self
             .localstore
-            .get_spent_proof_by_secret(&proof.secret)
+            .get_spent_proof_by_secret(&secret)
             .await?
             .is_some()
         {
@@ -432,7 +436,7 @@ impl Mint {
 
         if self
             .localstore
-            .get_pending_proof_by_secret(&proof.secret)
+            .get_pending_proof_by_secret(&secret)
             .await?
             .is_some()
         {
@@ -452,7 +456,7 @@ impl Mint {
         verify_message(
             keypair.secret_key.clone().into(),
             proof.c.clone().into(),
-            &proof.secret,
+            &secret,
         )?;
 
         Ok(())
@@ -561,7 +565,8 @@ impl Mint {
         let secrets: HashSet<Vec<u8>> = melt_request
             .inputs
             .iter()
-            .flat_map(|p| p.secret.to_bytes())
+            .flat_map(|p| Secret::from_str(&p.secret))
+            .flat_map(|p| p.to_bytes())
             .flat_map(|p| hash_to_curve(&p))
             .map(|p| p.to_sec1_bytes().to_vec())
             .collect();

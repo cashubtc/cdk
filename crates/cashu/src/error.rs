@@ -36,6 +36,18 @@ pub enum Error {
     MissingProofField,
     #[error("No valid point found")]
     NoValidPoint,
+    #[error("Kind not found")]
+    KindNotFound,
+    #[error("Unknown Tag")]
+    UnknownTag,
+    #[error("Incorrect Secret Kind")]
+    IncorrectSecretKind,
+    #[error("Spending conditions not met")]
+    SpendConditionsNotMet,
+    #[error("Could not convert key")]
+    Key,
+    #[error("Invalid signature")]
+    InvalidSignature,
     /// Custom error
     #[error("`{0}`")]
     CustomError(String),

@@ -7,6 +7,7 @@ use std::str::FromStr;
 use bip32::{DerivationPath, XPrv};
 use bip39::Mnemonic;
 use k256::elliptic_curve::generic_array::GenericArray;
+use k256::schnorr::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use super::{Id, KeySet};
@@ -35,6 +36,34 @@ impl From<k256::PublicKey> for PublicKey {
     }
 }
 
+impl TryFrom<PublicKey> for VerifyingKey {
+    type Error = Error;
+    fn try_from(value: PublicKey) -> Result<VerifyingKey, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+impl TryFrom<&PublicKey> for VerifyingKey {
+    type Error = Error;
+    fn try_from(value: &PublicKey) -> Result<VerifyingKey, Self::Error> {
+        let bytes = value.0.to_sec1_bytes();
+
+        let bytes = if bytes.len().eq(&33) {
+            bytes.into_iter().skip(1).cloned().collect()
+        } else {
+            bytes.to_vec()
+        };
+
+        Ok(VerifyingKey::from_bytes(&bytes).map_err(|_| Error::Key)?)
+    }
+}
+
+impl From<VerifyingKey> for PublicKey {
+    fn from(value: VerifyingKey) -> PublicKey {
+        PublicKey(value.try_into().unwrap())
+    }
+}
+
 impl PublicKey {
     pub fn from_hex(hex: String) -> Result<Self, Error> {
         let hex = hex::decode(hex)?;
@@ -48,6 +77,15 @@ impl PublicKey {
 
     pub fn to_bytes(&self) -> Box<[u8]> {
         self.0.to_sec1_bytes()
+    }
+}
+
+impl FromStr for PublicKey {
+    type Err = Error;
+
+    fn from_str(hex: &str) -> Result<Self, Self::Err> {
+        let hex = hex::decode(hex)?;
+        Ok(PublicKey(k256::PublicKey::from_sec1_bytes(&hex)?))
     }
 }
 
@@ -70,6 +108,13 @@ impl From<SecretKey> for k256::SecretKey {
 impl From<k256::SecretKey> for SecretKey {
     fn from(value: k256::SecretKey) -> Self {
         Self(value)
+    }
+}
+
+impl TryFrom<SecretKey> for SigningKey {
+    type Error = Error;
+    fn try_from(value: SecretKey) -> Result<SigningKey, Self::Error> {
+        Ok(value.0.into())
     }
 }
 
@@ -238,6 +283,18 @@ mod tests {
         let pubkey = PublicKey::from_hex(pubkey_str.to_string()).unwrap();
 
         assert_eq!(pubkey_str, pubkey.to_hex())
+    }
+
+    #[test]
+    fn verying_key() {
+        let key_str = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
+
+        let pubkey = PublicKey::from_str(key_str).unwrap();
+        let v_key: VerifyingKey = pubkey.clone().try_into().unwrap();
+
+        let p: PublicKey = v_key.try_into().unwrap();
+
+        assert_eq!(p, pubkey);
     }
 
     #[test]

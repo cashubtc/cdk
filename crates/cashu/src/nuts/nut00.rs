@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{Id, Proofs, PublicKey};
 use crate::error::Error;
-use crate::secret::Secret;
 use crate::url::UncheckedUrl;
 use crate::Amount;
 
@@ -432,7 +431,7 @@ pub struct Proof {
     #[serde(rename = "id")]
     pub keyset_id: Id,
     /// Secret message
-    pub secret: Secret,
+    pub secret: String,
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,

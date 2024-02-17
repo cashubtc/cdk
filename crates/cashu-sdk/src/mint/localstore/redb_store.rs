@@ -270,6 +270,7 @@ impl LocalStore for RedbLocalStore {
     }
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error> {
+        let secret = Secret::from_str(&proof.secret)?;
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -277,14 +278,11 @@ impl LocalStore for RedbLocalStore {
         {
             let mut table = write_txn.open_table(SPENT_PROOFS_TABLE)?;
             table.insert(
-                hash_to_curve(&proof.secret.to_bytes()?)?
-                    .to_sec1_bytes()
-                    .as_ref(),
+                hash_to_curve(&secret.to_bytes()?)?.to_sec1_bytes().as_ref(),
                 serde_json::to_string(&proof)?.as_str(),
             )?;
         }
         write_txn.commit()?;
-
         debug!("Added spend secret: {}", proof.secret.to_string());
 
         Ok(())
@@ -318,6 +316,7 @@ impl LocalStore for RedbLocalStore {
     }
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
+        let secret = Secret::from_str(&proof.secret)?;
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -325,9 +324,7 @@ impl LocalStore for RedbLocalStore {
         {
             let mut table = write_txn.open_table(PENDING_PROOFS_TABLE)?;
             table.insert(
-                hash_to_curve(&proof.secret.to_bytes()?)?
-                    .to_sec1_bytes()
-                    .as_ref(),
+                hash_to_curve(&secret.to_bytes()?)?.to_sec1_bytes().as_ref(),
                 serde_json::to_string(&proof)?.as_str(),
             )?;
         }
