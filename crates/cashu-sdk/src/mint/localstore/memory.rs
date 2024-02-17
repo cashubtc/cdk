@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -48,10 +49,12 @@ impl MemoryLocalStore {
                     .into_iter()
                     .map(|p| {
                         (
-                            hash_to_curve(&p.secret.to_bytes().unwrap())
-                                .unwrap()
-                                .to_sec1_bytes()
-                                .to_vec(),
+                            hash_to_curve(
+                                &Secret::from_str(&p.secret).unwrap().to_bytes().unwrap(),
+                            )
+                            .unwrap()
+                            .to_sec1_bytes()
+                            .to_vec(),
                             p,
                         )
                     })
@@ -62,10 +65,12 @@ impl MemoryLocalStore {
                     .into_iter()
                     .map(|p| {
                         (
-                            hash_to_curve(&p.secret.to_bytes().unwrap())
-                                .unwrap()
-                                .to_sec1_bytes()
-                                .to_vec(),
+                            hash_to_curve(
+                                &Secret::from_str(&p.secret).unwrap().to_bytes().unwrap(),
+                            )
+                            .unwrap()
+                            .to_sec1_bytes()
+                            .to_vec(),
                             p,
                         )
                     })
@@ -156,7 +161,8 @@ impl LocalStore for MemoryLocalStore {
     }
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error> {
-        let secret_point = hash_to_curve(&proof.secret.to_bytes()?)?;
+        let secret = Secret::from_str(&proof.secret)?;
+        let secret_point = hash_to_curve(&secret.to_bytes()?)?;
         self.spent_proofs
             .lock()
             .await
@@ -186,10 +192,9 @@ impl LocalStore for MemoryLocalStore {
     }
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
+        let secret = Secret::from_str(&proof.secret)?;
         self.pending_proofs.lock().await.insert(
-            hash_to_curve(&proof.secret.to_bytes()?)?
-                .to_sec1_bytes()
-                .to_vec(),
+            hash_to_curve(&secret.to_bytes()?)?.to_sec1_bytes().to_vec(),
             proof,
         );
         Ok(())
