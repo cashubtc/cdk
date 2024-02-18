@@ -58,8 +58,20 @@ impl Secret {
         Self(hex::encode(xpriv.private_key().to_bytes()))
     }
 
+    #[cfg(not(feature = "nut10"))]
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         Ok(hex::decode(&self.0)?)
+    }
+
+    #[cfg(feature = "nut10")]
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let secret: Result<crate::nuts::nut10::Secret, serde_json::Error> =
+            serde_json::from_str(&self.0);
+
+        match secret {
+            Ok(_) => Ok(self.0.clone().into_bytes()),
+            Err(_) => Ok(hex::decode(&self.0)?),
+        }
     }
 }
 
@@ -74,6 +86,36 @@ impl FromStr for Secret {
 impl ToString for Secret {
     fn to_string(&self) -> String {
         self.0.clone()
+    }
+}
+
+impl TryFrom<Secret> for Vec<u8> {
+    type Error = Error;
+    fn try_from(value: Secret) -> Result<Vec<u8>, Error> {
+        value.to_bytes()
+    }
+}
+
+impl TryFrom<&Secret> for Vec<u8> {
+    type Error = Error;
+    fn try_from(value: &Secret) -> Result<Vec<u8>, Error> {
+        value.to_bytes()
+    }
+}
+
+impl TryFrom<Secret> for crate::nuts::nut10::Secret {
+    type Error = serde_json::Error;
+
+    fn try_from(unchecked_secret: Secret) -> Result<crate::nuts::nut10::Secret, Self::Error> {
+        serde_json::from_str(&unchecked_secret.0)
+    }
+}
+
+impl TryFrom<&Secret> for crate::nuts::nut10::Secret {
+    type Error = serde_json::Error;
+
+    fn try_from(unchecked_secret: &Secret) -> Result<crate::nuts::nut10::Secret, Self::Error> {
+        serde_json::from_str(&unchecked_secret.0)
     }
 }
 

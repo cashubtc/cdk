@@ -49,6 +49,7 @@ mod wallet {
     use crate::error;
     use crate::nuts::{BlindedSignature, Keys, Proof, Proofs, PublicKey, *};
     use crate::secret::Secret;
+
     /// Blind Message Alice Step one
     pub fn blind_message(
         secret: &[u8],
@@ -103,12 +104,12 @@ mod wallet {
 
             let unblinded_signature = unblind_message(blinded_c, rs[i].clone().into(), a)?;
 
-            let proof = Proof {
-                keyset_id: promise.keyset_id,
-                amount: promise.amount,
-                secret: secrets[i].clone(),
-                c: unblinded_signature,
-            };
+            let proof = Proof::new(
+                promise.amount,
+                promise.keyset_id,
+                secrets[i].clone().try_into().unwrap(),
+                unblinded_signature,
+            );
 
             proofs.push(proof);
         }
@@ -119,6 +120,7 @@ mod wallet {
 
 #[cfg(feature = "mint")]
 mod mint {
+    use std::fmt::Debug;
     use std::ops::Mul;
 
     use k256::{Scalar, SecretKey};
@@ -139,13 +141,17 @@ mod mint {
     }
 
     /// Verify Message
-    pub fn verify_message(
+    pub fn verify_message<V>(
         a: SecretKey,
         unblinded_message: k256::PublicKey,
-        msg: &Secret,
-    ) -> Result<(), error::mint::Error> {
+        msg: V,
+    ) -> Result<(), error::mint::Error>
+    where
+        V: TryInto<Vec<u8>>,
+        <V as TryInto<Vec<u8>>>::Error: Debug,
+    {
         // Y
-        let y = hash_to_curve(&msg.to_bytes()?)?;
+        let y = hash_to_curve(&msg.try_into().unwrap())?;
 
         if unblinded_message
             == k256::PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive()))?

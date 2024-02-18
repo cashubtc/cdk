@@ -3,10 +3,10 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{self, Hasher};
 use std::str::FromStr;
 
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{sha256, Hash};
 use k256::schnorr::signature::{Signer, Verifier};
 use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 use serde::de::Error as DeserializerError;
@@ -15,14 +15,18 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
 use super::nut02::Id;
-use super::nut10::{Secret, SecretData, UncheckedSecret};
+use super::nut10::{Secret, SecretData};
 use crate::error::Error;
 use crate::utils::unix_time;
 use crate::Amount;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signatures {
     signatures: Vec<String>,
+}
+
+fn no_signatures(signatures: &Signatures) -> bool {
+    signatures.signatures.is_empty()
 }
 
 /// Proofs [NUT-11]
@@ -31,14 +35,47 @@ pub struct Proof {
     /// Amount in satoshi
     pub amount: Amount,
     /// NUT-10 Secret
-    pub secret: UncheckedSecret,
+    pub secret: crate::secret::Secret,
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,
     /// `Keyset id`
-    pub id: Option<Id>,
+    #[serde(rename = "id")]
+    pub keyset_id: Id,
     /// Witness
+    #[serde(default)]
+    #[serde(skip_serializing_if = "no_signatures")]
     pub witness: Signatures,
+}
+
+impl Proof {
+    pub fn new(amount: Amount, keyset_id: Id, secret: crate::secret::Secret, c: PublicKey) -> Self {
+        Proof {
+            amount,
+            keyset_id,
+            secret: secret.try_into().unwrap(),
+            c,
+            witness: Signatures::default(),
+        }
+    }
+}
+
+impl hash::Hash for Proof {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.secret.hash(state);
+    }
+}
+
+impl Ord for Proof {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.amount.cmp(&other.amount)
+    }
+}
+
+impl PartialOrd for Proof {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +222,7 @@ impl Proof {
 
         let mut valid_sigs = 0;
 
-        let msg = Sha256::hash(self.secret.as_bytes());
+        let msg = sha256::Hash::hash(&self.secret.to_bytes().unwrap());
 
         for signature in &self.witness.signatures {
             let mut pubkeys = spending_conditions.pubkeys.clone();
@@ -235,7 +272,7 @@ impl Proof {
     }
 
     pub fn sign_p2pk_proof(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg_to_sign = Sha256::hash(&self.secret.as_bytes());
+        let msg_to_sign = sha256::Hash::hash(&self.secret.to_bytes().unwrap());
 
         let signature = secret_key.sign(msg_to_sign.as_byte_array());
 
@@ -495,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_verify() {
-        let proof_str = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"190badde56afcbf67937e228744ea896bb3e48bcb60efa412799e1518618c287\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":null,"witness":{"signatures":["2b117c29a0e405fcbcac4c632b5862eb3ace0d67c681e8209d3aa2f52d5198471629b1ec6bce75d3879c47725be89d28938e31236307b40bc6c89491fa540e35"]}}"#;
+        let proof_str = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"190badde56afcbf67937e228744ea896bb3e48bcb60efa412799e1518618c287\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id": "009a1f293253e41e","witness":{"signatures":["2b117c29a0e405fcbcac4c632b5862eb3ace0d67c681e8209d3aa2f52d5198471629b1ec6bce75d3879c47725be89d28938e31236307b40bc6c89491fa540e35"]}}"#;
 
         let proof: Proof = serde_json::from_str(proof_str).unwrap();
 
@@ -523,7 +560,7 @@ mod tests {
         let secret: super::Secret = conditions.try_into().unwrap();
 
         let mut proof = Proof {
-            id: None,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret: secret.try_into().unwrap(),
             c: PublicKey::from_str(
