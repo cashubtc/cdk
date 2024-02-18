@@ -106,7 +106,7 @@ mod wallet {
             let proof = Proof {
                 keyset_id: promise.keyset_id,
                 amount: promise.amount,
-                secret: secrets[i].clone().to_string(),
+                secret: secrets[i].clone(),
                 c: unblinded_signature,
             };
 
