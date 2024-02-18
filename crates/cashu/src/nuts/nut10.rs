@@ -20,8 +20,8 @@ pub struct SecretData {
     /// Expresses the spending condition specific to each kind
     pub data: String,
     /// Additional data committed to and can be used for feature extensions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<Vec<String>>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
@@ -29,6 +29,22 @@ pub struct Secret {
     ///  Kind of the spending condition
     pub kind: Kind,
     pub secret_data: SecretData,
+}
+
+impl Secret {
+    pub fn new<S>(kind: Kind, data: S, tags: Vec<Vec<String>>) -> Self
+    where
+        S: Into<String>,
+    {
+        let nonce = crate::secret::Secret::new().to_string();
+        let secret_data = SecretData {
+            nonce,
+            data: data.into(),
+            tags,
+        };
+
+        Self { kind, secret_data }
+    }
 }
 
 impl Serialize for Secret {
@@ -47,6 +63,7 @@ impl Serialize for Secret {
         s.end()
     }
 }
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UncheckedSecret(String);
 
@@ -117,11 +134,11 @@ mod tests {
                 nonce: "5d11913ee0f92fefdc82a6764fd2457a".to_string(),
                 data: "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198"
                     .to_string(),
-                tags: Some(vec![vec![
+                tags: vec![vec![
                     "key".to_string(),
                     "value1".to_string(),
                     "value2".to_string(),
-                ]]),
+                ]],
             },
         };
 
