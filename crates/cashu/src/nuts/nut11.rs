@@ -88,8 +88,6 @@ impl TryFrom<P2PKConditions> for Secret {
 
         tags.push(Tag::SigFlag(sig_flag).as_vec());
 
-        let tags = if tags.len().gt(&0) { Some(tags) } else { None };
-
         Ok(Secret {
             kind: super::nut10::Kind::P2PK,
             secret_data: SecretData {
@@ -108,7 +106,6 @@ impl TryFrom<Secret> for P2PKConditions {
             .clone()
             .secret_data
             .tags
-            .unwrap_or_default()
             .into_iter()
             .map(|t| {
                 let tag = Tag::try_from(t).unwrap();
