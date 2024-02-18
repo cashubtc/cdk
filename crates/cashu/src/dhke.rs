@@ -107,7 +107,7 @@ mod wallet {
             let proof = Proof::new(
                 promise.amount,
                 promise.keyset_id,
-                secrets[i].clone().try_into().unwrap(),
+                secrets[i].clone(),
                 unblinded_signature,
             );
 
@@ -127,7 +127,7 @@ mod mint {
 
     use super::hash_to_curve;
     use crate::error;
-    use crate::secret::Secret;
+
     /// Sign Blinded Message (Step2 bob)
     pub fn sign_message(
         a: SecretKey,

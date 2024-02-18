@@ -49,12 +49,12 @@ impl TryFrom<&PublicKey> for VerifyingKey {
         let bytes = value.0.to_sec1_bytes();
 
         let bytes = if bytes.len().eq(&33) {
-            bytes.into_iter().skip(1).cloned().collect()
+            bytes.iter().skip(1).cloned().collect()
         } else {
             bytes.to_vec()
         };
 
-        Ok(VerifyingKey::from_bytes(&bytes).map_err(|_| Error::Key)?)
+        VerifyingKey::from_bytes(&bytes).map_err(|_| Error::Key)
     }
 }
 
