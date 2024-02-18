@@ -53,7 +53,7 @@ impl Proof {
         Proof {
             amount,
             keyset_id,
-            secret: secret.try_into().unwrap(),
+            secret,
             c,
             witness: Signatures::default(),
         }
@@ -152,14 +152,9 @@ impl TryFrom<Secret> for P2PKConditions {
 
         let mut pubkeys: Vec<PublicKey> = vec![];
 
-        if let Some(tag) = tags.get(&TagKind::Pubkeys) {
-            match tag {
-                Tag::PubKeys(keys) => {
-                    let mut keys = keys.clone();
-                    pubkeys.append(&mut keys);
-                }
-                _ => (),
-            }
+        if let Some(Tag::PubKeys(keys)) = tags.get(&TagKind::Pubkeys) {
+            let mut keys = keys.clone();
+            pubkeys.append(&mut keys);
         }
 
         let data_pubkey = PublicKey::from_hex(secret.secret_data.data)?;
@@ -412,8 +407,7 @@ where
                     let pubkeys = tag
                         .iter()
                         .skip(1)
-                        .map(|p| PublicKey::from_hex(p.as_ref().to_string()))
-                        .flatten()
+                        .flat_map(|p| PublicKey::from_hex(p.as_ref().to_string()))
                         .collect();
 
                     Ok(Self::Refund(pubkeys))
@@ -422,8 +416,7 @@ where
                     let pubkeys = tag
                         .iter()
                         .skip(1)
-                        .map(|p| PublicKey::from_hex(p.as_ref().to_string()))
-                        .flatten()
+                        .flat_map(|p| PublicKey::from_hex(p.as_ref().to_string()))
                         .collect();
 
                     Ok(Self::PubKeys(pubkeys))
