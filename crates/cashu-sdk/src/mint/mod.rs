@@ -48,13 +48,17 @@ pub enum Error {
     #[error("`{0}`")]
     Custom(String),
     #[error("`{0}`")]
-    Cashu(#[from] cashu::error::mint::Error),
+    CashuMint(#[from] cashu::error::mint::Error),
+    #[error("`{0}`")]
+    Cashu(#[from] cashu::error::Error),
     #[error("`{0}`")]
     Localstore(#[from] localstore::Error),
     #[error("`{0}`")]
     Secret(#[from] cashu::secret::Error),
     #[error("Unknown quote")]
     UnknownQuote,
+    #[error("Unknown secret kind")]
+    UnknownSecretKind,
     #[error("Cannot have multiple units")]
     MultipleUnits,
 }
@@ -420,8 +424,57 @@ impl Mint {
         Ok(SwapResponse::new(promises))
     }
 
+    #[cfg(not(feature = "nut11"))]
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         let y = hash_to_curve(&proof.secret.to_bytes().unwrap()).unwrap();
+        if self.localstore.get_spent_proof_by_hash(&y).await?.is_some() {
+            return Err(Error::TokenSpent);
+        }
+
+        if self
+            .localstore
+            .get_pending_proof_by_hash(&y)
+            .await?
+            .is_some()
+        {
+            return Err(Error::TokenPending);
+        }
+
+        let keyset = self
+            .localstore
+            .get_keyset(&proof.keyset_id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
+
+        let Some(keypair) = keyset.keys.0.get(&proof.amount) else {
+            return Err(Error::AmountKey);
+        };
+
+        verify_message(
+            keypair.secret_key.clone().into(),
+            proof.c.clone().into(),
+            &proof.secret,
+        )?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "nut11")]
+    async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+        // Check if secret is a nut10 secret with conditions
+        if let Ok(secret) =
+            <&cashu::secret::Secret as TryInto<cashu::nuts::nut10::Secret>>::try_into(&proof.secret)
+        {
+            // Verify if p2pk
+            if secret.kind.eq(&Kind::P2PK) {
+                proof.verify_p2pk()?;
+            } else {
+                return Err(Error::UnknownSecretKind);
+            }
+        }
+
+        let y = hash_to_curve(&proof.secret.to_bytes()?)?;
+
         if self.localstore.get_spent_proof_by_hash(&y).await?.is_some() {
             return Err(Error::TokenSpent);
         }
