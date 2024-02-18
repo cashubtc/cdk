@@ -100,7 +100,7 @@ pub mod wallet {
     use super::{CurrencyUnit, MintProofs};
     use crate::dhke::blind_message;
     use crate::error::wallet;
-    use crate::nuts::{BlindedMessage, Id, Proofs, SecretKey};
+    use crate::nuts::{BlindedMessage, Id, P2PKConditions, Proofs, SecretKey};
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
     use crate::{error, Amount};
@@ -132,28 +132,6 @@ pub mod wallet {
     #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
     pub struct PreMintSecrets {
         secrets: Vec<PreMint>,
-    }
-
-    // Implement Iterator for PreMintSecrets
-    impl Iterator for PreMintSecrets {
-        type Item = PreMint;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            // Use the iterator of the vector
-            self.secrets.pop()
-        }
-    }
-
-    impl Ord for PreMintSecrets {
-        fn cmp(&self, other: &Self) -> Ordering {
-            self.secrets.cmp(&other.secrets)
-        }
-    }
-
-    impl PartialOrd for PreMintSecrets {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
     }
 
     impl PreMintSecrets {
@@ -278,6 +256,37 @@ pub mod wallet {
             Ok(pre_mint_secrets)
         }
 
+        #[cfg(feature = "nut11")]
+        pub fn with_p2pk_conditions(
+            keyset_id: Id,
+            amount: Amount,
+            conditions: P2PKConditions,
+        ) -> Result<Self, wallet::Error> {
+            let amount_split = amount.split();
+
+            let mut output = Vec::with_capacity(amount_split.len());
+
+            for amount in amount_split {
+                let secret: Secret = conditions.clone().try_into().unwrap();
+                let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
+
+                let blinded_message = BlindedMessage {
+                    amount,
+                    b: blinded,
+                    keyset_id,
+                };
+
+                output.push(PreMint {
+                    secret,
+                    blinded_message,
+                    r: r.into(),
+                    amount,
+                });
+            }
+
+            Ok(PreMintSecrets { secrets: output })
+        }
+
         pub fn iter(&self) -> impl Iterator<Item = &PreMint> {
             self.secrets.iter()
         }
@@ -319,6 +328,28 @@ pub mod wallet {
 
         pub fn sort_secrets(&mut self) {
             self.secrets.sort();
+        }
+    }
+
+    // Implement Iterator for PreMintSecrets
+    impl Iterator for PreMintSecrets {
+        type Item = PreMint;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            // Use the iterator of the vector
+            self.secrets.pop()
+        }
+    }
+
+    impl Ord for PreMintSecrets {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.secrets.cmp(&other.secrets)
+        }
+    }
+
+    impl PartialOrd for PreMintSecrets {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
         }
     }
 

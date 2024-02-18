@@ -80,11 +80,39 @@ impl PartialOrd for Proof {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct P2PKConditions {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locktime: Option<u64>,
     pub pubkeys: Vec<PublicKey>,
-    pub refund_keys: Option<Vec<PublicKey>>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refund_keys: Vec<PublicKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub num_sigs: Option<u64>,
     pub sig_flag: SigFlag,
+}
+
+impl P2PKConditions {
+    pub fn new(
+        locktime: Option<u64>,
+        pubkeys: Vec<PublicKey>,
+        refund_keys: Vec<PublicKey>,
+        num_sigs: Option<u64>,
+        sig_flag: Option<SigFlag>,
+    ) -> Result<Self, Error> {
+        if let Some(locktime) = locktime {
+            if locktime.lt(&unix_time()) {
+                return Err(Error::LocktimeInPast);
+            }
+        }
+
+        Ok(Self {
+            locktime,
+            pubkeys,
+            refund_keys,
+            num_sigs,
+            sig_flag: sig_flag.unwrap_or_default(),
+        })
+    }
 }
 
 impl TryFrom<P2PKConditions> for Secret {
@@ -119,7 +147,7 @@ impl TryFrom<P2PKConditions> for Secret {
             tags.push(Tag::NSigs(num_sigs).as_vec());
         }
 
-        if let Some(refund_keys) = refund_keys {
+        if !refund_keys.is_empty() {
             tags.push(Tag::Refund(refund_keys).as_vec())
         }
 
@@ -133,6 +161,15 @@ impl TryFrom<P2PKConditions> for Secret {
                 tags,
             },
         })
+    }
+}
+
+impl TryFrom<P2PKConditions> for crate::secret::Secret {
+    type Error = Error;
+    fn try_from(conditions: P2PKConditions) -> Result<crate::secret::Secret, Self::Error> {
+        let secret: Secret = conditions.try_into()?;
+
+        secret.try_into()
     }
 }
 
@@ -171,11 +208,11 @@ impl TryFrom<Secret> for P2PKConditions {
 
         let refund_keys = if let Some(tag) = tags.get(&TagKind::Refund) {
             match tag {
-                Tag::Refund(keys) => Some(keys.clone()),
-                _ => None,
+                Tag::Refund(keys) => keys.clone(),
+                _ => vec![],
             }
         } else {
-            None
+            vec![]
         };
 
         let sig_flag = if let Some(tag) = tags.get(&TagKind::SigFlag) {
@@ -246,9 +283,9 @@ impl Proof {
         if let Some(locktime) = spending_conditions.locktime {
             // If lock time has passed check if refund witness signature is valid
             if locktime.lt(&unix_time()) {
-                if let Some(refund_pubkeys) = &spending_conditions.refund_keys {
+                if !spending_conditions.refund_keys.is_empty() {
                     for s in &self.witness.signatures {
-                        for v in refund_pubkeys {
+                        for v in &spending_conditions.refund_keys {
                             let sig = Signature::try_from(s.as_bytes())
                                 .map_err(|_| Error::InvalidSignature)?;
                             let v: VerifyingKey = v.clone().try_into()?;
@@ -325,10 +362,11 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
 pub enum SigFlag {
-    SigAll,
+    #[default]
     SigInputs,
+    SigAll,
     Custom(String),
 }
 
@@ -506,10 +544,10 @@ mod tests {
                 )
                 .unwrap(),
             ],
-            refund_keys: Some(vec![PublicKey::from_str(
+            refund_keys: vec![PublicKey::from_str(
                 "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
             )
-            .unwrap()]),
+            .unwrap()],
             num_sigs: Some(2),
             sig_flag: SigFlag::SigAll,
         };
@@ -545,7 +583,7 @@ mod tests {
         let conditions = P2PKConditions {
             locktime: None,
             pubkeys: vec![v_key.into()],
-            refund_keys: None,
+            refund_keys: vec![],
             num_sigs: None,
             sig_flag: SigFlag::SigInputs,
         };
