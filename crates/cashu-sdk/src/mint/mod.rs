@@ -421,7 +421,7 @@ impl Mint {
     }
 
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
-        let y = hash_to_curve(&proof.secret.to_bytes()?).unwrap();
+        let y = hash_to_curve(&proof.secret.to_bytes().unwrap()).unwrap();
         if self.localstore.get_spent_proof_by_hash(&y).await?.is_some() {
             return Err(Error::TokenSpent);
         }

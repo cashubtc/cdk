@@ -1,4 +1,3 @@
-use std::fmt;
 use std::str::FromStr;
 
 use serde::ser::SerializeTuple;
@@ -64,59 +63,10 @@ impl Serialize for Secret {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UncheckedSecret(String);
-
-impl UncheckedSecret {
-    pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
-}
-
-impl fmt::Display for UncheckedSecret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl<S> From<S> for UncheckedSecret
-where
-    S: Into<String>,
-{
-    fn from(inner: S) -> Self {
-        Self(inner.into())
-    }
-}
-
-impl TryFrom<Secret> for UncheckedSecret {
-    type Error = serde_json::Error;
-
-    fn try_from(secret: Secret) -> Result<UncheckedSecret, Self::Error> {
-        Ok(UncheckedSecret(serde_json::to_string(&secret)?))
-    }
-}
-
-impl FromStr for UncheckedSecret {
-    type Err = Error;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from(value))
-    }
-}
-
-impl TryFrom<UncheckedSecret> for Secret {
-    type Error = serde_json::Error;
-
-    fn try_from(unchecked_secret: UncheckedSecret) -> Result<Secret, Self::Error> {
-        serde_json::from_str(&unchecked_secret.0)
-    }
-}
-
-impl TryFrom<&UncheckedSecret> for Secret {
-    type Error = serde_json::Error;
-
-    fn try_from(unchecked_secret: &UncheckedSecret) -> Result<Secret, Self::Error> {
-        serde_json::from_str(&unchecked_secret.0)
+impl TryFrom<Secret> for crate::secret::Secret {
+    type Error = Error;
+    fn try_from(secret: Secret) -> Result<crate::secret::Secret, Self::Error> {
+        Ok(crate::secret::Secret::from_str(&serde_json::to_string(&secret).unwrap()).unwrap())
     }
 }
 

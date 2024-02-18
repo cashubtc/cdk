@@ -443,12 +443,12 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             let blinded_c = promise.c.clone();
 
             let unblinded_sig = unblind_message(blinded_c, premint.r.into(), a).unwrap();
-            let proof = Proof {
-                keyset_id: promise.keyset_id,
-                amount: promise.amount,
-                secret: premint.secret,
-                c: unblinded_sig,
-            };
+            let proof = Proof::new(
+                promise.amount,
+                promise.keyset_id,
+                premint.secret,
+                unblinded_sig,
+            );
 
             proofs.push(proof);
         }

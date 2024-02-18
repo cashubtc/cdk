@@ -438,6 +438,17 @@ pub struct Proof {
     pub c: PublicKey,
 }
 
+impl Proof {
+    pub fn new(amount: Amount, keyset_id: Id, secret: Secret, c: PublicKey) -> Self {
+        Proof {
+            amount,
+            keyset_id,
+            secret,
+            c,
+        }
+    }
+}
+
 impl Hash for Proof {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.secret.hash(state);
