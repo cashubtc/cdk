@@ -48,6 +48,8 @@ pub enum Error {
     Key,
     #[error("Invalid signature")]
     InvalidSignature,
+    #[error("Locktime in past")]
+    LocktimeInPast,
     /// Custom error
     #[error("`{0}`")]
     CustomError(String),

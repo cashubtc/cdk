@@ -385,7 +385,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         Ok(())
     }
 
-    /// Create Split Payload
+    /// Create Swap Payload
     async fn create_swap(
         &mut self,
         mint_url: &UncheckedUrl,
@@ -393,7 +393,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         amount: Option<Amount>,
         proofs: Proofs,
     ) -> Result<PreSwap, Error> {
-        // Since split is used to get the needed combination of tokens for a specific
+        // Since swap is used to get the needed combination of tokens for a specific
         // amount first blinded messages are created for the amount
 
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
@@ -509,6 +509,9 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         self.localstore
             .add_pending_proofs(mint_url.clone(), proofs)
+            .await?;
+        self.localstore
+            .add_pending_proofs(mint_url.clone(), send_proofs.clone())
             .await?;
 
         self.localstore
