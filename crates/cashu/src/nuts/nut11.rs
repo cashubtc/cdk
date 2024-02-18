@@ -15,7 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
 use super::nut02::Id;
-use super::nut10::{Secret, SecretData};
+use super::nut10::{Secret, SecretData, UncheckedSecret};
 use crate::error::Error;
 use crate::utils::unix_time;
 use crate::Amount;
@@ -31,7 +31,7 @@ pub struct Proof {
     /// Amount in satoshi
     pub amount: Amount,
     /// NUT-10 Secret
-    pub secret: String,
+    pub secret: UncheckedSecret,
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,
@@ -179,9 +179,7 @@ impl TryFrom<Secret> for P2PKConditions {
 
 impl Proof {
     pub fn verify_p2pk(&self) -> Result<(), Error> {
-        let secret: Secret = serde_json::from_str(&self.secret)
-            .map_err(|_err| Error::CustomError("Invalid secret".to_string()))?;
-
+        let secret: Secret = (&self.secret).try_into().unwrap();
         if secret.kind.ne(&super::nut10::Kind::P2PK) {
             return Err(Error::IncorrectSecretKind);
         }
@@ -530,7 +528,7 @@ mod tests {
         let mut proof = Proof {
             id: None,
             amount: Amount::ZERO,
-            secret: serde_json::to_string(&secret).unwrap(),
+            secret: secret.try_into().unwrap(),
             c: PublicKey::from_str(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
