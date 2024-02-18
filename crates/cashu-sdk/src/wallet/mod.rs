@@ -155,7 +155,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 proofs
                     .clone()
                     .into_iter()
-                    .flat_map(|p| Secret::from_str(&p.secret))
+                    .map(|p| p.secret)
                     .collect::<Vec<Secret>>()
                     .clone(),
             )
@@ -446,7 +446,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             let proof = Proof {
                 keyset_id: promise.keyset_id,
                 amount: promise.amount,
-                secret: premint.secret.to_string(),
+                secret: premint.secret,
                 c: unblinded_sig,
             };
 
