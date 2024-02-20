@@ -229,7 +229,7 @@ mod tests {
             assert_eq!(sec, r.into());
 
             assert_eq!(
-                b.to_hex(),
+                b.to_string(),
                 PublicKey::from(
                     k256::PublicKey::from_sec1_bytes(
                         &hex::decode(
@@ -239,7 +239,7 @@ mod tests {
                     )
                     .unwrap()
                 )
-                .to_hex()
+                .to_string()
             );
 
             let message = "f1aaf16c2239746f369572c0784d9dd3d032d952c2d992175873fb58fae31a60";
@@ -254,7 +254,7 @@ mod tests {
             assert_eq!(sec, r.into());
 
             assert_eq!(
-                b.to_hex(),
+                b.to_string(),
                 PublicKey::from(
                     k256::PublicKey::from_sec1_bytes(
                         &hex::decode(
@@ -264,7 +264,7 @@ mod tests {
                     )
                     .unwrap()
                 )
-                .to_hex()
+                .to_string()
             );
         }
 

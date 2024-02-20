@@ -14,7 +14,7 @@ pub use crate::Bolt11Invoice;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreSwap {
     pub pre_mint_secrets: PreMintSecrets,
-    pub split_request: SwapRequest,
+    pub swap_request: SwapRequest,
 }
 
 /// Split Request [NUT-06]
