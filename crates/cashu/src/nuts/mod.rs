@@ -40,6 +40,6 @@ pub use nut08::{MeltBolt11Request, MeltBolt11Response};
 #[cfg(feature = "nut10")]
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
 #[cfg(feature = "nut11")]
-pub use nut11::{P2PKConditions, Proof, SigFlag, Signatures};
+pub use nut11::{P2PKConditions, Proof, SigFlag, Signatures, SigningKey, VerifyingKey};
 
 pub type Proofs = Vec<Proof>;

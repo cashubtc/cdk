@@ -64,10 +64,10 @@ pub enum Error {
 }
 
 impl From<Error> for ErrorResponse {
-    fn from(_err: Error) -> ErrorResponse {
+    fn from(err: Error) -> ErrorResponse {
         ErrorResponse {
             code: 9999,
-            error: None,
+            error: Some(err.to_string()),
             detail: None,
         }
     }

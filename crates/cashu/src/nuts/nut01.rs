@@ -65,16 +65,6 @@ impl From<VerifyingKey> for PublicKey {
 }
 
 impl PublicKey {
-    pub fn from_hex(hex: String) -> Result<Self, Error> {
-        let hex = hex::decode(hex)?;
-        Ok(PublicKey(k256::PublicKey::from_sec1_bytes(&hex)?))
-    }
-
-    pub fn to_hex(&self) -> String {
-        let bytes = self.0.to_sec1_bytes();
-        hex::encode(bytes)
-    }
-
     pub fn to_bytes(&self) -> Box<[u8]> {
         self.0.to_sec1_bytes()
     }
@@ -91,7 +81,8 @@ impl FromStr for PublicKey {
 
 impl std::fmt::Display for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.to_hex())
+        let bytes = self.0.to_sec1_bytes();
+        f.write_str(&hex::encode(bytes))
     }
 }
 
@@ -280,9 +271,12 @@ mod tests {
     #[test]
     fn pubkey() {
         let pubkey_str = "02c020067db727d586bc3183aecf97fcb800c3f4cc4759f69c626c9db5d8f5b5d4";
+        let pubkey = PublicKey::from_str(pubkey_str).unwrap();
+        assert_eq!(pubkey_str, pubkey.to_string());
+        /*
+        let pubkey_str = "04918dfc36c93e7db6cc0d60f37e1522f1c36b64d3f4b424c532d7c595febbc5";
         let pubkey = PublicKey::from_hex(pubkey_str.to_string()).unwrap();
-
-        assert_eq!(pubkey_str, pubkey.to_hex())
+        assert_eq!(pubkey_str, pubkey.to_hex())*/
     }
 
     #[test]

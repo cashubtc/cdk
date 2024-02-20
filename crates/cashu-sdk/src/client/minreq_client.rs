@@ -14,7 +14,7 @@ use cashu::nuts::{CheckStateRequest, CheckStateResponse};
 use cashu::secret::Secret;
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
-use tracing::{error, warn};
+use tracing::warn;
 use url::Url;
 
 use super::join_url;
@@ -170,19 +170,18 @@ impl Client for HttpClient {
         mint_url: Url,
         split_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        // TODO: Add to endpoint
         let url = join_url(mint_url, &["v1", "swap"])?;
 
         let res = minreq::post(url).with_json(&split_request)?.send()?;
 
+        let value = res.json::<Value>()?;
         let response: Result<SwapResponse, serde_json::Error> =
-            serde_json::from_value(res.json::<Value>()?.clone());
+            serde_json::from_value(value.clone());
 
-        if let Err(err) = &response {
-            error!("{}", err)
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),
         }
-
-        Ok(response?)
     }
 
     /// Spendable check [NUT-07]
