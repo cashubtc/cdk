@@ -676,18 +676,26 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
     /// Create P2PK locked proofs
     /// Uses a swap to swap proofs for locked p2pk conditions
-    pub async fn create_p2pk_proofs(
+    pub async fn send_p2pk(
         &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
-        input_proofs: Proofs,
+        amount: Amount,
         conditions: P2PKConditions,
     ) -> Result<Proofs, Error> {
-        let amount = input_proofs.iter().map(|p| p.amount).sum();
+        let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
 
-        let pre_mint_secrets =
+        let input_amount: Amount = input_proofs.iter().map(|p| p.amount).sum();
+        let change_amount = input_amount - amount;
+
+        let send_premint_secrets =
             PreMintSecrets::with_p2pk_conditions(active_keyset_id, amount, conditions)?;
+
+        let change_premint_secrets = PreMintSecrets::random(active_keyset_id, change_amount)?;
+        let mut pre_mint_secrets = send_premint_secrets;
+        pre_mint_secrets.combine(change_premint_secrets);
+
         let swap_request =
             SwapRequest::new(input_proofs.clone(), pre_mint_secrets.blinded_messages());
 
@@ -712,8 +720,8 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         let mut change_proofs = vec![];
 
         for proof in post_swap_proofs {
+            println!("post swap proof: {:?}", proof);
             let conditions: Result<cashu::nuts::nut10::Secret, _> = (&proof.secret).try_into();
-            println!("{:?}", conditions);
             if conditions.is_ok() {
                 send_proofs.push(proof);
             } else {
@@ -738,7 +746,86 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         Ok(send_proofs)
     }
 
-    pub async fn claim_p2pk_locked_proof(
+    /// Receive p2pk
+    pub async fn receive_p2pk(
+        &mut self,
+        encoded_token: &str,
+        signing_keys: Vec<SigningKey>,
+    ) -> Result<(), Error> {
+        let pubkey_secret_key: HashMap<String, SigningKey> = signing_keys
+            .into_iter()
+            .map(|s| (s.public_key().to_string(), s))
+            .collect();
+
+        let token_data = Token::from_str(encoded_token)?;
+
+        let unit = token_data.unit.unwrap_or_default();
+
+        let mut received_proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
+        for token in token_data.token {
+            if token.proofs.is_empty() {
+                continue;
+            }
+
+            let active_keyset_id = self.active_mint_keyset(&token.mint, &unit).await?;
+
+            // TODO: if none fetch keyset for mint
+
+            let keys = self.localstore.get_keys(&active_keyset_id.unwrap()).await?;
+
+            // Sum amount of all proofs
+            let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
+
+            let mut proofs = token.proofs;
+
+            for proof in &mut proofs {
+                if let Ok(secret) =
+                    <cashu::secret::Secret as TryInto<cashu::nuts::nut10::Secret>>::try_into(
+                        proof.secret.clone(),
+                    )
+                {
+                    let conditions: Result<P2PKConditions, _> = secret.try_into();
+                    if let Ok(conditions) = conditions {
+                        let pubkeys = conditions.pubkeys;
+
+                        for pubkey in pubkeys {
+                            if let Some(signing) = pubkey_secret_key.get(&pubkey.to_string()) {
+                                proof.sign_p2pk_proof(signing.clone()).ok();
+                            }
+                        }
+                    }
+                }
+            }
+
+            let pre_swap = self
+                .create_swap(&token.mint, &unit, Some(amount), proofs)
+                .await?;
+
+            let swap_response = self
+                .client
+                .post_swap(token.mint.clone().try_into()?, pre_swap.swap_request)
+                .await?;
+
+            // Proof to keep
+            let p = construct_proofs(
+                swap_response.signatures,
+                pre_swap.pre_mint_secrets.rs(),
+                pre_swap.pre_mint_secrets.secrets(),
+                &keys.unwrap(),
+            )?;
+            let mint_proofs = received_proofs.entry(token.mint).or_default();
+
+            mint_proofs.extend(p);
+        }
+
+        for (mint, proofs) in received_proofs {
+            self.localstore.add_proofs(mint, proofs).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn claim_p2pk_locked_proofs(
         &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
