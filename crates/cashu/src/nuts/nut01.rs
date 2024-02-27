@@ -7,6 +7,7 @@ use std::str::FromStr;
 use bip32::{DerivationPath, XPrv};
 use bip39::Mnemonic;
 use k256::elliptic_curve::generic_array::GenericArray;
+#[cfg(feature = "nut11")]
 use k256::schnorr::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,7 @@ impl From<k256::PublicKey> for PublicKey {
     }
 }
 
+#[cfg(feature = "nut11")]
 impl TryFrom<PublicKey> for VerifyingKey {
     type Error = Error;
     fn try_from(value: PublicKey) -> Result<VerifyingKey, Self::Error> {
@@ -43,6 +45,7 @@ impl TryFrom<PublicKey> for VerifyingKey {
     }
 }
 
+#[cfg(feature = "nut11")]
 impl TryFrom<&PublicKey> for VerifyingKey {
     type Error = Error;
     fn try_from(value: &PublicKey) -> Result<VerifyingKey, Self::Error> {
@@ -58,12 +61,14 @@ impl TryFrom<&PublicKey> for VerifyingKey {
     }
 }
 
+#[cfg(feature = "nut11")]
 impl From<VerifyingKey> for PublicKey {
     fn from(value: VerifyingKey) -> PublicKey {
         PublicKey(value.try_into().unwrap())
     }
 }
 
+#[cfg(feature = "nut11")]
 impl From<super::VerifyingKey> for PublicKey {
     fn from(value: super::VerifyingKey) -> PublicKey {
         let v: VerifyingKey = value.into();
@@ -108,6 +113,7 @@ impl From<k256::SecretKey> for SecretKey {
     }
 }
 
+#[cfg(feature = "nut11")]
 impl TryFrom<SecretKey> for SigningKey {
     type Error = Error;
     fn try_from(value: SecretKey) -> Result<SigningKey, Self::Error> {
