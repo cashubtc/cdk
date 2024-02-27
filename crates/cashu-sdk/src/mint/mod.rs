@@ -311,6 +311,7 @@ impl Mint {
             amount,
             b,
             keyset_id,
+            ..
         } = blinded_message;
 
         let keyset = self

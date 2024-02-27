@@ -64,6 +64,12 @@ impl From<VerifyingKey> for PublicKey {
     }
 }
 
+impl From<super::VerifyingKey> for PublicKey {
+    fn from(value: super::VerifyingKey) -> PublicKey {
+        let v: VerifyingKey = value.into();
+        PublicKey(v.into())
+    }
+}
 impl PublicKey {
     pub fn to_bytes(&self) -> Box<[u8]> {
         self.0.to_sec1_bytes()

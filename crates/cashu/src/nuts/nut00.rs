@@ -2,13 +2,14 @@
 // https://github.com/cashubtc/nuts/blob/main/00.md
 
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::{self, Hasher};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Id, Proofs, PublicKey};
+use super::{Id, Proofs, PublicKey, Signatures, SigningKey};
 use crate::error::Error;
+use crate::nuts::nut11::{witness_deserialize, witness_serialize};
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
 use crate::Amount;
@@ -24,9 +25,39 @@ pub struct BlindedMessage {
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
     pub b: PublicKey,
+    /// Witness
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Signatures::is_empty")]
+    #[serde(serialize_with = "witness_serialize")]
+    #[serde(deserialize_with = "witness_deserialize")]
+    pub witness: Signatures,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
+impl BlindedMessage {
+    pub fn new(amount: Amount, keyset_id: Id, b: PublicKey) -> Self {
+        Self {
+            amount,
+            keyset_id,
+            b,
+            witness: Signatures::default(),
+        }
+    }
+
+    pub fn sign_p2pk_blinded_message(&mut self, secret_key: SigningKey) -> Result<(), Error> {
+        let msg_to_sign = hex::decode(self.b.to_string())?;
+
+        println!("{:?}", msg_to_sign);
+
+        let signature = secret_key.sign(&msg_to_sign);
+
+        self.witness
+            .signatures
+            .push(hex::encode(signature.to_bytes()));
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, hash::Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum CurrencyUnit {
     #[default]
@@ -145,11 +176,7 @@ pub mod wallet {
                 let secret = Secret::new();
                 let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
 
-                let blinded_message = BlindedMessage {
-                    amount,
-                    b: blinded,
-                    keyset_id,
-                };
+                let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
                 output.push(PreMint {
                     secret,
@@ -172,11 +199,7 @@ pub mod wallet {
             for (secret, amount) in secrets.into_iter().zip(amounts) {
                 let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
 
-                let blinded_message = BlindedMessage {
-                    amount,
-                    b: blinded,
-                    keyset_id,
-                };
+                let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
                 output.push(PreMint {
                     secret,
@@ -199,11 +222,7 @@ pub mod wallet {
                 let secret = Secret::new();
                 let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
 
-                let blinded_message = BlindedMessage {
-                    amount: Amount::ZERO,
-                    b: blinded,
-                    keyset_id,
-                };
+                let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
                 output.push(PreMint {
                     secret,
@@ -236,11 +255,7 @@ pub mod wallet {
                 let (blinded, r) =
                     blind_message(&secret.to_bytes()?, Some(blinding_factor.into()))?;
 
-                let blinded_message = BlindedMessage {
-                    keyset_id,
-                    amount,
-                    b: blinded,
-                };
+                let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
                 let pre_mint = PreMint {
                     blinded_message,
@@ -270,11 +285,7 @@ pub mod wallet {
                 let secret: Secret = conditions.clone().try_into().unwrap();
                 let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
 
-                let blinded_message = BlindedMessage {
-                    amount,
-                    b: blinded,
-                    keyset_id,
-                };
+                let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
                 output.push(PreMint {
                     secret,
@@ -480,7 +491,7 @@ impl Proof {
     }
 }
 
-impl Hash for Proof {
+impl hash::Hash for Proof {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.secret.hash(state);
     }
