@@ -7,8 +7,11 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Id, Proofs, PublicKey, Signatures, SigningKey};
+use super::{Id, Proofs, PublicKey};
+#[cfg(feature = "nut11")]
+use super::{Signatures, SigningKey};
 use crate::error::Error;
+#[cfg(feature = "nut11")]
 use crate::nuts::nut11::{witness_deserialize, witness_serialize};
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
@@ -26,6 +29,7 @@ pub struct BlindedMessage {
     #[serde(rename = "B_")]
     pub b: PublicKey,
     /// Witness
+    #[cfg(feature = "nut11")]
     #[serde(default)]
     #[serde(skip_serializing_if = "Signatures::is_empty")]
     #[serde(serialize_with = "witness_serialize")]
@@ -39,10 +43,12 @@ impl BlindedMessage {
             amount,
             keyset_id,
             b,
+            #[cfg(feature = "nut11")]
             witness: Signatures::default(),
         }
     }
 
+    #[cfg(feature = "nut11")]
     pub fn sign_p2pk_blinded_message(&mut self, secret_key: SigningKey) -> Result<(), Error> {
         let msg_to_sign = hex::decode(self.b.to_string())?;
 
@@ -131,7 +137,9 @@ pub mod wallet {
     use super::{CurrencyUnit, MintProofs};
     use crate::dhke::blind_message;
     use crate::error::wallet;
-    use crate::nuts::{BlindedMessage, Id, P2PKConditions, Proofs, SecretKey};
+    #[cfg(feature = "nut11")]
+    use crate::nuts::P2PKConditions;
+    use crate::nuts::{BlindedMessage, Id, Proofs, SecretKey};
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
     use crate::{error, Amount};
