@@ -9,7 +9,7 @@ use cashu::nuts::nut07::ProofState;
 use cashu::nuts::nut11::SigningKey;
 use cashu::nuts::{
     BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, P2PKConditions, PreMintSecrets,
-    PreSwap, Proof, Proofs, SwapRequest, Token,
+    PreSwap, Proof, Proofs, SigFlag, SwapRequest, Token,
 };
 #[cfg(feature = "nut07")]
 use cashu::secret::Secret;
@@ -234,6 +234,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         }
 
         let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+        println!("{:?}", keysets);
 
         self.localstore
             .add_mint_keysets(
@@ -353,7 +354,17 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
             // TODO: if none fetch keyset for mint
 
-            let keys = self.localstore.get_keys(&active_keyset_id.unwrap()).await?;
+            let keys =
+                if let Some(keys) = self.localstore.get_keys(&active_keyset_id.unwrap()).await? {
+                    keys
+                } else {
+                    self.get_mint_keys(&token.mint, active_keyset_id.unwrap())
+                        .await?;
+                    self.localstore
+                        .get_keys(&active_keyset_id.unwrap())
+                        .await?
+                        .unwrap()
+                };
 
             // Sum amount of all proofs
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
@@ -372,15 +383,20 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 swap_response.signatures,
                 pre_swap.pre_mint_secrets.rs(),
                 pre_swap.pre_mint_secrets.secrets(),
-                &keys.unwrap(),
+                &keys,
             )?;
+            //  println!("{:?}", p);
             let mint_proofs = proofs.entry(token.mint).or_default();
 
             mint_proofs.extend(p);
         }
+        //println!("{:?}", proofs);
 
-        for (mint, proofs) in proofs {
-            self.localstore.add_proofs(mint, proofs).await?;
+        for (mint, p) in proofs {
+            println!("{:?}", serde_json::to_string(&p));
+            println!("{:?}", mint);
+            self.add_mint(mint.clone()).await?;
+            self.localstore.add_proofs(mint, p).await?;
         }
 
         Ok(())
@@ -408,9 +424,9 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             desired_messages.sort_secrets();
             desired_messages
         } else {
-            let value = proofs.iter().map(|p| p.amount).sum();
+            let amount = proofs.iter().map(|p| p.amount).sum();
 
-            PreMintSecrets::random(active_keyset_id, value)?
+            PreMintSecrets::random(active_keyset_id, amount)?
         };
 
         let swap_request = SwapRequest::new(proofs, pre_mint_secrets.blinded_messages());
@@ -420,7 +436,51 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             swap_request,
         })
     }
+    /*
+        /// Create Swap Payload
+        async fn create_swap_signed(
+            &mut self,
+            mint_url: &UncheckedUrl,
+            unit: &CurrencyUnit,
+            amount: Option<Amount>,
+            proofs: Proofs,
+            signing_key: Option<SigningKey>,
+        ) -> Result<PreSwap, Error> {
+            let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
 
+            let pre_mint_secrets = if let Some(amount) = amount {
+                let mut desired_messages = PreMintSecrets::random(active_keyset_id, amount)?;
+
+                let change_amount = proofs.iter().map(|p| p.amount).sum::<Amount>() - amount;
+
+                let change_messages = if let Some(signing_key) = signing_key {
+                    PreMintSecrets::random_signed(active_keyset_id, change_amount, signing_key)?
+                } else {
+                    PreMintSecrets::random(active_keyset_id, change_amount)?
+                };
+                // Combine the BlindedMessages totoalling the desired amount with change
+                desired_messages.combine(change_messages);
+                // Sort the premint secrets to avoid finger printing
+                desired_messages.sort_secrets();
+                desired_messages
+            } else {
+                let amount = proofs.iter().map(|p| p.amount).sum();
+
+                if let Some(signing_key) = signing_key {
+                    PreMintSecrets::random_signed(active_keyset_id, amount, signing_key)?
+                } else {
+                    PreMintSecrets::random(active_keyset_id, amount)?
+                }
+            };
+
+            let swap_request = SwapRequest::new(proofs, pre_mint_secrets.blinded_messages());
+
+            Ok(PreSwap {
+                pre_mint_secrets,
+                swap_request,
+            })
+        }
+    */
     pub async fn process_swap_response(
         &self,
         blinded_messages: PreMintSecrets,
@@ -752,6 +812,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         encoded_token: &str,
         signing_keys: Vec<SigningKey>,
     ) -> Result<(), Error> {
+        let signing_key = signing_keys[0].clone();
         let pubkey_secret_key: HashMap<String, SigningKey> = signing_keys
             .into_iter()
             .map(|s| (s.public_key().to_string(), s))
@@ -778,6 +839,8 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
             let mut proofs = token.proofs;
 
+            let mut sig_flag = None;
+
             for proof in &mut proofs {
                 if let Ok(secret) =
                     <cashu::secret::Secret as TryInto<cashu::nuts::nut10::Secret>>::try_into(
@@ -786,20 +849,35 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 {
                     let conditions: Result<P2PKConditions, _> = secret.try_into();
                     if let Ok(conditions) = conditions {
+                        println!("{:?}", conditions);
                         let pubkeys = conditions.pubkeys;
 
                         for pubkey in pubkeys {
                             if let Some(signing) = pubkey_secret_key.get(&pubkey.to_string()) {
-                                proof.sign_p2pk_proof(signing.clone()).ok();
+                                proof.sign_p2pk_proof(signing.clone()).unwrap();
+                                proof.verify_p2pk().unwrap();
+                                println!("v");
                             }
                         }
+
+                        sig_flag = Some(conditions.sig_flag);
                     }
                 }
             }
 
-            let pre_swap = self
+            let mut pre_swap = self
                 .create_swap(&token.mint, &unit, Some(amount), proofs)
                 .await?;
+
+            if let Some(sigflag) = sig_flag {
+                if sigflag.eq(&SigFlag::SigAll) {
+                    for blinded_message in &mut pre_swap.swap_request.outputs {
+                        blinded_message
+                            .sign_p2pk_blinded_message(signing_key.clone())
+                            .unwrap();
+                    }
+                }
+            }
 
             let swap_response = self
                 .client
@@ -824,54 +902,70 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         Ok(())
     }
+    /*
+        pub async fn claim_p2pk_locked_proofs(
+            &mut self,
+            sigflag: SigFlag,
+            mint_url: &UncheckedUrl,
+            unit: &CurrencyUnit,
+            signing_key: SigningKey,
+            proofs: Proofs,
+        ) -> Result<(), Error> {
+            let active_keyset_id = self.active_mint_keyset(&mint_url, &unit).await?;
 
-    pub async fn claim_p2pk_locked_proofs(
-        &mut self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
-        signing_key: SigningKey,
-        proofs: Proofs,
-    ) -> Result<(), Error> {
-        let active_keyset_id = self.active_mint_keyset(&mint_url, &unit).await?;
+            let keys = self.localstore.get_keys(&active_keyset_id.unwrap()).await?;
 
-        let keys = self.localstore.get_keys(&active_keyset_id.unwrap()).await?;
+            let mut signed_proofs: Proofs = Vec::with_capacity(proofs.len());
 
-        let mut signed_proofs: Proofs = Vec::with_capacity(proofs.len());
+            // Sum amount of all proofs
+            let amount: Amount = proofs.iter().map(|p| p.amount).sum();
 
-        // Sum amount of all proofs
-        let amount: Amount = proofs.iter().map(|p| p.amount).sum();
+            for p in proofs.clone() {
+                let mut p = p;
+                p.sign_p2pk_proof(signing_key.clone()).unwrap();
+                signed_proofs.push(p);
+            }
 
-        for p in proofs.clone() {
-            let mut p = p;
-            p.sign_p2pk_proof(signing_key.clone()).unwrap();
-            signed_proofs.push(p);
+            let pre_swap = match sigflag {
+                SigFlag::SigInputs => {
+                    self.create_swap(mint_url, &unit, Some(amount), signed_proofs)
+                        .await?
+                }
+                SigFlag::SigAll => {
+                    self.create_swap_signed(
+                        mint_url,
+                        unit,
+                        Some(amount),
+                        signed_proofs,
+                        Some(signing_key),
+                    )
+                    .await?
+                }
+                _ => todo!(),
+            };
+
+            let swap_response = self
+                .client
+                .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
+                .await?;
+
+            // Proof to keep
+            let p = construct_proofs(
+                swap_response.signatures,
+                pre_swap.pre_mint_secrets.rs(),
+                pre_swap.pre_mint_secrets.secrets(),
+                &keys.unwrap(),
+            )?;
+
+            self.localstore
+                .remove_proofs(mint_url.clone(), &proofs)
+                .await?;
+
+            self.localstore.add_proofs(mint_url.clone(), p).await?;
+
+            Ok(())
         }
-
-        let pre_swap = self
-            .create_swap(mint_url, &unit, Some(amount), signed_proofs)
-            .await?;
-
-        let swap_response = self
-            .client
-            .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
-            .await?;
-
-        // Proof to keep
-        let p = construct_proofs(
-            swap_response.signatures,
-            pre_swap.pre_mint_secrets.rs(),
-            pre_swap.pre_mint_secrets.secrets(),
-            &keys.unwrap(),
-        )?;
-
-        self.localstore
-            .remove_proofs(mint_url.clone(), &proofs)
-            .await?;
-
-        self.localstore.add_proofs(mint_url.clone(), p).await?;
-
-        Ok(())
-    }
+    */
 
     pub fn proofs_to_token(
         &self,

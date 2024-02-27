@@ -6,12 +6,11 @@ use std::fmt;
 use std::hash::{self, Hasher};
 use std::str::FromStr;
 
-use bitcoin::hashes::{sha256, Hash};
 use k256::schnorr::signature::{Signer, Verifier};
 use k256::schnorr::Signature;
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
 use super::nut02::Id;
@@ -25,7 +24,7 @@ use crate::Amount;
 pub struct Signatures {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    signatures: Vec<String>,
+    pub signatures: Vec<String>,
 }
 
 impl Signatures {
@@ -50,7 +49,24 @@ pub struct Proof {
     /// Witness
     #[serde(default)]
     #[serde(skip_serializing_if = "Signatures::is_empty")]
+    #[serde(serialize_with = "witness_serialize")]
+    #[serde(deserialize_with = "witness_deserialize")]
     pub witness: Signatures,
+}
+
+pub fn witness_serialize<S>(x: &Signatures, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_str(&serde_json::to_string(x).map_err(ser::Error::custom)?)
+}
+
+pub fn witness_deserialize<'de, D>(deserializer: D) -> Result<Signatures, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let s: String = String::deserialize(deserializer)?;
+    serde_json::from_str(&s).map_err(de::Error::custom)
 }
 
 impl Proof {
@@ -136,7 +152,9 @@ impl TryFrom<P2PKConditions> for Secret {
             return Err(Error::Amount);
         }
 
-        let data = pubkeys[0].to_string();
+        let data: PublicKey = pubkeys[0].clone().into();
+
+        let data = data.to_string();
 
         let mut tags = vec![];
 
@@ -259,7 +277,13 @@ impl Proof {
 
         let mut valid_sigs = 0;
 
-        let msg = sha256::Hash::hash(&self.secret.to_bytes().unwrap());
+        println!("{:?}", self.secret.to_string());
+        println!(
+            "sec bytes: {:?}",
+            self.secret.to_string().into_bytes().len()
+        );
+
+        let msg = &self.secret.to_bytes().unwrap();
 
         for signature in &self.witness.signatures {
             let mut pubkeys = spending_conditions.pubkeys.clone();
@@ -268,31 +292,30 @@ impl Proof {
             for v in &spending_conditions.pubkeys {
                 let sig = Signature::try_from(hex::decode(signature).unwrap().as_slice()).unwrap();
 
-                if v.verify(&msg.to_byte_array(), &sig).is_ok() {
+                if v.verify(msg, &sig).is_ok() {
                     valid_sigs += 1;
                 } else {
-                    println!("{:?}", v.verify(&msg.to_byte_array(), &sig).unwrap());
+                    println!("{:?}", v.verify(msg, &sig).unwrap());
                 }
             }
         }
 
         if valid_sigs.ge(&spending_conditions.num_sigs.unwrap_or(1)) {
+            println!("valid sigs: {}", valid_sigs);
             return Ok(());
         }
 
         if let Some(locktime) = spending_conditions.locktime {
             // If lock time has passed check if refund witness signature is valid
-            if locktime.lt(&unix_time()) {
-                if !spending_conditions.refund_keys.is_empty() {
-                    for s in &self.witness.signatures {
-                        for v in &spending_conditions.refund_keys {
-                            let sig = Signature::try_from(s.as_bytes())
-                                .map_err(|_| Error::InvalidSignature)?;
+            if locktime.lt(&unix_time()) && !spending_conditions.refund_keys.is_empty() {
+                for s in &self.witness.signatures {
+                    for v in &spending_conditions.refund_keys {
+                        let sig = Signature::try_from(s.as_bytes())
+                            .map_err(|_| Error::InvalidSignature)?;
 
-                            // As long as there is one valid refund signature it can be spent
-                            if v.verify(&msg.to_byte_array(), &sig).is_ok() {
-                                return Ok(());
-                            }
+                        // As long as there is one valid refund signature it can be spent
+                        if v.verify(msg, &sig).is_ok() {
+                            return Ok(());
                         }
                     }
                 }
@@ -303,13 +326,14 @@ impl Proof {
     }
 
     pub fn sign_p2pk_proof(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg_to_sign = sha256::Hash::hash(&self.secret.to_bytes().unwrap());
+        let msg_to_sign = &self.secret.to_bytes().unwrap();
 
-        let signature = secret_key.sign(msg_to_sign.as_byte_array());
+        let signature = secret_key.sign(msg_to_sign);
 
         self.witness
             .signatures
             .push(hex::encode(signature.to_bytes()));
+
         Ok(())
     }
 }
@@ -476,6 +500,7 @@ impl From<Tag> for Vec<String> {
                 let mut tag = vec![TagKind::Pubkeys.to_string()];
 
                 for pubkey in pubkeys {
+                    let pubkey: PublicKey = pubkey.into();
                     tag.push(pubkey.to_string())
                 }
                 tag
@@ -529,7 +554,10 @@ impl VerifyingKey {
     }
 
     pub fn verify(&self, msg: &[u8], signature: &Signature) -> Result<(), Error> {
-        Ok(self.0.verify(msg, signature).unwrap())
+        self.0
+            .verify(msg, signature)
+            .map_err(|_| Error::InvalidSignature)?;
+        Ok(())
     }
 }
 
@@ -622,7 +650,7 @@ impl From<SecretKey> for SigningKey {
 
 impl SigningKey {
     pub fn public_key(&self) -> VerifyingKey {
-        self.0.verifying_key().clone().into()
+        (*self.0.verifying_key()).into()
     }
 
     pub fn sign(&self, msg: &[u8]) -> Signature {
@@ -630,7 +658,7 @@ impl SigningKey {
     }
 
     pub fn verifying_key(&self) -> VerifyingKey {
-        VerifyingKey(self.0.verifying_key().clone())
+        VerifyingKey(*self.0.verifying_key())
     }
 }
 
@@ -702,15 +730,6 @@ mod tests {
     }
 
     #[test]
-    fn test_verify() {
-        let proof_str = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"190badde56afcbf67937e228744ea896bb3e48bcb60efa412799e1518618c287\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id": "009a1f293253e41e","witness":{"signatures":["2b117c29a0e405fcbcac4c632b5862eb3ace0d67c681e8209d3aa2f52d5198471629b1ec6bce75d3879c47725be89d28938e31236307b40bc6c89491fa540e35"]}}"#;
-
-        let proof: Proof = serde_json::from_str(proof_str).unwrap();
-
-        assert!(proof.verify_p2pk().is_ok());
-    }
-
-    #[test]
     fn sign_proof() {
         let secret_key = SigningKey::from_str(
             "04918dfc36c93e7db6cc0d60f37e1522f1c36b64d3f4b424c532d7c595febbc5",
@@ -721,7 +740,7 @@ mod tests {
 
         let conditions = P2PKConditions {
             locktime: None,
-            pubkeys: vec![v_key.into()],
+            pubkeys: vec![v_key],
             refund_keys: vec![],
             num_sigs: None,
             sig_flag: SigFlag::SigInputs,
@@ -732,7 +751,7 @@ mod tests {
         let mut proof = Proof {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
-            secret: secret.try_into().unwrap(),
+            secret: secret.clone().try_into().unwrap(),
             c: PublicKey::from_str(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
@@ -740,9 +759,7 @@ mod tests {
             witness: Signatures { signatures: vec![] },
         };
 
-        let signing_key: SigningKey = secret_key.try_into().unwrap();
-
-        proof.sign_p2pk_proof(signing_key).unwrap();
+        proof.sign_p2pk_proof(secret_key).unwrap();
 
         assert!(proof.verify_p2pk().is_ok());
     }

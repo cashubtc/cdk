@@ -168,15 +168,19 @@ impl Client for HttpClient {
     async fn post_swap(
         &self,
         mint_url: Url,
-        split_request: SwapRequest,
+        swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
         let url = join_url(mint_url, &["v1", "swap"])?;
 
-        let res = minreq::post(url).with_json(&split_request)?.send()?;
+        println!("{}", serde_json::to_string(&swap_request).unwrap());
+
+        let res = minreq::post(url).with_json(&swap_request)?.send()?;
 
         let value = res.json::<Value>()?;
+        println!("{}", value);
         let response: Result<SwapResponse, serde_json::Error> =
             serde_json::from_value(value.clone());
+        println!("{:?}", response);
 
         match response {
             Ok(res) => Ok(res),

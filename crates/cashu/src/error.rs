@@ -64,7 +64,15 @@ pub struct ErrorResponse {
 
 impl ErrorResponse {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        if let Ok(res) = serde_json::from_str::<ErrorResponse>(json) {
+            Ok(res)
+        } else {
+            Ok(Self {
+                code: 999,
+                error: Some(json.to_string()),
+                detail: None,
+            })
+        }
     }
 }
 
