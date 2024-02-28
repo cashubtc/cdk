@@ -234,7 +234,6 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         }
 
         let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
-        println!("{:?}", keysets);
 
         self.localstore
             .add_mint_keysets(
@@ -385,16 +384,12 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 pre_swap.pre_mint_secrets.secrets(),
                 &keys,
             )?;
-            //  println!("{:?}", p);
             let mint_proofs = proofs.entry(token.mint).or_default();
 
             mint_proofs.extend(p);
         }
-        //println!("{:?}", proofs);
 
         for (mint, p) in proofs {
-            println!("{:?}", serde_json::to_string(&p));
-            println!("{:?}", mint);
             self.add_mint(mint.clone()).await?;
             self.localstore.add_proofs(mint, p).await?;
         }
@@ -780,7 +775,6 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         let mut change_proofs = vec![];
 
         for proof in post_swap_proofs {
-            println!("post swap proof: {:?}", proof);
             let conditions: Result<cashu::nuts::nut10::Secret, _> = (&proof.secret).try_into();
             if conditions.is_ok() {
                 send_proofs.push(proof);
@@ -849,14 +843,12 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 {
                     let conditions: Result<P2PKConditions, _> = secret.try_into();
                     if let Ok(conditions) = conditions {
-                        println!("{:?}", conditions);
                         let pubkeys = conditions.pubkeys;
 
                         for pubkey in pubkeys {
                             if let Some(signing) = pubkey_secret_key.get(&pubkey.to_string()) {
                                 proof.sign_p2pk_proof(signing.clone()).unwrap();
                                 proof.verify_p2pk().unwrap();
-                                println!("v");
                             }
                         }
 
