@@ -99,6 +99,48 @@ impl PartialOrd for Proof {
     }
 }
 
+/// Blinded Message [NUT-00]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlindedMessage {
+    /// Amount
+    pub amount: Amount,
+    /// Keyset Id
+    #[serde(rename = "id")]
+    pub keyset_id: Id,
+    /// encrypted secret message (B_)
+    #[serde(rename = "B_")]
+    pub b: PublicKey,
+    /// Witness
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Signatures::is_empty")]
+    #[serde(serialize_with = "witness_serialize")]
+    #[serde(deserialize_with = "witness_deserialize")]
+    pub witness: Signatures,
+}
+
+impl BlindedMessage {
+    pub fn new(amount: Amount, keyset_id: Id, b: PublicKey) -> Self {
+        Self {
+            amount,
+            keyset_id,
+            b,
+            witness: Signatures::default(),
+        }
+    }
+
+    #[cfg(feature = "nut11")]
+    pub fn sign_p2pk_blinded_message(&mut self, secret_key: SigningKey) -> Result<(), Error> {
+        let msg_to_sign = hex::decode(self.b.to_string())?;
+
+        let signature = secret_key.sign(&msg_to_sign);
+
+        self.witness
+            .signatures
+            .push(hex::encode(signature.to_bytes()));
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct P2PKConditions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -277,12 +319,6 @@ impl Proof {
 
         let mut valid_sigs = 0;
 
-        println!("{:?}", self.secret.to_string());
-        println!(
-            "sec bytes: {:?}",
-            self.secret.to_string().into_bytes().len()
-        );
-
         let msg = &self.secret.to_bytes().unwrap();
 
         for signature in &self.witness.signatures {
@@ -301,7 +337,6 @@ impl Proof {
         }
 
         if valid_sigs.ge(&spending_conditions.num_sigs.unwrap_or(1)) {
-            println!("valid sigs: {}", valid_sigs);
             return Ok(());
         }
 

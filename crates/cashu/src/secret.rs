@@ -69,7 +69,7 @@ impl Secret {
             serde_json::from_str(&self.0);
 
         match secret {
-            Ok(_) => Ok(self.0.clone().replace('\\', "").into_bytes()),
+            Ok(_) => Ok(self.0.clone().into_bytes()),
             Err(_) => Ok(hex::decode(&self.0)?),
         }
     }
