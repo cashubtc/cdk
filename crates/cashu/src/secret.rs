@@ -73,6 +73,22 @@ impl Secret {
             Err(_) => Ok(hex::decode(&self.0)?),
         }
     }
+
+    #[cfg(feature = "nut11")]
+    pub fn is_p2pk(&self) -> bool {
+        use crate::nuts::Kind;
+
+        let secret: Result<crate::nuts::nut10::Secret, serde_json::Error> =
+            serde_json::from_str(&self.0);
+
+        if let Ok(secret) = secret {
+            if secret.kind.eq(&Kind::P2PK) {
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 impl FromStr for Secret {
