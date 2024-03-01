@@ -64,7 +64,7 @@ impl TryFrom<&PublicKey> for VerifyingKey {
 #[cfg(feature = "nut11")]
 impl From<VerifyingKey> for PublicKey {
     fn from(value: VerifyingKey) -> PublicKey {
-        PublicKey(value.try_into().unwrap())
+        PublicKey(value.into())
     }
 }
 
