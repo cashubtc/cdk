@@ -431,51 +431,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             swap_request,
         })
     }
-    /*
-        /// Create Swap Payload
-        async fn create_swap_signed(
-            &mut self,
-            mint_url: &UncheckedUrl,
-            unit: &CurrencyUnit,
-            amount: Option<Amount>,
-            proofs: Proofs,
-            signing_key: Option<SigningKey>,
-        ) -> Result<PreSwap, Error> {
-            let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
 
-            let pre_mint_secrets = if let Some(amount) = amount {
-                let mut desired_messages = PreMintSecrets::random(active_keyset_id, amount)?;
-
-                let change_amount = proofs.iter().map(|p| p.amount).sum::<Amount>() - amount;
-
-                let change_messages = if let Some(signing_key) = signing_key {
-                    PreMintSecrets::random_signed(active_keyset_id, change_amount, signing_key)?
-                } else {
-                    PreMintSecrets::random(active_keyset_id, change_amount)?
-                };
-                // Combine the BlindedMessages totoalling the desired amount with change
-                desired_messages.combine(change_messages);
-                // Sort the premint secrets to avoid finger printing
-                desired_messages.sort_secrets();
-                desired_messages
-            } else {
-                let amount = proofs.iter().map(|p| p.amount).sum();
-
-                if let Some(signing_key) = signing_key {
-                    PreMintSecrets::random_signed(active_keyset_id, amount, signing_key)?
-                } else {
-                    PreMintSecrets::random(active_keyset_id, amount)?
-                }
-            };
-
-            let swap_request = SwapRequest::new(proofs, pre_mint_secrets.blinded_messages());
-
-            Ok(PreSwap {
-                pre_mint_secrets,
-                swap_request,
-            })
-        }
-    */
     pub async fn process_swap_response(
         &self,
         blinded_messages: PreMintSecrets,
@@ -894,70 +850,6 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         Ok(())
     }
-    /*
-        pub async fn claim_p2pk_locked_proofs(
-            &mut self,
-            sigflag: SigFlag,
-            mint_url: &UncheckedUrl,
-            unit: &CurrencyUnit,
-            signing_key: SigningKey,
-            proofs: Proofs,
-        ) -> Result<(), Error> {
-            let active_keyset_id = self.active_mint_keyset(&mint_url, &unit).await?;
-
-            let keys = self.localstore.get_keys(&active_keyset_id.unwrap()).await?;
-
-            let mut signed_proofs: Proofs = Vec::with_capacity(proofs.len());
-
-            // Sum amount of all proofs
-            let amount: Amount = proofs.iter().map(|p| p.amount).sum();
-
-            for p in proofs.clone() {
-                let mut p = p;
-                p.sign_p2pk_proof(signing_key.clone()).unwrap();
-                signed_proofs.push(p);
-            }
-
-            let pre_swap = match sigflag {
-                SigFlag::SigInputs => {
-                    self.create_swap(mint_url, &unit, Some(amount), signed_proofs)
-                        .await?
-                }
-                SigFlag::SigAll => {
-                    self.create_swap_signed(
-                        mint_url,
-                        unit,
-                        Some(amount),
-                        signed_proofs,
-                        Some(signing_key),
-                    )
-                    .await?
-                }
-                _ => todo!(),
-            };
-
-            let swap_response = self
-                .client
-                .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
-                .await?;
-
-            // Proof to keep
-            let p = construct_proofs(
-                swap_response.signatures,
-                pre_swap.pre_mint_secrets.rs(),
-                pre_swap.pre_mint_secrets.secrets(),
-                &keys.unwrap(),
-            )?;
-
-            self.localstore
-                .remove_proofs(mint_url.clone(), &proofs)
-                .await?;
-
-            self.localstore.add_proofs(mint_url.clone(), p).await?;
-
-            Ok(())
-        }
-    */
 
     pub fn proofs_to_token(
         &self,
