@@ -298,7 +298,7 @@ mod tests {
         let pubkey = PublicKey::from_str(key_str).unwrap();
         let v_key: VerifyingKey = pubkey.clone().try_into().unwrap();
 
-        let p: PublicKey = v_key.try_into().unwrap();
+        let p: PublicKey = v_key.into();
 
         assert_eq!(p, pubkey);
     }
