@@ -66,7 +66,9 @@ impl Serialize for Secret {
 impl TryFrom<Secret> for crate::secret::Secret {
     type Error = Error;
     fn try_from(secret: Secret) -> Result<crate::secret::Secret, Self::Error> {
-        Ok(crate::secret::Secret::from_str(&serde_json::to_string(&secret).unwrap()).unwrap())
+        Ok(crate::secret::Secret::from_str(&serde_json::to_string(
+            &secret,
+        )?)?)
     }
 }
 

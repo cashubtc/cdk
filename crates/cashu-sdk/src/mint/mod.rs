@@ -412,7 +412,7 @@ impl Mint {
         }
 
         for proof in swap_request.inputs {
-            self.localstore.add_spent_proof(proof).await.unwrap();
+            self.localstore.add_spent_proof(proof).await?;
         }
 
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
@@ -427,7 +427,7 @@ impl Mint {
 
     #[cfg(not(feature = "nut11"))]
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
-        let y = hash_to_curve(&proof.secret.to_bytes().unwrap()).unwrap();
+        let y = hash_to_curve(&proof.secret.to_bytes()?)?;
         if self.localstore.get_spent_proof_by_hash(&y).await?.is_some() {
             return Err(Error::TokenSpent);
         }
@@ -637,10 +637,7 @@ impl Mint {
         self.verify_melt_request(melt_request).await?;
 
         for input in &melt_request.inputs {
-            self.localstore
-                .add_spent_proof(input.clone())
-                .await
-                .unwrap();
+            self.localstore.add_spent_proof(input.clone()).await?;
         }
 
         let mut change = None;

@@ -13,7 +13,7 @@ pub enum Error {
     Utf8ParseError(#[from] FromUtf8Error),
     /// Serde Json error
     #[error("`{0}`")]
-    SerdeJsonError(serde_json::Error),
+    SerdeJsonError(#[from] serde_json::Error),
     /// Base64 error
     #[error("`{0}`")]
     Base64Error(#[from] base64::DecodeError),
@@ -22,6 +22,8 @@ pub enum Error {
     HexError(#[from] hex::FromHexError),
     #[error("`{0}`")]
     EllipticCurve(#[from] k256::elliptic_curve::Error),
+    #[error("`{0}`")]
+    ECDSA(#[from] k256::ecdsa::Error),
     #[error("No Key for Amoun")]
     AmountKey,
     #[error("Amount miss match")]
@@ -50,6 +52,10 @@ pub enum Error {
     InvalidSignature,
     #[error("Locktime in past")]
     LocktimeInPast,
+    #[error("`{0}`")]
+    Secret(#[from] super::secret::Error),
+    #[error("`{0}`")]
+    ParseInt(#[from] std::num::ParseIntError),
     /// Custom error
     #[error("`{0}`")]
     CustomError(String),

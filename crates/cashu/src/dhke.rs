@@ -149,9 +149,10 @@ mod mint {
     where
         V: TryInto<Vec<u8>>,
         <V as TryInto<Vec<u8>>>::Error: Debug,
+        error::mint::Error: From<<V as TryInto<Vec<u8>>>::Error>,
     {
         // Y
-        let y = hash_to_curve(&msg.try_into().unwrap())?;
+        let y = hash_to_curve(&msg.try_into()?)?;
 
         if unblinded_message
             == k256::PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive()))?

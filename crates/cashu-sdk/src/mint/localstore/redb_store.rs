@@ -95,7 +95,7 @@ impl LocalStore for RedbLocalStore {
         let table = read_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
 
         if let Some(id) = table.get(unit.to_string().as_str())? {
-            return Ok(Some(Id::from_str(id.value()).unwrap()));
+            return Ok(Some(Id::from_str(id.value())?));
         }
 
         Ok(None)
@@ -142,7 +142,11 @@ impl LocalStore for RedbLocalStore {
 
         let keyset = table.get(keyset_id.to_string().as_str())?;
 
-        Ok(keyset.map(|k| serde_json::from_str(k.value()).unwrap()))
+        if let Some(keyset) = keyset {
+            Ok(serde_json::from_str(keyset.value())?)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn get_keysets(&self) -> Result<Vec<KeySet>, Error> {
@@ -182,7 +186,11 @@ impl LocalStore for RedbLocalStore {
 
         let quote = table.get(quote_id)?;
 
-        Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
+        if let Some(quote) = quote {
+            Ok(serde_json::from_str(quote.value())?)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
@@ -299,7 +307,11 @@ impl LocalStore for RedbLocalStore {
 
         let proof = table.get(secret_point.to_sec1_bytes().as_ref())?;
 
-        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
+        if let Some(proof) = proof {
+            Ok(serde_json::from_str(proof.value())?)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
@@ -313,7 +325,11 @@ impl LocalStore for RedbLocalStore {
 
         debug!("Checking secret: {}", secret.to_string());
 
-        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
+        if let Some(proof) = proof {
+            Ok(serde_json::from_str(proof.value())?)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
@@ -345,7 +361,11 @@ impl LocalStore for RedbLocalStore {
 
         let proof = table.get(secret_point.to_sec1_bytes().as_ref())?;
 
-        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
+        if let Some(proof) = proof {
+            Ok(serde_json::from_str(proof.value())?)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
@@ -357,7 +377,11 @@ impl LocalStore for RedbLocalStore {
 
         let proof = table.get(secret_hash.to_sec1_bytes().as_ref())?;
 
-        Ok(proof.map(|p| serde_json::from_str(p.value()).unwrap()))
+        if let Some(proof) = proof {
+            Ok(serde_json::from_str(proof.value())?)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error> {
