@@ -309,10 +309,11 @@ impl TryFrom<Secret> for P2PKConditions {
 
 impl Proof {
     pub fn verify_p2pk(&self) -> Result<(), Error> {
-        let secret: Secret = (&self.secret).try_into()?;
-        if secret.kind.ne(&super::nut10::Kind::P2PK) {
+        if !self.secret.is_p2pk() {
             return Err(Error::IncorrectSecretKind);
         }
+
+        let secret: Secret = self.secret.clone().try_into()?;
 
         let spending_conditions: P2PKConditions = secret.clone().try_into()?;
 
