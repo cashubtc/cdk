@@ -247,7 +247,7 @@ impl TryFrom<Secret> for P2PKConditions {
             .secret_data
             .tags
             .into_iter()
-            .flat_map(|t| Tag::try_from(t))
+            .flat_map(Tag::try_from)
             .map(|t| (t.kind(), t))
             .collect();
 
