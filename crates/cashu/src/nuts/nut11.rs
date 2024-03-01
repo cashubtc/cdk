@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use k256::schnorr::signature::{Signer, Verifier};
 use k256::schnorr::Signature;
+use log::debug;
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
 use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
@@ -246,10 +247,8 @@ impl TryFrom<Secret> for P2PKConditions {
             .secret_data
             .tags
             .into_iter()
-            .map(|t| {
-                let tag = Tag::try_from(t).unwrap();
-                (tag.kind(), tag)
-            })
+            .flat_map(|t| Tag::try_from(t))
+            .map(|t| (t.kind(), t))
             .collect();
 
         let mut pubkeys: Vec<VerifyingKey> = vec![];
@@ -310,7 +309,7 @@ impl TryFrom<Secret> for P2PKConditions {
 
 impl Proof {
     pub fn verify_p2pk(&self) -> Result<(), Error> {
-        let secret: Secret = (&self.secret).try_into().unwrap();
+        let secret: Secret = (&self.secret).try_into()?;
         if secret.kind.ne(&super::nut10::Kind::P2PK) {
             return Err(Error::IncorrectSecretKind);
         }
@@ -319,19 +318,23 @@ impl Proof {
 
         let mut valid_sigs = 0;
 
-        let msg = &self.secret.to_bytes().unwrap();
+        let msg = &self.secret.to_bytes()?;
 
         for signature in &self.witness.signatures {
             let mut pubkeys = spending_conditions.pubkeys.clone();
-            let data_key = VerifyingKey::from_str(&secret.secret_data.data).unwrap();
+            let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
             pubkeys.push(data_key);
             for v in &spending_conditions.pubkeys {
-                let sig = Signature::try_from(hex::decode(signature).unwrap().as_slice()).unwrap();
+                let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
 
                 if v.verify(msg, &sig).is_ok() {
                     valid_sigs += 1;
                 } else {
-                    println!("{:?}", v.verify(msg, &sig).unwrap());
+                    debug!(
+                        "Could not verify signature: {} on message: {}",
+                        hex::encode(sig.to_bytes()),
+                        self.secret.to_string()
+                    )
                 }
             }
         }
@@ -361,7 +364,7 @@ impl Proof {
     }
 
     pub fn sign_p2pk_proof(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg_to_sign = &self.secret.to_bytes().unwrap();
+        let msg_to_sign = &self.secret.to_bytes()?;
 
         let signature = secret_key.sign(msg_to_sign);
 
@@ -493,8 +496,8 @@ where
         if tag_len.eq(&2) {
             match tag_kind {
                 TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from(tag[1].as_ref()))),
-                TagKind::NSigs => Ok(Tag::NSigs(tag[1].as_ref().parse().unwrap())),
-                TagKind::Locktime => Ok(Tag::LockTime(tag[1].as_ref().parse().unwrap())),
+                TagKind::NSigs => Ok(Tag::NSigs(tag[1].as_ref().parse()?)),
+                TagKind::Locktime => Ok(Tag::LockTime(tag[1].as_ref().parse()?)),
                 _ => Err(Error::UnknownTag),
             }
         } else if tag_len.gt(&1) {
@@ -583,9 +586,9 @@ pub struct VerifyingKey(k256::schnorr::VerifyingKey);
 
 impl VerifyingKey {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        Ok(VerifyingKey(
-            k256::schnorr::VerifyingKey::from_bytes(bytes).unwrap(),
-        ))
+        Ok(VerifyingKey(k256::schnorr::VerifyingKey::from_bytes(
+            bytes,
+        )?))
     }
 
     pub fn verify(&self, msg: &[u8], signature: &Signature) -> Result<(), Error> {

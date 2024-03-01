@@ -41,6 +41,8 @@ pub enum Error {
     QuoteExpired,
     #[error("Quote Unknown")]
     QuoteUnknown,
+    #[error("No active keyset")]
+    NoActiveKeyset,
     #[error("`{0}`")]
     LocalStore(#[from] localstore::Error),
     #[error("`{0}`")]
@@ -224,11 +226,11 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
-    ) -> Result<Option<Id>, Error> {
+    ) -> Result<Id, Error> {
         if let Some(keysets) = self.localstore.get_mint_keysets(mint_url.clone()).await? {
             for keyset in keysets {
                 if keyset.unit.eq(unit) && keyset.active {
-                    return Ok(Some(keyset.id));
+                    return Ok(keyset.id);
                 }
             }
         }
@@ -243,11 +245,11 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             .await?;
         for keyset in &keysets.keysets {
             if keyset.unit.eq(unit) && keyset.active {
-                return Ok(Some(keyset.id));
+                return Ok(keyset.id);
             }
         }
 
-        Ok(None)
+        Err(Error::NoActiveKeyset)
     }
 
     async fn active_keys(
@@ -255,7 +257,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
     ) -> Result<Option<Keys>, Error> {
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
 
         let keys;
 
@@ -293,10 +295,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             return Err(Error::QuoteUnknown);
         };
 
-        let active_keyset_id = self
-            .active_mint_keyset(&mint_url, &quote_info.unit)
-            .await?
-            .unwrap();
+        let active_keyset_id = self.active_mint_keyset(&mint_url, &quote_info.unit).await?;
 
         let premint_secrets = match &self.backup_info {
             Some(backup_info) => PreMintSecrets::from_seed(
@@ -353,17 +352,12 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
             // TODO: if none fetch keyset for mint
 
-            let keys =
-                if let Some(keys) = self.localstore.get_keys(&active_keyset_id.unwrap()).await? {
-                    keys
-                } else {
-                    self.get_mint_keys(&token.mint, active_keyset_id.unwrap())
-                        .await?;
-                    self.localstore
-                        .get_keys(&active_keyset_id.unwrap())
-                        .await?
-                        .unwrap()
-                };
+            let keys = if let Some(keys) = self.localstore.get_keys(&active_keyset_id).await? {
+                keys
+            } else {
+                self.get_mint_keys(&token.mint, active_keyset_id).await?;
+                self.localstore.get_keys(&active_keyset_id).await?.unwrap()
+            };
 
             // Sum amount of all proofs
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
@@ -405,7 +399,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         amount: Option<Amount>,
         proofs: Proofs,
     ) -> Result<PreSwap, Error> {
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
 
         let pre_mint_secrets = if let Some(amount) = amount {
             let mut desired_messages = PreMintSecrets::random(active_keyset_id, amount)?;
@@ -638,9 +632,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         let proofs_amount = proofs.iter().map(|p| p.amount).sum();
 
         let blinded = PreMintSecrets::blank(
-            self.active_mint_keyset(mint_url, &quote_info.unit)
-                .await?
-                .unwrap(),
+            self.active_mint_keyset(mint_url, &quote_info.unit).await?,
             proofs_amount,
         )?;
 
@@ -695,7 +687,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         conditions: P2PKConditions,
     ) -> Result<Proofs, Error> {
         let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?.unwrap();
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
 
         let input_amount: Amount = input_proofs.iter().map(|p| p.amount).sum();
         let change_amount = input_amount - amount;
@@ -782,7 +774,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
             // TODO: if none fetch keyset for mint
 
-            let keys = self.localstore.get_keys(&active_keyset_id.unwrap()).await?;
+            let keys = self.localstore.get_keys(&active_keyset_id).await?;
 
             // Sum amount of all proofs
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();

@@ -263,7 +263,7 @@ pub mod wallet {
             let mut output = Vec::with_capacity(amount_split.len());
 
             for amount in amount_split {
-                let secret: Secret = conditions.clone().try_into().unwrap();
+                let secret: Secret = conditions.clone().try_into()?;
                 let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
 
                 let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
