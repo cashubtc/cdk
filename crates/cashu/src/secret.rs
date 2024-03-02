@@ -58,20 +58,8 @@ impl Secret {
         Self(hex::encode(xpriv.private_key().to_bytes()))
     }
 
-    #[cfg(not(feature = "nut10"))]
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        Ok(hex::decode(&self.0)?)
-    }
-
-    #[cfg(feature = "nut10")]
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        let secret: Result<crate::nuts::nut10::Secret, serde_json::Error> =
-            serde_json::from_str(&self.0);
-
-        match secret {
-            Ok(_) => Ok(self.0.clone().into_bytes()),
-            Err(_) => Ok(hex::decode(&self.0)?),
-        }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.0.clone().into_bytes()
     }
 
     #[cfg(feature = "nut11")]
@@ -105,16 +93,14 @@ impl ToString for Secret {
     }
 }
 
-impl TryFrom<Secret> for Vec<u8> {
-    type Error = Error;
-    fn try_from(value: Secret) -> Result<Vec<u8>, Error> {
+impl From<Secret> for Vec<u8> {
+    fn from(value: Secret) -> Vec<u8> {
         value.to_bytes()
     }
 }
 
-impl TryFrom<&Secret> for Vec<u8> {
-    type Error = Error;
-    fn try_from(value: &Secret) -> Result<Vec<u8>, Error> {
+impl From<&Secret> for Vec<u8> {
+    fn from(value: &Secret) -> Vec<u8> {
         value.to_bytes()
     }
 }

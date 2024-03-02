@@ -362,8 +362,7 @@ impl Mint {
         let secrets: HashSet<Vec<u8>> = swap_request
             .inputs
             .iter()
-            .flat_map(|p| p.secret.to_bytes())
-            .flat_map(|p| hash_to_curve(&p))
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
             .map(|p| p.to_sec1_bytes().to_vec())
             .collect();
 
@@ -474,7 +473,7 @@ impl Mint {
             }
         }
 
-        let y = hash_to_curve(&proof.secret.to_bytes()?)?;
+        let y = hash_to_curve(&proof.secret.to_bytes())?;
 
         if self.localstore.get_spent_proof_by_hash(&y).await?.is_some() {
             return Err(Error::TokenSpent);
@@ -502,7 +501,7 @@ impl Mint {
         verify_message(
             keypair.secret_key.clone().into(),
             proof.c.clone().into(),
-            &proof.secret,
+            &proof.secret.to_bytes(),
         )?;
 
         Ok(())
@@ -611,8 +610,7 @@ impl Mint {
         let secrets: HashSet<Vec<u8>> = melt_request
             .inputs
             .iter()
-            .flat_map(|p| p.secret.to_bytes())
-            .flat_map(|p| hash_to_curve(&p))
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
             .map(|p| p.to_sec1_bytes().to_vec())
             .collect();
 
