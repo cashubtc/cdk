@@ -120,7 +120,6 @@ mod wallet {
 
 #[cfg(feature = "mint")]
 mod mint {
-    use std::fmt::Debug;
     use std::ops::Mul;
 
     use k256::{Scalar, SecretKey};
@@ -141,18 +140,13 @@ mod mint {
     }
 
     /// Verify Message
-    pub fn verify_message<V>(
+    pub fn verify_message(
         a: SecretKey,
         unblinded_message: k256::PublicKey,
-        msg: V,
-    ) -> Result<(), error::mint::Error>
-    where
-        V: TryInto<Vec<u8>>,
-        <V as TryInto<Vec<u8>>>::Error: Debug,
-        error::mint::Error: From<<V as TryInto<Vec<u8>>>::Error>,
-    {
+        msg: &[u8],
+    ) -> Result<(), error::mint::Error> {
         // Y
-        let y = hash_to_curve(&msg.try_into()?)?;
+        let y = hash_to_curve(msg)?;
 
         if unblinded_message
             == k256::PublicKey::try_from(*y.as_affine() * Scalar::from(a.as_scalar_primitive()))?
@@ -369,7 +363,7 @@ mod tests {
             let x = Secret::new();
 
             // Y
-            let y = hash_to_curve(&x.to_bytes().unwrap()).unwrap();
+            let y = hash_to_curve(&x.to_bytes()).unwrap();
 
             // B_
             let blinded = blind_message(&y.to_sec1_bytes(), None).unwrap();
@@ -380,7 +374,7 @@ mod tests {
             // C
             let c = unblind_message(signed.into(), blinded.1, bob_pub.into()).unwrap();
 
-            assert!(verify_message(bob_sec, c.into(), &x).is_ok());
+            assert!(verify_message(bob_sec, c.into(), &x.to_bytes()).is_ok());
         }
     }
 }

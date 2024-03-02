@@ -155,7 +155,7 @@ pub mod wallet {
 
             for amount in amount_split {
                 let secret = Secret::new();
-                let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
+                let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
                 let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -178,7 +178,7 @@ pub mod wallet {
             let mut output = Vec::with_capacity(secrets.len());
 
             for (secret, amount) in secrets.into_iter().zip(amounts) {
-                let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
+                let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
                 let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -201,7 +201,7 @@ pub mod wallet {
 
             for _i in 0..count {
                 let secret = Secret::new();
-                let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
+                let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
                 let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
@@ -233,8 +233,7 @@ pub mod wallet {
                 let secret = Secret::from_seed(mnemonic, keyset_id, counter);
                 let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, counter);
 
-                let (blinded, r) =
-                    blind_message(&secret.to_bytes()?, Some(blinding_factor.into()))?;
+                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor.into()))?;
 
                 let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -264,7 +263,7 @@ pub mod wallet {
 
             for amount in amount_split {
                 let secret: Secret = conditions.clone().try_into()?;
-                let (blinded, r) = blind_message(&secret.to_bytes()?, None)?;
+                let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
                 let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 

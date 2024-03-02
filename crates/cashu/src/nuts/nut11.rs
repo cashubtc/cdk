@@ -319,7 +319,7 @@ impl Proof {
 
         let mut valid_sigs = 0;
 
-        let msg = &self.secret.to_bytes()?;
+        let msg = &self.secret.to_bytes();
 
         for signature in &self.witness.signatures {
             let mut pubkeys = spending_conditions.pubkeys.clone();
@@ -365,7 +365,7 @@ impl Proof {
     }
 
     pub fn sign_p2pk_proof(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg_to_sign = &self.secret.to_bytes()?;
+        let msg_to_sign = &self.secret.to_bytes();
 
         let signature = secret_key.sign(msg_to_sign);
 
