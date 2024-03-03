@@ -351,7 +351,6 @@ impl Proof {
             if locktime.lt(&unix_time()) && !spending_conditions.refund_keys.is_empty() {
                 for s in &self.witness.signatures {
                     for v in &spending_conditions.refund_keys {
-                        println!("{}", v);
                         let sig = Signature::try_from(hex::decode(s)?.as_slice())
                             .map_err(|_| Error::InvalidSignature)?;
 
