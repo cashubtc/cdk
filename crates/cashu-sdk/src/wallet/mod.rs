@@ -795,7 +795,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
                         for pubkey in pubkeys {
                             if let Some(signing) = pubkey_secret_key.get(&pubkey.to_string()) {
-                                proof.sign_p2pk_proof(signing.clone()).unwrap();
+                                proof.sign_p2pk(signing.clone()).unwrap();
                                 proof.verify_p2pk().unwrap();
                             }
                         }
@@ -812,9 +812,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             if let Some(sigflag) = sig_flag {
                 if sigflag.eq(&SigFlag::SigAll) {
                     for blinded_message in &mut pre_swap.swap_request.outputs {
-                        blinded_message
-                            .sign_p2pk_blinded_message(signing_key.clone())
-                            .unwrap();
+                        blinded_message.sign_p2pk(signing_key.clone()).unwrap();
                     }
                 }
             }
