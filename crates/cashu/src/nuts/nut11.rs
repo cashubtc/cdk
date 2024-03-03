@@ -18,6 +18,7 @@ use super::nut02::Id;
 use super::nut10::{Secret, SecretData};
 use super::SecretKey;
 use crate::error::Error;
+use crate::nuts::nut00::BlindedMessage;
 use crate::utils::unix_time;
 use crate::Amount;
 
@@ -170,35 +171,7 @@ impl PartialOrd for Proof {
     }
 }
 
-/// Blinded Message [NUT-00]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlindedMessage {
-    /// Amount
-    pub amount: Amount,
-    /// Keyset Id
-    #[serde(rename = "id")]
-    pub keyset_id: Id,
-    /// encrypted secret message (B_)
-    #[serde(rename = "B_")]
-    pub b: PublicKey,
-    /// Witness
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Signatures::is_empty")]
-    #[serde(serialize_with = "witness_serialize")]
-    #[serde(deserialize_with = "witness_deserialize")]
-    pub witness: Signatures,
-}
-
 impl BlindedMessage {
-    pub fn new(amount: Amount, keyset_id: Id, b: PublicKey) -> Self {
-        Self {
-            amount,
-            keyset_id,
-            b,
-            witness: Signatures::default(),
-        }
-    }
-
     pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
         let msg_to_sign = hex::decode(self.b.to_string())?;
 
