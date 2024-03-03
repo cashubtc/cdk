@@ -471,6 +471,13 @@ pub struct Proof {
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,
+    #[cfg(feature = "nut11")]
+    /// Witness
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Signatures::is_empty")]
+    #[serde(serialize_with = "witness_serialize")]
+    #[serde(deserialize_with = "witness_deserialize")]
+    pub witness: Signatures,
 }
 
 impl Proof {
@@ -480,6 +487,8 @@ impl Proof {
             keyset_id,
             secret,
             c,
+            #[cfg(feature = "nut11")]
+            witness: Signatures::default(),
         }
     }
 }
