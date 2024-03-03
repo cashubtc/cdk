@@ -80,6 +80,76 @@ impl Proof {
             witness: Signatures::default(),
         }
     }
+
+    pub fn verify_p2pk(&self) -> Result<(), Error> {
+        if !self.secret.is_p2pk() {
+            return Err(Error::IncorrectSecretKind);
+        }
+
+        let secret: Secret = self.secret.clone().try_into()?;
+
+        let spending_conditions: P2PKConditions = secret.clone().try_into()?;
+
+        let mut valid_sigs = 0;
+
+        let msg = &self.secret.to_bytes();
+
+        for signature in &self.witness.signatures {
+            let mut pubkeys = spending_conditions.pubkeys.clone();
+            let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
+            pubkeys.push(data_key);
+            for v in &spending_conditions.pubkeys {
+                let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
+
+                if v.verify(msg, &sig).is_ok() {
+                    valid_sigs += 1;
+                } else {
+                    debug!(
+                        "Could not verify signature: {} on message: {}",
+                        hex::encode(sig.to_bytes()),
+                        self.secret.to_string()
+                    )
+                }
+            }
+        }
+
+        if valid_sigs.ge(&spending_conditions.num_sigs.unwrap_or(1)) {
+            return Ok(());
+        }
+
+        println!("{:?}", spending_conditions.refund_keys);
+
+        if let Some(locktime) = spending_conditions.locktime {
+            // If lock time has passed check if refund witness signature is valid
+            if locktime.lt(&unix_time()) && !spending_conditions.refund_keys.is_empty() {
+                for s in &self.witness.signatures {
+                    for v in &spending_conditions.refund_keys {
+                        let sig = Signature::try_from(hex::decode(s)?.as_slice())
+                            .map_err(|_| Error::InvalidSignature)?;
+
+                        // As long as there is one valid refund signature it can be spent
+                        if v.verify(msg, &sig).is_ok() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(Error::SpendConditionsNotMet)
+    }
+
+    pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
+        let msg_to_sign = &self.secret.to_bytes();
+
+        let signature = secret_key.sign(msg_to_sign);
+
+        self.witness
+            .signatures
+            .push(hex::encode(signature.to_bytes()));
+
+        Ok(())
+    }
 }
 
 impl hash::Hash for Proof {
@@ -129,8 +199,7 @@ impl BlindedMessage {
         }
     }
 
-    #[cfg(feature = "nut11")]
-    pub fn sign_p2pk_blinded_message(&mut self, secret_key: SigningKey) -> Result<(), Error> {
+    pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
         let msg_to_sign = hex::decode(self.b.to_string())?;
 
         let signature = secret_key.sign(&msg_to_sign);
@@ -139,6 +208,36 @@ impl BlindedMessage {
             .signatures
             .push(hex::encode(signature.to_bytes()));
         Ok(())
+    }
+
+    pub fn verify_p2pk(
+        &self,
+        pubkeys: &Vec<VerifyingKey>,
+        required_sigs: u64,
+    ) -> Result<(), Error> {
+        let mut valid_sigs = 0;
+        for signature in &self.witness.signatures {
+            for v in pubkeys {
+                let msg = &self.b.to_bytes();
+                let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
+
+                if v.verify(msg, &sig).is_ok() {
+                    valid_sigs += 1;
+                } else {
+                    debug!(
+                        "Could not verify signature: {} on message: {}",
+                        hex::encode(sig.to_bytes()),
+                        self.b.to_string()
+                    )
+                }
+            }
+        }
+
+        if valid_sigs.ge(&required_sigs) {
+            Ok(())
+        } else {
+            Err(Error::SpendConditionsNotMet)
+        }
     }
 }
 
@@ -304,78 +403,6 @@ impl TryFrom<Secret> for P2PKConditions {
             num_sigs,
             sig_flag,
         })
-    }
-}
-
-impl Proof {
-    pub fn verify_p2pk(&self) -> Result<(), Error> {
-        if !self.secret.is_p2pk() {
-            return Err(Error::IncorrectSecretKind);
-        }
-
-        let secret: Secret = self.secret.clone().try_into()?;
-
-        let spending_conditions: P2PKConditions = secret.clone().try_into()?;
-
-        let mut valid_sigs = 0;
-
-        let msg = &self.secret.to_bytes();
-
-        for signature in &self.witness.signatures {
-            let mut pubkeys = spending_conditions.pubkeys.clone();
-            let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
-            pubkeys.push(data_key);
-            for v in &spending_conditions.pubkeys {
-                let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
-
-                if v.verify(msg, &sig).is_ok() {
-                    valid_sigs += 1;
-                } else {
-                    debug!(
-                        "Could not verify signature: {} on message: {}",
-                        hex::encode(sig.to_bytes()),
-                        self.secret.to_string()
-                    )
-                }
-            }
-        }
-
-        if valid_sigs.ge(&spending_conditions.num_sigs.unwrap_or(1)) {
-            return Ok(());
-        }
-
-        println!("{:?}", spending_conditions.refund_keys);
-
-        if let Some(locktime) = spending_conditions.locktime {
-            // If lock time has passed check if refund witness signature is valid
-            if locktime.lt(&unix_time()) && !spending_conditions.refund_keys.is_empty() {
-                for s in &self.witness.signatures {
-                    for v in &spending_conditions.refund_keys {
-                        let sig = Signature::try_from(hex::decode(s)?.as_slice())
-                            .map_err(|_| Error::InvalidSignature)?;
-
-                        // As long as there is one valid refund signature it can be spent
-                        if v.verify(msg, &sig).is_ok() {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(Error::SpendConditionsNotMet)
-    }
-
-    pub fn sign_p2pk_proof(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg_to_sign = &self.secret.to_bytes();
-
-        let signature = secret_key.sign(msg_to_sign);
-
-        self.witness
-            .signatures
-            .push(hex::encode(signature.to_bytes()));
-
-        Ok(())
     }
 }
 
@@ -802,7 +829,7 @@ mod tests {
             witness: Signatures { signatures: vec![] },
         };
 
-        proof.sign_p2pk_proof(secret_key).unwrap();
+        proof.sign_p2pk(secret_key).unwrap();
 
         assert!(proof.verify_p2pk().is_ok());
     }
