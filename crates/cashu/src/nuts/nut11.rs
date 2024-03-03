@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{self, Hasher};
 use std::str::FromStr;
 
 use k256::schnorr::signature::{Signer, Verifier};
@@ -14,13 +13,11 @@ use serde::ser::SerializeSeq;
 use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-use super::nut02::Id;
 use super::nut10::{Secret, SecretData};
-use super::SecretKey;
+use super::{Proof, SecretKey};
 use crate::error::Error;
 use crate::nuts::nut00::BlindedMessage;
 use crate::utils::unix_time;
-use crate::Amount;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signatures {
@@ -33,27 +30,6 @@ impl Signatures {
     pub fn is_empty(&self) -> bool {
         self.signatures.is_empty()
     }
-}
-
-/// Proofs [NUT-11]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Proof {
-    /// Amount in satoshi
-    pub amount: Amount,
-    /// NUT-10 Secret
-    pub secret: crate::secret::Secret,
-    /// Unblinded signature
-    #[serde(rename = "C")]
-    pub c: PublicKey,
-    /// `Keyset id`
-    #[serde(rename = "id")]
-    pub keyset_id: Id,
-    /// Witness
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Signatures::is_empty")]
-    #[serde(serialize_with = "witness_serialize")]
-    #[serde(deserialize_with = "witness_deserialize")]
-    pub witness: Signatures,
 }
 
 pub fn witness_serialize<S>(x: &Signatures, s: S) -> Result<S::Ok, S::Error>
@@ -72,16 +48,6 @@ where
 }
 
 impl Proof {
-    pub fn new(amount: Amount, keyset_id: Id, secret: crate::secret::Secret, c: PublicKey) -> Self {
-        Proof {
-            amount,
-            keyset_id,
-            secret,
-            c,
-            witness: Signatures::default(),
-        }
-    }
-
     pub fn verify_p2pk(&self) -> Result<(), Error> {
         if !self.secret.is_p2pk() {
             return Err(Error::IncorrectSecretKind);
@@ -150,24 +116,6 @@ impl Proof {
             .push(hex::encode(signature.to_bytes()));
 
         Ok(())
-    }
-}
-
-impl hash::Hash for Proof {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.secret.hash(state);
-    }
-}
-
-impl Ord for Proof {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.amount.cmp(&other.amount)
-    }
-}
-
-impl PartialOrd for Proof {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -725,6 +673,8 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use crate::nuts::Id;
+    use crate::Amount;
 
     #[test]
     fn test_secret_ser() {
