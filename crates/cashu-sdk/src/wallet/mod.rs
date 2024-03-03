@@ -31,7 +31,7 @@ pub enum Error {
     #[error("Insufficient Funds")]
     InsufficientFunds,
     #[error("`{0}`")]
-    Cashu(#[from] cashu::error::wallet::Error),
+    CashuWallet(#[from] cashu::error::wallet::Error),
     #[error("`{0}`")]
     Client(#[from] crate::client::Error),
     /// Cashu Url Error
@@ -45,6 +45,8 @@ pub enum Error {
     NoActiveKeyset,
     #[error("`{0}`")]
     LocalStore(#[from] localstore::Error),
+    #[error("`{0}`")]
+    Cashu(#[from] cashu::error::Error),
     #[error("`{0}`")]
     Custom(String),
 }
@@ -795,8 +797,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
                         for pubkey in pubkeys {
                             if let Some(signing) = pubkey_secret_key.get(&pubkey.to_string()) {
-                                proof.sign_p2pk(signing.clone()).unwrap();
-                                proof.verify_p2pk().unwrap();
+                                proof.sign_p2pk(signing.clone())?;
                             }
                         }
 
