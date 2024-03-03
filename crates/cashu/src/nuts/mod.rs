@@ -17,8 +17,8 @@ pub mod nut11;
 #[cfg(feature = "wallet")]
 pub use nut00::wallet::{PreMint, PreMintSecrets, Token};
 #[cfg(not(feature = "nut11"))]
-pub use nut00::{BlindedMessage, Proof};
-pub use nut00::{BlindedSignature, CurrencyUnit, PaymentMethod};
+pub use nut00::Proof;
+pub use nut00::{BlindedMessage, BlindedSignature, CurrencyUnit, PaymentMethod};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 pub use nut02::mint::KeySet as MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
@@ -40,8 +40,6 @@ pub use nut08::{MeltBolt11Request, MeltBolt11Response};
 #[cfg(feature = "nut10")]
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
 #[cfg(feature = "nut11")]
-pub use nut11::{
-    BlindedMessage, P2PKConditions, Proof, SigFlag, Signatures, SigningKey, VerifyingKey,
-};
+pub use nut11::{P2PKConditions, Proof, SigFlag, Signatures, SigningKey, VerifyingKey};
 
 pub type Proofs = Vec<Proof>;

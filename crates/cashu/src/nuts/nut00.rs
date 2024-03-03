@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{Id, Proofs, PublicKey};
 use crate::error::Error;
+#[cfg(feature = "nut11")]
+use crate::nuts::nut11::Signatures;
+#[cfg(feature = "nut11")]
+use crate::nuts::nut11::{witness_deserialize, witness_serialize};
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
 use crate::Amount;
@@ -24,6 +28,13 @@ pub struct BlindedMessage {
     /// encrypted secret message (B_)
     #[serde(rename = "B_")]
     pub b: PublicKey,
+    /// Witness
+    #[cfg(feature = "nut11")]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Signatures::is_empty")]
+    #[serde(serialize_with = "witness_serialize")]
+    #[serde(deserialize_with = "witness_deserialize")]
+    pub witness: Signatures,
 }
 
 impl BlindedMessage {
@@ -32,6 +43,8 @@ impl BlindedMessage {
             amount,
             keyset_id,
             b,
+            #[cfg(feature = "nut11")]
+            witness: Signatures::default(),
         }
     }
 }
