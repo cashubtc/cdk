@@ -9,6 +9,8 @@ pub mod nut06;
 pub mod nut07;
 #[cfg(feature = "nut08")]
 pub mod nut08;
+#[cfg(feature = "nut09")]
+pub mod nut09;
 #[cfg(feature = "nut10")]
 pub mod nut10;
 #[cfg(feature = "nut11")]
