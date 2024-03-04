@@ -4,14 +4,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
-use bip32::{DerivationPath, XPrv};
-use bip39::Mnemonic;
 use k256::elliptic_curve::generic_array::GenericArray;
 #[cfg(feature = "nut11")]
 use k256::schnorr::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use super::{Id, KeySet};
+use super::KeySet;
 use crate::error::Error;
 use crate::Amount;
 
@@ -99,7 +97,7 @@ impl std::fmt::Display for PublicKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct SecretKey(#[serde(with = "crate::serde_utils::serde_secret_key")] k256::SecretKey);
+pub struct SecretKey(#[serde(with = "crate::serde_utils::serde_secret_key")] pub k256::SecretKey);
 
 impl From<SecretKey> for k256::SecretKey {
     fn from(value: SecretKey) -> k256::SecretKey {
@@ -134,22 +132,6 @@ impl SecretKey {
 
     pub fn public_key(&self) -> PublicKey {
         self.0.public_key().into()
-    }
-
-    // TODO: put behind feature
-    pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Self {
-        let path = DerivationPath::from_str(&format!(
-            "m/129372'/0'/{}'/{}'/1",
-            u64::from(keyset_id),
-            counter
-        ))
-        .unwrap();
-
-        let signing_key = XPrv::derive_from_path(mnemonic.to_seed(""), &path).unwrap();
-
-        let private_key = signing_key.private_key();
-
-        Self(private_key.into())
     }
 
     pub fn random() -> Self {
