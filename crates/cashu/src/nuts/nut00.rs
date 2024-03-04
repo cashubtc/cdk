@@ -116,7 +116,6 @@ pub mod wallet {
 
     use base64::engine::{general_purpose, GeneralPurpose};
     use base64::{alphabet, Engine as _};
-    use bip39::Mnemonic;
     use serde::{Deserialize, Serialize};
     use url::Url;
 
@@ -156,7 +155,7 @@ pub mod wallet {
 
     #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
     pub struct PreMintSecrets {
-        secrets: Vec<PreMint>,
+        pub secrets: Vec<PreMint>,
     }
 
     impl PreMintSecrets {
@@ -227,41 +226,6 @@ pub mod wallet {
             }
 
             Ok(PreMintSecrets { secrets: output })
-        }
-
-        /// Generate blinded messages from predetermined secrets and blindings
-        /// factor
-        /// TODO: Put behind feature
-        pub fn from_seed(
-            keyset_id: Id,
-            counter: u64,
-            mnemonic: &Mnemonic,
-            amount: Amount,
-        ) -> Result<Self, wallet::Error> {
-            let mut pre_mint_secrets = PreMintSecrets::default();
-
-            let mut counter = counter;
-
-            for amount in amount.split() {
-                let secret = Secret::from_seed(mnemonic, keyset_id, counter);
-                let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, counter);
-
-                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor.into()))?;
-
-                let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
-
-                let pre_mint = PreMint {
-                    blinded_message,
-                    secret: secret.clone(),
-                    r: r.into(),
-                    amount: Amount::ZERO,
-                };
-
-                pre_mint_secrets.secrets.push(pre_mint);
-                counter += 1;
-            }
-
-            Ok(pre_mint_secrets)
         }
 
         #[cfg(feature = "nut11")]

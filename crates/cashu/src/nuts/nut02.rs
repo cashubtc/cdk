@@ -47,12 +47,16 @@ impl Id {
     const STRLEN: usize = 14;
 }
 
-impl From<Id> for u64 {
-    fn from(value: Id) -> Self {
-        value
-            .id
-            .iter()
-            .fold(0, |acc, &byte| (acc << 8) | u64::from(byte))
+impl TryFrom<Id> for u64 {
+    type Error = Error;
+    fn try_from(value: Id) -> Result<Self, Self::Error> {
+        let hex_bytes: [u8; 8] = hex::decode(value.to_string())?
+            .try_into()
+            .map_err(|_| Error::Length)?;
+
+        let int = u64::from_be_bytes(hex_bytes);
+
+        Ok(int % (2_u64.pow(31) - 1))
     }
 }
 
@@ -405,5 +409,13 @@ mod test {
         let h = r#"{"keysets":[{"id":"009a1f293253e41e","unit":"sat","active":true},{"id":"eGnEWtdJ0PIM","unit":"sat","active":true},{"id":"003dfdf4e5e35487","unit":"sat","active":true},{"id":"0066ad1a4b6fc57c","unit":"sat","active":true},{"id":"00f7ca24d44c3e5e","unit":"sat","active":true},{"id":"001fcea2931f2d85","unit":"sat","active":true},{"id":"00d095959d940edb","unit":"sat","active":true},{"id":"000d7f730d657125","unit":"sat","active":true},{"id":"0007208d861d7295","unit":"sat","active":true},{"id":"00bfdf8889b719dd","unit":"sat","active":true},{"id":"00ca9b17da045f21","unit":"sat","active":true}]}"#;
 
         let _keyset_response: KeysetResponse = serde_json::from_str(h).unwrap();
+    }
+
+    #[test]
+    fn test_to_int() {
+        let id = Id::from_str("009a1f293253e41e").unwrap();
+
+        let id_int = u64::try_from(id).unwrap();
+        assert_eq!(864559728, id_int)
     }
 }
