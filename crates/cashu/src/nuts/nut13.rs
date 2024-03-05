@@ -11,10 +11,9 @@ impl Secret {
     pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
         let path = DerivationPath::from_str(&format!(
             "m/129372'/0'/{}'/{}'/0",
-            u64::try_from(keyset_id).unwrap(),
+            u64::try_from(keyset_id)?,
             counter
-        ))
-        .unwrap();
+        ))?;
 
         let xpriv = XPrv::derive_from_path(mnemonic.to_seed(""), &path).unwrap();
 
@@ -26,12 +25,11 @@ impl SecretKey {
     pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
         let path = DerivationPath::from_str(&format!(
             "m/129372'/0'/{}'/{}'/1",
-            u64::try_from(keyset_id).unwrap(),
+            u64::try_from(keyset_id)?,
             counter
-        ))
-        .unwrap();
+        ))?;
 
-        let signing_key = XPrv::derive_from_path(mnemonic.to_seed(""), &path).unwrap();
+        let signing_key = XPrv::derive_from_path(mnemonic.to_seed(""), &path)?;
 
         let private_key = signing_key.private_key();
 
