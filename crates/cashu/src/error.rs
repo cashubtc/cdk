@@ -55,6 +55,11 @@ pub enum Error {
     #[error("`{0}`")]
     Secret(#[from] super::secret::Error),
     #[error("`{0}`")]
+    NUT02(#[from] crate::nuts::nut02::Error),
+    #[cfg(feature = "nut13")]
+    #[error("`{0}`")]
+    Bip32(#[from] bip32::Error),
+    #[error("`{0}`")]
     ParseInt(#[from] std::num::ParseIntError),
     /// Custom error
     #[error("`{0}`")]
