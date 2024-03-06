@@ -69,7 +69,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
     /// Back up seed
     pub fn mnemonic(&self) -> Option<Mnemonic> {
-        self.mnemonic.clone().map(|b| b)
+        self.mnemonic.clone()
     }
 
     pub async fn mint_balances(&self) -> Result<HashMap<UncheckedUrl, Amount>, Error> {
@@ -306,7 +306,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
-                    &mnemonic,
+                    mnemonic,
                     quote_info.amount,
                     false,
                 )?
@@ -704,7 +704,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                     .unwrap_or(0);
 
                 counter = Some(count);
-                PreMintSecrets::from_seed(active_keyset_id, count, &mnemonic, proofs_amount, true)?
+                PreMintSecrets::from_seed(active_keyset_id, count, mnemonic, proofs_amount, true)?
             }
             None => PreMintSecrets::blank(active_keyset_id, proofs_amount)?,
         };
