@@ -212,10 +212,7 @@ impl LocalStore for MemoryLocalStore {
     }
 
     async fn add_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
-        self.keyset_counter
-            .lock()
-            .await
-            .insert(keyset_id.clone(), count);
+        self.keyset_counter.lock().await.insert(*keyset_id, count);
         Ok(())
     }
 
