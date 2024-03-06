@@ -52,22 +52,16 @@ pub enum Error {
 }
 
 #[derive(Clone, Debug)]
-pub struct BackupInfo {
-    mnemonic: Mnemonic,
-    counter: HashMap<Id, u64>,
-}
-
-#[derive(Clone, Debug)]
 pub struct Wallet<C: Client, L: LocalStore> {
     pub client: C,
     localstore: L,
-    backup_info: Option<BackupInfo>,
+    mnemonic: Option<Mnemonic>,
 }
 
 impl<C: Client, L: LocalStore> Wallet<C, L> {
-    pub async fn new(client: C, localstore: L, backup_info: Option<BackupInfo>) -> Self {
+    pub async fn new(client: C, localstore: L, mnemonic: Option<Mnemonic>) -> Self {
         Self {
-            backup_info,
+            mnemonic,
             client,
             localstore,
         }
@@ -75,12 +69,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
     /// Back up seed
     pub fn mnemonic(&self) -> Option<Mnemonic> {
-        self.backup_info.clone().map(|b| b.mnemonic)
-    }
-
-    /// Back up keyset counters
-    pub fn keyset_counters(&self) -> Option<HashMap<Id, u64>> {
-        self.backup_info.clone().map(|b| b.counter)
+        self.mnemonic.clone().map(|b| b)
     }
 
     pub async fn mint_balances(&self) -> Result<HashMap<UncheckedUrl, Amount>, Error> {
@@ -303,13 +292,25 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         let active_keyset_id = self.active_mint_keyset(&mint_url, &quote_info.unit).await?;
 
-        let premint_secrets = match &self.backup_info {
-            Some(backup_info) => PreMintSecrets::from_seed(
-                active_keyset_id,
-                *backup_info.counter.get(&active_keyset_id).unwrap_or(&0),
-                &backup_info.mnemonic,
-                quote_info.amount,
-            )?,
+        let mut counter = None;
+
+        let premint_secrets = match &self.mnemonic {
+            Some(mnemonic) => {
+                let count = self
+                    .localstore
+                    .get_keyset_counter(&active_keyset_id)
+                    .await?
+                    .unwrap_or(0);
+
+                counter = Some(count);
+                PreMintSecrets::from_seed(
+                    active_keyset_id,
+                    count,
+                    &mnemonic,
+                    quote_info.amount,
+                    false,
+                )?
+            }
             None => PreMintSecrets::random(active_keyset_id, quote_info.amount)?,
         };
 
@@ -335,6 +336,14 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
+
+        // Update counter for keyset
+        if let Some(counter) = counter {
+            let count = counter + proofs.len() as u64;
+            self.localstore
+                .add_keyset_counter(&active_keyset_id, count)
+                .await?;
+        }
 
         // Add new proofs to store
         self.localstore.add_proofs(mint_url, proofs).await?;
@@ -407,27 +416,52 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
     ) -> Result<PreSwap, Error> {
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
 
-        let pre_mint_secrets = if let Some(amount) = amount {
-            let mut desired_messages = PreMintSecrets::random(active_keyset_id, amount)?;
+        // Desired amount is either amount passwed or value of all proof
+        let proofs_total = proofs.iter().map(|p| p.amount).sum();
 
-            let change_amount = proofs.iter().map(|p| p.amount).sum::<Amount>() - amount;
+        let desired_amount = amount.unwrap_or(proofs_total);
 
-            let change_messages = PreMintSecrets::random(active_keyset_id, change_amount)?;
+        let mut counter = None;
+
+        let mut desired_messages = if let Some(mnemonic) = &self.mnemonic {
+            let count = self
+                .localstore
+                .get_keyset_counter(&active_keyset_id)
+                .await?
+                .unwrap_or(0);
+            let premint_secrets = PreMintSecrets::from_seed(
+                active_keyset_id,
+                count,
+                mnemonic,
+                desired_amount,
+                false,
+            )?;
+
+            counter = Some(count + premint_secrets.len() as u64);
+
+            premint_secrets
+        } else {
+            PreMintSecrets::random(active_keyset_id, desired_amount)?
+        };
+
+        if let (Some(amt), Some(mnemonic)) = (amount, &self.mnemonic) {
+            let change_amount = proofs_total - amt;
+
+            let change_messages = if let Some(count) = counter {
+                PreMintSecrets::from_seed(active_keyset_id, count, mnemonic, desired_amount, false)?
+            } else {
+                PreMintSecrets::random(active_keyset_id, change_amount)?
+            };
             // Combine the BlindedMessages totoalling the desired amount with change
             desired_messages.combine(change_messages);
             // Sort the premint secrets to avoid finger printing
             desired_messages.sort_secrets();
-            desired_messages
-        } else {
-            let amount = proofs.iter().map(|p| p.amount).sum();
-
-            PreMintSecrets::random(active_keyset_id, amount)?
         };
 
-        let swap_request = SwapRequest::new(proofs, pre_mint_secrets.blinded_messages());
+        let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
 
         Ok(PreSwap {
-            pre_mint_secrets,
+            pre_mint_secrets: desired_messages,
             swap_request,
         })
     }
@@ -438,6 +472,8 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         promises: Vec<BlindedSignature>,
     ) -> Result<Proofs, Error> {
         let mut proofs = vec![];
+
+        let mut proof_count: HashMap<Id, u64> = HashMap::new();
 
         for (promise, premint) in promises.iter().zip(blinded_messages) {
             let a = self
@@ -452,6 +488,10 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             let blinded_c = promise.c.clone();
 
             let unblinded_sig = unblind_message(blinded_c, premint.r.into(), a).unwrap();
+
+            let count = proof_count.get(&promise.keyset_id).unwrap_or(&0);
+            proof_count.insert(promise.keyset_id, count + 1);
+
             let proof = Proof::new(
                 promise.amount,
                 promise.keyset_id,
@@ -460,6 +500,20 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             );
 
             proofs.push(proof);
+        }
+
+        if self.mnemonic.is_some() {
+            for (keyset_id, count) in proof_count {
+                let counter = self
+                    .localstore
+                    .get_keyset_counter(&keyset_id)
+                    .await?
+                    .unwrap_or(0);
+
+                self.localstore
+                    .add_keyset_counter(&keyset_id, counter + count)
+                    .await?;
+            }
         }
 
         Ok(proofs)
@@ -637,10 +691,23 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         let proofs_amount = proofs.iter().map(|p| p.amount).sum();
 
-        let blinded = PreMintSecrets::blank(
-            self.active_mint_keyset(mint_url, &quote_info.unit).await?,
-            proofs_amount,
-        )?;
+        let mut counter = None;
+
+        let active_keyset_id = self.active_mint_keyset(mint_url, &quote_info.unit).await?;
+
+        let premint_secrets = match &self.mnemonic {
+            Some(mnemonic) => {
+                let count = self
+                    .localstore
+                    .get_keyset_counter(&active_keyset_id)
+                    .await?
+                    .unwrap_or(0);
+
+                counter = Some(count);
+                PreMintSecrets::from_seed(active_keyset_id, count, &mnemonic, proofs_amount, true)?
+            }
+            None => PreMintSecrets::blank(active_keyset_id, proofs_amount)?,
+        };
 
         let melt_response = self
             .client
@@ -648,15 +715,15 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 mint_url.clone().try_into()?,
                 quote_id.to_string(),
                 proofs.clone(),
-                Some(blinded.blinded_messages()),
+                Some(premint_secrets.blinded_messages()),
             )
             .await?;
 
         let change_proofs = match melt_response.change {
             Some(change) => Some(construct_proofs(
                 change,
-                blinded.rs(),
-                blinded.secrets(),
+                premint_secrets.rs(),
+                premint_secrets.secrets(),
                 &self.active_keys(mint_url, &quote_info.unit).await?.unwrap(),
             )?),
             None => None,
@@ -669,6 +736,14 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         };
 
         if let Some(change_proofs) = change_proofs {
+            // Update counter for keyset
+            if let Some(counter) = counter {
+                let count = counter + change_proofs.len() as u64;
+                self.localstore
+                    .add_keyset_counter(&active_keyset_id, count)
+                    .await?;
+            }
+
             self.localstore
                 .add_proofs(mint_url.clone(), change_proofs)
                 .await?;

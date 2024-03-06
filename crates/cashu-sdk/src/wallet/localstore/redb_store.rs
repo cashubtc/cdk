@@ -22,6 +22,8 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: MultimapTableDefinition<&str, &str> = MultimapTableDefinition::new("proofs");
 const PENDING_PROOFS_TABLE: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("pending_proofs");
+#[cfg(feature = "nut13")]
+const KEYSET_COUNTER: TableDefinition<&str, u64> = TableDefinition::new("keyset_counter");
 
 #[derive(Debug, Clone)]
 pub struct RedbLocalStore {
@@ -40,6 +42,8 @@ impl RedbLocalStore {
             let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
             let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
             let _ = write_txn.open_multimap_table(PROOFS_TABLE)?;
+            #[cfg(feature = "nut13")]
+            let _ = write_txn.open_table(KEYSET_COUNTER)?;
         }
         write_txn.commit()?;
 
@@ -382,5 +386,32 @@ impl LocalStore for RedbLocalStore {
         write_txn.commit()?;
 
         Ok(())
+    }
+
+    #[cfg(feature = "nut13")]
+    async fn add_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
+        let db = self.db.lock().await;
+
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(KEYSET_COUNTER)?;
+
+            table.insert(keyset_id.to_string().as_str(), count)?;
+        }
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "nut13")]
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(KEYSET_COUNTER)?;
+
+        let counter = table.get(keyset_id.to_string().as_str())?;
+
+        Ok(counter.map(|c| c.value()))
     }
 }

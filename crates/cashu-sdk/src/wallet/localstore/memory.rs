@@ -18,6 +18,8 @@ pub struct MemoryLocalStore {
     mint_keys: Arc<Mutex<HashMap<Id, Keys>>>,
     proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
     pending_proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
+    #[cfg(feature = "nut13")]
+    keyset_counter: Arc<Mutex<HashMap<Id, u64>>>,
 }
 
 impl MemoryLocalStore {
@@ -25,6 +27,7 @@ impl MemoryLocalStore {
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
         mint_keys: Vec<Keys>,
+        keyset_counter: HashMap<Id, u64>,
     ) -> Self {
         Self {
             mints: Arc::new(Mutex::new(HashMap::new())),
@@ -40,6 +43,8 @@ impl MemoryLocalStore {
             )),
             proofs: Arc::new(Mutex::new(HashMap::new())),
             pending_proofs: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "nut13")]
+            keyset_counter: Arc::new(Mutex::new(keyset_counter)),
         }
     }
 }
@@ -204,5 +209,17 @@ impl LocalStore for MemoryLocalStore {
         }
 
         Ok(())
+    }
+
+    async fn add_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
+        self.keyset_counter
+            .lock()
+            .await
+            .insert(keyset_id.clone(), count);
+        Ok(())
+    }
+
+    async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u64>, Error> {
+        Ok(self.keyset_counter.lock().await.get(id).cloned())
     }
 }

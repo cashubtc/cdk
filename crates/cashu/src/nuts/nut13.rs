@@ -55,6 +55,7 @@ mod wallet {
             counter: u64,
             mnemonic: &Mnemonic,
             amount: Amount,
+            zero_amount: bool,
         ) -> Result<Self, wallet::Error> {
             let mut pre_mint_secrets = PreMintSecrets::default();
 
@@ -66,13 +67,15 @@ mod wallet {
 
                 let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor.into()))?;
 
+                let amount = if zero_amount { Amount::ZERO } else { amount };
+
                 let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
                 let pre_mint = PreMint {
                     blinded_message,
                     secret: secret.clone(),
                     r: r.into(),
-                    amount: Amount::ZERO,
+                    amount,
                 };
 
                 pre_mint_secrets.secrets.push(pre_mint);

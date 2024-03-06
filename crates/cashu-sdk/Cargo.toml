@@ -14,11 +14,12 @@ default = ["mint", "wallet", "all-nuts", "redb"]
 mint = ["cashu/mint"]
 wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
 gloo = ["dep:gloo"]
-all-nuts = ["nut07", "nut08", "nut10", "nut11"]
+all-nuts = ["nut07", "nut08", "nut10", "nut11", "nut13"]
 nut07 = ["cashu/nut07"]
 nut08 = ["cashu/nut08"]
 nut10 = ["cashu/nut10"]
 nut11 = ["cashu/nut11"]
+nut13 = ["cashu/nut13"]
 redb = ["dep:redb"]
 
 
