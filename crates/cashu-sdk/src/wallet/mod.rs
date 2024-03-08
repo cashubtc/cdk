@@ -13,8 +13,8 @@ use cashu::nuts::nut11::SigningKey;
 #[cfg(feature = "nut07")]
 use cashu::nuts::PublicKey;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, P2PKConditions, PreMintSecrets,
-    PreSwap, Proof, Proofs, SigFlag, SwapRequest, Token,
+    BlindedSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
+    PreMintSecrets, PreSwap, Proof, Proofs, SigFlag, SwapRequest, Token,
 };
 use cashu::types::{MeltQuote, Melted, MintQuote};
 use cashu::url::UncheckedUrl;
@@ -117,7 +117,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         Ok(mint_info)
     }
 
-    pub async fn get_mint_keys(
+    pub async fn get_keyset_keys(
         &self,
         mint_url: &UncheckedUrl,
         keyset_id: Id,
@@ -136,6 +136,38 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         };
 
         Ok(keys)
+    }
+
+    pub async fn get_mint_keysets(
+        &self,
+        mint_url: &UncheckedUrl,
+    ) -> Result<Vec<KeySetInfo>, Error> {
+        let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+
+        self.localstore
+            .add_mint_keysets(mint_url.clone(), keysets.keysets.clone())
+            .await?;
+
+        Ok(keysets.keysets)
+    }
+
+    pub async fn get_active_mint_keys(
+        &self,
+        mint_url: &UncheckedUrl,
+    ) -> Result<Vec<KeySet>, Error> {
+        let keysets = self.client.get_mint_keys(mint_url.try_into()?).await?;
+
+        for keyset in keysets.clone() {
+            self.localstore.add_keys(keyset.keys).await?;
+        }
+
+        let k = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+
+        self.localstore
+            .add_mint_keysets(mint_url.clone(), k.keysets)
+            .await?;
+
+        Ok(keysets)
     }
 
     /// Check if a proof is spent
@@ -166,33 +198,6 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         Ok(spendable.states)
     }
-
-    /*
-        // TODO: This should be create token
-        // the requited proofs for the token amount may already be in the wallet and mint is not needed
-        // Mint a token
-        pub async fn mint_token(
-            &mut self,
-            mint_url: UncheckedUrl,
-            amount: Amount,
-            memo: Option<String>,
-            unit: Option<CurrencyUnit>,
-        ) -> Result<Token, Error> {
-            let quote = self
-                .mint_quote(
-                    mint_url.clone(),
-                    amount,
-                    unit.clone()
-                        .ok_or(Error::Custom("Unit required".to_string()))?,
-                )
-                .await?;
-
-            let proofs = self.mint(mint_url.clone(), &quote.id).await?;
-
-            let token = Token::new(mint_url.clone(), proofs, memo, unit);
-            Ok(token?)
-        }
-    */
 
     /// Mint Quote
     pub async fn mint_quote(
@@ -331,7 +336,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             )
             .await?;
 
-        let keys = self.get_mint_keys(&mint_url, active_keyset_id).await?;
+        let keys = self.get_keyset_keys(&mint_url, active_keyset_id).await?;
 
         let proofs = construct_proofs(
             mint_res.signatures,
@@ -378,7 +383,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             let keys = if let Some(keys) = self.localstore.get_keys(&active_keyset_id).await? {
                 keys
             } else {
-                self.get_mint_keys(&token.mint, active_keyset_id).await?;
+                self.get_keyset_keys(&token.mint, active_keyset_id).await?;
                 self.localstore.get_keys(&active_keyset_id).await?.unwrap()
             };
 
@@ -972,92 +977,93 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             self.add_mint(mint_url.clone()).await?;
         }
 
-        let active_keyset_id = &self
-            .active_mint_keyset(&mint_url, &CurrencyUnit::Sat)
-            .await?;
-        let keys = if let Some(keys) = self.localstore.get_keys(active_keyset_id).await? {
-            keys
-        } else {
-            self.get_mint_keys(&mint_url, *active_keyset_id).await?;
-            self.localstore.get_keys(active_keyset_id).await?.unwrap()
-        };
+        let keysets = self.get_mint_keysets(&mint_url).await?;
 
-        let mut empty_batch = 0;
-        let mut start_counter = 0;
         let mut restored_value = Amount::ZERO;
 
-        while empty_batch.lt(&3) {
-            let premint_secrets = PreMintSecrets::restore_batch(
-                *active_keyset_id,
-                &self.mnemonic.clone().unwrap(),
-                start_counter,
-                start_counter + 100,
-            )?;
+        for keyset in keysets {
+            let keys = self.get_keyset_keys(&mint_url, keyset.id).await?;
+            let mut empty_batch = 0;
+            let mut start_counter = 0;
 
-            debug!(
-                "Attempting to restore counter {}-{} for mint {} keyset {}",
-                start_counter,
-                start_counter + 100,
-                mint_url,
-                active_keyset_id
-            );
+            while empty_batch.lt(&3) {
+                let premint_secrets = PreMintSecrets::restore_batch(
+                    keyset.id,
+                    &self.mnemonic.clone().unwrap(),
+                    start_counter,
+                    start_counter + 100,
+                )?;
 
-            let restore_request = RestoreRequest {
-                outputs: premint_secrets.blinded_messages(),
-            };
+                debug!(
+                    "Attempting to restore counter {}-{} for mint {} keyset {}",
+                    start_counter,
+                    start_counter + 100,
+                    mint_url,
+                    keyset.id
+                );
 
-            let response = self
-                .client
-                .post_restore(mint_url.clone().try_into()?, restore_request)
-                .await
-                .unwrap();
+                let restore_request = RestoreRequest {
+                    outputs: premint_secrets.blinded_messages(),
+                };
 
-            if response.signatures.is_empty() {
-                empty_batch += 1;
-                continue;
+                let response = self
+                    .client
+                    .post_restore(mint_url.clone().try_into()?, restore_request)
+                    .await
+                    .unwrap();
+
+                if response.signatures.is_empty() {
+                    empty_batch += 1;
+                    continue;
+                }
+
+                let premint_secrets: Vec<_> = premint_secrets
+                    .secrets
+                    .iter()
+                    .filter(|p| response.outputs.contains(&p.blinded_message))
+                    .collect();
+
+                let premint_secrets: Vec<_> = premint_secrets
+                    .iter()
+                    .filter(|p| response.outputs.contains(&p.blinded_message))
+                    .collect();
+
+                // the response outputs and premint secrets should be the same after filtering
+                // blinded messages the mint did not have signatures for
+                assert_eq!(response.outputs.len(), premint_secrets.len());
+
+                let proofs = construct_proofs(
+                    response.signatures,
+                    premint_secrets.iter().map(|p| p.r.clone()).collect(),
+                    premint_secrets.iter().map(|p| p.secret.clone()).collect(),
+                    &keys,
+                )?;
+
+                self.localstore
+                    .add_keyset_counter(&keyset.id, start_counter + proofs.len() as u64)
+                    .await?;
+
+                let states = self
+                    .check_proofs_spent(mint_url.clone(), proofs.clone())
+                    .await?;
+
+                let unspent_proofs: Vec<Proof> = proofs
+                    .iter()
+                    .zip(states)
+                    .filter(|(_, state)| !state.state.eq(&State::Spent))
+                    .map(|(p, _)| p)
+                    .cloned()
+                    .collect();
+
+                restored_value += unspent_proofs.iter().map(|p| p.amount).sum();
+
+                self.localstore
+                    .add_proofs(mint_url.clone(), unspent_proofs)
+                    .await?;
+
+                empty_batch = 0;
+                start_counter += 100;
             }
-
-            let premint_secrets: Vec<_> = premint_secrets
-                .secrets
-                .iter()
-                .filter(|p| response.outputs.contains(&p.blinded_message))
-                .collect();
-
-            // the response outputs and premint secrets should be the same after filtering
-            // blinded messages the mint did not have signatures for
-            assert_eq!(response.outputs.len(), premint_secrets.len());
-
-            let proofs = construct_proofs(
-                response.signatures,
-                premint_secrets.iter().map(|p| p.r.clone()).collect(),
-                premint_secrets.iter().map(|p| p.secret.clone()).collect(),
-                &keys,
-            )?;
-
-            self.localstore
-                .add_keyset_counter(active_keyset_id, start_counter + proofs.len() as u64)
-                .await?;
-
-            let states = self
-                .check_proofs_spent(mint_url.clone(), proofs.clone())
-                .await?;
-
-            let unspent_proofs: Vec<Proof> = proofs
-                .iter()
-                .zip(states)
-                .filter(|(_, state)| !state.state.eq(&State::Spent))
-                .map(|(p, _)| p)
-                .cloned()
-                .collect();
-
-            restored_value += unspent_proofs.iter().map(|p| p.amount).sum();
-
-            self.localstore
-                .add_proofs(mint_url.clone(), unspent_proofs)
-                .await?;
-
-            empty_batch = 0;
-            start_counter += 100;
         }
         Ok(restored_value)
     }

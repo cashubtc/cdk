@@ -27,12 +27,12 @@ pub struct HttpClient {}
 
 #[async_trait(?Send)]
 impl Client for HttpClient {
-    /// Get Mint Keys [NUT-01]
+    /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
         let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = minreq::get(url).send()?.json::<Value>()?;
 
-        let keys: KeysResponse = serde_json::from_str(&keys.to_string())?;
+        let keys: KeysResponse = serde_json::from_value(keys)?;
         Ok(keys.keysets)
     }
 
