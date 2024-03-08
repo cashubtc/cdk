@@ -115,9 +115,11 @@ impl<'de> serde::de::Deserialize<'de> for Id {
             {
                 Id::from_str(v).map_err(|e| match e {
                     Error::Length => E::custom(format!(
-                        "Invalid Length: Expected {}, got {}",
+                        "Invalid Length: Expected {}, got {}:
+                        {}",
                         Id::STRLEN,
-                        v.len()
+                        v.len(),
+                        v
                     )),
                     Error::HexError(e) => E::custom(e),
                 })
