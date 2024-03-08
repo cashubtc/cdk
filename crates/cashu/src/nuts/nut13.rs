@@ -84,6 +84,37 @@ mod wallet {
 
             Ok(pre_mint_secrets)
         }
+
+        /// Generate blinded messages from predetermined secrets and blindings
+        /// factor
+        pub fn restore_batch(
+            keyset_id: Id,
+            mnemonic: &Mnemonic,
+            start_count: u64,
+            end_count: u64,
+        ) -> Result<Self, wallet::Error> {
+            let mut pre_mint_secrets = PreMintSecrets::default();
+
+            for i in start_count..end_count {
+                let secret = Secret::from_seed(mnemonic, keyset_id, i)?;
+                let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, i)?;
+
+                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor.into()))?;
+
+                let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+
+                let pre_mint = PreMint {
+                    blinded_message,
+                    secret: secret.clone(),
+                    r: r.into(),
+                    amount: Amount::ZERO,
+                };
+
+                pre_mint_secrets.secrets.push(pre_mint);
+            }
+
+            Ok(pre_mint_secrets)
+        }
     }
 }
 

@@ -1,6 +1,8 @@
 //! gloo wasm http Client
 
 use async_trait::async_trait;
+#[cfg(feature = "nut09")]
+use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
 use cashu::nuts::{
     BlindedMessage, MeltBolt11Request, MeltBolt11Response, MintBolt11Request, MintBolt11Response,
     MintInfo, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
@@ -248,6 +250,34 @@ impl Client for HttpClient {
             .map_err(|err| Error::Gloo(err.to_string()))?;
 
         let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(Error::from_json(&res.to_string())?),
+        }
+    }
+
+    /// Restore [NUT-09]
+    #[cfg(feature = "nut09")]
+    async fn post_check_state(
+        &self,
+        mint_url: Url,
+        request: RestoreRequest,
+    ) -> Result<CheckStateResponse, Error> {
+        let url = join_url(mint_url, &["v1", "check"])?;
+
+        let res = Request::post(url.as_str())
+            .json(&request)
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .send()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?
+            .json::<Value>()
+            .await
+            .map_err(|err| Error::Gloo(err.to_string()))?;
+
+        let response: Result<RestoreRequest, serde_json::Error> =
+            serde_json::from_value(res.clone());
 
         match response {
             Ok(res) => Ok(res),

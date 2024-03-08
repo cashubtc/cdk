@@ -2,6 +2,8 @@
 
 use async_trait::async_trait;
 use cashu::error::ErrorResponse;
+#[cfg(feature = "nut09")]
+use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckStateResponse;
 #[cfg(feature = "nut07")]
@@ -111,6 +113,13 @@ pub trait Client {
     ) -> Result<CheckStateResponse, Error>;
 
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error>;
+
+    #[cfg(feature = "nut09")]
+    async fn post_restore(
+        &self,
+        mint_url: Url,
+        restore_request: RestoreRequest,
+    ) -> Result<RestoreResponse, Error>;
 }
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "gloo"))]

@@ -31,10 +31,10 @@ pub struct BlindedMessage {
     /// Witness
     #[cfg(feature = "nut11")]
     #[serde(default)]
-    #[serde(skip_serializing_if = "Signatures::is_empty")]
-    #[serde(serialize_with = "witness_serialize")]
-    #[serde(deserialize_with = "witness_deserialize")]
-    pub witness: Signatures,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    //#[serde(serialize_with = "witness_serialize")]
+    //#[serde(deserialize_with = "witness_deserialize")]
+    pub witness: Option<Signatures>,
 }
 
 impl BlindedMessage {
@@ -44,7 +44,7 @@ impl BlindedMessage {
             keyset_id,
             b,
             #[cfg(feature = "nut11")]
-            witness: Signatures::default(),
+            witness: None,
         }
     }
 }
@@ -437,11 +437,12 @@ pub struct Proof {
     pub c: PublicKey,
     #[cfg(feature = "nut11")]
     /// Witness
+    #[cfg(feature = "nut11")]
     #[serde(default)]
-    #[serde(skip_serializing_if = "Signatures::is_empty")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(serialize_with = "witness_serialize")]
     #[serde(deserialize_with = "witness_deserialize")]
-    pub witness: Signatures,
+    pub witness: Option<Signatures>,
 }
 
 impl Proof {
@@ -452,7 +453,7 @@ impl Proof {
             secret,
             c,
             #[cfg(feature = "nut11")]
-            witness: Signatures::default(),
+            witness: None,
         }
     }
 }

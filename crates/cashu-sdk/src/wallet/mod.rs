@@ -6,6 +6,9 @@ use bip39::Mnemonic;
 use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut07::ProofState;
+use cashu::nuts::nut07::State;
+#[cfg(feature = "nut09")]
+use cashu::nuts::nut09::RestoreRequest;
 use cashu::nuts::nut11::SigningKey;
 #[cfg(feature = "nut07")]
 use cashu::nuts::PublicKey;
@@ -18,7 +21,7 @@ use cashu::url::UncheckedUrl;
 use cashu::{Amount, Bolt11Invoice};
 use localstore::LocalStore;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::client::Client;
 use crate::utils::unix_time;
@@ -299,8 +302,13 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 let count = self
                     .localstore
                     .get_keyset_counter(&active_keyset_id)
-                    .await?
-                    .unwrap_or(0);
+                    .await?;
+
+                let count = if let Some(count) = count {
+                    count + 1
+                } else {
+                    0
+                };
 
                 counter = Some(count);
                 PreMintSecrets::from_seed(
@@ -427,8 +435,14 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             let count = self
                 .localstore
                 .get_keyset_counter(&active_keyset_id)
-                .await?
-                .unwrap_or(0);
+                .await?;
+
+            let count = if let Some(count) = count {
+                count + 1
+            } else {
+                0
+            };
+
             let premint_secrets = PreMintSecrets::from_seed(
                 active_keyset_id,
                 count,
@@ -444,11 +458,11 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             PreMintSecrets::random(active_keyset_id, desired_amount)?
         };
 
-        if let (Some(amt), Some(mnemonic)) = (amount, &self.mnemonic) {
+        if let Some(amt) = amount {
             let change_amount = proofs_total - amt;
 
-            let change_messages = if let Some(count) = counter {
-                PreMintSecrets::from_seed(active_keyset_id, count, mnemonic, desired_amount, false)?
+            let change_messages = if let (Some(count), Some(mnemonic)) = (counter, &self.mnemonic) {
+                PreMintSecrets::from_seed(active_keyset_id, count, mnemonic, change_amount, false)?
             } else {
                 PreMintSecrets::random(active_keyset_id, change_amount)?
             };
@@ -546,6 +560,22 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             pre_swap.pre_mint_secrets.secrets(),
             &self.active_keys(mint_url, unit).await?.unwrap(),
         )?;
+
+        let active_keyset = self.active_mint_keyset(mint_url, unit).await?;
+
+        if self.mnemonic.is_some() {
+            let count = self
+                .localstore
+                .get_keyset_counter(&active_keyset)
+                .await?
+                .unwrap_or(0);
+
+            let new_count = count + post_swap_proofs.len() as u64;
+
+            self.localstore
+                .add_keyset_counter(&active_keyset, new_count)
+                .await?;
+        }
 
         post_swap_proofs.reverse();
 
@@ -700,8 +730,13 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 let count = self
                     .localstore
                     .get_keyset_counter(&active_keyset_id)
-                    .await?
-                    .unwrap_or(0);
+                    .await?;
+
+                let count = if let Some(count) = count {
+                    count + 1
+                } else {
+                    0
+                };
 
                 counter = Some(count);
                 PreMintSecrets::from_seed(active_keyset_id, count, mnemonic, proofs_amount, true)?
@@ -929,6 +964,102 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         unit: Option<CurrencyUnit>,
     ) -> Result<String, Error> {
         Ok(Token::new(mint_url, proofs, memo, unit)?.to_string())
+    }
+
+    pub async fn restore(&mut self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
+        // Check that mint is in store of mints
+        if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
+            self.add_mint(mint_url.clone()).await?;
+        }
+
+        let active_keyset_id = &self
+            .active_mint_keyset(&mint_url, &CurrencyUnit::Sat)
+            .await?;
+        let keys = if let Some(keys) = self.localstore.get_keys(&active_keyset_id).await? {
+            keys
+        } else {
+            self.get_mint_keys(&mint_url, *active_keyset_id).await?;
+            self.localstore.get_keys(&active_keyset_id).await?.unwrap()
+        };
+
+        let mut empty_batch = 0;
+        let mut start_counter = 0;
+        let mut restored_value = Amount::ZERO;
+
+        while empty_batch.lt(&3) {
+            let premint_secrets = PreMintSecrets::restore_batch(
+                *active_keyset_id,
+                &self.mnemonic.clone().unwrap(),
+                start_counter,
+                start_counter + 100,
+            )?;
+
+            debug!(
+                "Attempting to restore counter {}-{} for mint {} keyset {}",
+                start_counter,
+                start_counter + 100,
+                mint_url,
+                active_keyset_id
+            );
+
+            let restore_request = RestoreRequest {
+                outputs: premint_secrets.blinded_messages(),
+            };
+
+            let response = self
+                .client
+                .post_restore(mint_url.clone().try_into()?, restore_request)
+                .await
+                .unwrap();
+
+            if response.signatures.is_empty() {
+                empty_batch += 1;
+                continue;
+            }
+
+            let premint_secrets: Vec<_> = premint_secrets
+                .secrets
+                .iter()
+                .filter(|p| response.outputs.contains(&p.blinded_message))
+                .collect();
+
+            // the response outputs and premint secrets should be the same after filtering
+            // blinded messages the mint did not have signatures for
+            assert_eq!(response.outputs.len(), premint_secrets.len());
+
+            let proofs = construct_proofs(
+                response.signatures,
+                premint_secrets.iter().map(|p| p.r.clone()).collect(),
+                premint_secrets.iter().map(|p| p.secret.clone()).collect(),
+                &keys,
+            )?;
+
+            self.localstore
+                .add_keyset_counter(active_keyset_id, start_counter + proofs.len() as u64)
+                .await?;
+
+            let states = self
+                .check_proofs_spent(mint_url.clone(), proofs.clone())
+                .await?;
+
+            let unspent_proofs: Vec<Proof> = proofs
+                .iter()
+                .zip(states)
+                .filter(|(_, state)| !state.state.eq(&State::Spent))
+                .map(|(p, _)| p)
+                .cloned()
+                .collect();
+
+            restored_value += unspent_proofs.iter().map(|p| p.amount).sum();
+
+            self.localstore
+                .add_proofs(mint_url.clone(), unspent_proofs)
+                .await?;
+
+            empty_batch = 0;
+            start_counter += 100;
+        }
+        Ok(restored_value)
     }
 }
 
