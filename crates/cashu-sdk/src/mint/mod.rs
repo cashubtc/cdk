@@ -61,6 +61,8 @@ pub enum Error {
     UnknownSecretKind,
     #[error("Cannot have multiple units")]
     MultipleUnits,
+    #[error("Blinded Message is already signed")]
+    BlindedMessageAlreadySigned,
 }
 
 impl From<Error> for ErrorResponse {
@@ -282,6 +284,17 @@ impl Mint {
         &mut self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
+        for blinded_message in &mint_request.outputs {
+            if self
+                .localstore
+                .get_blinded_signature(&blinded_message.b)
+                .await?
+                .is_some()
+            {
+                return Err(Error::BlindedMessageAlreadySigned);
+            }
+        }
+
         let quote = self
             .localstore
             .get_mint_quote(&mint_request.quote)
@@ -295,7 +308,11 @@ impl Mint {
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
         for blinded_message in mint_request.outputs {
-            blind_signatures.push(self.blind_sign(&blinded_message).await?);
+            let blinded_signature = self.blind_sign(&blinded_message).await?;
+            self.localstore
+                .add_blinded_signature(blinded_message.b, blinded_signature.clone())
+                .await?;
+            blind_signatures.push(blinded_signature);
         }
 
         Ok(nut04::MintBolt11Response {
@@ -349,6 +366,17 @@ impl Mint {
         &mut self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        for blinded_message in &swap_request.outputs {
+            if self
+                .localstore
+                .get_blinded_signature(&blinded_message.b)
+                .await?
+                .is_some()
+            {
+                return Err(Error::BlindedMessageAlreadySigned);
+            }
+        }
+
         let proofs_total = swap_request.input_amount();
 
         let output_total = swap_request.output_amount();
@@ -416,9 +444,12 @@ impl Mint {
 
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
 
-        for output in swap_request.outputs {
-            let promise = self.blind_sign(&output).await?;
-            promises.push(promise);
+        for blinded_message in swap_request.outputs {
+            let blinded_signature = self.blind_sign(&blinded_message).await?;
+            self.localstore
+                .add_blinded_signature(blinded_message.b, blinded_signature.clone())
+                .await?;
+            promises.push(blinded_signature);
         }
 
         Ok(SwapResponse::new(promises))
@@ -619,6 +650,19 @@ impl Mint {
     ) -> Result<MeltBolt11Response, Error> {
         self.verify_melt_request(melt_request).await?;
 
+        if let Some(outputs) = &melt_request.outputs {
+            for blinded_message in outputs {
+                if self
+                    .localstore
+                    .get_blinded_signature(&blinded_message.b)
+                    .await?
+                    .is_some()
+                {
+                    return Err(Error::BlindedMessageAlreadySigned);
+                }
+            }
+        }
+
         for input in &melt_request.inputs {
             self.localstore.add_spent_proof(input.clone()).await?;
         }
@@ -647,8 +691,11 @@ impl Mint {
                 let mut blinded_message = blinded_message;
                 blinded_message.amount = *amount;
 
-                let signature = self.blind_sign(&blinded_message).await?;
-                change_sigs.push(signature)
+                let blinded_signature = self.blind_sign(&blinded_message).await?;
+                self.localstore
+                    .add_blinded_signature(blinded_message.b, blinded_signature.clone())
+                    .await?;
+                change_sigs.push(blinded_signature)
             }
 
             change = Some(change_sigs);
