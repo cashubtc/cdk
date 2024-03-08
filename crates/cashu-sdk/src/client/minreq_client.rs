@@ -2,6 +2,8 @@
 
 use async_trait::async_trait;
 use cashu::error::ErrorResponse;
+#[cfg(feature = "nut09")]
+use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
 #[cfg(feature = "nut07")]
 use cashu::nuts::PublicKey;
 use cashu::nuts::{
@@ -215,6 +217,28 @@ impl Client for HttpClient {
         let res = minreq::get(url).send()?.json::<Value>()?;
 
         let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
+        }
+    }
+
+    #[cfg(feature = "nut09")]
+    async fn post_restore(
+        &self,
+        mint_url: Url,
+        request: RestoreRequest,
+    ) -> Result<RestoreResponse, Error> {
+        let url = join_url(mint_url, &["v1", "restore"])?;
+
+        let res = minreq::post(url)
+            .with_json(&request)?
+            .send()?
+            .json::<Value>()?;
+
+        let response: Result<RestoreResponse, serde_json::Error> =
+            serde_json::from_value(res.clone());
 
         match response {
             Ok(res) => Ok(res),

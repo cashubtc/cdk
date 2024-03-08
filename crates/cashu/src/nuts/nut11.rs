@@ -32,14 +32,14 @@ impl Signatures {
     }
 }
 
-pub fn witness_serialize<S>(x: &Signatures, s: S) -> Result<S::Ok, S::Error>
+pub fn witness_serialize<S>(x: &Option<Signatures>, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    s.serialize_str(&serde_json::to_string(x).map_err(ser::Error::custom)?)
+    s.serialize_str(&serde_json::to_string(&x).map_err(ser::Error::custom)?)
 }
 
-pub fn witness_deserialize<'de, D>(deserializer: D) -> Result<Signatures, D::Error>
+pub fn witness_deserialize<'de, D>(deserializer: D) -> Result<Option<Signatures>, D::Error>
 where
     D: de::Deserializer<'de>,
 {
@@ -60,22 +60,23 @@ impl Proof {
         let mut valid_sigs = 0;
 
         let msg = &self.secret.to_bytes();
+        if let Some(witness) = &self.witness {
+            for signature in &witness.signatures {
+                let mut pubkeys = spending_conditions.pubkeys.clone();
+                let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
+                pubkeys.push(data_key);
+                for v in &spending_conditions.pubkeys {
+                    let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
 
-        for signature in &self.witness.signatures {
-            let mut pubkeys = spending_conditions.pubkeys.clone();
-            let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
-            pubkeys.push(data_key);
-            for v in &spending_conditions.pubkeys {
-                let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
-
-                if v.verify(msg, &sig).is_ok() {
-                    valid_sigs += 1;
-                } else {
-                    debug!(
-                        "Could not verify signature: {} on message: {}",
-                        hex::encode(sig.to_bytes()),
-                        self.secret.to_string()
-                    )
+                    if v.verify(msg, &sig).is_ok() {
+                        valid_sigs += 1;
+                    } else {
+                        debug!(
+                            "Could not verify signature: {} on message: {}",
+                            hex::encode(sig.to_bytes()),
+                            self.secret.to_string()
+                        )
+                    }
                 }
             }
         }
@@ -84,19 +85,19 @@ impl Proof {
             return Ok(());
         }
 
-        println!("{:?}", spending_conditions.refund_keys);
-
         if let Some(locktime) = spending_conditions.locktime {
             // If lock time has passed check if refund witness signature is valid
             if locktime.lt(&unix_time()) && !spending_conditions.refund_keys.is_empty() {
-                for s in &self.witness.signatures {
-                    for v in &spending_conditions.refund_keys {
-                        let sig = Signature::try_from(hex::decode(s)?.as_slice())
-                            .map_err(|_| Error::InvalidSignature)?;
+                if let Some(signatures) = &self.witness {
+                    for s in &signatures.signatures {
+                        for v in &spending_conditions.refund_keys {
+                            let sig = Signature::try_from(hex::decode(s)?.as_slice())
+                                .map_err(|_| Error::InvalidSignature)?;
 
-                        // As long as there is one valid refund signature it can be spent
-                        if v.verify(msg, &sig).is_ok() {
-                            return Ok(());
+                            // As long as there is one valid refund signature it can be spent
+                            if v.verify(msg, &sig).is_ok() {
+                                return Ok(());
+                            }
                         }
                     }
                 }
@@ -112,6 +113,8 @@ impl Proof {
         let signature = secret_key.sign(msg_to_sign);
 
         self.witness
+            .as_mut()
+            .unwrap_or(&mut Signatures::default())
             .signatures
             .push(hex::encode(signature.to_bytes()));
 
@@ -126,8 +129,11 @@ impl BlindedMessage {
         let signature = secret_key.sign(&msg_to_sign);
 
         self.witness
+            .as_mut()
+            .unwrap_or(&mut Signatures::default())
             .signatures
             .push(hex::encode(signature.to_bytes()));
+
         Ok(())
     }
 
@@ -137,19 +143,21 @@ impl BlindedMessage {
         required_sigs: u64,
     ) -> Result<(), Error> {
         let mut valid_sigs = 0;
-        for signature in &self.witness.signatures {
-            for v in pubkeys {
-                let msg = &self.b.to_bytes();
-                let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
+        if let Some(witness) = &self.witness {
+            for signature in &witness.signatures {
+                for v in pubkeys {
+                    let msg = &self.b.to_bytes();
+                    let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
 
-                if v.verify(msg, &sig).is_ok() {
-                    valid_sigs += 1;
-                } else {
-                    debug!(
-                        "Could not verify signature: {} on message: {}",
-                        hex::encode(sig.to_bytes()),
-                        self.b.to_string()
-                    )
+                    if v.verify(msg, &sig).is_ok() {
+                        valid_sigs += 1;
+                    } else {
+                        debug!(
+                            "Could not verify signature: {} on message: {}",
+                            hex::encode(sig.to_bytes()),
+                            self.b.to_string()
+                        )
+                    }
                 }
             }
         }
@@ -749,7 +757,7 @@ mod tests {
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
-            witness: Signatures { signatures: vec![] },
+            witness: Some(Signatures { signatures: vec![] }),
         };
 
         proof.sign_p2pk(secret_key).unwrap();
