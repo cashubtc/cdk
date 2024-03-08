@@ -975,11 +975,11 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         let active_keyset_id = &self
             .active_mint_keyset(&mint_url, &CurrencyUnit::Sat)
             .await?;
-        let keys = if let Some(keys) = self.localstore.get_keys(&active_keyset_id).await? {
+        let keys = if let Some(keys) = self.localstore.get_keys(active_keyset_id).await? {
             keys
         } else {
             self.get_mint_keys(&mint_url, *active_keyset_id).await?;
-            self.localstore.get_keys(&active_keyset_id).await?.unwrap()
+            self.localstore.get_keys(active_keyset_id).await?.unwrap()
         };
 
         let mut empty_batch = 0;
