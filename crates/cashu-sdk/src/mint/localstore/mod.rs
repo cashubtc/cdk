@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof, PublicKey};
+use cashu::nuts::{BlindedSignature, CurrencyUnit, Id, MintInfo, Proof, PublicKey};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 pub use memory::MemoryLocalStore;
@@ -78,4 +78,14 @@ pub trait LocalStore {
     async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
     async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error>;
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error>;
+
+    async fn add_blinded_signature(
+        &self,
+        blinded_message: PublicKey,
+        blinded_signature: BlindedSignature,
+    ) -> Result<(), Error>;
+    async fn get_blinded_signature(
+        &self,
+        blinded_message: &PublicKey,
+    ) -> Result<Option<BlindedSignature>, Error>;
 }

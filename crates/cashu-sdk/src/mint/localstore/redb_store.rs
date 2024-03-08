@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cashu::dhke::hash_to_curve;
-use cashu::nuts::{CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey};
+use cashu::nuts::{
+    BlindedSignature, CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey,
+};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -20,6 +22,8 @@ const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mel
 const PENDING_PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("pending_proofs");
 const SPENT_PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("spent_proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
+// Key is hex blinded_message B_ value is blinded_signature
+const BLINDED_SIGNATURES: TableDefinition<&str, &str> = TableDefinition::new("blinded_signatures");
 
 #[derive(Debug, Clone)]
 pub struct RedbLocalStore {
@@ -39,6 +43,7 @@ impl RedbLocalStore {
             let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
             let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
             let _ = write_txn.open_table(CONFIG_TABLE)?;
+            let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
         }
         write_txn.commit()?;
 
@@ -390,5 +395,41 @@ impl LocalStore for RedbLocalStore {
         write_txn.commit()?;
 
         Ok(())
+    }
+
+    async fn add_blinded_signature(
+        &self,
+        blinded_message: PublicKey,
+        blinded_signature: BlindedSignature,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().await;
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(BLINDED_SIGNATURES)?;
+            table.insert(
+                blinded_message.to_string().as_str(),
+                serde_json::to_string(&blinded_signature)?.as_str(),
+            )?;
+        }
+
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
+    async fn get_blinded_signature(
+        &self,
+        blinded_message: &PublicKey,
+    ) -> Result<Option<BlindedSignature>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(BLINDED_SIGNATURES)?;
+
+        if let Some(blinded_signature) = table.get(blinded_message.to_string().as_str())? {
+            return Ok(serde_json::from_str(blinded_signature.value())?);
+        }
+
+        Ok(None)
     }
 }

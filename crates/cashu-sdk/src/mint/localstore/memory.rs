@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cashu::dhke::hash_to_curve;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
+use cashu::nuts::{BlindedSignature, CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use tokio::sync::Mutex;
@@ -20,9 +20,11 @@ pub struct MemoryLocalStore {
     melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
     pending_proofs: Arc<Mutex<HashMap<Vec<u8>, Proof>>>,
     spent_proofs: Arc<Mutex<HashMap<Vec<u8>, Proof>>>,
+    blinded_signatures: Arc<Mutex<HashMap<String, BlindedSignature>>>,
 }
 
 impl MemoryLocalStore {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mint_info: MintInfo,
         active_keysets: HashMap<CurrencyUnit, Id>,
@@ -31,6 +33,7 @@ impl MemoryLocalStore {
         melt_quotes: Vec<MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
+        blinded_signatures: HashMap<String, BlindedSignature>,
     ) -> Result<Self, Error> {
         Ok(Self {
             mint_info: Arc::new(Mutex::new(mint_info)),
@@ -70,6 +73,7 @@ impl MemoryLocalStore {
                     })
                     .collect(),
             )),
+            blinded_signatures: Arc::new(Mutex::new(blinded_signatures)),
         })
     }
 }
@@ -217,5 +221,28 @@ impl LocalStore for MemoryLocalStore {
             .await
             .remove(&secret_point.to_sec1_bytes().to_vec());
         Ok(())
+    }
+
+    async fn add_blinded_signature(
+        &self,
+        blinded_message: PublicKey,
+        blinded_signature: BlindedSignature,
+    ) -> Result<(), Error> {
+        self.blinded_signatures
+            .lock()
+            .await
+            .insert(blinded_message.to_string(), blinded_signature);
+        Ok(())
+    }
+    async fn get_blinded_signature(
+        &self,
+        blinded_message: &PublicKey,
+    ) -> Result<Option<BlindedSignature>, Error> {
+        Ok(self
+            .blinded_signatures
+            .lock()
+            .await
+            .get(&blinded_message.to_string())
+            .cloned())
     }
 }
