@@ -39,6 +39,8 @@ pub use nut06::{MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse};
 #[cfg(feature = "nut08")]
 pub use nut08::{MeltBolt11Request, MeltBolt11Response};
+#[cfg(feature = "nut09")]
+pub use nut09::{RestoreRequest, RestoreResponse};
 #[cfg(feature = "nut10")]
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
 #[cfg(feature = "nut11")]

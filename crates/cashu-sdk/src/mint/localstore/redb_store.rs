@@ -23,7 +23,7 @@ const PENDING_PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new(
 const SPENT_PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("spent_proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 // Key is hex blinded_message B_ value is blinded_signature
-const BLINDED_SIGNATURES: TableDefinition<&str, &str> = TableDefinition::new("blinded_signatures");
+const BLINDED_SIGNATURES: TableDefinition<&[u8], &str> = TableDefinition::new("blinded_signatures");
 
 #[derive(Debug, Clone)]
 pub struct RedbLocalStore {
@@ -408,7 +408,7 @@ impl LocalStore for RedbLocalStore {
         {
             let mut table = write_txn.open_table(BLINDED_SIGNATURES)?;
             table.insert(
-                blinded_message.to_string().as_str(),
+                blinded_message.to_bytes().as_ref(),
                 serde_json::to_string(&blinded_signature)?.as_str(),
             )?;
         }
@@ -426,10 +426,29 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(BLINDED_SIGNATURES)?;
 
-        if let Some(blinded_signature) = table.get(blinded_message.to_string().as_str())? {
+        if let Some(blinded_signature) = table.get(blinded_message.to_bytes().as_ref())? {
             return Ok(serde_json::from_str(blinded_signature.value())?);
         }
 
         Ok(None)
+    }
+
+    async fn get_blinded_signatures(
+        &self,
+        blinded_messages: Vec<PublicKey>,
+    ) -> Result<Vec<Option<BlindedSignature>>, Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(BLINDED_SIGNATURES)?;
+
+        let mut signatures = Vec::with_capacity(blinded_messages.len());
+
+        for blinded_message in blinded_messages {
+            if let Some(blinded_signature) = table.get(blinded_message.to_bytes().as_ref())? {
+                signatures.push(Some(serde_json::from_str(blinded_signature.value())?))
+            }
+        }
+
+        Ok(signatures)
     }
 }

@@ -79,6 +79,12 @@ impl PublicKey {
     }
 }
 
+impl From<PublicKey> for Box<[u8]> {
+    fn from(pubkey: PublicKey) -> Box<[u8]> {
+        pubkey.to_bytes()
+    }
+}
+
 impl FromStr for PublicKey {
     type Err = Error;
 
