@@ -17,6 +17,7 @@ pub struct RestoreResponse {
     /// Outputs
     pub outputs: Vec<BlindedMessage>,
     /// Signatures
+    // TODO: remove rename just for temp compatanlite with nutshell
     #[serde(rename = "promises")]
     pub signatures: Vec<BlindedSignature>,
 }

@@ -732,6 +732,35 @@ impl Mint {
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
         Ok(self.localstore.get_mint_info().await?)
     }
+
+    #[cfg(feature = "nut09")]
+    pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        let output_len = request.outputs.len();
+
+        let mut outputs = Vec::with_capacity(output_len);
+        let mut signatures = Vec::with_capacity(output_len);
+
+        let blinded_message = request.outputs.iter().map(|b| b.b.clone()).collect();
+
+        let blinded_signatures = self
+            .localstore
+            .get_blinded_signatures(blinded_message)
+            .await?;
+
+        for (blinded_message, blinded_signature) in
+            request.outputs.into_iter().zip(blinded_signatures)
+        {
+            if let Some(blinded_signature) = blinded_signature {
+                outputs.push(blinded_message);
+                signatures.push(blinded_signature);
+            }
+        }
+
+        Ok(RestoreResponse {
+            outputs,
+            signatures,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

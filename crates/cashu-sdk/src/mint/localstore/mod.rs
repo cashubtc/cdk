@@ -88,4 +88,8 @@ pub trait LocalStore {
         &self,
         blinded_message: &PublicKey,
     ) -> Result<Option<BlindedSignature>, Error>;
+    async fn get_blinded_signatures(
+        &self,
+        blinded_messages: Vec<PublicKey>,
+    ) -> Result<Vec<Option<BlindedSignature>>, Error>;
 }

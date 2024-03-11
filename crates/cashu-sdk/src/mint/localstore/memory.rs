@@ -20,7 +20,7 @@ pub struct MemoryLocalStore {
     melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
     pending_proofs: Arc<Mutex<HashMap<Vec<u8>, Proof>>>,
     spent_proofs: Arc<Mutex<HashMap<Vec<u8>, Proof>>>,
-    blinded_signatures: Arc<Mutex<HashMap<String, BlindedSignature>>>,
+    blinded_signatures: Arc<Mutex<HashMap<Box<[u8]>, BlindedSignature>>>,
 }
 
 impl MemoryLocalStore {
@@ -33,7 +33,7 @@ impl MemoryLocalStore {
         melt_quotes: Vec<MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
-        blinded_signatures: HashMap<String, BlindedSignature>,
+        blinded_signatures: HashMap<Box<[u8]>, BlindedSignature>,
     ) -> Result<Self, Error> {
         Ok(Self {
             mint_info: Arc::new(Mutex::new(mint_info)),
@@ -231,9 +231,10 @@ impl LocalStore for MemoryLocalStore {
         self.blinded_signatures
             .lock()
             .await
-            .insert(blinded_message.to_string(), blinded_signature);
+            .insert(blinded_message.to_bytes(), blinded_signature);
         Ok(())
     }
+
     async fn get_blinded_signature(
         &self,
         blinded_message: &PublicKey,
@@ -242,7 +243,24 @@ impl LocalStore for MemoryLocalStore {
             .blinded_signatures
             .lock()
             .await
-            .get(&blinded_message.to_string())
+            .get(&blinded_message.to_bytes())
             .cloned())
+    }
+
+    async fn get_blinded_signatures(
+        &self,
+        blinded_messages: Vec<PublicKey>,
+    ) -> Result<Vec<Option<BlindedSignature>>, Error> {
+        let mut signatures = Vec::with_capacity(blinded_messages.len());
+
+        let blinded_signatures = self.blinded_signatures.lock().await;
+
+        for blinded_message in blinded_messages {
+            let signature = blinded_signatures.get(&blinded_message.to_bytes()).cloned();
+
+            signatures.push(signature)
+        }
+
+        Ok(signatures)
     }
 }
