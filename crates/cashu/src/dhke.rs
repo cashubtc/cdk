@@ -93,21 +93,21 @@ mod wallet {
         keys: &Keys,
     ) -> Result<Proofs, error::wallet::Error> {
         let mut proofs = vec![];
-        for (i, promise) in promises.into_iter().enumerate() {
-            let blinded_c = promise.c;
+        for ((blinded_signature, r), secret) in promises.into_iter().zip(rs).zip(secrets) {
+            let blinded_c = blinded_signature.c;
             let a: PublicKey = keys
-                .amount_key(promise.amount)
+                .amount_key(blinded_signature.amount)
                 .ok_or(error::wallet::Error::CustomError(
                     "Could not get proofs".to_string(),
                 ))?
                 .to_owned();
 
-            let unblinded_signature = unblind_message(blinded_c, rs[i].clone().into(), a)?;
+            let unblinded_signature = unblind_message(blinded_c, r.into(), a)?;
 
             let proof = Proof::new(
-                promise.amount,
-                promise.keyset_id,
-                secrets[i].clone(),
+                blinded_signature.amount,
+                blinded_signature.keyset_id,
+                secret,
                 unblinded_signature,
             );
 
