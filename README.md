@@ -20,13 +20,8 @@ Experimental for this project can be found in the [cashu-crab-bindings](https://
 - :heavy_check_mark: [NUT-07](https://github.com/cashubtc/nuts/blob/main/07.md)
 - :heavy_check_mark: [NUT-08](https://github.com/cashubtc/nuts/blob/main/08.md)
 - :heavy_check_mark: [NUT-09](https://github.com/cashubtc/nuts/blob/main/09.md)
-
-
-## Supported token formats:
-
-- :x: v1 read (deprecated)
-- :x: v2 read (deprecated)
-- :heavy_check_mark: [v3](https://github.com/cashubtc/nuts/blob/main/00.md#023---v3-tokens) read/write
+- :heavy_check_mark: [NUT-09](https://github.com/cashubtc/nuts/blob/main/10.md)
+- :heavy_check_mark: [NUT-09](https://github.com/cashubtc/nuts/blob/main/11.md)
 
 
 ## License
