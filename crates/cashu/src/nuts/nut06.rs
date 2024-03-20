@@ -142,13 +142,23 @@ mod tests {
   "nuts": {
     "4": {
       "methods": [
-        ["bolt11", "sat"]
+        {
+        "method": "bolt11",
+        "unit": "sat",
+        "min_amount": 0,
+        "max_amount": 10000
+        }
       ],
       "disabled": false
     },
     "5": {
       "methods": [
-        ["bolt11", "sat"]
+        {
+        "method": "bolt11",
+        "unit": "sat",
+        "min_amount": 0,
+        "max_amount": 10000
+        }
       ]
     },
     "7": {"supported": true},

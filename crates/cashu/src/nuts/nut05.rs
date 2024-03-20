@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::CurrencyUnit;
+use super::{CurrencyUnit, PaymentMethod};
 use crate::nuts::Proofs;
 use crate::types::MeltQuote;
 use crate::{Amount, Bolt11Invoice};
@@ -68,8 +68,21 @@ pub struct MeltBolt11Response {
     pub payment_preimage: Option<String>,
 }
 
+/// Melt Method Settings
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeltMethodSettings {
+    /// Payment Method e.g. bolt11
+    method: PaymentMethod,
+    /// Currency Unit e.g. sat
+    unit: CurrencyUnit,
+    /// Min Amount
+    min_amount: Amount,
+    /// Max Amount
+    max_amount: Amount,
+}
+
 /// Melt Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    methods: Vec<(String, CurrencyUnit)>,
+    methods: Vec<MeltMethodSettings>,
 }

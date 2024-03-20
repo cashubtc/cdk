@@ -64,9 +64,22 @@ pub struct MintBolt11Response {
     pub signatures: Vec<BlindedSignature>,
 }
 
+/// Mint Method Settings
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintMethodSettings {
+    /// Payment Method e.g. bolt11
+    method: PaymentMethod,
+    /// Currency Unit e.g. sat
+    unit: CurrencyUnit,
+    /// Min Amount
+    min_amount: Amount,
+    /// Max Amount
+    max_amount: Amount,
+}
+
 /// Mint Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    methods: Vec<(PaymentMethod, CurrencyUnit)>,
+    methods: Vec<MintMethodSettings>,
     disabled: bool,
 }
