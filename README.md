@@ -2,11 +2,10 @@
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind loosing.
 
 Cashu Crab is a rust library for [Cashu](https://github.com/cashubtc) wallets written in Rust.
-Modeled after [Cashu-ts](https://github.com/cashubtc/cashu-ts).
 
 **ALPHA** This library is in early development, the api will change.
 
-Experimental for this project can be found in the [cashu-crab-bindings](https://github.com/thesimplekid/cashu-crab-bindings) repository.
+Experimental bindings for this project can be found in the [cashu-crab-bindings](https://github.com/thesimplekid/cashu-crab-bindings) repository.
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
@@ -20,8 +19,8 @@ Experimental for this project can be found in the [cashu-crab-bindings](https://
 - :heavy_check_mark: [NUT-07](https://github.com/cashubtc/nuts/blob/main/07.md)
 - :heavy_check_mark: [NUT-08](https://github.com/cashubtc/nuts/blob/main/08.md)
 - :heavy_check_mark: [NUT-09](https://github.com/cashubtc/nuts/blob/main/09.md)
-- :heavy_check_mark: [NUT-09](https://github.com/cashubtc/nuts/blob/main/10.md)
-- :heavy_check_mark: [NUT-09](https://github.com/cashubtc/nuts/blob/main/11.md)
+- :heavy_check_mark: [NUT-10](https://github.com/cashubtc/nuts/blob/main/10.md)
+- :heavy_check_mark: [NUT-11](https://github.com/cashubtc/nuts/blob/main/11.md)
 
 
 ## License
