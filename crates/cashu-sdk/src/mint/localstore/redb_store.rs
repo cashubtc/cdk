@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cashu::dhke::hash_to_curve;
-use cashu::k256;
-use cashu::nuts::{CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof};
+use cashu::nuts::{CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -297,15 +296,12 @@ impl LocalStore for RedbLocalStore {
         Ok(())
     }
 
-    async fn get_spent_proof_by_hash(
-        &self,
-        secret_point: &k256::PublicKey,
-    ) -> Result<Option<Proof>, Error> {
+    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
 
-        let proof = table.get(secret_point.to_sec1_bytes().as_ref())?;
+        let proof = table.get(y.to_bytes().as_ref())?;
 
         if let Some(proof) = proof {
             Ok(serde_json::from_str(proof.value())?)
@@ -351,15 +347,12 @@ impl LocalStore for RedbLocalStore {
         Ok(())
     }
 
-    async fn get_pending_proof_by_hash(
-        &self,
-        secret_point: &k256::PublicKey,
-    ) -> Result<Option<Proof>, Error> {
+    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(PENDING_PROOFS_TABLE)?;
 
-        let proof = table.get(secret_point.to_sec1_bytes().as_ref())?;
+        let proof = table.get(y.to_bytes().as_ref())?;
 
         if let Some(proof) = proof {
             Ok(serde_json::from_str(proof.value())?)

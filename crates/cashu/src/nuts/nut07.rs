@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::secret::Secret;
+use super::PublicKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -16,14 +16,17 @@ pub enum State {
 /// Check spendabale request [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckStateRequest {
-    pub secrets: Vec<Secret>,
+    /// Y's of the proofs to check
+    #[serde(rename = "Ys")]
+    pub ys: Vec<PublicKey>,
 }
 
 /// Proof state [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofState {
-    /// Secret of proof
-    pub secret: Secret,
+    /// Y of proof
+    #[serde(rename = "Y")]
+    pub y: PublicKey,
     /// State of proof
     pub state: State,
     /// Witness data if it is supplied

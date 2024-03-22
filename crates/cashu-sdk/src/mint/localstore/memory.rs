@@ -3,9 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cashu::dhke::hash_to_curve;
-use cashu::k256;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof, Proofs};
+use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 use tokio::sync::Mutex;
@@ -173,15 +172,12 @@ impl LocalStore for MemoryLocalStore {
             .cloned())
     }
 
-    async fn get_spent_proof_by_hash(
-        &self,
-        secret: &k256::PublicKey,
-    ) -> Result<Option<Proof>, Error> {
+    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
         Ok(self
             .spent_proofs
             .lock()
             .await
-            .get(&secret.to_sec1_bytes().to_vec())
+            .get(&y.to_bytes().to_vec())
             .cloned())
     }
 
@@ -205,15 +201,12 @@ impl LocalStore for MemoryLocalStore {
             .cloned())
     }
 
-    async fn get_pending_proof_by_hash(
-        &self,
-        secret: &k256::PublicKey,
-    ) -> Result<Option<Proof>, Error> {
+    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
         Ok(self
             .pending_proofs
             .lock()
             .await
-            .get(&secret.to_sec1_bytes().to_vec())
+            .get(&y.to_bytes().to_vec())
             .cloned())
     }
 

@@ -7,12 +7,12 @@ use cashu::dhke::{construct_proofs, unblind_message};
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut07::ProofState;
 use cashu::nuts::nut11::SigningKey;
+#[cfg(feature = "nut07")]
+use cashu::nuts::PublicKey;
 use cashu::nuts::{
     BlindedSignature, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, P2PKConditions, PreMintSecrets,
     PreSwap, Proof, Proofs, SigFlag, SwapRequest, Token,
 };
-#[cfg(feature = "nut07")]
-use cashu::secret::Secret;
 use cashu::types::{MeltQuote, Melted, MintQuote};
 use cashu::url::UncheckedUrl;
 use cashu::{Amount, Bolt11Invoice};
@@ -153,6 +153,8 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         mint_url: UncheckedUrl,
         proofs: Proofs,
     ) -> Result<Vec<ProofState>, Error> {
+        use cashu::dhke::hash_to_curve;
+
         let spendable = self
             .client
             .post_check_state(
@@ -160,8 +162,10 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 proofs
                     .clone()
                     .into_iter()
-                    .map(|p| p.secret)
-                    .collect::<Vec<Secret>>()
+                    // Find Y for the secret
+                    .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
+                    .map(|y| y.into())
+                    .collect::<Vec<PublicKey>>()
                     .clone(),
             )
             .await?;

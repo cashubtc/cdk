@@ -473,18 +473,13 @@ impl Mint {
             }
         }
 
-        let y = hash_to_curve(&proof.secret.to_bytes())?;
+        let y: PublicKey = hash_to_curve(&proof.secret.to_bytes())?.into();
 
-        if self.localstore.get_spent_proof_by_hash(&y).await?.is_some() {
+        if self.localstore.get_spent_proof_by_y(&y).await?.is_some() {
             return Err(Error::TokenSpent);
         }
 
-        if self
-            .localstore
-            .get_pending_proof_by_hash(&y)
-            .await?
-            .is_some()
-        {
+        if self.localstore.get_pending_proof_by_y(&y).await?.is_some() {
             return Err(Error::TokenPending);
         }
 
@@ -512,29 +507,19 @@ impl Mint {
         &self,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        let mut states = Vec::with_capacity(check_state.secrets.len());
+        let mut states = Vec::with_capacity(check_state.ys.len());
 
-        for secret in &check_state.secrets {
-            let state = if self
-                .localstore
-                .get_spent_proof_by_secret(secret)
-                .await?
-                .is_some()
-            {
+        for y in &check_state.ys {
+            let state = if self.localstore.get_spent_proof_by_y(y).await?.is_some() {
                 State::Spent
-            } else if self
-                .localstore
-                .get_pending_proof_by_secret(secret)
-                .await?
-                .is_some()
-            {
+            } else if self.localstore.get_pending_proof_by_y(y).await?.is_some() {
                 State::Pending
             } else {
                 State::Unspent
             };
 
             states.push(ProofState {
-                secret: secret.clone(),
+                y: y.clone(),
                 state,
                 witness: None,
             })

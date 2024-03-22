@@ -4,13 +4,13 @@ use async_trait::async_trait;
 use cashu::error::ErrorResponse;
 #[cfg(feature = "nut07")]
 use cashu::nuts::CheckStateResponse;
+#[cfg(feature = "nut07")]
+use cashu::nuts::PublicKey;
 use cashu::nuts::{
     BlindedMessage, CurrencyUnit, Id, KeySet, KeysetResponse, MeltBolt11Response,
     MeltQuoteBolt11Response, MintBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets,
     Proof, SwapRequest, SwapResponse,
 };
-#[cfg(feature = "nut07")]
-use cashu::secret::Secret;
 use cashu::Amount;
 use thiserror::Error;
 use url::Url;
@@ -107,7 +107,7 @@ pub trait Client {
     async fn post_check_state(
         &self,
         mint_url: Url,
-        secrets: Vec<Secret>,
+        ys: Vec<PublicKey>,
     ) -> Result<CheckStateResponse, Error>;
 
     async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error>;
