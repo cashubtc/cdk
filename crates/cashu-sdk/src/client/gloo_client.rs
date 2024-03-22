@@ -6,7 +6,7 @@ use cashu::nuts::{
     MintInfo, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
-use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse};
+use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse, PublicKey};
 use cashu::{Amount, Bolt11Invoice};
 use gloo::net::http::Request;
 use serde_json::Value;
@@ -212,10 +212,10 @@ impl Client for HttpClient {
     async fn post_check_state(
         &self,
         mint_url: Url,
-        secrets: Vec<Secret>,
+        ys: Vec<PublicKey>,
     ) -> Result<CheckStateResponse, Error> {
         let url = join_url(mint_url, &["v1", "check"])?;
-        let request = CheckSpendableRequest { secrets };
+        let request = CheckSpendableRequest { ys };
 
         let res = Request::post(url.as_str())
             .json(&request)

@@ -5,9 +5,8 @@ pub mod redb_store;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use cashu::k256;
 use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof};
+use cashu::nuts::{CurrencyUnit, Id, MintInfo, Proof, PublicKey};
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
 pub use memory::MemoryLocalStore;
@@ -73,16 +72,10 @@ pub trait LocalStore {
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error>;
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
-    async fn get_spent_proof_by_hash(
-        &self,
-        secret: &k256::PublicKey,
-    ) -> Result<Option<Proof>, Error>;
+    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error>;
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error>;
     async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error>;
-    async fn get_pending_proof_by_hash(
-        &self,
-        secret: &k256::PublicKey,
-    ) -> Result<Option<Proof>, Error>;
+    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error>;
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error>;
 }

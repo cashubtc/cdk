@@ -2,6 +2,8 @@
 
 use async_trait::async_trait;
 use cashu::error::ErrorResponse;
+#[cfg(feature = "nut07")]
+use cashu::nuts::PublicKey;
 use cashu::nuts::{
     BlindedMessage, CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
@@ -10,8 +12,6 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckStateRequest, CheckStateResponse};
-#[cfg(feature = "nut07")]
-use cashu::secret::Secret;
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
 use tracing::warn;
@@ -189,10 +189,10 @@ impl Client for HttpClient {
     async fn post_check_state(
         &self,
         mint_url: Url,
-        secrets: Vec<Secret>,
+        ys: Vec<PublicKey>,
     ) -> Result<CheckStateResponse, Error> {
         let url = join_url(mint_url, &["v1", "checkstate"])?;
-        let request = CheckStateRequest { secrets };
+        let request = CheckStateRequest { ys };
 
         let res = minreq::post(url)
             .with_json(&request)?
