@@ -11,6 +11,8 @@ use cashu::nuts::{
 };
 #[cfg(feature = "nut07")]
 use cashu::nuts::{CheckStateRequest, CheckStateResponse};
+#[cfg(feature = "nut09")]
+use cashu::nuts::{RestoreRequest, RestoreResponse};
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
 use http::StatusCode;
@@ -291,6 +293,7 @@ impl Mint {
                 .await?
                 .is_some()
             {
+                error!("Output has already been signed: {}", blinded_message.b);
                 return Err(Error::BlindedMessageAlreadySigned);
             }
         }
@@ -373,6 +376,7 @@ impl Mint {
                 .await?
                 .is_some()
             {
+                error!("Output has already been signed: {}", blinded_message.b);
                 return Err(Error::BlindedMessageAlreadySigned);
             }
         }
@@ -658,6 +662,7 @@ impl Mint {
                     .await?
                     .is_some()
                 {
+                    error!("Output has already been signed: {}", blinded_message.b);
                     return Err(Error::BlindedMessageAlreadySigned);
                 }
             }
@@ -740,12 +745,14 @@ impl Mint {
         let mut outputs = Vec::with_capacity(output_len);
         let mut signatures = Vec::with_capacity(output_len);
 
-        let blinded_message = request.outputs.iter().map(|b| b.b.clone()).collect();
+        let blinded_message: Vec<PublicKey> = request.outputs.iter().map(|b| b.b.clone()).collect();
 
         let blinded_signatures = self
             .localstore
             .get_blinded_signatures(blinded_message)
             .await?;
+
+        assert_eq!(blinded_signatures.len(), output_len);
 
         for (blinded_message, blinded_signature) in
             request.outputs.into_iter().zip(blinded_signatures)

@@ -389,15 +389,27 @@ impl LocalStore for RedbLocalStore {
     }
 
     #[cfg(feature = "nut13")]
-    async fn add_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
         let db = self.db.lock().await;
 
-        let write_txn = db.begin_write()?;
+        let current_counter;
+        {
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(KEYSET_COUNTER)?;
+            let counter = table.get(keyset_id.to_string().as_str())?;
+            current_counter = if let Some(counter) = counter {
+                counter.value()
+            } else {
+                0
+            };
+        }
 
+        let write_txn = db.begin_write()?;
         {
             let mut table = write_txn.open_table(KEYSET_COUNTER)?;
+            let new_counter = current_counter + count;
 
-            table.insert(keyset_id.to_string().as_str(), count)?;
+            table.insert(keyset_id.to_string().as_str(), new_counter)?;
         }
         write_txn.commit()?;
 

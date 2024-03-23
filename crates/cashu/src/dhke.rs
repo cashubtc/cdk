@@ -123,6 +123,7 @@ mod mint {
     use std::ops::Mul;
 
     use k256::{Scalar, SecretKey};
+    use log::warn;
 
     use super::hash_to_curve;
     use crate::error;
@@ -153,6 +154,8 @@ mod mint {
         {
             return Ok(());
         }
+
+        warn!("Message not verifed");
 
         Err(error::mint::Error::TokenNotVerifed)
     }

@@ -288,10 +288,9 @@ impl LocalStore for RedbLocalStore {
 
         {
             let mut table = write_txn.open_table(SPENT_PROOFS_TABLE)?;
+            let y: PublicKey = hash_to_curve(&proof.secret.to_bytes())?.into();
             table.insert(
-                hash_to_curve(&proof.secret.to_bytes())?
-                    .to_sec1_bytes()
-                    .as_ref(),
+                y.to_bytes().as_ref(),
                 serde_json::to_string(&proof)?.as_str(),
             )?;
         }
@@ -320,9 +319,9 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
 
-        let secret_hash = hash_to_curve(&secret.to_bytes())?;
+        let y: PublicKey = hash_to_curve(&secret.to_bytes())?.into();
 
-        let proof = table.get(secret_hash.to_sec1_bytes().as_ref())?;
+        let proof = table.get(y.to_bytes().as_ref())?;
 
         debug!("Checking secret: {}", secret.to_string());
 
@@ -446,6 +445,8 @@ impl LocalStore for RedbLocalStore {
         for blinded_message in blinded_messages {
             if let Some(blinded_signature) = table.get(blinded_message.to_bytes().as_ref())? {
                 signatures.push(Some(serde_json::from_str(blinded_signature.value())?))
+            } else {
+                signatures.push(None);
             }
         }
 

@@ -84,7 +84,7 @@ pub trait LocalStore {
     ) -> Result<(), Error>;
 
     #[cfg(feature = "nut13")]
-    async fn add_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error>;
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error>;
     #[cfg(feature = "nut13")]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Error>;
 }
