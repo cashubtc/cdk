@@ -351,10 +351,9 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         // Update counter for keyset
-        if let Some(counter) = counter {
-            let count = counter + proofs.len() as u64;
+        if counter.is_some() {
             self.localstore
-                .add_keyset_counter(&active_keyset_id, count)
+                .increment_keyset_counter(&active_keyset_id, proofs.len() as u64)
                 .await?;
         }
 
@@ -406,6 +405,13 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                 pre_swap.pre_mint_secrets.secrets(),
                 &keys,
             )?;
+
+            if self.mnemonic.is_some() {
+                self.localstore
+                    .increment_keyset_counter(&active_keyset_id, p.len() as u64)
+                    .await?;
+            }
+
             let mint_proofs = proofs.entry(token.mint).or_default();
 
             mint_proofs.extend(p);
@@ -523,14 +529,8 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         if self.mnemonic.is_some() {
             for (keyset_id, count) in proof_count {
-                let counter = self
-                    .localstore
-                    .get_keyset_counter(&keyset_id)
-                    .await?
-                    .unwrap_or(0);
-
                 self.localstore
-                    .add_keyset_counter(&keyset_id, counter + count)
+                    .increment_keyset_counter(&keyset_id, count)
                     .await?;
             }
         }
@@ -569,16 +569,8 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         let active_keyset = self.active_mint_keyset(mint_url, unit).await?;
 
         if self.mnemonic.is_some() {
-            let count = self
-                .localstore
-                .get_keyset_counter(&active_keyset)
-                .await?
-                .unwrap_or(0);
-
-            let new_count = count + post_swap_proofs.len() as u64;
-
             self.localstore
-                .add_keyset_counter(&active_keyset, new_count)
+                .increment_keyset_counter(&active_keyset, post_swap_proofs.len() as u64)
                 .await?;
         }
 
@@ -776,11 +768,14 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         };
 
         if let Some(change_proofs) = change_proofs {
+            debug!(
+                "Change amount returned from melt: {}",
+                change_proofs.iter().map(|p| p.amount).sum::<Amount>()
+            );
             // Update counter for keyset
-            if let Some(counter) = counter {
-                let count = counter + change_proofs.len() as u64;
+            if counter.is_some() {
                 self.localstore
-                    .add_keyset_counter(&active_keyset_id, count)
+                    .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u64)
                     .await?;
             }
 
@@ -951,6 +946,12 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
             )?;
             let mint_proofs = received_proofs.entry(token.mint).or_default();
 
+            if self.mnemonic.is_some() {
+                self.localstore
+                    .increment_keyset_counter(&active_keyset_id, p.len() as u64)
+                    .await?;
+            }
+
             mint_proofs.extend(p);
         }
 
@@ -1014,6 +1015,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
                 if response.signatures.is_empty() {
                     empty_batch += 1;
+                    start_counter += 100;
                     continue;
                 }
 
@@ -1039,8 +1041,10 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
                     &keys,
                 )?;
 
+                debug!("Restored {} proofs", proofs.len());
+
                 self.localstore
-                    .add_keyset_counter(&keyset.id, start_counter + proofs.len() as u64)
+                    .increment_keyset_counter(&keyset.id, proofs.len() as u64)
                     .await?;
 
                 let states = self

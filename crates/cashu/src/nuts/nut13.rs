@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use bip32::{DerivationPath, XPrv};
 use bip39::Mnemonic;
+use log::debug;
 
 use super::{Id, SecretKey};
 use crate::error::Error;
@@ -9,6 +10,11 @@ use crate::secret::Secret;
 
 impl Secret {
     pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
+        debug!(
+            "Deriving secret for {} with count {}",
+            keyset_id.to_string(),
+            counter.to_string()
+        );
         let path = DerivationPath::from_str(&format!(
             "m/129372'/0'/{}'/{}'/0",
             u64::try_from(keyset_id)?,
@@ -23,6 +29,11 @@ impl Secret {
 
 impl SecretKey {
     pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
+        debug!(
+            "Deriving key for {} with count {}",
+            keyset_id.to_string(),
+            counter.to_string()
+        );
         let path = DerivationPath::from_str(&format!(
             "m/129372'/0'/{}'/{}'/1",
             u64::try_from(keyset_id)?,
@@ -95,7 +106,7 @@ mod wallet {
         ) -> Result<Self, wallet::Error> {
             let mut pre_mint_secrets = PreMintSecrets::default();
 
-            for i in start_count..end_count {
+            for i in start_count..=end_count {
                 let secret = Secret::from_seed(mnemonic, keyset_id, i)?;
                 let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, i)?;
 
