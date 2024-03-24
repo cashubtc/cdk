@@ -338,6 +338,15 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
 
         let keys = self.get_keyset_keys(&mint_url, active_keyset_id).await?;
 
+        #[cfg(feature = "nut12")]
+        {
+            for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
+                let keys = self.localstore.get_keys(&sig.keyset_id).await?.unwrap();
+                let key = keys.amount_key(sig.amount).unwrap();
+                sig.verify_dleq(&key, &premint.blinded_message.b).unwrap();
+            }
+        }
+
         let proofs = construct_proofs(
             mint_res.signatures,
             premint_secrets.rs(),
