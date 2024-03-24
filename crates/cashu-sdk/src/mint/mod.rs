@@ -362,6 +362,8 @@ impl Mint {
             amount: *amount,
             c: c.into(),
             keyset_id: keyset.id,
+            #[cfg(feature = "nut12")]
+            dleq: None,
         })
     }
 
