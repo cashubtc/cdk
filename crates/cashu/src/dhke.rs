@@ -115,18 +115,44 @@ mod wallet {
                 ))?
                 .to_owned();
 
-            let unblinded_signature = unblind_message(blinded_c, r.into(), a)?;
+            let unblinded_signature = unblind_message(blinded_c, r.clone().into(), a)?;
 
-            let proof = Proof {
-                amount: blinded_signature.amount,
-                keyset_id: blinded_signature.keyset_id,
-                secret,
-                c: unblinded_signature,
-                #[cfg(feature = "nut11")]
-                witness: None,
-                #[cfg(feature = "nut12")]
-                dleq: blinded_signature.dleq,
-            };
+            let proof;
+
+            #[cfg(not(feature = "nut12"))]
+            {
+                proof = Proof {
+                    amount: blinded_signature.amount,
+                    keyset_id: blinded_signature.keyset_id,
+                    secret,
+                    c: unblinded_signature,
+                    #[cfg(feature = "nut11")]
+                    witness: None,
+                };
+            }
+
+            #[cfg(feature = "nut12")]
+            {
+                let dleq = if let Some(dleq) = blinded_signature.dleq {
+                    Some(DleqProof {
+                        e: dleq.e,
+                        s: dleq.s,
+                        r: Some(r),
+                    })
+                } else {
+                    None
+                };
+
+                proof = Proof {
+                    amount: blinded_signature.amount,
+                    keyset_id: blinded_signature.keyset_id,
+                    secret,
+                    c: unblinded_signature,
+                    #[cfg(feature = "nut11")]
+                    witness: None,
+                    dleq,
+                };
+            }
 
             proofs.push(proof);
         }
