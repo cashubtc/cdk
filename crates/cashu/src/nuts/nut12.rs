@@ -5,17 +5,31 @@ use std::ops::Mul;
 use k256::Scalar;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use super::{BlindedSignature, Proof, PublicKey, SecretKey};
 use crate::dhke::{hash_e, hash_to_curve};
-use crate::error::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("No Dleq Proof provided")]
+    MissingDleqProof,
+    #[error("Incomplete DLEQ Proof")]
+    IncompleteDleqProof,
+    #[error("Invalid Dleq Prood")]
+    InvalidDleqProof,
+    #[error("`{0}`")]
+    EllipticCurve(#[from] k256::elliptic_curve::Error),
+    #[error("`{0}`")]
+    Cashu(#[from] crate::error::Error),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DleqProof {
-    e: SecretKey,
-    s: SecretKey,
+    pub e: SecretKey,
+    pub s: SecretKey,
     #[serde(skip_serializing_if = "Option::is_none")]
-    r: Option<SecretKey>,
+    pub r: Option<SecretKey>,
 }
 
 fn verify_dleq(
@@ -50,28 +64,27 @@ fn verify_dleq(
         warn!("DLEQ on signature failed");
         debug!("e_bytes: {:?}, Hash e: {:?}", e_bytes, hash_e);
         // TODO: fix error
-        return Err(Error::TokenSpent);
+        return Err(Error::InvalidDleqProof);
     }
 
     Ok(())
 }
 
 impl Proof {
-    pub fn verify_dleq(
-        &self,
-        mint_pubkey: PublicKey,
-        blinding_factor: SecretKey,
-    ) -> Result<(), Error> {
-        let (e, s): (k256::SecretKey, k256::SecretKey) = if let Some(dleq) = &self.dleq {
-            (dleq.e.clone().into(), dleq.s.clone().into())
-        } else {
-            // TODO: fix error
-            return Err(Error::AmountKey);
-        };
+    pub fn verify_dleq(&self, mint_pubkey: &PublicKey) -> Result<(), Error> {
+        let (e, s, blinding_factor): (k256::SecretKey, k256::SecretKey, k256::SecretKey) =
+            if let Some(dleq) = self.dleq.clone() {
+                if let Some(r) = dleq.r {
+                    (dleq.e.into(), dleq.s.into(), r.into())
+                } else {
+                    return Err(Error::IncompleteDleqProof);
+                }
+            } else {
+                return Err(Error::MissingDleqProof);
+            };
 
         let c: k256::PublicKey = (&self.c).into();
         let mint_pubkey: k256::PublicKey = mint_pubkey.into();
-        let blinding_factor: k256::SecretKey = blinding_factor.into();
 
         let y = hash_to_curve(self.secret.0.as_bytes())?;
         let blinded_signature = c.to_projective()
@@ -97,7 +110,7 @@ impl BlindedSignature {
             (dleq.e.clone().into(), dleq.s.clone().into())
         } else {
             // TODO: fix error
-            return Err(Error::AmountKey);
+            return Err(Error::MissingDleqProof);
         };
 
         let mint_pubkey: k256::PublicKey = mint_pubkey.into();
