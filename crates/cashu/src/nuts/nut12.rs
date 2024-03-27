@@ -26,7 +26,7 @@ pub enum Error {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlindedSignatureDleq {
+pub struct BlindSignatureDleq {
     pub e: SecretKey,
     pub s: SecretKey,
 }
@@ -79,7 +79,7 @@ fn calculate_dleq(
     blinded_signature: k256::PublicKey,
     blinded_message: &k256::PublicKey,
     mint_secretkey: &k256::SecretKey,
-) -> Result<BlindedSignatureDleq, Error> {
+) -> Result<BlindSignatureDleq, Error> {
     // Random nonce
     let r: k256::SecretKey = SecretKey::random().into();
 
@@ -100,7 +100,7 @@ fn calculate_dleq(
 
     let s: k256::SecretKey = k256::SecretKey::new(s.into());
 
-    Ok(BlindedSignatureDleq {
+    Ok(BlindSignatureDleq {
         e: e_sk.into(),
         s: s.into(),
     })
