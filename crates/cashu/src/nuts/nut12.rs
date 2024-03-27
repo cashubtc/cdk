@@ -26,11 +26,16 @@ pub enum Error {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DleqProof {
+pub struct BlindedSignatureDleq {
     pub e: SecretKey,
     pub s: SecretKey,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r: Option<SecretKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofDleq {
+    pub e: SecretKey,
+    pub s: SecretKey,
+    pub r: SecretKey,
 }
 
 fn verify_dleq(
@@ -74,7 +79,7 @@ fn calculate_dleq(
     blinded_signature: k256::PublicKey,
     blinded_message: &k256::PublicKey,
     mint_secretkey: &k256::SecretKey,
-) -> Result<DleqProof, Error> {
+) -> Result<BlindedSignatureDleq, Error> {
     // Random nonce
     let r: k256::SecretKey = SecretKey::random().into();
 
@@ -95,10 +100,9 @@ fn calculate_dleq(
 
     let s: k256::SecretKey = k256::SecretKey::new(s.into());
 
-    Ok(DleqProof {
+    Ok(BlindedSignatureDleq {
         e: e_sk.into(),
         s: s.into(),
-        r: None,
     })
 }
 
@@ -106,11 +110,7 @@ impl Proof {
     pub fn verify_dleq(&self, mint_pubkey: &PublicKey) -> Result<(), Error> {
         let (e, s, blinding_factor): (k256::SecretKey, k256::SecretKey, k256::SecretKey) =
             if let Some(dleq) = self.dleq.clone() {
-                if let Some(r) = dleq.r {
-                    (dleq.e.into(), dleq.s.into(), r.into())
-                } else {
-                    return Err(Error::IncompleteDleqProof);
-                }
+                (dleq.e.into(), dleq.s.into(), dleq.r.into())
             } else {
                 return Err(Error::MissingDleqProof);
             };
@@ -223,5 +223,20 @@ mod tests {
         .unwrap();
 
         blinded.verify_dleq(&mint_key, &blinded_secret).unwrap()
+    }
+
+    #[test]
+    fn test_proof_dleq() {
+        let proof = r#"{"amount": 1,"id": "00882760bfa2eb41","secret": "daf4dd00a2b68a0858a80450f52c8a7d2ccf87d375e43e216e0c571f089f63e9","C": "024369d2d22a80ecf78f3937da9d5f30c1b9f74f0c32684d583cca0fa6a61cdcfc","dleq": {"e": "b31e58ac6527f34975ffab13e70a48b6d2b0d35abc4b03f0151f09ee1a9763d4","s": "8fbae004c59e754d71df67e392b6ae4e29293113ddc2ec86592a0431d16306d8","r": "a6d13fcd7a18442e6076f5e1e7c887ad5de40a019824bdfa9fe740d302e8d861"}}"#;
+
+        let proof: Proof = serde_json::from_str(proof).unwrap();
+
+        // A
+        let a: PublicKey = PublicKey::from_str(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+
+        assert!(proof.verify_dleq(&a).is_ok());
     }
 }

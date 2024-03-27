@@ -134,10 +134,10 @@ mod wallet {
             #[cfg(feature = "nut12")]
             {
                 let dleq = if let Some(dleq) = blinded_signature.dleq {
-                    Some(DleqProof {
+                    Some(ProofDleq {
                         e: dleq.e,
                         s: dleq.s,
-                        r: Some(r),
+                        r,
                     })
                 } else {
                     None
@@ -391,7 +391,6 @@ mod tests {
             let sec = SecretKey::new(ScalarPrimitive::ONE);
 
             let (blinded_message, _r) = blind_message(message.as_bytes(), Some(sec)).unwrap();
-
             // A
             let bob_sec = SecretKey::new(ScalarPrimitive::ONE);
 
