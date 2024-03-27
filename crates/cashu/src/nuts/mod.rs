@@ -48,6 +48,6 @@ pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
 #[cfg(feature = "nut11")]
 pub use nut11::{P2PKConditions, SigFlag, Signatures, SigningKey, VerifyingKey};
 #[cfg(feature = "nut12")]
-pub use nut12::DleqProof;
+pub use nut12::{BlindedSignatureDleq, ProofDleq};
 
 pub type Proofs = Vec<Proof>;
