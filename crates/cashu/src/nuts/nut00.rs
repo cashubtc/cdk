@@ -8,7 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "nut12")]
-use super::{BlindedSignatureDleq, ProofDleq};
+use super::{BlindSignatureDleq, ProofDleq};
 use super::{Id, Proofs, PublicKey};
 use crate::error::Error;
 #[cfg(feature = "nut11")]
@@ -424,7 +424,7 @@ pub struct BlindedSignature {
     pub c: PublicKey,
     /// DLEQ Proof
     #[cfg(feature = "nut12")]
-    pub dleq: Option<BlindedSignatureDleq>,
+    pub dleq: Option<BlindSignatureDleq>,
 }
 
 /// Proofs [NUT-00]
