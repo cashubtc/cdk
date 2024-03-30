@@ -6,9 +6,7 @@ use async_trait::async_trait;
 use cashu::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::url::UncheckedUrl;
-use redb::{
-    Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
-};
+use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
 
 use super::{Error, LocalStore};
