@@ -1,7 +1,7 @@
 > **Warning**
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind loosing.
 
-Cashu Crab is a rust library for [Cashu](https://github.com/cashubtc) wallets written in Rust.
+Cashu Crab is a rust library for [Cashu](https://github.com/cashubtc) wallets and mints written in Rust.
 
 **ALPHA** This library is in early development, the api will change.
 
