@@ -32,15 +32,13 @@ pub use nut03::{SwapRequest, SwapResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintQuoteBolt11Request, MintQuoteBolt11Response,
 };
-#[cfg(not(feature = "nut08"))]
-pub use nut05::{MeltBolt11Request, MeltBolt11Response};
-pub use nut05::{MeltQuoteBolt11Request, MeltQuoteBolt11Response};
+pub use nut05::{
+    MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+};
 pub use nut06::{MintInfo, MintVersion, Nuts};
 #[cfg(feature = "wallet")]
 #[cfg(feature = "nut07")]
 pub use nut07::{CheckStateRequest, CheckStateResponse};
-#[cfg(feature = "nut08")]
-pub use nut08::{MeltBolt11Request, MeltBolt11Response};
 #[cfg(feature = "nut09")]
 pub use nut09::{RestoreRequest, RestoreResponse};
 #[cfg(feature = "nut10")]
