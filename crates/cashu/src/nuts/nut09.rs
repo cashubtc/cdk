@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{BlindedMessage, BlindedSignature};
+use super::{BlindSignature, BlindedMessage};
 
 /// Restore Request [NUT-09]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,7 +19,7 @@ pub struct RestoreResponse {
     /// Signatures
     // TODO: remove rename just for temp compatanlite with nutshell
     #[serde(rename = "promises")]
-    pub signatures: Vec<BlindedSignature>,
+    pub signatures: Vec<BlindSignature>,
 }
 
 mod test {

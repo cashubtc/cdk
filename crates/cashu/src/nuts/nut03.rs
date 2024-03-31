@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::nut00::BlindedSignature;
+use super::nut00::BlindSignature;
 #[cfg(feature = "wallet")]
 use crate::nuts::PreMintSecrets;
 use crate::nuts::{BlindedMessage, Proofs};
@@ -46,11 +46,11 @@ impl SwapRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapResponse {
     /// Promises
-    pub signatures: Vec<BlindedSignature>,
+    pub signatures: Vec<BlindSignature>,
 }
 
 impl SwapResponse {
-    pub fn new(promises: Vec<BlindedSignature>) -> SwapResponse {
+    pub fn new(promises: Vec<BlindSignature>) -> SwapResponse {
         SwapResponse {
             signatures: promises,
         }
@@ -59,7 +59,7 @@ impl SwapResponse {
     pub fn promises_amount(&self) -> Amount {
         self.signatures
             .iter()
-            .map(|BlindedSignature { amount, .. }| *amount)
+            .map(|BlindSignature { amount, .. }| *amount)
             .sum()
     }
 }

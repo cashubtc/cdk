@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{BlindedMessage, BlindedSignature, Proofs};
+use super::{BlindSignature, BlindedMessage, Proofs};
 use crate::Amount;
 
 /// Melt Bolt11 Request [NUT-08]
@@ -36,7 +36,7 @@ impl MeltBolt11Request {
 pub struct MeltBolt11Response {
     pub paid: bool,
     pub payment_preimage: Option<String>,
-    pub change: Option<Vec<BlindedSignature>>,
+    pub change: Option<Vec<BlindSignature>>,
 }
 
 impl MeltBolt11Response {

@@ -60,7 +60,7 @@ mod wallet {
 
     use super::hash_to_curve;
     use crate::error;
-    use crate::nuts::{BlindedSignature, Keys, Proof, Proofs, PublicKey, *};
+    use crate::nuts::{BlindSignature, Keys, Proof, Proofs, PublicKey, *};
     use crate::secret::Secret;
 
     /// Blind Message Alice Step one
@@ -100,7 +100,7 @@ mod wallet {
 
     /// Construct Proof
     pub fn construct_proofs(
-        promises: Vec<BlindedSignature>,
+        promises: Vec<BlindSignature>,
         rs: Vec<nut01::SecretKey>,
         secrets: Vec<Secret>,
         keys: &Keys,

@@ -7,7 +7,7 @@ use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{BlindedSignature, Id, Proof, PublicKey, SecretKey};
+use super::{BlindSignature, Id, Proof, PublicKey, SecretKey};
 use crate::dhke::{hash_e, hash_to_curve};
 use crate::Amount;
 
@@ -132,7 +132,7 @@ impl Proof {
     }
 }
 
-impl BlindedSignature {
+impl BlindSignature {
     pub fn new_dleq(
         amount: Amount,
         blinded_signature: PublicKey,
@@ -149,7 +149,7 @@ impl BlindedSignature {
             &mint_secretkey,
         )?;
 
-        Ok(BlindedSignature {
+        Ok(BlindSignature {
             amount,
             keyset_id,
             c: blinded_signature,
@@ -209,7 +209,7 @@ mod tests {
     fn test_blind_signature_dleq() {
         let blinded_sig = r#"{"amount":8,"id":"00882760bfa2eb41","C_":"02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2","dleq":{"e":"9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73d9","s":"9818e061ee51d5c8edc3342369a554998ff7b4381c8652d724cdf46429be73da"}}"#;
 
-        let blinded: BlindedSignature = serde_json::from_str(blinded_sig).unwrap();
+        let blinded: BlindSignature = serde_json::from_str(blinded_sig).unwrap();
 
         let secret_key =
             SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")

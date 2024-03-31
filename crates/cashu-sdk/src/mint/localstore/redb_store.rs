@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cashu::dhke::hash_to_curve;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey,
+    BlindSignature, CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey,
 };
 use cashu::secret::Secret;
 use cashu::types::{MeltQuote, MintQuote};
@@ -399,7 +399,7 @@ impl LocalStore for RedbLocalStore {
     async fn add_blinded_signature(
         &self,
         blinded_message: PublicKey,
-        blinded_signature: BlindedSignature,
+        blinded_signature: BlindSignature,
     ) -> Result<(), Error> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write()?;
@@ -420,7 +420,7 @@ impl LocalStore for RedbLocalStore {
     async fn get_blinded_signature(
         &self,
         blinded_message: &PublicKey,
-    ) -> Result<Option<BlindedSignature>, Error> {
+    ) -> Result<Option<BlindSignature>, Error> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(BLINDED_SIGNATURES)?;
@@ -435,7 +435,7 @@ impl LocalStore for RedbLocalStore {
     async fn get_blinded_signatures(
         &self,
         blinded_messages: Vec<PublicKey>,
-    ) -> Result<Vec<Option<BlindedSignature>>, Error> {
+    ) -> Result<Vec<Option<BlindSignature>>, Error> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(BLINDED_SIGNATURES)?;
