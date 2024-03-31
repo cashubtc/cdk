@@ -12,7 +12,7 @@ license.workspace = true
 [features]
 default = ["mint", "wallet", "all-nuts", "redb"]
 mint = ["cashu/mint"]
-wallet = ["cashu/wallet", "dep:minreq", "dep:once_cell"]
+wallet = ["cashu/wallet", "dep:minreq"]
 gloo = ["dep:gloo"]
 all-nuts = ["nut07", "nut08", "nut09", "nut10", "nut11", "nut12", "nut13"]
 nut07 = ["cashu/nut07"]
@@ -32,8 +32,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-once_cell = { version = "1.17", optional = true }
 thiserror = { workspace = true }
 async-trait = "0.1.74"
 gloo = { version = "0.11.0", optional = true, features = ["net"] }
