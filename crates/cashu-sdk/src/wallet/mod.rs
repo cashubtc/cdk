@@ -13,7 +13,7 @@ use cashu::nuts::nut11::SigningKey;
 #[cfg(feature = "nut07")]
 use cashu::nuts::PublicKey;
 use cashu::nuts::{
-    BlindedSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
+    BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
     PreMintSecrets, PreSwap, Proof, Proofs, SigFlag, SwapRequest, Token,
 };
 use cashu::types::{MeltQuote, Melted, MintQuote};
@@ -532,7 +532,7 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
     pub async fn process_swap_response(
         &self,
         blinded_messages: PreMintSecrets,
-        promises: Vec<BlindedSignature>,
+        promises: Vec<BlindSignature>,
     ) -> Result<Proofs, Error> {
         let mut proofs = vec![];
 

@@ -6,7 +6,7 @@ use cashu::error::ErrorResponse;
 #[cfg(feature = "nut07")]
 use cashu::nuts::nut07::{ProofState, State};
 use cashu::nuts::{
-    BlindedMessage, BlindedSignature, MeltBolt11Request, MeltBolt11Response, Proof, SwapRequest,
+    BlindSignature, BlindedMessage, MeltBolt11Request, MeltBolt11Response, Proof, SwapRequest,
     SwapResponse, *,
 };
 #[cfg(feature = "nut07")]
@@ -325,10 +325,7 @@ impl Mint {
         })
     }
 
-    async fn blind_sign(
-        &self,
-        blinded_message: &BlindedMessage,
-    ) -> Result<BlindedSignature, Error> {
+    async fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindSignature, Error> {
         let BlindedMessage {
             amount,
             b,
@@ -363,7 +360,7 @@ impl Mint {
         let blinded_signature;
         #[cfg(not(feature = "nut12"))]
         {
-            blinded_signature = BlindedSignature {
+            blinded_signature = BlindSignature {
                 amount: *amount,
                 c: c.into(),
                 keyset_id: keyset.id,
@@ -372,7 +369,7 @@ impl Mint {
 
         #[cfg(feature = "nut12")]
         {
-            blinded_signature = BlindedSignature::new_dleq(
+            blinded_signature = BlindSignature::new_dleq(
                 *amount,
                 c.into(),
                 keyset.id,

@@ -412,9 +412,9 @@ impl MintProofs {
     }
 }
 
-/// Promise (BlindedSignature) [NUT-00]
+/// Promise (BlindSignature) [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlindedSignature {
+pub struct BlindSignature {
     pub amount: Amount,
     /// Keyset Id
     #[serde(rename = "id")]
