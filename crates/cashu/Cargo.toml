@@ -35,12 +35,10 @@ k256 = { version = "0.13.1", features=["arithmetic", "serde", "schnorr"] }
 lightning-invoice = { version = "0.29.0", features=["serde"] }
 log = "0.4.2"
 rand = "0.8.5"
-getrandom = { version = "0.2", features = ["js"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = "3.4.0"
 url = { workspace = true }
-regex = "1.8.4"
 itertools = "0.12.0"
 thiserror = { workspace = true }
 uuid = { version = "1.6.1", features = ["v4"] }
