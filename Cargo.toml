@@ -30,6 +30,7 @@ tracing = { version = "0.1", default-features = false }
 tracing-subscriber = "0.3"
 uniffi = "0.24"
 thiserror = "1.0.50"
+getrandom = { version = "0.2", features = ["js"] }
 
 [profile]
 
