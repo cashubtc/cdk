@@ -13,6 +13,8 @@ pub mod nut11;
 pub mod nut12;
 #[cfg(feature = "nut13")]
 pub mod nut13;
+pub mod nut17;
+pub mod nut18;
 
 #[cfg(feature = "wallet")]
 pub use nut00::wallet::{PreMint, PreMintSecrets, Token};
@@ -24,7 +26,8 @@ pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
 pub use nut04::{
-    MintBolt11Request, MintBolt11Response, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
+    MintQuoteBolt11Response,
 };
 pub use nut05::{
     MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response,

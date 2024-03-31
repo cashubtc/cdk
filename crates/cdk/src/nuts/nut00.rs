@@ -112,6 +112,7 @@ impl fmt::Display for CurrencyUnit {
 pub enum PaymentMethod {
     #[default]
     Bolt11,
+    BtcOnChain,
     Custom(String),
 }
 
@@ -121,6 +122,7 @@ impl FromStr for PaymentMethod {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "bolt11" => Ok(Self::Bolt11),
+            "btconchain" => Ok(Self::BtcOnChain),
             _ => Ok(Self::Custom(s.to_string())),
         }
     }
@@ -130,6 +132,7 @@ impl fmt::Display for PaymentMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentMethod::Bolt11 => write!(f, "bolt11"),
+            PaymentMethod::BtcOnChain => write!(f, "btconchain"),
             PaymentMethod::Custom(unit) => write!(f, "{}", unit),
         }
     }
