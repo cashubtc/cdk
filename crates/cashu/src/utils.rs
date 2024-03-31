@@ -5,15 +5,6 @@ use std::time::SystemTime;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use rand::prelude::*;
-use regex::Regex;
-
-pub fn extract_url_from_error(error: &str) -> Option<String> {
-    let regex = Regex::new(r"https?://[^\s]+").unwrap();
-    if let Some(capture) = regex.captures(error) {
-        return Some(capture[0].to_owned());
-    }
-    None
-}
 
 pub fn random_hash() -> Vec<u8> {
     let mut rng = rand::thread_rng();
