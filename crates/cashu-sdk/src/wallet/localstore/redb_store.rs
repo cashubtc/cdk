@@ -51,7 +51,7 @@ impl RedbLocalStore {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl LocalStore for RedbLocalStore {
     async fn add_mint(
         &self,

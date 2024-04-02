@@ -49,7 +49,7 @@ impl MemoryLocalStore {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl LocalStore for MemoryLocalStore {
     async fn add_mint(
         &self,
