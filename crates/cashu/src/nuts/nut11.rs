@@ -85,12 +85,15 @@ impl Proof {
             return Ok(());
         }
 
-        if let Some(locktime) = spending_conditions.locktime {
+        if let (Some(locktime), Some(refund_keys)) = (
+            spending_conditions.locktime,
+            spending_conditions.refund_keys,
+        ) {
             // If lock time has passed check if refund witness signature is valid
-            if locktime.lt(&unix_time()) && !spending_conditions.refund_keys.is_empty() {
+            if locktime.lt(&unix_time()) {
                 if let Some(signatures) = &self.witness {
                     for s in &signatures.signatures {
-                        for v in &spending_conditions.refund_keys {
+                        for v in &refund_keys {
                             let sig = Signature::try_from(hex::decode(s)?.as_slice())
                                 .map_err(|_| Error::InvalidSignature)?;
 
@@ -175,9 +178,8 @@ pub struct P2PKConditions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locktime: Option<u64>,
     pub pubkeys: Vec<VerifyingKey>,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub refund_keys: Vec<VerifyingKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refund_keys: Option<Vec<VerifyingKey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_sigs: Option<u64>,
     pub sig_flag: SigFlag,
@@ -187,7 +189,7 @@ impl P2PKConditions {
     pub fn new(
         locktime: Option<u64>,
         pubkeys: Vec<VerifyingKey>,
-        refund_keys: Vec<VerifyingKey>,
+        refund_keys: Option<Vec<VerifyingKey>>,
         num_sigs: Option<u64>,
         sig_flag: Option<SigFlag>,
     ) -> Result<Self, Error> {
@@ -241,10 +243,9 @@ impl TryFrom<P2PKConditions> for Secret {
             tags.push(Tag::NSigs(num_sigs).as_vec());
         }
 
-        if !refund_keys.is_empty() {
+        if let Some(refund_keys) = refund_keys {
             tags.push(Tag::Refund(refund_keys).as_vec())
         }
-
         tags.push(Tag::SigFlag(sig_flag).as_vec());
 
         Ok(Secret {
@@ -300,11 +301,11 @@ impl TryFrom<Secret> for P2PKConditions {
 
         let refund_keys = if let Some(tag) = tags.get(&TagKind::Refund) {
             match tag {
-                Tag::Refund(keys) => keys.clone(),
-                _ => vec![],
+                Tag::Refund(keys) => Some(keys.clone()),
+                _ => None,
             }
         } else {
-            vec![]
+            None
         };
 
         let sig_flag = if let Some(tag) = tags.get(&TagKind::SigFlag) {
@@ -702,10 +703,10 @@ mod tests {
                 )
                 .unwrap(),
             ],
-            refund_keys: vec![VerifyingKey::from_str(
+            refund_keys: Some(vec![VerifyingKey::from_str(
                 "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
             )
-            .unwrap()],
+            .unwrap()]),
             num_sigs: Some(2),
             sig_flag: SigFlag::SigAll,
         };
@@ -742,7 +743,7 @@ mod tests {
         let conditions = P2PKConditions {
             locktime: Some(21),
             pubkeys: vec![v_key.clone(), v_key_two, v_key_three],
-            refund_keys: vec![v_key],
+            refund_keys: Some(vec![v_key]),
             num_sigs: Some(2),
             sig_flag: SigFlag::SigInputs,
         };

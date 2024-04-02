@@ -39,7 +39,7 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 pub trait LocalStore {
     async fn add_mint(
         &self,

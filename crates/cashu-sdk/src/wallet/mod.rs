@@ -1,6 +1,7 @@
 //! Cashu Wallet
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cashu::dhke::{construct_proofs, unblind_message};
@@ -52,21 +53,29 @@ pub enum Error {
     Cashu(#[from] cashu::error::Error),
     #[error("Could not verify Dleq")]
     CouldNotVerifyDleq,
+    #[error("P2PK Condition Not met `{0}`")]
+    P2PKConditionsNotMet(String),
+    #[error("Invalid Spending Conditions: `{0}`")]
+    InvalidSpendConditions(String),
     #[error("Unknown Key")]
     UnknownKey,
     #[error("`{0}`")]
     Custom(String),
 }
 
-#[derive(Clone, Debug)]
-pub struct Wallet<C: Client, L: LocalStore> {
-    pub client: C,
-    localstore: L,
+#[derive(Clone)]
+pub struct Wallet {
+    pub client: Arc<dyn Client + Send + Sync>,
+    pub localstore: Arc<dyn LocalStore + Send + Sync>,
     mnemonic: Option<Mnemonic>,
 }
 
-impl<C: Client, L: LocalStore> Wallet<C, L> {
-    pub async fn new(client: C, localstore: L, mnemonic: Option<Mnemonic>) -> Self {
+impl Wallet {
+    pub async fn new(
+        client: Arc<dyn Client + Sync + Send>,
+        localstore: Arc<dyn LocalStore + Send + Sync>,
+        mnemonic: Option<Mnemonic>,
+    ) -> Self {
         Self {
             mnemonic,
             client,
@@ -1134,19 +1143,115 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         Ok(restored_value)
     }
 
+    /// Verify all proofs in token have meet the required spend
+    /// Can be used to allow a wallet to accept payments offline while reducing
+    /// the risk of claiming back to the limits let by the spending_conditions
+    #[cfg(feature = "nut11")]
+    pub fn verify_token_p2pk(
+        &self,
+        token: &Token,
+        spending_conditions: P2PKConditions,
+    ) -> Result<(), Error> {
+        use cashu::nuts::nut10;
+
+        if spending_conditions.refund_keys.is_some() && spending_conditions.locktime.is_none() {
+            warn!(
+                "Invalid spending conditions set: Locktime must be set if refund keys are allowed"
+            );
+            return Err(Error::InvalidSpendConditions(
+                "Must set locktime".to_string(),
+            ));
+        }
+
+        for mint_proof in &token.token {
+            for proof in &mint_proof.proofs {
+                let secret: nut10::Secret = (&proof.secret).try_into().unwrap();
+
+                let proof_conditions: P2PKConditions = secret.try_into().unwrap();
+
+                if spending_conditions.num_sigs.ne(&proof_conditions.num_sigs) {
+                    debug!(
+                        "Spending condition requires: {:?} sigs proof secret specifies: {:?}",
+                        spending_conditions.num_sigs, proof_conditions.num_sigs
+                    );
+
+                    return Err(Error::P2PKConditionsNotMet(
+                        "Num sigs did not match spending condition".to_string(),
+                    ));
+                }
+
+                // Check the Proof has the required pubkeys
+                if proof_conditions
+                    .pubkeys
+                    .len()
+                    .ne(&spending_conditions.pubkeys.len())
+                    || !proof_conditions
+                        .pubkeys
+                        .iter()
+                        .all(|pubkey| spending_conditions.pubkeys.contains(pubkey))
+                {
+                    debug!("Proof did not included Publickeys meeting condition");
+                    return Err(Error::P2PKConditionsNotMet(
+                        "Pubkeys in proof not allowed by spending condition".to_string(),
+                    ));
+                }
+
+                // If spending condition refund keys is allowed (Some(Empty Vec))
+                // If spending conition refund keys is allowed to restricted set of keys check
+                // it is one of them Check that proof locktime is > condition
+                // locktime
+
+                if let Some(proof_refund_keys) = proof_conditions.refund_keys {
+                    let proof_locktime = proof_conditions.locktime.unwrap();
+
+                    if let (Some(condition_refund_keys), Some(condition_locktime)) = (
+                        &spending_conditions.refund_keys,
+                        spending_conditions.locktime,
+                    ) {
+                        // Proof locktime must be greater then condition locktime to ensure it
+                        // cannot be claimed back
+                        if proof_locktime.lt(&condition_locktime) {
+                            return Err(Error::P2PKConditionsNotMet(
+                                "Proof locktime less then required".to_string(),
+                            ));
+                        }
+
+                        // A non empty condition refund key list is used as a restricted set of keys
+                        // returns are allowed to An empty list means the
+                        // proof can be refunded to anykey set in the secret
+                        if !condition_refund_keys.is_empty()
+                            && !proof_refund_keys
+                                .iter()
+                                .all(|refund_key| condition_refund_keys.contains(refund_key))
+                        {
+                            return Err(Error::P2PKConditionsNotMet(
+                                "Refund Key not allowed".to_string(),
+                            ));
+                        }
+                    } else {
+                        // Spending conditions does not allow refund keys
+                        return Err(Error::P2PKConditionsNotMet(
+                            "Spending condition does not allow refund keys".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Verify all proofs in token have a valid DLEQ proof
     #[cfg(feature = "nut12")]
-    pub async fn verify_token_dleq(&self, token: Token) -> Result<(), Error> {
+    pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
 
-        for mint_proof in token.token {
-            let mint_url = mint_proof.mint;
-
-            for proof in mint_proof.proofs {
+        for mint_proof in &token.token {
+            for proof in &mint_proof.proofs {
                 let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                     Some(keys) => keys.amount_key(proof.amount),
                     None => {
-                        let keys = self.get_keyset_keys(&mint_url, proof.keyset_id).await?;
+                        let keys = self.localstore.get_keys(&proof.keyset_id).await?.unwrap();
 
                         let key = keys.amount_key(proof.amount);
                         keys_cache.insert(proof.keyset_id, keys);
