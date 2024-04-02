@@ -1133,6 +1133,37 @@ impl<C: Client, L: LocalStore> Wallet<C, L> {
         }
         Ok(restored_value)
     }
+
+    /// Verify all proofs in token have a valid DLEQ proof
+    #[cfg(feature = "nut12")]
+    pub async fn verify_token_dleq(&self, token: Token) -> Result<(), Error> {
+        let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
+
+        for mint_proof in token.token {
+            let mint_url = mint_proof.mint;
+
+            for proof in mint_proof.proofs {
+                let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
+                    Some(keys) => keys.amount_key(proof.amount),
+                    None => {
+                        let keys = self.get_keyset_keys(&mint_url, proof.keyset_id).await?;
+
+                        let key = keys.amount_key(proof.amount);
+                        keys_cache.insert(proof.keyset_id, keys);
+
+                        key
+                    }
+                }
+                .ok_or(Error::UnknownKey)?;
+
+                proof
+                    .verify_dleq(&mint_pubkey)
+                    .map_err(|_| Error::CouldNotVerifyDleq)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /*
