@@ -27,7 +27,7 @@ Experimental bindings for this project can be found in the [cashu-crab-bindings]
 
 ## License
 
-Code is under the [BSD 3-Clause License](LICENSE-BSD-3)
+Code is under the [BSD 3-Clause License](LICENSE)
 
 ## Contribution
 
