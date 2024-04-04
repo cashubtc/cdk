@@ -296,7 +296,7 @@ impl TryFrom<P2PKConditions> for Secret {
             tags.push(Tag::SigFlag(sig_flag).as_vec());
         }
 
-        let tags = if !tags.is_empty() { Some(tags) } else { None };
+        let tags = (!tags.is_empty()).then(|| tags);
 
         Ok(Secret {
             kind: super::nut10::Kind::P2PK,
