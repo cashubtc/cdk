@@ -31,7 +31,7 @@ pub struct MeltQuoteBtcOnchainResponse {
     pub amount: u64,
     /// The fee that is required
     pub fee: u64,
-    /// Whether the the request haas be paid
+    /// Whether the the request has been paid
     pub paid: bool,
     /// Unix timestamp until the quote is valid
     pub expiry: u64,

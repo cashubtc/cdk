@@ -22,9 +22,9 @@ pub struct MintQuoteBtcOnchainRequest {
 pub struct MintQuoteBtcOnchainResponse {
     /// Quote Id
     pub quote: String,
-    /// Payment request to fulfil
+    /// Payment request to fulfill
     pub address: String,
-    /// Whether the the request haas be paid
+    /// Whether the the request has been paid
     pub paid: bool,
     /// Unix timestamp until the quote is valid
     pub expiry: u64,
