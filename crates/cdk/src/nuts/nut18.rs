@@ -12,9 +12,9 @@ use crate::{Amount, Bolt11Invoice};
 /// Melt quote request [NUT-18]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuoteBtcOnchainRequest {
-    /// Bitcoin onchain address to be paid
+    /// Amount to be paid
     pub amount: Amount,
-    /// Bolt11 invoice to be paid
+    /// Bitcoin onchain address to be paid
     pub address: Bolt11Invoice,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
@@ -57,7 +57,7 @@ impl MeltBtcOnchianRequest {
 pub struct MeltBtcOnChainResponse {
     /// Indicate if payment was successful
     pub paid: bool,
-    /// Bolt11 preimage
+    // TXID
     pub txid: Option<String>,
 }
 
