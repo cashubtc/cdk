@@ -296,7 +296,7 @@ impl TryFrom<P2PKConditions> for Secret {
             tags.push(Tag::SigFlag(sig_flag).as_vec());
         }
 
-        let tags = (!tags.is_empty()).then(|| tags);
+        let tags = (!tags.is_empty()).then_some(tags);
 
         Ok(Secret {
             kind: super::nut10::Kind::P2PK,
@@ -808,7 +808,7 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .unwrap();
-        println!("{}", secret_key.public_key().to_string());
+        //  println!("{}", secret_key.public_key().to_string());
         // Proof with a valid signature
         let valid_proof = r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"7b99e03aeeef568244585c8a4c9cdb855fafdf7809db929e69015a42b142e08b\",\"data\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"9a2851824c39fc1743dd0a9ecf4469284798882ebbc783ae11c823daf936a2ba04d63006865fd62c96a7d323a8161828cd606797a3fed47d624453a56be548bf\"]}"}"#;
 
