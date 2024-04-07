@@ -3,6 +3,7 @@ pub mod memory;
 pub mod redb_store;
 
 use std::collections::HashMap;
+use std::num::ParseIntError;
 
 use async_trait::async_trait;
 use cashu::nuts::nut02::mint::KeySet;
@@ -37,6 +38,8 @@ pub enum Error {
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Serde(#[from] serde_json::Error),
+    #[error("`{0}`")]
+    ParseInt(#[from] ParseIntError),
     #[error("Unknown Mint Info")]
     UnknownMintInfo,
     #[error("`{0}`")]

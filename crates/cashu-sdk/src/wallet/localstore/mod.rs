@@ -4,6 +4,7 @@ mod memory;
 mod redb_store;
 
 use std::collections::HashMap;
+use std::num::ParseIntError;
 
 use async_trait::async_trait;
 use cashu::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
@@ -37,6 +38,8 @@ pub enum Error {
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
     #[error("`{0}`")]
     Serde(#[from] serde_json::Error),
+    #[error("`{0}`")]
+    ParseInt(#[from] ParseIntError),
 }
 
 #[async_trait]
