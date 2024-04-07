@@ -1,5 +1,6 @@
 //! Cashu Wallet
 use std::collections::{HashMap, HashSet};
+use std::num::ParseIntError;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -59,6 +60,8 @@ pub enum Error {
     InvalidSpendConditions(String),
     #[error("Unknown Key")]
     UnknownKey,
+    #[error("`{0}`")]
+    ParseInt(#[from] ParseIntError),
     #[error("`{0}`")]
     Custom(String),
 }

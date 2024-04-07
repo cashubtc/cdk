@@ -25,6 +25,8 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 // Key is hex blinded_message B_ value is blinded_signature
 const BLINDED_SIGNATURES: TableDefinition<&[u8], &str> = TableDefinition::new("blinded_signatures");
 
+const DATABASE_VERSION: u64 = 0;
+
 #[derive(Debug, Clone)]
 pub struct RedbLocalStore {
     db: Arc<Mutex<Database>>,
@@ -35,18 +37,35 @@ impl RedbLocalStore {
         let db = Database::create(path)?;
 
         let write_txn = db.begin_write()?;
+        // Check database version
         {
-            let _ = write_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
-            let _ = write_txn.open_table(KEYSETS_TABLE)?;
-            let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
-            let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-            let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
-            let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
             let _ = write_txn.open_table(CONFIG_TABLE)?;
-            let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
-        }
-        write_txn.commit()?;
+            let mut table = write_txn.open_table(CONFIG_TABLE)?;
 
+            let db_version = table.get("db_version")?;
+            let db_version = db_version.map(|v| v.value().to_owned());
+
+            if let Some(db_version) = db_version {
+                let current_file_version = u64::from_str(&db_version)?;
+                if current_file_version.ne(&DATABASE_VERSION) {
+                    // Database needs to be upgraded
+                    todo!()
+                }
+            } else {
+                // Open all tables to init a new db
+                let _ = write_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
+                let _ = write_txn.open_table(KEYSETS_TABLE)?;
+                let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
+                let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
+                let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
+                let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
+                let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
+
+                table.insert("db_version", "0")?;
+            };
+        }
+
+        write_txn.commit()?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
         })

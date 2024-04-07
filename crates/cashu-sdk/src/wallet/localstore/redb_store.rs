@@ -20,8 +20,11 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: MultimapTableDefinition<&str, &str> = MultimapTableDefinition::new("proofs");
 const PENDING_PROOFS_TABLE: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("pending_proofs");
+const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 #[cfg(feature = "nut13")]
 const KEYSET_COUNTER: TableDefinition<&str, u64> = TableDefinition::new("keyset_counter");
+
+const DATABASE_VERSION: u64 = 0;
 
 #[derive(Debug, Clone)]
 pub struct RedbLocalStore {
@@ -33,15 +36,35 @@ impl RedbLocalStore {
         let db = Database::create(path)?;
 
         let write_txn = db.begin_write()?;
+
+        // Check database version
         {
-            let _ = write_txn.open_table(MINTS_TABLE)?;
-            let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
-            let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
-            let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-            let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
-            let _ = write_txn.open_multimap_table(PROOFS_TABLE)?;
-            #[cfg(feature = "nut13")]
-            let _ = write_txn.open_table(KEYSET_COUNTER)?;
+            let _ = write_txn.open_table(CONFIG_TABLE)?;
+            let mut table = write_txn.open_table(CONFIG_TABLE)?;
+
+            let db_version = table.get("db_version")?;
+            let db_version = db_version.map(|v| v.value().to_owned());
+
+            if let Some(db_version) = db_version {
+                let current_file_version = u64::from_str(&db_version)?;
+                if current_file_version.ne(&DATABASE_VERSION) {
+                    // Database needs to be upgraded
+                    todo!()
+                }
+                #[cfg(feature = "nut13")]
+                let _ = write_txn.open_table(KEYSET_COUNTER)?;
+            } else {
+                // Open all tables to init a new db
+                let _ = write_txn.open_table(MINTS_TABLE)?;
+                let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+                let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
+                let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
+                let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
+                let _ = write_txn.open_multimap_table(PROOFS_TABLE)?;
+                #[cfg(feature = "nut13")]
+                let _ = write_txn.open_table(KEYSET_COUNTER)?;
+                table.insert("db_version", "0")?;
+            };
         }
         write_txn.commit()?;
 
