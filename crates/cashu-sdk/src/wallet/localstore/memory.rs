@@ -211,6 +211,7 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
+    #[cfg(feature = "nut13")]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
         let keyset_counter = self.keyset_counter.lock().await;
         let current_counter = keyset_counter.get(keyset_id).unwrap_or(&0);
@@ -221,6 +222,7 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
+    #[cfg(feature = "nut13")]
     async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u64>, Error> {
         Ok(self.keyset_counter.lock().await.get(id).cloned())
     }

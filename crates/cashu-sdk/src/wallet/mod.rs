@@ -316,33 +316,42 @@ impl Wallet {
 
         let active_keyset_id = self.active_mint_keyset(&mint_url, &quote_info.unit).await?;
 
-        let mut counter = None;
+        let mut counter: Option<u64> = None;
 
-        let premint_secrets = match &self.mnemonic {
-            Some(mnemonic) => {
-                let count = self
-                    .localstore
-                    .get_keyset_counter(&active_keyset_id)
-                    .await?;
+        let premint_secrets;
 
-                let count = if let Some(count) = count {
-                    count + 1
-                } else {
-                    0
-                };
+        #[cfg(not(feature = "nut13"))]
+        {
+            premint_secrets = PreMintSecrets::random(active_keyset_id, quote_info.amount)?;
+        }
 
-                counter = Some(count);
-                PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    mnemonic,
-                    quote_info.amount,
-                    false,
-                )?
-            }
-            None => PreMintSecrets::random(active_keyset_id, quote_info.amount)?,
-        };
+        #[cfg(feature = "nut13")]
+        {
+            premint_secrets = match &self.mnemonic {
+                Some(mnemonic) => {
+                    let count = self
+                        .localstore
+                        .get_keyset_counter(&active_keyset_id)
+                        .await?;
 
+                    let count = if let Some(count) = count {
+                        count + 1
+                    } else {
+                        0
+                    };
+
+                    counter = Some(count);
+                    PreMintSecrets::from_seed(
+                        active_keyset_id,
+                        count,
+                        mnemonic,
+                        quote_info.amount,
+                        false,
+                    )?
+                }
+                None => PreMintSecrets::random(active_keyset_id, quote_info.amount)?,
+            };
+        }
         let mint_res = self
             .client
             .post_mint(
@@ -381,6 +390,7 @@ impl Wallet {
         self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         // Update counter for keyset
+        #[cfg(feature = "nut13")]
         if counter.is_some() {
             self.localstore
                 .increment_keyset_counter(&active_keyset_id, proofs.len() as u64)
@@ -456,6 +466,7 @@ impl Wallet {
                 &keys,
             )?;
 
+            #[cfg(feature = "nut13")]
             if self.mnemonic.is_some() {
                 self.localstore
                     .increment_keyset_counter(&active_keyset_id, p.len() as u64)
@@ -492,32 +503,42 @@ impl Wallet {
 
         let mut counter = None;
 
-        let mut desired_messages = if let Some(mnemonic) = &self.mnemonic {
-            let count = self
-                .localstore
-                .get_keyset_counter(&active_keyset_id)
-                .await?;
+        let mut desired_messages;
 
-            let count = if let Some(count) = count {
-                count + 1
+        #[cfg(not(feature = "nut13"))]
+        {
+            desired_messages = PreMintSecrets::random(active_keyset_id, desired_amount)?;
+        }
+
+        #[cfg(feature = "nut13")]
+        {
+            desired_messages = if let Some(mnemonic) = &self.mnemonic {
+                let count = self
+                    .localstore
+                    .get_keyset_counter(&active_keyset_id)
+                    .await?;
+
+                let count = if let Some(count) = count {
+                    count + 1
+                } else {
+                    0
+                };
+
+                let premint_secrets = PreMintSecrets::from_seed(
+                    active_keyset_id,
+                    count,
+                    mnemonic,
+                    desired_amount,
+                    false,
+                )?;
+
+                counter = Some(count + premint_secrets.len() as u64);
+
+                premint_secrets
             } else {
-                0
+                PreMintSecrets::random(active_keyset_id, desired_amount)?
             };
-
-            let premint_secrets = PreMintSecrets::from_seed(
-                active_keyset_id,
-                count,
-                mnemonic,
-                desired_amount,
-                false,
-            )?;
-
-            counter = Some(count + premint_secrets.len() as u64);
-
-            premint_secrets
-        } else {
-            PreMintSecrets::random(active_keyset_id, desired_amount)?
-        };
+        }
 
         if let Some(amt) = amount {
             let change_amount = proofs_total - amt;
@@ -593,6 +614,7 @@ impl Wallet {
             proofs.push(proof);
         }
 
+        #[cfg(feature = "nut13")]
         if self.mnemonic.is_some() {
             for (keyset_id, count) in proof_count {
                 self.localstore
@@ -634,6 +656,7 @@ impl Wallet {
 
         let active_keyset = self.active_mint_keyset(mint_url, unit).await?;
 
+        #[cfg(feature = "nut13")]
         if self.mnemonic.is_some() {
             self.localstore
                 .increment_keyset_counter(&active_keyset, post_swap_proofs.len() as u64)
@@ -784,28 +807,44 @@ impl Wallet {
 
         let proofs_amount = proofs.iter().map(|p| p.amount).sum();
 
-        let mut counter = None;
+        let mut counter: Option<u64> = None;
 
         let active_keyset_id = self.active_mint_keyset(mint_url, &quote_info.unit).await?;
 
-        let premint_secrets = match &self.mnemonic {
-            Some(mnemonic) => {
-                let count = self
-                    .localstore
-                    .get_keyset_counter(&active_keyset_id)
-                    .await?;
+        let premint_secrets;
 
-                let count = if let Some(count) = count {
-                    count + 1
-                } else {
-                    0
-                };
+        #[cfg(not(feature = "nut13"))]
+        {
+            premint_secrets = PreMintSecrets::blank(active_keyset_id, proofs_amount)?;
+        }
 
-                counter = Some(count);
-                PreMintSecrets::from_seed(active_keyset_id, count, mnemonic, proofs_amount, true)?
-            }
-            None => PreMintSecrets::blank(active_keyset_id, proofs_amount)?,
-        };
+        #[cfg(feature = "nut13")]
+        {
+            premint_secrets = match &self.mnemonic {
+                Some(mnemonic) => {
+                    let count = self
+                        .localstore
+                        .get_keyset_counter(&active_keyset_id)
+                        .await?;
+
+                    let count = if let Some(count) = count {
+                        count + 1
+                    } else {
+                        0
+                    };
+
+                    counter = Some(count);
+                    PreMintSecrets::from_seed(
+                        active_keyset_id,
+                        count,
+                        mnemonic,
+                        proofs_amount,
+                        true,
+                    )?
+                }
+                None => PreMintSecrets::blank(active_keyset_id, proofs_amount)?,
+            };
+        }
 
         let melt_response = self
             .client
@@ -838,7 +877,9 @@ impl Wallet {
                 "Change amount returned from melt: {}",
                 change_proofs.iter().map(|p| p.amount).sum::<Amount>()
             );
+
             // Update counter for keyset
+            #[cfg(feature = "nut13")]
             if counter.is_some() {
                 self.localstore
                     .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u64)
@@ -1020,6 +1061,7 @@ impl Wallet {
             )?;
             let mint_proofs = received_proofs.entry(token.mint).or_default();
 
+            #[cfg(feature = "nut13")]
             if self.mnemonic.is_some() {
                 self.localstore
                     .increment_keyset_counter(&active_keyset_id, p.len() as u64)
@@ -1046,6 +1088,7 @@ impl Wallet {
         Ok(Token::new(mint_url, proofs, memo, unit)?.to_string())
     }
 
+    #[cfg(feature = "nut13")]
     pub async fn restore(&mut self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
@@ -1117,6 +1160,7 @@ impl Wallet {
 
                 debug!("Restored {} proofs", proofs.len());
 
+                #[cfg(feature = "nut13")]
                 self.localstore
                     .increment_keyset_counter(&keyset.id, proofs.len() as u64)
                     .await?;
