@@ -409,6 +409,16 @@ pub mod wallet {
         }
     }
 
+    impl From<TokenV4> for Token {
+        fn from(token: TokenV4) -> Self {
+            Token {
+                token: token.token.into_iter().map(Into::into).collect(),
+                memo: token.memo,
+                unit: token.unit,
+            }
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct TokenV4 {
         #[serde(rename = "t")]
@@ -439,16 +449,6 @@ pub mod wallet {
             }
         }
     }
-
-    impl Into<Token> for TokenV4 {
-        fn into(self) -> Token {
-            Token {
-                token: self.token.into_iter().map(Into::into).collect(),
-                memo: self.memo,
-                unit: self.unit,
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,6 +467,15 @@ impl MintProofs {
     }
 }
 
+impl From<MintProofsV4> for MintProofs {
+    fn from(mint_proofs: MintProofsV4) -> Self {
+        MintProofs {
+            mint: mint_proofs.mint,
+            proofs: mint_proofs.proofs.into_iter().map(From::from).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MintProofsV4 {
     #[serde(rename = "m")]
@@ -480,15 +489,6 @@ impl From<MintProofs> for MintProofsV4 {
         MintProofsV4 {
             mint: mint_proofs.mint,
             proofs: mint_proofs.proofs.into_iter().map(From::from).collect(),
-        }
-    }
-}
-
-impl Into<MintProofs> for MintProofsV4 {
-    fn into(self) -> MintProofs {
-        MintProofs {
-            mint: self.mint,
-            proofs: self.proofs.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -567,6 +567,21 @@ impl PartialOrd for Proof {
     }
 }
 
+impl From<ProofV4> for Proof {
+    fn from(proof: ProofV4) -> Self {
+        Proof {
+            amount: proof.amount,
+            keyset_id: proof.keyset_id,
+            secret: proof.secret,
+            c: proof.c,
+            #[cfg(feature = "nut11")]
+            witness: proof.witness,
+            #[cfg(feature = "nut12")]
+            dleq: proof.dleq,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofV4 {
     /// Amount in satoshi
@@ -614,7 +629,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let bytes = Vec::<u8>::deserialize(deserializer)?;
-    Ok(Id::from_bytes(&bytes).map_err(serde::de::Error::custom)?)
+    Id::from_bytes(&bytes).map_err(serde::de::Error::custom)
 }
 
 // fn serialize_v4_secret<S>(secret: &Secret, serializer: S) -> Result<S::Ok, S::Error>
@@ -646,7 +661,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let bytes = Vec::<u8>::deserialize(deserializer)?;
-    Ok(PublicKey::from_bytes(&bytes).map_err(serde::de::Error::custom)?)
+    PublicKey::from_bytes(&bytes).map_err(serde::de::Error::custom)
 }
 
 impl From<Proof> for ProofV4 {
@@ -660,21 +675,6 @@ impl From<Proof> for ProofV4 {
             witness: proof.witness,
             #[cfg(feature = "nut12")]
             dleq: proof.dleq,
-        }
-    }
-}
-
-impl Into<Proof> for ProofV4 {
-    fn into(self) -> Proof {
-        Proof {
-            amount: self.amount,
-            keyset_id: self.keyset_id,
-            secret: self.secret,
-            c: self.c,
-            #[cfg(feature = "nut11")]
-            witness: self.witness,
-            #[cfg(feature = "nut12")]
-            dleq: self.dleq,
         }
     }
 }
