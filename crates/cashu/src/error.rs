@@ -98,6 +98,9 @@ pub mod wallet {
         /// Serde Json error
         #[error("`{0}`")]
         SerdeJsonError(#[from] serde_json::Error),
+        /// Ciborium error
+        #[error("`{0}`")]
+        CiboriumError(#[from] ciborium::de::Error<std::io::Error>),
         /// From elliptic curve
         #[error("`{0}`")]
         EllipticError(#[from] k256::elliptic_curve::Error),

@@ -77,6 +77,10 @@ impl PublicKey {
     pub fn to_bytes(&self) -> Box<[u8]> {
         self.0.to_sec1_bytes()
     }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        Ok(PublicKey(k256::PublicKey::from_sec1_bytes(bytes)?))
+    }
 }
 
 impl From<PublicKey> for Box<[u8]> {

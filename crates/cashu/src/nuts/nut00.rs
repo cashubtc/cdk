@@ -121,7 +121,7 @@ pub mod wallet {
     use serde::{Deserialize, Serialize};
     use url::Url;
 
-    use super::{CurrencyUnit, MintProofs};
+    use super::{CurrencyUnit, MintProofs, MintProofsV4};
     use crate::dhke::blind_message;
     use crate::error::wallet;
     #[cfg(feature = "nut11")]
@@ -366,32 +366,87 @@ pub mod wallet {
 
             (amount.into(), self.token[0].mint.to_string())
         }
+
+        pub fn to_v4_string(&self) -> String {
+            TokenV4::from(self.clone()).to_string()
+        }
     }
 
     impl FromStr for Token {
         type Err = error::wallet::Error;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
-            let s = if s.starts_with("cashuA") {
+            let is_v3 = s.starts_with("cashuA");
+            let is_v4 = s.starts_with("cashuB");
+            let s = if is_v3 {
                 s.replace("cashuA", "")
+            } else if is_v4 {
+                s.replace("cashuB", "")
             } else {
                 return Err(wallet::Error::UnsupportedToken);
             };
 
             let decode_config = general_purpose::GeneralPurposeConfig::new()
                 .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
-            let decoded = GeneralPurpose::new(&alphabet::STANDARD, decode_config).decode(s)?;
-            let decoded_str = String::from_utf8(decoded)?;
-            let token: Token = serde_json::from_str(&decoded_str)?;
-            Ok(token)
+            let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
+            if is_v3 {
+                let decoded_str = String::from_utf8(decoded)?;
+                let token: Token = serde_json::from_str(&decoded_str)?;
+                Ok(token)
+            } else {
+                println!("{}", hex::encode(decoded.clone()));
+                let token: TokenV4 = ciborium::from_reader(&decoded[..])?;
+                Ok(token.into())
+            }
         }
     }
 
     impl fmt::Display for Token {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let json_string = serde_json::to_string(self).map_err(|_| fmt::Error)?;
-            let encoded = general_purpose::STANDARD.encode(json_string);
+            let encoded = general_purpose::URL_SAFE.encode(json_string);
             write!(f, "cashuA{}", encoded)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TokenV4 {
+        #[serde(rename = "t")]
+        pub token: Vec<MintProofsV4>,
+        /// Memo for token
+        #[serde(rename = "m", skip_serializing_if = "Option::is_none")]
+        pub memo: Option<String>,
+        /// Token Unit
+        #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
+        pub unit: Option<CurrencyUnit>,
+    }
+
+    impl fmt::Display for TokenV4 {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let mut data = Vec::new();
+            ciborium::into_writer(self, &mut data).unwrap();
+            let encoded = general_purpose::URL_SAFE.encode(data);
+            write!(f, "cashuB{}", encoded)
+        }
+    }
+
+    impl From<Token> for TokenV4 {
+        fn from(token: Token) -> Self {
+            TokenV4 {
+                token: token.token.into_iter().map(Into::into).collect(),
+                memo: token.memo,
+                unit: token.unit,
+            }
+        }
+    }
+
+    impl Into<Token> for TokenV4 {
+        fn into(self) -> Token {
+            Token {
+                token: self.token.into_iter().map(Into::into).collect(),
+                memo: self.memo,
+                unit: self.unit,
+            }
         }
     }
 }
@@ -408,6 +463,32 @@ impl MintProofs {
         Self {
             mint: mint_url,
             proofs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MintProofsV4 {
+    #[serde(rename = "m")]
+    pub mint: UncheckedUrl,
+    #[serde(rename = "p")]
+    pub proofs: Vec<ProofV4>,
+}
+
+impl From<MintProofs> for MintProofsV4 {
+    fn from(mint_proofs: MintProofs) -> Self {
+        MintProofsV4 {
+            mint: mint_proofs.mint,
+            proofs: mint_proofs.proofs.into_iter().map(From::from).collect(),
+        }
+    }
+}
+
+impl Into<MintProofs> for MintProofsV4 {
+    fn into(self) -> MintProofs {
+        MintProofs {
+            mint: self.mint,
+            proofs: self.proofs.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -486,6 +567,118 @@ impl PartialOrd for Proof {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofV4 {
+    /// Amount in satoshi
+    #[serde(rename = "a")]
+    pub amount: Amount,
+    /// `Keyset id`
+    #[serde(
+        rename = "i",
+        serialize_with = "serialize_v4_keyset_id",
+        deserialize_with = "deserialize_v4_keyset_id"
+    )]
+    pub keyset_id: Id,
+    /// Secret message
+    #[serde(rename = "s")]
+    pub secret: Secret,
+    /// Unblinded signature
+    #[serde(
+        serialize_with = "serialize_v4_pubkey",
+        deserialize_with = "deserialize_v4_pubkey"
+    )]
+    pub c: PublicKey,
+    #[cfg(feature = "nut11")]
+    /// Witness
+    #[cfg(feature = "nut11")]
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "witness_serialize")]
+    #[serde(deserialize_with = "witness_deserialize")]
+    pub witness: Option<Signatures>,
+    /// DLEQ Proof
+    #[cfg(feature = "nut12")]
+    #[serde(rename = "d")]
+    pub dleq: Option<ProofDleq>,
+}
+
+fn serialize_v4_keyset_id<S>(keyset_id: &Id, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_bytes(&keyset_id.to_bytes())
+}
+
+fn deserialize_v4_keyset_id<'de, D>(deserializer: D) -> Result<Id, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let bytes = Vec::<u8>::deserialize(deserializer)?;
+    Ok(Id::from_bytes(&bytes).map_err(serde::de::Error::custom)?)
+}
+
+// fn serialize_v4_secret<S>(secret: &Secret, serializer: S) -> Result<S::Ok, S::Error>
+// where
+//     S: serde::Serializer,
+// {
+//     serializer.serialize_bytes(&secret.0.as_bytes())
+// }
+
+// fn deserialize_v4_secret<'de, D>(deserializer: D) -> Result<Secret, D::Error>
+// where
+//     D: serde::Deserializer<'de>,
+// {
+//     let bytes = Vec::<u8>::deserialize(deserializer)?;
+//     Ok(Secret(
+//         String::from_utf8(bytes).map_err(serde::de::Error::custom)?,
+//     ))
+// }
+
+fn serialize_v4_pubkey<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_bytes(&key.to_bytes())
+}
+
+fn deserialize_v4_pubkey<'de, D>(deserializer: D) -> Result<PublicKey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let bytes = Vec::<u8>::deserialize(deserializer)?;
+    Ok(PublicKey::from_bytes(&bytes).map_err(serde::de::Error::custom)?)
+}
+
+impl From<Proof> for ProofV4 {
+    fn from(proof: Proof) -> Self {
+        ProofV4 {
+            amount: proof.amount,
+            keyset_id: proof.keyset_id,
+            secret: proof.secret,
+            c: proof.c,
+            #[cfg(feature = "nut11")]
+            witness: proof.witness,
+            #[cfg(feature = "nut12")]
+            dleq: proof.dleq,
+        }
+    }
+}
+
+impl Into<Proof> for ProofV4 {
+    fn into(self) -> Proof {
+        Proof {
+            amount: self.amount,
+            keyset_id: self.keyset_id,
+            secret: self.secret,
+            c: self.c,
+            #[cfg(feature = "nut11")]
+            witness: self.witness,
+            #[cfg(feature = "nut12")]
+            dleq: self.dleq,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -523,6 +716,28 @@ mod tests {
         assert_eq!(token.unit.clone().unwrap(), CurrencyUnit::Sat);
 
         let encoded = &token.to_string();
+
+        let token_data = Token::from_str(encoded).unwrap();
+
+        assert_eq!(token_data, token);
+    }
+
+    #[test]
+    fn test_token_v4_str_round_trip() {
+        let token_str = "cashuBoWF0gaJhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhcIKkYWlIAIiC2b1wghxhYQJhc3hAMGY5OTJmYmNmZjQ1MGI2YzJmNWNiYWMwMmQ2OWE4ZDUwOGIwOTEyYzEwZTI1NDVlYmEyZGVmNTU0M2FhNDVlMWFjWCECWAksUObH-oRm-Oa1whlFLElCyz5i_r1zyC1etH_Kmc6kYWlIAIiC2b1wghxhYQhhc3hAYTg5NGZjNDljZWYxMmM3MGFjMDhhZmQ2YTRkZTY4ZmQ2M2JiOWJjYmY5MzAyZTc3OTdiZTQ1ZDc2MGNiOGFmY2FjWCEC4rg3LKRNqFEtqV-xqtqX2WypEzSFhDAd7WHdiSQsZ6c=";
+
+        let token = Token::from_str(token_str).unwrap();
+
+        assert_eq!(
+            token.token[0].mint,
+            UncheckedUrl::from_str("http://localhost:3338").unwrap()
+        );
+        assert_eq!(
+            token.token[0].proofs[0].clone().keyset_id,
+            Id::from_str("008882d9bd70821c").unwrap()
+        );
+
+        let encoded = &token.to_v4_string();
 
         let token_data = Token::from_str(encoded).unwrap();
 

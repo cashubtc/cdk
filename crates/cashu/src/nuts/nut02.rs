@@ -45,6 +45,15 @@ pub struct Id {
 
 impl Id {
     const STRLEN: usize = 14;
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        hex::decode(self.to_string()).unwrap()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let hex = hex::encode(bytes);
+        Self::from_str(&hex)
+    }
 }
 
 impl TryFrom<Id> for u64 {

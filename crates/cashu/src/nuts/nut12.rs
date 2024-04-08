@@ -118,7 +118,7 @@ impl Proof {
         let c: k256::PublicKey = (&self.c).into();
         let mint_pubkey: k256::PublicKey = mint_pubkey.into();
 
-        let y = hash_to_curve(self.secret.0.as_bytes())?;
+        let y = hash_to_curve(&self.secret.to_bytes())?;
         let blinded_signature = c.to_projective()
             + mint_pubkey
                 .as_affine()
