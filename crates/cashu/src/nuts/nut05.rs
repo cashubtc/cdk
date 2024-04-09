@@ -1,5 +1,6 @@
-//! Melting Tokens
-// https://github.com/cashubtc/nuts/blob/main/05.md
+//! NUT-05: Melting Tokens
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/05.md>
 
 use serde::{Deserialize, Serialize};
 

@@ -1,22 +1,23 @@
-//! Keysets and keyset ID
-// https://github.com/cashubtc/nuts/blob/main/02.md
+//! NUT-02: Keysets and keyset ID
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/02.md>
 
 use core::fmt;
-use std::str::FromStr;
+use core::str::FromStr;
 
 use bitcoin::hashes::{sha256, Hash};
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
 use super::nut01::Keys;
 use super::CurrencyUnit;
+use crate::util::hex;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum Error {
-    #[error("`{0}`")]
-    HexError(#[from] hex::FromHexError),
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
     #[error("NUT02: ID length invalid")]
     Length,
 }
@@ -25,8 +26,9 @@ pub enum Error {
 pub enum KeySetVersion {
     Version00,
 }
-impl std::fmt::Display for KeySetVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+impl fmt::Display for KeySetVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             KeySetVersion::Version00 => f.write_str("00"),
         }
@@ -60,8 +62,8 @@ impl TryFrom<Id> for u64 {
     }
 }
 
-impl std::fmt::Display for Id {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&format!(
             "{}{}",
             self.version,
@@ -105,7 +107,7 @@ impl<'de> serde::de::Deserialize<'de> for Id {
         impl<'de> serde::de::Visitor<'de> for IdVisitor {
             type Value = Id;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("Expecting a 14 char hex string")
             }
 
@@ -141,11 +143,12 @@ impl From<&Keys> for Id {
             5 - prefix it with a keyset ID version byte
         */
 
-        let pubkeys_concat = map
+        // Note: Keys are a BTreeMap so are already sorted by amount in ascending order
+
+        let pubkeys_concat: Vec<u8> = map
             .iter()
-            .sorted_by(|(amt_a, _), (amt_b, _)| amt_a.cmp(amt_b))
             .map(|(_, pubkey)| pubkey.to_bytes())
-            .collect::<Box<[Box<[u8]>]>>()
+            .collect::<Vec<[u8; 33]>>()
             .concat();
 
         let hash = sha256::Hash::hash(&pubkeys_concat);
@@ -219,11 +222,11 @@ pub mod mint {
 
     use bitcoin::hashes::sha256::Hash as Sha256;
     use bitcoin::hashes::{Hash, HashEngine};
-    use k256::SecretKey;
     use serde::{Deserialize, Serialize};
 
     use super::Id;
     use crate::nuts::nut01::mint::{KeyPair, Keys};
+    use crate::nuts::nut01::SecretKey;
     use crate::nuts::CurrencyUnit;
     use crate::Amount;
 
@@ -262,8 +265,8 @@ pub mod mint {
                 let mut e = engine.clone();
                 e.input(i.to_string().as_bytes());
                 let hash = Sha256::from_engine(e);
-                let secret_key = SecretKey::from_slice(&hash.to_byte_array()).unwrap();
-                let keypair = KeyPair::from_secret_key(secret_key.into());
+                let secret_key = SecretKey::from_slice(&hash.to_byte_array()).unwrap(); // TODO: remove unwrap
+                let keypair = KeyPair::from_secret_key(secret_key);
                 map.insert(amount, keypair);
             }
 

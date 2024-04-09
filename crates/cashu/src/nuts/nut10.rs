@@ -1,4 +1,8 @@
-use std::str::FromStr;
+//! NUT-10: Spending conditions
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/10.md>
+
+use core::str::FromStr;
 
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
@@ -35,7 +39,7 @@ impl Secret {
     where
         S: Into<String>,
     {
-        let nonce = crate::secret::Secret::new().to_string();
+        let nonce = crate::secret::Secret::generate().to_string();
         let secret_data = SecretData {
             nonce,
             data: data.into(),

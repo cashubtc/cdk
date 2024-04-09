@@ -1,4 +1,6 @@
-//! Nut-09: Restore signatures
+//! NUT-09: Restore signatures
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/09.md>
 
 use serde::{Deserialize, Serialize};
 

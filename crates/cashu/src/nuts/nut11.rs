@@ -1,13 +1,18 @@
-//! Pay to Public Key (P2PK)
-// https://github.com/cashubtc/nuts/blob/main/11.md
+//! NUT-11: Pay to Public Key (P2PK)
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
 use std::collections::HashMap;
 use std::fmt;
+use std::ops::Deref;
 use std::str::FromStr;
 
-use k256::schnorr::signature::{Signer, Verifier};
-use k256::schnorr::Signature;
-use log::debug;
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::{
+    KeyPair, Message, Parity, PublicKey as NormalizedPublicKey, XOnlyPublicKey,
+};
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
 use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
@@ -17,7 +22,8 @@ use super::nut10::{Secret, SecretData};
 use super::{Proof, SecretKey};
 use crate::error::Error;
 use crate::nuts::nut00::BlindedMessage;
-use crate::utils::unix_time;
+use crate::util::{hex, unix_time};
+use crate::SECP256K1;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signatures {
@@ -54,26 +60,25 @@ impl Proof {
         }
 
         let secret: Secret = self.secret.clone().try_into()?;
-
         let spending_conditions: P2PKConditions = secret.clone().try_into()?;
+        let msg: &[u8] = self.secret.as_bytes();
 
         let mut valid_sigs = 0;
 
-        let msg = &self.secret.to_bytes();
         if let Some(witness) = &self.witness {
-            for signature in &witness.signatures {
+            for signature in witness.signatures.iter() {
                 let mut pubkeys = spending_conditions.pubkeys.clone();
-                let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
-                pubkeys.push(data_key);
+
+                pubkeys.push(VerifyingKey::from_str(&secret.secret_data.data)?);
+
                 for v in &spending_conditions.pubkeys {
-                    let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
+                    let sig = Signature::from_str(signature)?;
 
                     if v.verify(msg, &sig).is_ok() {
                         valid_sigs += 1;
                     } else {
-                        debug!(
-                            "Could not verify signature: {} on message: {}",
-                            hex::encode(sig.to_bytes()),
+                        tracing::debug!(
+                            "Could not verify signature: {sig} on message: {}",
                             self.secret.to_string()
                         )
                     }
@@ -81,7 +86,7 @@ impl Proof {
             }
         }
 
-        if valid_sigs.ge(&spending_conditions.num_sigs.unwrap_or(1)) {
+        if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
             return Ok(());
         }
 
@@ -94,8 +99,8 @@ impl Proof {
                 if let Some(signatures) = &self.witness {
                     for s in &signatures.signatures {
                         for v in &refund_keys {
-                            let sig = Signature::try_from(hex::decode(s)?.as_slice())
-                                .map_err(|_| Error::InvalidSignature)?;
+                            let sig =
+                                Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
 
                             // As long as there is one valid refund signature it can be spent
                             if v.verify(msg, &sig).is_ok() {
@@ -111,15 +116,14 @@ impl Proof {
     }
 
     pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg_to_sign = &self.secret.to_bytes();
-
-        let signature = secret_key.sign(msg_to_sign);
+        let msg: Vec<u8> = self.secret.to_bytes();
+        let signature: Signature = secret_key.sign(&msg)?;
 
         self.witness
             .as_mut()
             .unwrap_or(&mut Signatures::default())
             .signatures
-            .push(hex::encode(signature.to_bytes()));
+            .push(signature.to_string());
 
         Ok(())
     }
@@ -127,15 +131,14 @@ impl Proof {
 
 impl BlindedMessage {
     pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg_to_sign = hex::decode(self.b.to_string())?;
-
-        let signature = secret_key.sign(&msg_to_sign);
+        let msg: [u8; 33] = self.b.to_bytes();
+        let signature: Signature = secret_key.sign(&msg)?;
 
         self.witness
             .as_mut()
             .unwrap_or(&mut Signatures::default())
             .signatures
-            .push(hex::encode(signature.to_bytes()));
+            .push(signature.to_string());
 
         Ok(())
     }
@@ -150,16 +153,12 @@ impl BlindedMessage {
             for signature in &witness.signatures {
                 for v in pubkeys {
                     let msg = &self.b.to_bytes();
-                    let sig = Signature::try_from(hex::decode(signature)?.as_slice())?;
+                    let sig = Signature::from_str(signature)?;
 
                     if v.verify(msg, &sig).is_ok() {
                         valid_sigs += 1;
                     } else {
-                        debug!(
-                            "Could not verify signature: {} on message: {}",
-                            hex::encode(sig.to_bytes()),
-                            self.b.to_string()
-                        )
+                        tracing::debug!("Could not verify signature: {sig} on message: {}", self.b)
                     }
                 }
             }
@@ -225,11 +224,11 @@ impl TryFrom<P2PKConditions> for Secret {
             return Err(Error::Amount);
         }
 
-        let data: PublicKey = pubkeys[0].clone().into();
+        let data: PublicKey = pubkeys[0].clone().to_normalized_public_key();
 
         let data = data.to_string();
 
-        let mut tags = vec![];
+        let mut tags = Vec::new();
 
         if pubkeys.len().gt(&1) {
             tags.push(Tag::PubKeys(pubkeys.into_iter().skip(1).collect()).as_vec());
@@ -488,8 +487,8 @@ impl From<Tag> for Vec<String> {
             Tag::PubKeys(pubkeys) => {
                 let mut tag = vec![TagKind::Pubkeys.to_string()];
 
-                for pubkey in pubkeys {
-                    let pubkey: PublicKey = pubkey.into();
+                for pubkey in pubkeys.into_iter() {
+                    let pubkey: PublicKey = pubkey.to_normalized_public_key();
                     tag.push(pubkey.to_string())
                 }
                 tag
@@ -533,19 +532,26 @@ impl<'de> Deserialize<'de> for Tag {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct VerifyingKey(k256::schnorr::VerifyingKey);
+pub struct VerifyingKey(XOnlyPublicKey);
 
 impl VerifyingKey {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        Ok(VerifyingKey(k256::schnorr::VerifyingKey::from_bytes(
-            bytes,
-        )?))
+        Ok(Self(XOnlyPublicKey::from_slice(bytes)?))
     }
 
-    pub fn verify(&self, msg: &[u8], signature: &Signature) -> Result<(), Error> {
-        self.0
-            .verify(msg, signature)
-            .map_err(|_| Error::InvalidSignature)?;
+    pub fn from_public_key(public_key: PublicKey) -> Self {
+        let (pk, ..) = public_key.x_only_public_key();
+        Self(pk)
+    }
+
+    pub fn to_normalized_public_key(self) -> PublicKey {
+        NormalizedPublicKey::from_x_only_public_key(self.0, Parity::Even).into()
+    }
+
+    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), Error> {
+        let hash: Sha256Hash = Sha256Hash::hash(msg);
+        let msg = Message::from_slice(hash.as_ref())?;
+        SECP256K1.verify_schnorr(sig, &msg, &self.0)?;
         Ok(())
     }
 }
@@ -554,42 +560,22 @@ impl FromStr for VerifyingKey {
     type Err = Error;
 
     fn from_str(hex: &str) -> Result<Self, Self::Err> {
-        let bytes = hex::decode(hex)?;
+        let bytes: Vec<u8> = hex::decode(hex)?;
 
-        let bytes = if bytes.len().eq(&33) {
-            bytes.iter().skip(1).cloned().collect()
+        // Check len
+        let bytes: &[u8] = if bytes.len() == 33 {
+            &bytes[1..]
         } else {
-            bytes.to_vec()
+            &bytes
         };
 
-        Ok(VerifyingKey(
-            k256::schnorr::VerifyingKey::from_bytes(&bytes).map_err(|_| Error::Key)?,
-        ))
+        Ok(Self(XOnlyPublicKey::from_slice(bytes)?))
     }
 }
 
-impl std::fmt::Display for VerifyingKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bytes = self.0.to_bytes();
-        f.write_str(&hex::encode(bytes))
-    }
-}
-
-impl From<VerifyingKey> for k256::schnorr::VerifyingKey {
-    fn from(value: VerifyingKey) -> k256::schnorr::VerifyingKey {
-        value.0
-    }
-}
-
-impl From<&VerifyingKey> for k256::schnorr::VerifyingKey {
-    fn from(value: &VerifyingKey) -> k256::schnorr::VerifyingKey {
-        value.0
-    }
-}
-
-impl From<k256::schnorr::VerifyingKey> for VerifyingKey {
-    fn from(value: k256::schnorr::VerifyingKey) -> VerifyingKey {
-        VerifyingKey(value)
+impl fmt::Display for VerifyingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -616,38 +602,37 @@ impl TryFrom<&PublicKey> for VerifyingKey {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SigningKey(k256::schnorr::SigningKey);
-
-impl From<SigningKey> for k256::schnorr::SigningKey {
-    fn from(value: SigningKey) -> k256::schnorr::SigningKey {
-        value.0
-    }
+pub struct SigningKey {
+    secret_key: SecretKey,
+    key_pair: KeyPair,
 }
 
-impl From<k256::schnorr::SigningKey> for SigningKey {
-    fn from(value: k256::schnorr::SigningKey) -> Self {
-        Self(value)
-    }
-}
+impl Deref for SigningKey {
+    type Target = SecretKey;
 
-impl From<SecretKey> for SigningKey {
-    fn from(value: SecretKey) -> SigningKey {
-        value.into()
+    fn deref(&self) -> &Self::Target {
+        &self.secret_key
     }
 }
 
 impl SigningKey {
-    pub fn public_key(&self) -> VerifyingKey {
-        (*self.0.verifying_key()).into()
+    #[inline]
+    pub fn new(secret_key: SecretKey) -> Self {
+        Self {
+            key_pair: KeyPair::from_secret_key(&SECP256K1, &secret_key),
+            secret_key,
+        }
+    }
+    pub fn sign(&self, msg: &[u8]) -> Result<Signature, Error> {
+        let hash: Sha256Hash = Sha256Hash::hash(msg);
+        let msg = Message::from_slice(hash.as_ref())?;
+        Ok(SECP256K1.sign_schnorr(&msg, &self.key_pair))
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Signature {
-        self.0.sign(msg)
-    }
-
+    #[inline]
     pub fn verifying_key(&self) -> VerifyingKey {
-        VerifyingKey(*self.0.verifying_key())
+        let public_key: PublicKey = self.public_key();
+        VerifyingKey::from_public_key(public_key)
     }
 }
 
@@ -655,30 +640,19 @@ impl FromStr for SigningKey {
     type Err = Error;
 
     fn from_str(hex: &str) -> Result<Self, Self::Err> {
-        let bytes = hex::decode(hex)?;
-
-        let bytes = if bytes.len().eq(&33) {
-            bytes.iter().skip(1).cloned().collect()
-        } else {
-            bytes.to_vec()
-        };
-
-        Ok(SigningKey(
-            k256::schnorr::SigningKey::from_bytes(&bytes).map_err(|_| Error::Key)?,
-        ))
+        let secret_key = SecretKey::from_hex(hex)?;
+        Ok(Self::new(secret_key))
     }
 }
 
-impl std::fmt::Display for SigningKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bytes = self.0.to_bytes();
-
-        f.write_str(&hex::encode(bytes))
+impl fmt::Display for SigningKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.secret_key)
     }
 }
+
 #[cfg(test)]
 mod tests {
-
     use std::str::FromStr;
 
     use super::*;
@@ -771,10 +745,16 @@ mod tests {
     #[test]
     fn test_verify() {
         // Proof with a valid signature
-        let valid_proof = r#"{"amount":1,"secret":"[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"60f3c9b766770b46caac1d27e1ae6b77c8866ebaeba0b9489fe6a15a837eaa6fcd6eaa825499c72ac342983983fd3ba3a8a41f56677cc99ffd73da68b59e1383\"]}"}"#;
+        let json: &str = r#"{
+            "amount":1,
+            "secret":"[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_INPUTS\"]]}]",
+            "C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            "id":"009a1f293253e41e",
+            "witness":"{\"signatures\":[\"60f3c9b766770b46caac1d27e1ae6b77c8866ebaeba0b9489fe6a15a837eaa6fcd6eaa825499c72ac342983983fd3ba3a8a41f56677cc99ffd73da68b59e1383\"]}"
+        }"#;
+        let valid_proof: Proof = serde_json::from_str(json).unwrap();
 
-        let valid_proof: Proof = serde_json::from_str(valid_proof).unwrap();
-
+        valid_proof.verify_p2pk().unwrap();
         assert!(valid_proof.verify_p2pk().is_ok());
 
         // Proof with a signature that is in a different secret

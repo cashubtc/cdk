@@ -1,35 +1,45 @@
 //! Secret
 
+use core::fmt;
 use std::str::FromStr;
 
+use bitcoin::secp256k1::rand::{self, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::util::hex;
 
 /// The secret data that allows spending ecash
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Secret(pub String);
+pub struct Secret(String);
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Invalid secret length: `{0}`")]
     InvalidLength(u64),
-    #[error("Hex error: `{0}`")]
-    Hex(#[from] hex::FromHexError),
+    #[error(transparent)]
+    Hex(#[from] hex::Error),
 }
 
 impl Default for Secret {
     fn default() -> Self {
-        Self::new()
+        Self::generate()
     }
 }
 
 impl Secret {
+    #[inline]
+    pub fn new<S>(secret: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self(secret.into())
+    }
+
     /// Create secret value
     /// Generate a new random secret as the recommended 32 byte hex
-    pub fn new() -> Self {
-        use rand::RngCore;
-
+    pub fn generate() -> Self {
         let mut rng = rand::thread_rng();
 
         let mut random_bytes = [0u8; 32];
@@ -41,8 +51,14 @@ impl Secret {
         Self(secret)
     }
 
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    #[inline]
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.0.clone().into_bytes()
+        self.as_bytes().to_vec()
     }
 
     #[cfg(feature = "nut11")]
@@ -66,13 +82,13 @@ impl FromStr for Secret {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Secret(s.to_string()))
+        Ok(Self(s.to_string()))
     }
 }
 
-impl ToString for Secret {
-    fn to_string(&self) -> String {
-        self.0.clone()
+impl fmt::Display for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -115,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_secret_from_str() {
-        let secret = Secret::new();
+        let secret = Secret::generate();
 
         let secret_str = secret.to_string();
 

@@ -1,5 +1,6 @@
-//! Swap
-// https://github.com/cashubtc/nuts/blob/main/03.md
+//! NUT-03: Swap
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/03.md>
 
 use serde::{Deserialize, Serialize};
 

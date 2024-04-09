@@ -1,35 +1,45 @@
-use std::str::FromStr;
+//! NUT-13: Deterministic Secrets
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/13.md>
 
-use bip32::{DerivationPath, XPrv};
+use core::str::FromStr;
+
 use bip39::Mnemonic;
-use log::debug;
+use bitcoin::bip32::{DerivationPath, ExtendedPrivKey};
+use bitcoin::Network;
 
 use super::{Id, SecretKey};
 use crate::error::Error;
 use crate::secret::Secret;
+use crate::util::hex;
+use crate::SECP256K1;
 
 impl Secret {
     pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
-        debug!(
+        tracing::debug!(
             "Deriving secret for {} with count {}",
             keyset_id.to_string(),
             counter.to_string()
         );
-        let path = DerivationPath::from_str(&format!(
+        let path: DerivationPath = DerivationPath::from_str(&format!(
             "m/129372'/0'/{}'/{}'/0",
             u64::try_from(keyset_id)?,
             counter
         ))?;
 
-        let xpriv = XPrv::derive_from_path(mnemonic.to_seed(""), &path).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+        let bip32_root_key = ExtendedPrivKey::new_master(Network::Bitcoin, &seed)?;
+        let derived_xpriv = bip32_root_key.derive_priv(&SECP256K1, &path)?;
 
-        Ok(Self(hex::encode(xpriv.private_key().to_bytes())))
+        Ok(Self::new(hex::encode(
+            derived_xpriv.private_key.secret_bytes(),
+        )))
     }
 }
 
 impl SecretKey {
     pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
-        debug!(
+        tracing::debug!(
             "Deriving key for {} with count {}",
             keyset_id.to_string(),
             counter.to_string()
@@ -40,11 +50,11 @@ impl SecretKey {
             counter
         ))?;
 
-        let signing_key = XPrv::derive_from_path(mnemonic.to_seed(""), &path)?;
+        let seed: [u8; 64] = mnemonic.to_seed("");
+        let bip32_root_key = ExtendedPrivKey::new_master(Network::Bitcoin, &seed)?;
+        let derived_xpriv = bip32_root_key.derive_priv(&SECP256K1, &path)?;
 
-        let private_key = signing_key.private_key();
-
-        Ok(Self(private_key.into()))
+        Ok(Self::from(derived_xpriv.private_key))
     }
 }
 
@@ -76,7 +86,7 @@ mod wallet {
                 let secret = Secret::from_seed(mnemonic, keyset_id, counter)?;
                 let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, counter)?;
 
-                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor.into()))?;
+                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
                 let amount = if zero_amount { Amount::ZERO } else { amount };
 
@@ -85,7 +95,7 @@ mod wallet {
                 let pre_mint = PreMint {
                     blinded_message,
                     secret: secret.clone(),
-                    r: r.into(),
+                    r,
                     amount,
                 };
 
@@ -110,14 +120,14 @@ mod wallet {
                 let secret = Secret::from_seed(mnemonic, keyset_id, i)?;
                 let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, i)?;
 
-                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor.into()))?;
+                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
                 let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
                 let pre_mint = PreMint {
                     blinded_message,
                     secret: secret.clone(),
-                    r: r.into(),
+                    r,
                     amount: Amount::ZERO,
                 };
 

@@ -3,6 +3,8 @@ use std::string::FromUtf8Error;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::util::hex;
+
 #[derive(Debug, Error)]
 pub enum Error {
     /// Parse Url Error
@@ -19,11 +21,10 @@ pub enum Error {
     Base64Error(#[from] base64::DecodeError),
     /// From hex error
     #[error("`{0}`")]
-    HexError(#[from] hex::FromHexError),
+    HexError(#[from] hex::Error),
+    /// Secp256k1 error
     #[error("`{0}`")]
-    EllipticCurve(#[from] k256::elliptic_curve::Error),
-    #[error("`{0}`")]
-    ECDSA(#[from] k256::ecdsa::Error),
+    Secp256k1(#[from] bitcoin::secp256k1::Error),
     #[error("No Key for Amoun")]
     AmountKey,
     #[error("Amount miss match")]
@@ -55,10 +56,12 @@ pub enum Error {
     #[error("`{0}`")]
     Secret(#[from] super::secret::Error),
     #[error("`{0}`")]
+    NUT01(#[from] crate::nuts::nut01::Error),
+    #[error("`{0}`")]
     NUT02(#[from] crate::nuts::nut02::Error),
     #[cfg(feature = "nut13")]
     #[error("`{0}`")]
-    Bip32(#[from] bip32::Error),
+    Bip32(#[from] bitcoin::bip32::Error),
     #[error("`{0}`")]
     ParseInt(#[from] std::num::ParseIntError),
     /// Custom error
@@ -87,20 +90,24 @@ impl ErrorResponse {
     }
 }
 
-#[cfg(feature = "wallet")]
 pub mod wallet {
     use std::string::FromUtf8Error;
 
     use thiserror::Error;
+
+    use crate::nuts::nut01;
 
     #[derive(Debug, Error)]
     pub enum Error {
         /// Serde Json error
         #[error("`{0}`")]
         SerdeJsonError(#[from] serde_json::Error),
-        /// From elliptic curve
+        /// Secp256k1 error
         #[error("`{0}`")]
-        EllipticError(#[from] k256::elliptic_curve::Error),
+        Secp256k1(#[from] bitcoin::secp256k1::Error),
+        /// NUT01 error
+        #[error("`{0}`")]
+        NUT01(#[from] nut01::Error),
         /// Insufficient Funds
         #[error("Insufficient funds")]
         InsufficientFunds,
@@ -135,9 +142,10 @@ pub mod wallet {
     }
 }
 
-#[cfg(feature = "mint")]
 pub mod mint {
     use thiserror::Error;
+
+    use crate::nuts::nut01;
 
     #[derive(Debug, Error)]
     pub enum Error {
@@ -147,9 +155,12 @@ pub mod mint {
         Amount,
         #[error("Token Already Spent")]
         TokenSpent,
-        /// From elliptic curve
+        /// Secp256k1 error
         #[error("`{0}`")]
-        EllipticError(#[from] k256::elliptic_curve::Error),
+        Secp256k1(#[from] bitcoin::secp256k1::Error),
+        /// NUT01 error
+        #[error("`{0}`")]
+        NUT01(#[from] nut01::Error),
         #[error("`Token not verified`")]
         TokenNotVerifed,
         #[error("Invoice amount undefined")]
