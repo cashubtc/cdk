@@ -20,13 +20,13 @@ use cashu::nuts::{
 };
 use cashu::types::{MeltQuote, Melted, MintQuote};
 use cashu::url::UncheckedUrl;
+use cashu::util::unix_time;
 use cashu::{Amount, Bolt11Invoice};
 use localstore::LocalStore;
 use thiserror::Error;
 use tracing::{debug, warn};
 
 use crate::client::Client;
-use crate::utils::unix_time;
 
 pub mod localstore;
 
@@ -200,13 +200,10 @@ impl Wallet {
             .post_check_state(
                 mint_url.try_into()?,
                 proofs
-                    .clone()
                     .into_iter()
                     // Find Y for the secret
-                    .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-                    .map(|y| y.into())
-                    .collect::<Vec<PublicKey>>()
-                    .clone(),
+                    .flat_map(|p| hash_to_curve(p.secret.as_bytes()))
+                    .collect::<Vec<PublicKey>>(),
             )
             .await?;
 
@@ -369,7 +366,7 @@ impl Wallet {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.get_keyset_keys(&mint_url, sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::UnknownKey)?;
-                match sig.verify_dleq(&key, &premint.blinded_message.b) {
+                match sig.verify_dleq(key, premint.blinded_message.b) {
                     Ok(_) => (),
                     Err(cashu::nuts::nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
@@ -420,7 +417,7 @@ impl Wallet {
                 for proof in proofs {
                     let keys = self.get_keyset_keys(mint_url, proof.keyset_id).await?;
                     let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
-                    match proof.verify_dleq(&key) {
+                    match proof.verify_dleq(key) {
                         Ok(_) => continue,
                         Err(cashu::nuts::nut12::Error::MissingDleqProof) => continue,
                         Err(_) => return Err(Error::CouldNotVerifyDleq),
@@ -581,7 +578,7 @@ impl Wallet {
                     .await?
                     .ok_or(Error::UnknownKey)?;
                 let key = keys.amount_key(promise.amount).ok_or(Error::UnknownKey)?;
-                match promise.verify_dleq(&key, &premint.blinded_message.b) {
+                match promise.verify_dleq(key, premint.blinded_message.b) {
                     Ok(_) => (),
                     Err(cashu::nuts::nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
@@ -597,9 +594,7 @@ impl Wallet {
                 .unwrap()
                 .to_owned();
 
-            let blinded_c = promise.c.clone();
-
-            let unblinded_sig = unblind_message(blinded_c, premint.r.into(), a).unwrap();
+            let unblinded_sig = unblind_message(&promise.c, &premint.r, &a).unwrap();
 
             let count = proof_count.get(&promise.keyset_id).unwrap_or(&0);
             proof_count.insert(promise.keyset_id, count + 1);
@@ -1012,7 +1007,7 @@ impl Wallet {
                 {
                     let keys = self.localstore.get_keys(&proof.keyset_id).await?.unwrap();
                     let key = keys.amount_key(proof.amount).unwrap();
-                    proof.verify_dleq(&key).unwrap();
+                    proof.verify_dleq(key).unwrap();
                 }
 
                 if let Ok(secret) =
@@ -1309,7 +1304,7 @@ impl Wallet {
                 .ok_or(Error::UnknownKey)?;
 
                 proof
-                    .verify_dleq(&mint_pubkey)
+                    .verify_dleq(mint_pubkey)
                     .map_err(|_| Error::CouldNotVerifyDleq)?;
             }
         }

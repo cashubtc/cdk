@@ -355,7 +355,7 @@ impl Mint {
             return Err(Error::AmountKey);
         };
 
-        let c = sign_message(key_pair.secret_key.clone().into(), b.clone().into())?;
+        let c = sign_message(&key_pair.secret_key, b)?;
 
         let blinded_signature;
         #[cfg(not(feature = "nut12"))]
@@ -369,9 +369,9 @@ impl Mint {
 
         #[cfg(feature = "nut12")]
         {
-            blinded_signature = BlindSignature::new_dleq(
+            blinded_signature = BlindSignature::new(
                 *amount,
-                c.into(),
+                c,
                 keyset.id,
                 &blinded_message.b,
                 key_pair.secret_key.clone(),
@@ -407,11 +407,11 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let secrets: HashSet<Vec<u8>> = swap_request
+        let secrets: HashSet<[u8; 33]> = swap_request
             .inputs
             .iter()
             .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .map(|p| p.to_sec1_bytes().to_vec())
+            .map(|p| p.to_bytes())
             .collect();
 
         // Check that there are no duplicate proofs in request
@@ -524,7 +524,7 @@ impl Mint {
             }
         }
 
-        let y: PublicKey = hash_to_curve(&proof.secret.to_bytes())?.into();
+        let y: PublicKey = hash_to_curve(&proof.secret.to_bytes())?;
 
         if self.localstore.get_spent_proof_by_y(&y).await?.is_some() {
             return Err(Error::TokenSpent);
@@ -544,11 +544,7 @@ impl Mint {
             return Err(Error::AmountKey);
         };
 
-        verify_message(
-            keypair.secret_key.clone().into(),
-            proof.c.clone().into(),
-            &proof.secret.to_bytes(),
-        )?;
+        verify_message(&keypair.secret_key, proof.c, proof.secret.as_bytes())?;
 
         Ok(())
     }
@@ -570,7 +566,7 @@ impl Mint {
             };
 
             states.push(ProofState {
-                y: y.clone(),
+                y: *y,
                 state,
                 witness: None,
             })
@@ -643,11 +639,11 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        let secrets: HashSet<Vec<u8>> = melt_request
+        let secrets: HashSet<[u8; 33]> = melt_request
             .inputs
             .iter()
             .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .map(|p| p.to_sec1_bytes().to_vec())
+            .map(|p| p.to_bytes())
             .collect();
 
         // Ensure proofs are unique and not being double spent
@@ -761,7 +757,7 @@ impl Mint {
         let mut outputs = Vec::with_capacity(output_len);
         let mut signatures = Vec::with_capacity(output_len);
 
-        let blinded_message: Vec<PublicKey> = request.outputs.iter().map(|b| b.b.clone()).collect();
+        let blinded_message: Vec<PublicKey> = request.outputs.iter().map(|b| b.b).collect();
 
         let blinded_signatures = self
             .localstore

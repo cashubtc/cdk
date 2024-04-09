@@ -1,5 +1,7 @@
-//! Mint Tokens via Bolt11
-// https://github.com/cashubtc/nuts/blob/main/04.md
+//! NUT-04: Mint Tokens via Bolt11
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/04.md>
+
 use serde::{Deserialize, Serialize};
 
 use super::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};

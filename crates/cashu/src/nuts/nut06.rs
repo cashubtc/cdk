@@ -1,5 +1,6 @@
-//! Mint Information
-// https://github.com/cashubtc/nuts/blob/main/09.md
+//! NUT-06: Mint Information
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

@@ -1,5 +1,6 @@
-//! Lightning fee return
-// https://github.com/cashubtc/nuts/blob/main/08.md
+//! NUT-08: Lightning fee return
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/08.md>
 
 use serde::{Deserialize, Serialize};
 

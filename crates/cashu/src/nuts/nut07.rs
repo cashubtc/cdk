@@ -1,5 +1,6 @@
-//! Spendable Check
-// https://github.com/cashubtc/nuts/blob/main/07.md
+//! NUT-07: Spendable Check
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/07.md>
 
 use serde::{Deserialize, Serialize};
 
