@@ -42,29 +42,31 @@ impl RedbLocalStore {
             let _ = write_txn.open_table(CONFIG_TABLE)?;
             let mut table = write_txn.open_table(CONFIG_TABLE)?;
 
-            let db_version = table.get("db_version")?;
-            let db_version = db_version.map(|v| v.value().to_owned());
+            let db_version = table.get("db_version")?.map(|v| v.value().to_owned());
 
-            if let Some(db_version) = db_version {
-                let current_file_version = u64::from_str(&db_version)?;
-                if current_file_version.ne(&DATABASE_VERSION) {
-                    // Database needs to be upgraded
-                    todo!()
+            match db_version {
+                Some(db_version) => {
+                    let current_file_version = u64::from_str(&db_version)?;
+                    if current_file_version.ne(&DATABASE_VERSION) {
+                        // Database needs to be upgraded
+                        todo!()
+                    }
+                    #[cfg(feature = "nut13")]
+                    let _ = write_txn.open_table(KEYSET_COUNTER)?;
                 }
-                #[cfg(feature = "nut13")]
-                let _ = write_txn.open_table(KEYSET_COUNTER)?;
-            } else {
-                // Open all tables to init a new db
-                let _ = write_txn.open_table(MINTS_TABLE)?;
-                let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
-                let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
-                let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-                let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
-                let _ = write_txn.open_multimap_table(PROOFS_TABLE)?;
-                #[cfg(feature = "nut13")]
-                let _ = write_txn.open_table(KEYSET_COUNTER)?;
-                table.insert("db_version", "0")?;
-            };
+                None => {
+                    // Open all tables to init a new db
+                    let _ = write_txn.open_table(MINTS_TABLE)?;
+                    let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+                    let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
+                    let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
+                    let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
+                    let _ = write_txn.open_multimap_table(PROOFS_TABLE)?;
+                    #[cfg(feature = "nut13")]
+                    let _ = write_txn.open_table(KEYSET_COUNTER)?;
+                    table.insert("db_version", "0")?;
+                }
+            }
         }
         write_txn.commit()?;
 
@@ -418,10 +420,10 @@ impl LocalStore for RedbLocalStore {
             let read_txn = db.begin_read()?;
             let table = read_txn.open_table(KEYSET_COUNTER)?;
             let counter = table.get(keyset_id.to_string().as_str())?;
-            current_counter = if let Some(counter) = counter {
-                counter.value()
-            } else {
-                0
+
+            current_counter = match counter {
+                Some(c) => c.value(),
+                None => 0,
             };
         }
 

@@ -244,7 +244,7 @@ mod tests {
         )
         .unwrap();
 
-        let e = hash_e(vec![r1.into(), r2.into(), k.into(), c.into()]);
+        let e = hash_e(vec![r1, r2, k, c]);
         let e_hex = hex::encode(e);
 
         assert_eq!(
