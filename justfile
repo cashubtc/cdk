@@ -9,6 +9,17 @@ alias t := test
 default:
   @just --list
 
+# Execute a partial check (MSRV is not checked)
+precommit:
+    @bash misc/scripts/precommit.sh
+
+# Format the entire Rust code
+fmt:
+	@bash misc/scripts/check-fmt.sh
+
+# Check if the Rust code is formatted
+check-fmt:
+	@bash misc/scripts/check-fmt.sh check
 
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
