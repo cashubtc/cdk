@@ -47,24 +47,27 @@ impl RedbLocalStore {
             let db_version = table.get("db_version")?;
             let db_version = db_version.map(|v| v.value().to_owned());
 
-            if let Some(db_version) = db_version {
-                let current_file_version = u64::from_str(&db_version)?;
-                if current_file_version.ne(&DATABASE_VERSION) {
-                    // Database needs to be upgraded
-                    todo!()
+            match db_version {
+                Some(db_version) => {
+                    let current_file_version = u64::from_str(&db_version)?;
+                    if current_file_version.ne(&DATABASE_VERSION) {
+                        // Database needs to be upgraded
+                        todo!()
+                    }
                 }
-            } else {
-                // Open all tables to init a new db
-                let _ = write_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
-                let _ = write_txn.open_table(KEYSETS_TABLE)?;
-                let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
-                let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-                let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
-                let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
-                let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
+                None => {
+                    // Open all tables to init a new db
+                    let _ = write_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
+                    let _ = write_txn.open_table(KEYSETS_TABLE)?;
+                    let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
+                    let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
+                    let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
+                    let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
+                    let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
 
-                table.insert("db_version", "0")?;
-            };
+                    table.insert("db_version", "0")?;
+                }
+            }
         }
 
         write_txn.commit()?;
@@ -165,12 +168,9 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(KEYSETS_TABLE)?;
 
-        let keyset = table.get(keyset_id.to_string().as_str())?;
-
-        if let Some(keyset) = keyset {
-            Ok(serde_json::from_str(keyset.value())?)
-        } else {
-            Ok(None)
+        match table.get(keyset_id.to_string().as_str())? {
+            Some(keyset) => Ok(serde_json::from_str(keyset.value())?),
+            None => Ok(None),
         }
     }
 
@@ -209,12 +209,9 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(MINT_QUOTES_TABLE)?;
 
-        let quote = table.get(quote_id)?;
-
-        if let Some(quote) = quote {
-            Ok(serde_json::from_str(quote.value())?)
-        } else {
-            Ok(None)
+        match table.get(quote_id)? {
+            Some(quote) => Ok(serde_json::from_str(quote.value())?),
+            None => Ok(None),
         }
     }
 
@@ -323,12 +320,9 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
 
-        let proof = table.get(y.to_bytes())?;
-
-        if let Some(proof) = proof {
-            Ok(serde_json::from_str(proof.value())?)
-        } else {
-            Ok(None)
+        match table.get(y.to_bytes())? {
+            Some(proof) => Ok(serde_json::from_str(proof.value())?),
+            None => Ok(None),
         }
     }
 
@@ -339,14 +333,9 @@ impl LocalStore for RedbLocalStore {
 
         let y: PublicKey = hash_to_curve(&secret.to_bytes())?;
 
-        let proof = table.get(y.to_bytes())?;
-
-        debug!("Checking secret: {}", secret.to_string());
-
-        if let Some(proof) = proof {
-            Ok(serde_json::from_str(proof.value())?)
-        } else {
-            Ok(None)
+        match table.get(y.to_bytes())? {
+            Some(proof) => Ok(serde_json::from_str(proof.value())?),
+            None => Ok(None),
         }
     }
 
@@ -372,12 +361,9 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(PENDING_PROOFS_TABLE)?;
 
-        let proof = table.get(y.to_bytes())?;
-
-        if let Some(proof) = proof {
-            Ok(serde_json::from_str(proof.value())?)
-        } else {
-            Ok(None)
+        match table.get(y.to_bytes())? {
+            Some(proof) => Ok(serde_json::from_str(proof.value())?),
+            None => Ok(None),
         }
     }
 
@@ -388,12 +374,9 @@ impl LocalStore for RedbLocalStore {
 
         let secret_hash = hash_to_curve(&secret.to_bytes())?;
 
-        let proof = table.get(secret_hash.to_bytes())?;
-
-        if let Some(proof) = proof {
-            Ok(serde_json::from_str(proof.value())?)
-        } else {
-            Ok(None)
+        match table.get(secret_hash.to_bytes())? {
+            Some(proof) => Ok(serde_json::from_str(proof.value())?),
+            None => Ok(None),
         }
     }
 
@@ -441,11 +424,10 @@ impl LocalStore for RedbLocalStore {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(BLINDED_SIGNATURES)?;
 
-        if let Some(blinded_signature) = table.get(blinded_message.to_bytes())? {
-            return Ok(serde_json::from_str(blinded_signature.value())?);
+        match table.get(blinded_message.to_bytes())? {
+            Some(blind_signature) => Ok(serde_json::from_str(blind_signature.value())?),
+            None => Ok(None),
         }
-
-        Ok(None)
     }
 
     async fn get_blinded_signatures(
@@ -459,10 +441,11 @@ impl LocalStore for RedbLocalStore {
         let mut signatures = Vec::with_capacity(blinded_messages.len());
 
         for blinded_message in blinded_messages {
-            if let Some(blinded_signature) = table.get(blinded_message.to_bytes())? {
-                signatures.push(Some(serde_json::from_str(blinded_signature.value())?))
-            } else {
-                signatures.push(None);
+            match table.get(blinded_message.to_bytes())? {
+                Some(blind_signature) => {
+                    signatures.push(Some(serde_json::from_str(blind_signature.value())?))
+                }
+                None => signatures.push(None),
             }
         }
 

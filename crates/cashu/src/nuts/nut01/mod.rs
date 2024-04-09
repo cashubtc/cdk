@@ -166,7 +166,7 @@ mod tests {
         let key_str = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
 
         let pubkey = PublicKey::from_str(key_str).unwrap();
-        let v_key: VerifyingKey = pubkey.clone().try_into().unwrap();
+        let v_key: VerifyingKey = pubkey.try_into().unwrap();
 
         let p: PublicKey = v_key.to_normalized_public_key();
 
