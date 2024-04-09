@@ -30,8 +30,10 @@ jobs:
             -p cashu --no-default-features,
             -p cashu --no-default-features --features wallet,
             -p cashu --no-default-features --features mint,
+            -p cashu --no-default-features --features all-nuts,
             -p cashu-sdk,
             -p cashu-sdk --no-default-features,
+            -p cashu-sdk --no-default-features --features all-nuts,
           ]
     steps:
     - name: Checkout

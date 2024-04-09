@@ -15,14 +15,8 @@ description = "Cashu rust wallet and mint library"
 default = ["mint", "wallet", "all-nuts"]
 mint = []
 wallet = []
-all-nuts = ["nut07", "nut08", "nut09", "nut10", "nut11", "nut12", "nut13"]
-nut07 = []
-nut08 = []
-nut09 = []
-nut10 = []
-nut11 = ["nut10"]
-nut12 = []
-nut13 = ["dep:bip39", "nut09"]
+all-nuts = ["nut13"]
+nut13 = ["dep:bip39"]
 
 [dependencies]
 base64 = "0.21" # bitcoin uses v0.21 (optional dep)

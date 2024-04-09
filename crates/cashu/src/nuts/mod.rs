@@ -5,17 +5,11 @@ pub mod nut03;
 pub mod nut04;
 pub mod nut05;
 pub mod nut06;
-#[cfg(feature = "nut07")]
 pub mod nut07;
-#[cfg(feature = "nut08")]
 pub mod nut08;
-#[cfg(feature = "nut09")]
 pub mod nut09;
-#[cfg(feature = "nut10")]
 pub mod nut10;
-#[cfg(feature = "nut11")]
 pub mod nut11;
-#[cfg(feature = "nut12")]
 pub mod nut12;
 #[cfg(feature = "nut13")]
 pub mod nut13;
@@ -37,15 +31,10 @@ pub use nut05::{
 };
 pub use nut06::{MintInfo, MintVersion, Nuts};
 #[cfg(feature = "wallet")]
-#[cfg(feature = "nut07")]
 pub use nut07::{CheckStateRequest, CheckStateResponse};
-#[cfg(feature = "nut09")]
 pub use nut09::{RestoreRequest, RestoreResponse};
-#[cfg(feature = "nut10")]
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
-#[cfg(feature = "nut11")]
 pub use nut11::{P2PKConditions, SigFlag, Signatures, SigningKey, VerifyingKey};
-#[cfg(feature = "nut12")]
 pub use nut12::{BlindSignatureDleq, ProofDleq};
 
 pub type Proofs = Vec<Proof>;

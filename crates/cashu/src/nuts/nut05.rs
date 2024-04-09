@@ -4,9 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "nut08")]
-use super::{BlindSignature, BlindedMessage};
-use super::{CurrencyUnit, PaymentMethod};
+use super::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use crate::nuts::Proofs;
 use crate::types::MeltQuote;
 use crate::{Amount, Bolt11Invoice};
@@ -56,7 +54,6 @@ pub struct MeltBolt11Request {
     pub inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
-    #[cfg(feature = "nut08")]
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
@@ -74,7 +71,6 @@ pub struct MeltBolt11Response {
     /// Bolt11 preimage
     pub payment_preimage: Option<String>,
     /// Change
-    #[cfg(feature = "nut08")]
     pub change: Option<Vec<BlindSignature>>,
 }
 

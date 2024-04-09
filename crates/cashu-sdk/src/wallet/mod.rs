@@ -6,17 +6,12 @@ use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cashu::dhke::{construct_proofs, unblind_message};
-#[cfg(feature = "nut07")]
-use cashu::nuts::nut07::ProofState;
-use cashu::nuts::nut07::State;
-#[cfg(feature = "nut09")]
+use cashu::nuts::nut07::{ProofState, State};
 use cashu::nuts::nut09::RestoreRequest;
 use cashu::nuts::nut11::SigningKey;
-#[cfg(feature = "nut07")]
-use cashu::nuts::PublicKey;
 use cashu::nuts::{
     BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
-    PreMintSecrets, PreSwap, Proof, Proofs, SigFlag, SwapRequest, Token,
+    PreMintSecrets, PreSwap, Proof, Proofs, PublicKey, SigFlag, SwapRequest, Token,
 };
 use cashu::types::{MeltQuote, Melted, MintQuote};
 use cashu::url::UncheckedUrl;
@@ -187,7 +182,6 @@ impl Wallet {
     }
 
     /// Check if a proof is spent
-    #[cfg(feature = "nut07")]
     pub async fn check_proofs_spent(
         &self,
         mint_url: UncheckedUrl,
@@ -361,7 +355,6 @@ impl Wallet {
         let keys = self.get_keyset_keys(&mint_url, active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
-        #[cfg(feature = "nut12")]
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.get_keyset_keys(&mint_url, sig.keyset_id).await?;
@@ -408,7 +401,6 @@ impl Wallet {
 
         // Verify the signature DLEQ is valid
         // Verify that all proofs in the token have a vlid DLEQ proof if one is supplied
-        #[cfg(feature = "nut12")]
         {
             for mint_proof in &token_data.token {
                 let mint_url = &mint_proof.mint;
@@ -570,7 +562,6 @@ impl Wallet {
 
         for (promise, premint) in promises.iter().zip(blinded_messages) {
             // Verify the signature DLEQ is valid
-            #[cfg(feature = "nut12")]
             {
                 let keys = self
                     .localstore
@@ -1003,7 +994,6 @@ impl Wallet {
 
             for proof in &mut proofs {
                 // Verify that proof DLEQ is valid
-                #[cfg(feature = "nut12")]
                 {
                     let keys = self.localstore.get_keys(&proof.keyset_id).await?.unwrap();
                     let key = keys.amount_key(proof.amount).unwrap();
@@ -1188,7 +1178,6 @@ impl Wallet {
     /// Verify all proofs in token have meet the required spend
     /// Can be used to allow a wallet to accept payments offline while reducing
     /// the risk of claiming back to the limits let by the spending_conditions
-    #[cfg(feature = "nut11")]
     pub fn verify_token_p2pk(
         &self,
         token: &Token,
@@ -1284,7 +1273,6 @@ impl Wallet {
     }
 
     /// Verify all proofs in token have a valid DLEQ proof
-    #[cfg(feature = "nut12")]
     pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
 

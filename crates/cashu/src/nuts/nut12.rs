@@ -41,6 +41,12 @@ pub struct ProofDleq {
     pub r: SecretKey,
 }
 
+impl ProofDleq {
+    pub fn new(e: SecretKey, s: SecretKey, r: SecretKey) -> Self {
+        Self { e, s, r }
+    }
+}
+
 /// Verify DLEQ
 fn verify_dleq(
     blinded_message: PublicKey,   // B'

@@ -3,16 +3,11 @@ use std::sync::Arc;
 
 use cashu::dhke::{hash_to_curve, sign_message, verify_message};
 use cashu::error::ErrorResponse;
-#[cfg(feature = "nut07")]
 use cashu::nuts::nut07::{ProofState, State};
 use cashu::nuts::{
-    BlindSignature, BlindedMessage, MeltBolt11Request, MeltBolt11Response, Proof, SwapRequest,
-    SwapResponse, *,
+    BlindSignature, BlindedMessage, CheckStateRequest, CheckStateResponse, MeltBolt11Request,
+    MeltBolt11Response, Proof, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse, *,
 };
-#[cfg(feature = "nut07")]
-use cashu::nuts::{CheckStateRequest, CheckStateResponse};
-#[cfg(feature = "nut09")]
-use cashu::nuts::{RestoreRequest, RestoreResponse};
 use cashu::types::{MeltQuote, MintQuote};
 use cashu::Amount;
 use http::StatusCode;
@@ -357,26 +352,13 @@ impl Mint {
 
         let c = sign_message(&key_pair.secret_key, b)?;
 
-        let blinded_signature;
-        #[cfg(not(feature = "nut12"))]
-        {
-            blinded_signature = BlindSignature {
-                amount: *amount,
-                c: c.into(),
-                keyset_id: keyset.id,
-            };
-        }
-
-        #[cfg(feature = "nut12")]
-        {
-            blinded_signature = BlindSignature::new(
-                *amount,
-                c,
-                keyset.id,
-                &blinded_message.b,
-                key_pair.secret_key.clone(),
-            )?;
-        }
+        let blinded_signature = BlindSignature::new(
+            *amount,
+            c,
+            keyset.id,
+            &blinded_message.b,
+            key_pair.secret_key.clone(),
+        )?;
 
         Ok(blinded_signature)
     }
@@ -475,42 +457,6 @@ impl Mint {
         Ok(SwapResponse::new(promises))
     }
 
-    #[cfg(not(feature = "nut11"))]
-    async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
-        let y = hash_to_curve(&proof.secret.to_bytes()?)?;
-        if self.localstore.get_spent_proof_by_hash(&y).await?.is_some() {
-            return Err(Error::TokenSpent);
-        }
-
-        if self
-            .localstore
-            .get_pending_proof_by_hash(&y)
-            .await?
-            .is_some()
-        {
-            return Err(Error::TokenPending);
-        }
-
-        let keyset = self
-            .localstore
-            .get_keyset(&proof.keyset_id)
-            .await?
-            .ok_or(Error::UnknownKeySet)?;
-
-        let Some(keypair) = keyset.keys.0.get(&proof.amount) else {
-            return Err(Error::AmountKey);
-        };
-
-        verify_message(
-            keypair.secret_key.clone().into(),
-            proof.c.clone().into(),
-            &proof.secret,
-        )?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "nut11")]
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
@@ -549,7 +495,6 @@ impl Mint {
         Ok(())
     }
 
-    #[cfg(feature = "nut07")]
     pub async fn check_state(
         &self,
         check_state: &CheckStateRequest,
@@ -750,7 +695,6 @@ impl Mint {
         Ok(self.localstore.get_mint_info().await?)
     }
 
-    #[cfg(feature = "nut09")]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let output_len = request.outputs.len();
 

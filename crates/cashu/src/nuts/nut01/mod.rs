@@ -26,10 +26,8 @@ pub enum Error {
     InvalidPublicKeySize { expected: usize, found: usize },
 }
 
-/// Mint Keys
-///
-/// <https://github.com/cashubtc/nuts/blob/main/01.md>
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Mint Keys [NUT-01]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Keys(BTreeMap<Amount, PublicKey>);
 
 impl From<mint::Keys> for Keys {

@@ -8,7 +8,6 @@ use bitcoin::secp256k1::{Parity, PublicKey as NormalizedPublicKey, Scalar, XOnly
 
 use crate::error::{self, Error};
 use crate::nuts::nut01::{PublicKey, SecretKey};
-#[cfg(feature = "nut12")]
 use crate::nuts::nut12::ProofDleq;
 use crate::nuts::{BlindSignature, Keys, Proof, Proofs};
 use crate::secret::Secret;
@@ -107,42 +106,16 @@ pub fn construct_proofs(
 
         let unblinded_signature: PublicKey = unblind_message(&blinded_c, &r, &a)?;
 
-        let proof;
+        let dleq = blinded_signature.dleq.map(|d| ProofDleq::new(d.e, d.s, r));
 
-        #[cfg(not(feature = "nut12"))]
-        {
-            proof = Proof {
-                amount: blinded_signature.amount,
-                keyset_id: blinded_signature.keyset_id,
-                secret,
-                c: unblinded_signature,
-                #[cfg(feature = "nut11")]
-                witness: None,
-            };
-        }
-
-        #[cfg(feature = "nut12")]
-        {
-            let dleq = if let Some(dleq) = blinded_signature.dleq {
-                Some(ProofDleq {
-                    e: dleq.e,
-                    s: dleq.s,
-                    r,
-                })
-            } else {
-                None
-            };
-
-            proof = Proof {
-                amount: blinded_signature.amount,
-                keyset_id: blinded_signature.keyset_id,
-                secret,
-                c: unblinded_signature,
-                #[cfg(feature = "nut11")]
-                witness: None,
-                dleq,
-            };
-        }
+        let proof = Proof {
+            amount: blinded_signature.amount,
+            keyset_id: blinded_signature.keyset_id,
+            secret,
+            c: unblinded_signature,
+            witness: None,
+            dleq,
+        };
 
         proofs.push(proof);
     }
