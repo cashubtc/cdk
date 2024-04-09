@@ -733,7 +733,6 @@ mod tests {
             )
             .unwrap(),
             witness: Some(Signatures { signatures: vec![] }),
-            #[cfg(feature = "nut12")]
             dleq: None,
         };
 

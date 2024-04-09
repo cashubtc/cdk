@@ -5,7 +5,6 @@ pub use bitcoin::secp256k1;
 pub use lightning_invoice::{self, Bolt11Invoice};
 
 pub mod amount;
-#[cfg(any(feature = "wallet", feature = "mint"))]
 pub mod dhke;
 pub mod error;
 pub mod nuts;

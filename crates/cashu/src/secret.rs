@@ -61,7 +61,6 @@ impl Secret {
         self.as_bytes().to_vec()
     }
 
-    #[cfg(feature = "nut11")]
     pub fn is_p2pk(&self) -> bool {
         use crate::nuts::Kind;
 
@@ -104,7 +103,6 @@ impl From<&Secret> for Vec<u8> {
     }
 }
 
-#[cfg(feature = "nut10")]
 impl TryFrom<Secret> for crate::nuts::nut10::Secret {
     type Error = serde_json::Error;
 
@@ -113,7 +111,6 @@ impl TryFrom<Secret> for crate::nuts::nut10::Secret {
     }
 }
 
-#[cfg(feature = "nut10")]
 impl TryFrom<&Secret> for crate::nuts::nut10::Secret {
     type Error = serde_json::Error;
 

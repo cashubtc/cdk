@@ -2,18 +2,14 @@
 
 use async_trait::async_trait;
 use cashu::error::ErrorResponse;
-#[cfg(feature = "nut09")]
 use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
-#[cfg(feature = "nut07")]
-use cashu::nuts::PublicKey;
 use cashu::nuts::{
-    BlindedMessage, CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse, MeltBolt11Request,
-    MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
-    Proof, SwapRequest, SwapResponse,
+    BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
+    KeysetResponse, MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo,
+    MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey, SwapRequest,
+    SwapResponse,
 };
-#[cfg(feature = "nut07")]
-use cashu::nuts::{CheckStateRequest, CheckStateResponse};
 use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
 use tracing::warn;
@@ -186,8 +182,21 @@ impl Client for HttpClient {
         }
     }
 
+    /// Get Mint Info [NUT-06]
+    async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
+        let url = join_url(mint_url, &["v1", "info"])?;
+
+        let res = minreq::get(url).send()?.json::<Value>()?;
+
+        let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
+        }
+    }
+
     /// Spendable check [NUT-07]
-    #[cfg(feature = "nut07")]
     async fn post_check_state(
         &self,
         mint_url: Url,
@@ -210,21 +219,6 @@ impl Client for HttpClient {
         }
     }
 
-    /// Get Mint Info [NUT-09]
-    async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
-        let url = join_url(mint_url, &["v1", "info"])?;
-
-        let res = minreq::get(url).send()?.json::<Value>()?;
-
-        let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
-        }
-    }
-
-    #[cfg(feature = "nut09")]
     async fn post_restore(
         &self,
         mint_url: Url,

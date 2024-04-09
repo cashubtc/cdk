@@ -7,13 +7,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "nut12")]
-use super::{BlindSignatureDleq, ProofDleq};
-use super::{Id, Proofs, PublicKey};
+use super::{BlindSignatureDleq, Id, ProofDleq, Proofs, PublicKey, Signatures};
 use crate::error::Error;
-#[cfg(feature = "nut11")]
-use crate::nuts::nut11::Signatures;
-#[cfg(feature = "nut11")]
 use crate::nuts::nut11::{witness_deserialize, witness_serialize};
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
@@ -31,7 +26,6 @@ pub struct BlindedMessage {
     #[serde(rename = "B_")]
     pub b: PublicKey,
     /// Witness
-    #[cfg(feature = "nut11")]
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     //#[serde(serialize_with = "witness_serialize")]
@@ -45,7 +39,6 @@ impl BlindedMessage {
             amount,
             keyset_id,
             b,
-            #[cfg(feature = "nut11")]
             witness: None,
         }
     }
@@ -124,9 +117,7 @@ pub mod wallet {
     use super::{CurrencyUnit, MintProofs};
     use crate::dhke::blind_message;
     use crate::error::wallet;
-    #[cfg(feature = "nut11")]
-    use crate::nuts::P2PKConditions;
-    use crate::nuts::{BlindedMessage, Id, Proofs, SecretKey};
+    use crate::nuts::{BlindedMessage, Id, P2PKConditions, Proofs, SecretKey};
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
     use crate::{error, Amount};
@@ -230,7 +221,6 @@ pub mod wallet {
             Ok(PreMintSecrets { secrets: output })
         }
 
-        #[cfg(feature = "nut11")]
         pub fn with_p2pk_conditions(
             keyset_id: Id,
             amount: Amount,
@@ -423,7 +413,6 @@ pub struct BlindSignature {
     #[serde(rename = "C_")]
     pub c: PublicKey,
     /// DLEQ Proof
-    #[cfg(feature = "nut12")]
     pub dleq: Option<BlindSignatureDleq>,
 }
 
@@ -440,16 +429,13 @@ pub struct Proof {
     /// Unblinded signature
     #[serde(rename = "C")]
     pub c: PublicKey,
-    #[cfg(feature = "nut11")]
     /// Witness
-    #[cfg(feature = "nut11")]
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(serialize_with = "witness_serialize")]
     #[serde(deserialize_with = "witness_deserialize")]
     pub witness: Option<Signatures>,
     /// DLEQ Proof
-    #[cfg(feature = "nut12")]
     pub dleq: Option<ProofDleq>,
 }
 
@@ -460,9 +446,7 @@ impl Proof {
             keyset_id,
             secret,
             c,
-            #[cfg(feature = "nut11")]
             witness: None,
-            #[cfg(feature = "nut12")]
             dleq: None,
         }
     }
