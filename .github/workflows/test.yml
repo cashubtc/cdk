@@ -18,8 +18,7 @@ jobs:
           - version: stable
         build-args:
           [
-            -p cashu,
-            -p cashu-sdk,
+            -p cdk,
           ]
     steps:
     - name: Checkout Crate

@@ -24,11 +24,10 @@ fi
 
 buildargs=(
     "-p cashu"
-    "-p cashu --no-default-features"
-    "-p cashu --no-default-features --features wallet"
-    "-p cashu --no-default-features --features mint"
-    "-p cashu-sdk"
-    "-p cashu-sdk --no-default-features"
+    "-p cdk --no-default-features"
+    "-p cdk --no-default-features --features wallet"
+    "-p cdk --no-default-features --features mint"
+    "-p cdk --no-default-features --features nut13"
 )
 
 for arg in "${buildargs[@]}"; do
