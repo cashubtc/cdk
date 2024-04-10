@@ -26,14 +26,12 @@ jobs:
           - version: stable
         build-args:
           [
-            -p cashu,
-            -p cashu --no-default-features,
-            -p cashu --no-default-features --features wallet,
-            -p cashu --no-default-features --features mint,
-            -p cashu --no-default-features --features all-nuts,
-            -p cashu-sdk,
-            -p cashu-sdk --no-default-features,
-            -p cashu-sdk --no-default-features --features all-nuts,
+            -p cdk,
+            -p cdk --no-default-features,
+            -p cdk --no-default-features --features wallet,
+            -p cdk --no-default-features --features mint --features redb,
+            -p cdk --no-default-features --features mint --features redb,
+            -p cdk --no-default-features --features all-nuts,
           ]
     steps:
     - name: Checkout
@@ -64,8 +62,7 @@ jobs:
           - version: stable
         build-args:
           [
-            -p cashu,
-            -p cashu-sdk,
+            -p cdk,
           ]
     steps:
     - name: Checkout
