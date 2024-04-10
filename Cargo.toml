@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/cashu",
-    "crates/cashu-sdk",
+    "crates/cdk",
 ]
 resolver = "2"
 
