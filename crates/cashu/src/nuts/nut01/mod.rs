@@ -144,7 +144,6 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    #[cfg(feature = "nut11")]
     use crate::nuts::nut11::VerifyingKey;
 
     #[test]
@@ -159,7 +158,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "nut11")]
     fn verying_key() {
         let key_str = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
 

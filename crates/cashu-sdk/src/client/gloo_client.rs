@@ -1,14 +1,12 @@
 //! gloo wasm http Client
 
 use async_trait::async_trait;
-#[cfg(feature = "nut09")]
 use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
 use cashu::nuts::{
-    BlindedMessage, MeltBolt11Request, MeltBolt11Response, MintBolt11Request, MintBolt11Response,
-    MintInfo, PreMintSecrets, Proof, SwapRequest, SwapResponse, *,
+    BlindedMessage, CheckSpendableRequest, CheckSpendableResponse, MeltBolt11Request,
+    MeltBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo, PreMintSecrets, Proof,
+    PublicKey, SwapRequest, SwapResponse, *,
 };
-#[cfg(feature = "nut07")]
-use cashu::nuts::{CheckSpendableRequest, CheckSpendableResponse, PublicKey};
 use cashu::{Amount, Bolt11Invoice};
 use gloo::net::http::Request;
 use serde_json::Value;
@@ -210,7 +208,6 @@ impl Client for HttpClient {
     }
 
     /// Spendable check [NUT-07]
-    #[cfg(feature = "nut07")]
     async fn post_check_state(
         &self,
         mint_url: Url,
@@ -258,7 +255,6 @@ impl Client for HttpClient {
     }
 
     /// Restore [NUT-09]
-    #[cfg(feature = "nut09")]
     async fn post_check_state(
         &self,
         mint_url: Url,
