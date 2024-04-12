@@ -71,6 +71,12 @@ impl PublicKey {
     pub fn to_hex(&self) -> String {
         self.inner.to_string()
     }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        Ok(Self {
+            inner: secp256k1::PublicKey::from_slice(bytes)?,
+        })
+    }
 }
 
 impl FromStr for PublicKey {

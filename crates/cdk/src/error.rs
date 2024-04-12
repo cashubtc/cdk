@@ -102,6 +102,9 @@ pub mod wallet {
         /// Serde Json error
         #[error("`{0}`")]
         SerdeJsonError(#[from] serde_json::Error),
+        /// Ciborium error
+        #[error("`{0}`")]
+        CiboriumError(#[from] ciborium::de::Error<std::io::Error>),
         /// Secp256k1 error
         #[error("`{0}`")]
         Secp256k1(#[from] bitcoin::secp256k1::Error),
