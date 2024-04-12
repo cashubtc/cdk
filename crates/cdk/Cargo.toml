@@ -12,8 +12,7 @@ license.workspace = true
 [features]
 default = ["mint", "wallet", "all-nuts", "redb"]
 mint = ["dep:bip39"]
-wallet = ["nut13", "dep:minreq", "dep:bip39"]
-gloo = ["dep:gloo"]
+wallet = ["nut13", "dep:bip39", "dep:reqwest"]
 all-nuts = ["nut13"]
 nut13 = ["dep:bip39"]
 redb = ["dep:redb"]
@@ -32,13 +31,12 @@ url = "2.3.1"
 tracing = { version = "0.1", default-features = false }
 thiserror = "1.0.50"
 async-trait = "0.1.74"
-gloo = { version = "0.11.0", optional = true, features = ["net"] }
 http = "1.0.0"
 uuid = { version = "1.6", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
-minreq = { version = "2.7.0", optional = true, features = ["json-using-serde", "https"] }
 redb = { version = "2.0.0", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

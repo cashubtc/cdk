@@ -58,6 +58,10 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     HexError(#[from] hex::Error),
+    #[cfg(feature = "wallet")]
+    /// From hex error
+    #[error(transparent)]
+    HReeqwestError(#[from] reqwest::Error),
     /// Nut01 error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
@@ -67,6 +71,9 @@ pub enum Error {
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    ///  Min req error
+    #[error("Unknown Error response")]
+    UnknownErrorResponse(crate::error::ErrorResponse),
     /// Custom error
     #[error("`{0}`")]
     CustomError(String),
@@ -90,5 +97,11 @@ impl ErrorResponse {
                 detail: None,
             })
         }
+    }
+}
+
+impl From<ErrorResponse> for Error {
+    fn from(err: ErrorResponse) -> Error {
+        Self::UnknownErrorResponse(err)
     }
 }
