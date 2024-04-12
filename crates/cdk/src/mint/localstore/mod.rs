@@ -6,14 +6,15 @@ use std::collections::HashMap;
 use std::num::ParseIntError;
 
 use async_trait::async_trait;
-use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, PublicKey};
-use cashu::secret::Secret;
-use cashu::types::{MeltQuote, MintQuote};
 pub use memory::MemoryLocalStore;
 #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
 pub use redb_store::RedbLocalStore;
 use thiserror::Error;
+
+use crate::nuts::nut02::mint::KeySet;
+use crate::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, PublicKey};
+use crate::secret::Secret;
+use crate::types::{MeltQuote, MintQuote};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -43,11 +44,11 @@ pub enum Error {
     #[error("Unknown Mint Info")]
     UnknownMintInfo,
     #[error("`{0}`")]
-    Cashu(#[from] cashu::error::Error),
+    Cashu(#[from] crate::error::Error),
     #[error("`{0}`")]
-    CashuNut02(#[from] cashu::nuts::nut02::Error),
+    CashuNut02(#[from] crate::nuts::nut02::Error),
     #[error("`{0}`")]
-    Secret(#[from] cashu::secret::Error),
+    Secret(#[from] crate::secret::Error),
 }
 
 #[async_trait]

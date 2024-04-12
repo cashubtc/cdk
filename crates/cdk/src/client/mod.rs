@@ -1,23 +1,24 @@
 //! Client to connet to mint
 
 use async_trait::async_trait;
-use cashu::error::ErrorResponse;
-use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
-use cashu::nuts::{
+use thiserror::Error;
+use url::Url;
+
+use crate::error::ErrorResponse;
+use crate::nuts::nut09::{RestoreRequest, RestoreResponse};
+use crate::nuts::{
     BlindedMessage, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
     MeltBolt11Response, MeltQuoteBolt11Response, MintBolt11Response, MintInfo,
     MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey, SwapRequest, SwapResponse,
 };
-use cashu::Amount;
-use thiserror::Error;
-use url::Url;
+use crate::Amount;
 
 #[cfg(feature = "gloo")]
 pub mod gloo_client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod minreq_client;
 
-pub use cashu::Bolt11Invoice;
+pub use crate::Bolt11Invoice;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -33,7 +34,7 @@ pub enum Error {
     SerdeJson(#[from] serde_json::Error),
     /// Cashu Url Error
     #[error("`{0}`")]
-    CashuUrl(#[from] cashu::url::Error),
+    CashuUrl(#[from] crate::url::Error),
     ///  Min req error
     #[cfg(not(target_arch = "wasm32"))]
     #[error("`{0}`")]
@@ -42,7 +43,7 @@ pub enum Error {
     #[error("`{0}`")]
     Gloo(String),
     #[error("Unknown Error response")]
-    UnknownErrorResponse(cashu::error::ErrorResponse),
+    UnknownErrorResponse(crate::error::ErrorResponse),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

@@ -1,19 +1,18 @@
 //! gloo wasm http Client
 
 use async_trait::async_trait;
-use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
-use cashu::nuts::{
-    BlindedMessage, CheckSpendableRequest, CheckSpendableResponse, MeltBolt11Request,
-    MeltBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo, PreMintSecrets, Proof,
-    PublicKey, SwapRequest, SwapResponse, *,
-};
-use cashu::{Amount, Bolt11Invoice};
 use gloo::net::http::Request;
 use serde_json::Value;
 use url::Url;
 
 use super::join_url;
 use crate::client::{Client, Error};
+use crate::nuts::{
+    BlindedMessage, CheckSpendableRequest, CheckSpendableResponse, MeltBolt11Request,
+    MeltBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo, PreMintSecrets, Proof,
+    PublicKey, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse, *,
+};
+use crate::{Amount, Bolt11Invoice};
 
 #[derive(Debug, Clone)]
 pub struct HttpClient {}

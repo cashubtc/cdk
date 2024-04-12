@@ -7,13 +7,14 @@ use std::collections::HashMap;
 use std::num::ParseIntError;
 
 use async_trait::async_trait;
-use cashu::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
-use cashu::types::{MeltQuote, MintQuote};
-use cashu::url::UncheckedUrl;
 pub use memory::MemoryLocalStore;
 #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
 pub use redb_store::RedbLocalStore;
 use thiserror::Error;
+
+use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
+use crate::types::{MeltQuote, MintQuote};
+use crate::url::UncheckedUrl;
 
 #[derive(Debug, Error)]
 pub enum Error {

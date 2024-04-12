@@ -5,23 +5,21 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cashu::dhke::{construct_proofs, unblind_message};
-use cashu::nuts::nut07::{ProofState, State};
-use cashu::nuts::nut09::RestoreRequest;
-use cashu::nuts::nut11::SigningKey;
-use cashu::nuts::{
-    BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
-    PreMintSecrets, PreSwap, Proof, Proofs, PublicKey, SigFlag, SwapRequest, Token,
-};
-use cashu::types::{MeltQuote, Melted, MintQuote};
-use cashu::url::UncheckedUrl;
-use cashu::util::unix_time;
-use cashu::{Amount, Bolt11Invoice};
 use localstore::LocalStore;
 use thiserror::Error;
 use tracing::{debug, warn};
 
 use crate::client::Client;
+use crate::dhke::{construct_proofs, hash_to_curve, unblind_message};
+use crate::nuts::{
+    BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
+    PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SigFlag,
+    SigningKey, State, SwapRequest, Token,
+};
+use crate::types::{MeltQuote, Melted, MintQuote};
+use crate::url::UncheckedUrl;
+use crate::util::unix_time;
+use crate::{Amount, Bolt11Invoice};
 
 pub mod localstore;
 
@@ -31,12 +29,12 @@ pub enum Error {
     #[error("Insufficient Funds")]
     InsufficientFunds,
     #[error("`{0}`")]
-    CashuWallet(#[from] cashu::error::wallet::Error),
+    CashuWallet(#[from] crate::error::wallet::Error),
     #[error("`{0}`")]
     Client(#[from] crate::client::Error),
     /// Cashu Url Error
     #[error("`{0}`")]
-    CashuUrl(#[from] cashu::url::Error),
+    CashuUrl(#[from] crate::url::Error),
     #[error("Quote Expired")]
     QuoteExpired,
     #[error("Quote Unknown")]
@@ -46,7 +44,7 @@ pub enum Error {
     #[error("`{0}`")]
     LocalStore(#[from] localstore::Error),
     #[error("`{0}`")]
-    Cashu(#[from] cashu::error::Error),
+    Cashu(#[from] crate::error::Error),
     #[error("Could not verify Dleq")]
     CouldNotVerifyDleq,
     #[error("P2PK Condition Not met `{0}`")]
@@ -187,8 +185,6 @@ impl Wallet {
         mint_url: UncheckedUrl,
         proofs: Proofs,
     ) -> Result<Vec<ProofState>, Error> {
-        use cashu::dhke::hash_to_curve;
-
         let spendable = self
             .client
             .post_check_state(
@@ -361,7 +357,7 @@ impl Wallet {
                 let key = keys.amount_key(sig.amount).ok_or(Error::UnknownKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.b) {
                     Ok(_) => (),
-                    Err(cashu::nuts::nut12::Error::MissingDleqProof) => (),
+                    Err(crate::nuts::nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
                 }
             }
@@ -411,7 +407,7 @@ impl Wallet {
                     let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
                     match proof.verify_dleq(key) {
                         Ok(_) => continue,
-                        Err(cashu::nuts::nut12::Error::MissingDleqProof) => continue,
+                        Err(crate::nuts::nut12::Error::MissingDleqProof) => continue,
                         Err(_) => return Err(Error::CouldNotVerifyDleq),
                     }
                 }
@@ -571,7 +567,7 @@ impl Wallet {
                 let key = keys.amount_key(promise.amount).ok_or(Error::UnknownKey)?;
                 match promise.verify_dleq(key, premint.blinded_message.b) {
                     Ok(_) => (),
-                    Err(cashu::nuts::nut12::Error::MissingDleqProof) => (),
+                    Err(crate::nuts::nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
                 }
             }
@@ -932,7 +928,7 @@ impl Wallet {
         let mut change_proofs = vec![];
 
         for proof in post_swap_proofs {
-            let conditions: Result<cashu::nuts::nut10::Secret, _> = (&proof.secret).try_into();
+            let conditions: Result<crate::nuts::nut10::Secret, _> = (&proof.secret).try_into();
             if conditions.is_ok() {
                 send_proofs.push(proof);
             } else {
@@ -1001,7 +997,7 @@ impl Wallet {
                 }
 
                 if let Ok(secret) =
-                    <cashu::secret::Secret as TryInto<cashu::nuts::nut10::Secret>>::try_into(
+                    <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
                         proof.secret.clone(),
                     )
                 {
@@ -1183,7 +1179,7 @@ impl Wallet {
         token: &Token,
         spending_conditions: P2PKConditions,
     ) -> Result<(), Error> {
-        use cashu::nuts::nut10;
+        use crate::nuts::nut10;
 
         if spending_conditions.refund_keys.is_some() && spending_conditions.locktime.is_none() {
             warn!(

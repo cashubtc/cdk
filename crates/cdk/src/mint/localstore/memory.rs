@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu::dhke::hash_to_curve;
-use cashu::nuts::nut02::mint::KeySet;
-use cashu::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
-use cashu::secret::Secret;
-use cashu::types::{MeltQuote, MintQuote};
 use tokio::sync::Mutex;
 
 use super::{Error, LocalStore};
+use crate::dhke::hash_to_curve;
+use crate::nuts::nut02::mint::KeySet;
+use crate::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
+use crate::secret::Secret;
+use crate::types::{MeltQuote, MintQuote};
 
 #[derive(Debug, Clone)]
 pub struct MemoryLocalStore {

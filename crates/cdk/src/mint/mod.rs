@@ -1,21 +1,21 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use cashu::dhke::{hash_to_curve, sign_message, verify_message};
-use cashu::error::ErrorResponse;
-use cashu::nuts::nut07::{ProofState, State};
-use cashu::nuts::{
-    BlindSignature, BlindedMessage, CheckStateRequest, CheckStateResponse, MeltBolt11Request,
-    MeltBolt11Response, Proof, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse, *,
-};
-use cashu::types::{MeltQuote, MintQuote};
-use cashu::Amount;
+use bip39::Mnemonic;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info};
 
-use crate::Mnemonic;
+use crate::dhke::{hash_to_curve, sign_message, verify_message};
+use crate::error::ErrorResponse;
+use crate::nuts::nut07::{ProofState, State};
+use crate::nuts::{
+    BlindSignature, BlindedMessage, CheckStateRequest, CheckStateResponse, MeltBolt11Request,
+    MeltBolt11Response, Proof, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse, *,
+};
+use crate::types::{MeltQuote, MintQuote};
+use crate::Amount;
 
 mod localstore;
 #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
@@ -45,15 +45,15 @@ pub enum Error {
     #[error("`{0}`")]
     Custom(String),
     #[error("`{0}`")]
-    CashuMint(#[from] cashu::error::mint::Error),
+    CashuMint(#[from] crate::error::mint::Error),
     #[error("`{0}`")]
-    Cashu(#[from] cashu::error::Error),
+    Cashu(#[from] crate::error::Error),
     #[error("`{0}`")]
     Localstore(#[from] localstore::Error),
     #[error("`{0}`")]
-    Secret(#[from] cashu::secret::Error),
+    Secret(#[from] crate::secret::Error),
     #[error("`{0}`")]
-    Nut12(#[from] cashu::nuts::nut12::Error),
+    Nut12(#[from] crate::nuts::nut12::Error),
     #[error("Unknown quote")]
     UnknownQuote,
     #[error("Unknown secret kind")]
@@ -460,7 +460,7 @@ impl Mint {
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
-            <&cashu::secret::Secret as TryInto<cashu::nuts::nut10::Secret>>::try_into(&proof.secret)
+            <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)
         {
             // Verify if p2pk
             if secret.kind.eq(&Kind::P2PK) {
