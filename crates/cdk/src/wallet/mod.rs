@@ -9,7 +9,7 @@ use localstore::LocalStore;
 use thiserror::Error;
 use tracing::{debug, warn};
 
-use crate::client::Client;
+use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve, unblind_message};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
@@ -48,8 +48,6 @@ pub enum Error {
     UnknownKey,
     #[error(transparent)]
     ParseInt(#[from] ParseIntError),
-    #[error(transparent)]
-    Client(#[from] crate::client::Error),
     /// Cashu Url Error
     #[error(transparent)]
     CashuUrl(#[from] crate::url::Error),
@@ -65,14 +63,14 @@ pub enum Error {
 
 #[derive(Clone)]
 pub struct Wallet {
-    pub client: Arc<dyn Client + Send + Sync>,
+    pub client: HttpClient,
     pub localstore: Arc<dyn LocalStore + Send + Sync>,
     mnemonic: Option<Mnemonic>,
 }
 
 impl Wallet {
     pub async fn new(
-        client: Arc<dyn Client + Sync + Send>,
+        client: HttpClient,
         localstore: Arc<dyn LocalStore + Send + Sync>,
         mnemonic: Option<Mnemonic>,
     ) -> Self {
