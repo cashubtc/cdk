@@ -46,6 +46,8 @@ pub enum Error {
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),
     #[error(transparent)]
+    NUT00(#[from] crate::nuts::nut00::Error),
+    #[error(transparent)]
     CashuNut02(#[from] crate::nuts::nut02::Error),
     #[error(transparent)]
     Secret(#[from] crate::secret::Error),

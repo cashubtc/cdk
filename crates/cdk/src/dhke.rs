@@ -6,7 +6,7 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Parity, PublicKey as NormalizedPublicKey, Scalar, XOnlyPublicKey};
 
-use crate::error::{self, Error};
+use crate::error::Error;
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::nuts::nut12::ProofDleq;
 use crate::nuts::{BlindSignature, Keys, Proof, Proofs};
@@ -62,7 +62,7 @@ where
 pub fn blind_message(
     secret: &[u8],
     blinding_factor: Option<SecretKey>,
-) -> Result<(PublicKey, SecretKey), error::wallet::Error> {
+) -> Result<(PublicKey, SecretKey), Error> {
     let y: PublicKey = hash_to_curve(secret)?;
     let r: SecretKey = blinding_factor.unwrap_or_else(SecretKey::generate);
     Ok((y.combine(&r.public_key())?.into(), r))
@@ -77,7 +77,7 @@ pub fn unblind_message(
     r: &SecretKey,
     // K
     mint_pubkey: &PublicKey,
-) -> Result<PublicKey, error::wallet::Error> {
+) -> Result<PublicKey, Error> {
     let r: Scalar = Scalar::from(r.deref().to_owned());
 
     // a = r * K
@@ -94,15 +94,13 @@ pub fn construct_proofs(
     rs: Vec<SecretKey>,
     secrets: Vec<Secret>,
     keys: &Keys,
-) -> Result<Proofs, error::wallet::Error> {
+) -> Result<Proofs, Error> {
     let mut proofs = vec![];
     for ((blinded_signature, r), secret) in promises.into_iter().zip(rs).zip(secrets) {
         let blinded_c: PublicKey = blinded_signature.c;
-        let a: PublicKey =
-            keys.amount_key(blinded_signature.amount)
-                .ok_or(error::wallet::Error::CustomError(
-                    "Could not get proofs".to_string(),
-                ))?;
+        let a: PublicKey = keys
+            .amount_key(blinded_signature.amount)
+            .ok_or(Error::CustomError("Could not get proofs".to_string()))?;
 
         let unblinded_signature: PublicKey = unblind_message(&blinded_c, &r, &a)?;
 
@@ -129,10 +127,7 @@ pub fn construct_proofs(
 /// * `k` is the private key of mint (one for each amount)
 /// * `B_` is the blinded message
 #[inline]
-pub fn sign_message(
-    k: &SecretKey,
-    blinded_message: &PublicKey,
-) -> Result<PublicKey, error::mint::Error> {
+pub fn sign_message(k: &SecretKey, blinded_message: &PublicKey) -> Result<PublicKey, Error> {
     let k: Scalar = Scalar::from(k.deref().to_owned());
     Ok(blinded_message.mul_tweak(&SECP256K1, &k)?.into())
 }
@@ -142,7 +137,7 @@ pub fn verify_message(
     a: &SecretKey,
     unblinded_message: PublicKey,
     msg: &[u8],
-) -> Result<(), error::mint::Error> {
+) -> Result<(), Error> {
     // Y
     let y: PublicKey = hash_to_curve(msg)?;
 
@@ -154,7 +149,7 @@ pub fn verify_message(
         return Ok(());
     }
 
-    Err(error::mint::Error::TokenNotVerifed)
+    Err(Error::TokenNotVerifed)
 }
 
 #[cfg(test)]

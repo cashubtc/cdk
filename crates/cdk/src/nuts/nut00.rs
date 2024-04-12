@@ -4,15 +4,47 @@
 use std::fmt;
 use std::hash::{self, Hasher};
 use std::str::FromStr;
+use std::string::FromUtf8Error;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use super::{BlindSignatureDleq, Id, ProofDleq, Proofs, PublicKey, Signatures};
-use crate::error::Error;
 use crate::nuts::nut11::{witness_deserialize, witness_serialize};
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
 use crate::Amount;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Proofs required
+    #[error("Proofs required in token")]
+    ProofsRequired,
+    /// Unsupported token
+    #[error("Unsupported token")]
+    UnsupportedToken,
+    /// Invalid Url
+    #[error("Invalid Url")]
+    InvalidUrl,
+    /// Serde Json error
+    #[error(transparent)]
+    SerdeJsonError(#[from] serde_json::Error),
+    /// Utf8 parse error
+    #[error(transparent)]
+    Utf8ParseError(#[from] FromUtf8Error),
+    /// Base64 error
+    #[error(transparent)]
+    Base64Error(#[from] base64::DecodeError),
+    /// Parse Url Error
+    #[error(transparent)]
+    UrlParseError(#[from] url::ParseError),
+    /// CDK error
+    #[error(transparent)]
+    Cdk(#[from] crate::error::Error),
+    /// NUT11 error
+    #[error(transparent)]
+    NUT11(#[from] crate::nuts::nut11::Error),
+}
 
 /// Blinded Message [NUT-00]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,13 +146,12 @@ pub mod wallet {
     use serde::{Deserialize, Serialize};
     use url::Url;
 
-    use super::{CurrencyUnit, MintProofs};
+    use super::{CurrencyUnit, MintProofs, *};
     use crate::dhke::blind_message;
-    use crate::error::wallet;
     use crate::nuts::{BlindedMessage, Id, P2PKConditions, Proofs, SecretKey};
     use crate::secret::Secret;
     use crate::url::UncheckedUrl;
-    use crate::{error, Amount};
+    use crate::Amount;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct PreMint {
@@ -153,7 +184,7 @@ pub mod wallet {
 
     impl PreMintSecrets {
         /// Outputs for speceifed amount with random secret
-        pub fn random(keyset_id: Id, amount: Amount) -> Result<Self, wallet::Error> {
+        pub fn random(keyset_id: Id, amount: Amount) -> Result<Self, Error> {
             let amount_split = amount.split();
 
             let mut output = Vec::with_capacity(amount_split.len());
@@ -330,13 +361,13 @@ pub mod wallet {
             proofs: Proofs,
             memo: Option<String>,
             unit: Option<CurrencyUnit>,
-        ) -> Result<Self, wallet::Error> {
+        ) -> Result<Self, Error> {
             if proofs.is_empty() {
-                return Err(wallet::Error::ProofsRequired);
+                return Err(Error::ProofsRequired);
             }
 
             // Check Url is valid
-            let _: Url = (&mint_url).try_into()?;
+            let _: Url = (&mint_url).try_into().map_err(|_| Error::InvalidUrl)?;
 
             Ok(Self {
                 token: vec![MintProofs::new(mint_url, proofs)],
@@ -359,13 +390,13 @@ pub mod wallet {
     }
 
     impl FromStr for Token {
-        type Err = error::wallet::Error;
+        type Err = Error;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
             let s = if s.starts_with("cashuA") {
                 s.replace("cashuA", "")
             } else {
-                return Err(wallet::Error::UnsupportedToken);
+                return Err(Error::UnsupportedToken);
             };
 
             let decode_config = general_purpose::GeneralPurposeConfig::new()
