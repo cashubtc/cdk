@@ -23,7 +23,7 @@ if [ "$is_msrv" == true ]; then
 fi
 
 buildargs=(
-    "-p cashu"
+    "-p cdk"
     "-p cdk --no-default-features"
     "-p cdk --no-default-features --features wallet"
     "-p cdk --no-default-features --features mint"

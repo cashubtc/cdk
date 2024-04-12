@@ -30,7 +30,7 @@ jobs:
             -p cdk --no-default-features,
             -p cdk --no-default-features --features wallet,
             -p cdk --no-default-features --features mint --features redb,
-            -p cdk --no-default-features --features mint --features redb,
+            -p cdk --no-default-features --features wallet --features redb,
             -p cdk --no-default-features --features all-nuts,
           ]
     steps:
