@@ -1,3 +1,5 @@
+//! Wallet HTTP wallet client
+
 use reqwest::Client;
 use serde_json::Value;
 use url::Url;
