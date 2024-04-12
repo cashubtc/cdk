@@ -9,15 +9,11 @@ use tracing::{debug, error, info};
 
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::ErrorResponse;
-use crate::nuts::nut07::{ProofState, State};
-use crate::nuts::{
-    BlindSignature, BlindedMessage, CheckStateRequest, CheckStateResponse, MeltBolt11Request,
-    MeltBolt11Response, Proof, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse, *,
-};
+use crate::nuts::*;
 use crate::types::{MeltQuote, MintQuote};
 use crate::Amount;
 
-mod localstore;
+pub mod localstore;
 #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
 pub use localstore::RedbLocalStore;
 pub use localstore::{LocalStore, MemoryLocalStore};
@@ -45,13 +41,15 @@ pub enum Error {
     #[error("`{0}`")]
     Custom(String),
     #[error(transparent)]
-    CashuMint(#[from] crate::error::mint::Error),
-    #[error(transparent)]
     Cashu(#[from] crate::error::Error),
     #[error(transparent)]
     Localstore(#[from] localstore::Error),
     #[error(transparent)]
     Secret(#[from] crate::secret::Error),
+    #[error(transparent)]
+    NUT00(#[from] crate::nuts::nut00::Error),
+    #[error(transparent)]
+    NUT11(#[from] crate::nuts::nut11::Error),
     #[error(transparent)]
     Nut12(#[from] crate::nuts::nut12::Error),
     #[error("Unknown quote")]

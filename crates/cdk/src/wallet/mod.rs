@@ -28,22 +28,15 @@ pub enum Error {
     /// Insufficient Funds
     #[error("Insufficient Funds")]
     InsufficientFunds,
-    #[error("`{0}`")]
-    CashuWallet(#[from] crate::error::wallet::Error),
-    #[error("`{0}`")]
-    Client(#[from] crate::client::Error),
-    /// Cashu Url Error
-    #[error("`{0}`")]
-    CashuUrl(#[from] crate::url::Error),
     #[error("Quote Expired")]
     QuoteExpired,
     #[error("Quote Unknown")]
     QuoteUnknown,
     #[error("No active keyset")]
     NoActiveKeyset,
-    #[error("`{0}`")]
+    #[error(transparent)]
     LocalStore(#[from] localstore::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     Cashu(#[from] crate::error::Error),
     #[error("Could not verify Dleq")]
     CouldNotVerifyDleq,
@@ -53,8 +46,19 @@ pub enum Error {
     InvalidSpendConditions(String),
     #[error("Unknown Key")]
     UnknownKey,
-    #[error("`{0}`")]
+    #[error(transparent)]
     ParseInt(#[from] ParseIntError),
+    #[error(transparent)]
+    Client(#[from] crate::client::Error),
+    /// Cashu Url Error
+    #[error(transparent)]
+    CashuUrl(#[from] crate::url::Error),
+    /// NUT00 Error
+    #[error(transparent)]
+    NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT11 Error
+    #[error(transparent)]
+    NUT11(#[from] crate::nuts::nut11::Error),
     #[error("`{0}`")]
     Custom(String),
 }

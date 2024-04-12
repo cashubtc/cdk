@@ -16,14 +16,59 @@ use bitcoin::secp256k1::{
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
 use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
+use thiserror::Error;
 
 use super::nut01::PublicKey;
 use super::nut10::{Secret, SecretData};
 use super::{Proof, SecretKey};
-use crate::error::Error;
 use crate::nuts::nut00::BlindedMessage;
 use crate::util::{hex, unix_time};
 use crate::SECP256K1;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Incorrect secret kind
+    #[error("Secret is not a p2pk secret")]
+    IncorrectSecretKind,
+    /// P2PK locktime has already passed
+    #[error("Locktime in past")]
+    LocktimeInPast,
+    /// Witness signature is not valid
+    #[error("Invalid signature")]
+    InvalidSignature,
+    /// Unknown tag in P2PK secret
+    #[error("Unknown Tag P2PK secret")]
+    UnknownTag,
+    /// P2PK Spend conditions not meet
+    #[error("P2PK Spend conditions are not met")]
+    SpendConditionsNotMet,
+    /// Pubkey must be in data field of P2PK
+    #[error("P2PK Required in secret data")]
+    P2PKPubkeyRequired,
+    #[error("Kind not found")]
+    KindNotFound,
+    /// Parse Url Error
+    #[error(transparent)]
+    UrlParseError(#[from] url::ParseError),
+    /// Parse int error
+    #[error(transparent)]
+    ParseInt(#[from] std::num::ParseIntError),
+    /// From hex error
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
+    /// Serde Json error
+    #[error(transparent)]
+    SerdeJsonError(#[from] serde_json::Error),
+    /// Secp256k1 error
+    #[error(transparent)]
+    Secp256k1(#[from] bitcoin::secp256k1::Error),
+    /// NUT01 Error
+    #[error(transparent)]
+    NUT01(#[from] crate::nuts::nut01::Error),
+    /// Secret error
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
+}
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signatures {
@@ -219,12 +264,10 @@ impl TryFrom<P2PKConditions> for Secret {
             sig_flag,
         } = conditions;
 
-        // Check there is at least one pubkey
-        if pubkeys.len().lt(&1) {
-            return Err(Error::Amount);
-        }
-
-        let data: PublicKey = pubkeys[0].clone().to_normalized_public_key();
+        let data = match pubkeys.first() {
+            Some(data) => data.to_string(),
+            None => return Err(Error::P2PKPubkeyRequired),
+        };
 
         let data = data.to_string();
 
@@ -263,7 +306,7 @@ impl TryFrom<P2PKConditions> for crate::secret::Secret {
     fn try_from(conditions: P2PKConditions) -> Result<crate::secret::Secret, Self::Error> {
         let secret: Secret = conditions.try_into()?;
 
-        secret.try_into()
+        secret.try_into().map_err(|_| Error::IncorrectSecretKind)
     }
 }
 
@@ -597,7 +640,7 @@ impl TryFrom<&PublicKey> for VerifyingKey {
             bytes.to_vec()
         };
 
-        VerifyingKey::from_bytes(&bytes).map_err(|_| Error::Key)
+        VerifyingKey::from_bytes(&bytes)
     }
 }
 
