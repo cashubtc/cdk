@@ -118,6 +118,7 @@ pub mod wallet {
 
     use base64::engine::{general_purpose, GeneralPurpose};
     use base64::{alphabet, Engine as _};
+    use serde::ser::Error;
     use serde::{Deserialize, Serialize};
     use url::Url;
 
@@ -376,14 +377,10 @@ pub mod wallet {
         type Err = error::wallet::Error;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
-            let is_v3 = s.starts_with("cashuA");
-            let is_v4 = s.starts_with("cashuB");
-            let s = if is_v3 {
-                s.replace("cashuA", "")
-            } else if is_v4 {
-                s.replace("cashuB", "")
-            } else {
-                return Err(wallet::Error::UnsupportedToken);
+            let (is_v3, s) = match (s.strip_prefix("cashuA"), s.strip_prefix("cashuB")) {
+                (Some(s), None) => (true, s),
+                (None, Some(s)) => (false, s),
+                _ => return Err(wallet::Error::UnsupportedToken),
             };
 
             let decode_config = general_purpose::GeneralPurposeConfig::new()
@@ -394,7 +391,6 @@ pub mod wallet {
                 let token: Token = serde_json::from_str(&decoded_str)?;
                 Ok(token)
             } else {
-                println!("{}", hex::encode(decoded.clone()));
                 let token: TokenV4 = ciborium::from_reader(&decoded[..])?;
                 Ok(token.into())
             }
@@ -434,7 +430,8 @@ pub mod wallet {
     impl fmt::Display for TokenV4 {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let mut data = Vec::new();
-            ciborium::into_writer(self, &mut data).unwrap();
+            ciborium::into_writer(self, &mut data)
+                .map_err(|e| fmt::Error::custom(e.to_string()))?;
             let encoded = general_purpose::URL_SAFE.encode(data);
             write!(f, "cashuB{}", encoded)
         }
@@ -631,23 +628,6 @@ where
     let bytes = Vec::<u8>::deserialize(deserializer)?;
     Id::from_bytes(&bytes).map_err(serde::de::Error::custom)
 }
-
-// fn serialize_v4_secret<S>(secret: &Secret, serializer: S) -> Result<S::Ok, S::Error>
-// where
-//     S: serde::Serializer,
-// {
-//     serializer.serialize_bytes(&secret.0.as_bytes())
-// }
-
-// fn deserialize_v4_secret<'de, D>(deserializer: D) -> Result<Secret, D::Error>
-// where
-//     D: serde::Deserializer<'de>,
-// {
-//     let bytes = Vec::<u8>::deserialize(deserializer)?;
-//     Ok(Secret(
-//         String::from_utf8(bytes).map_err(serde::de::Error::custom)?,
-//     ))
-// }
 
 fn serialize_v4_pubkey<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
 where
