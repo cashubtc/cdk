@@ -14,7 +14,7 @@ use url::{ParseError, Url};
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
     /// Url error
-    #[error("`{0}`")]
+    #[error(transparent)]
     Url(#[from] ParseError),
 }
 

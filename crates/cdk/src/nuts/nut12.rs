@@ -20,11 +20,11 @@ pub enum Error {
     IncompleteDleqProof,
     #[error("Invalid Dleq Prood")]
     InvalidDleqProof,
-    #[error("`{0}`")]
+    #[error(transparent)]
     Cashu(#[from] crate::error::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     Secp256k1(#[from] secp256k1::Error),
 }
 
