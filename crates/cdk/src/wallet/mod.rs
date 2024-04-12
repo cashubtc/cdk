@@ -51,6 +51,9 @@ pub enum Error {
     /// Cashu Url Error
     #[error(transparent)]
     CashuUrl(#[from] crate::url::Error),
+    /// NUT11 Error
+    #[error(transparent)]
+    Client(#[from] crate::client::Error),
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
