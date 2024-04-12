@@ -8,22 +8,22 @@ use crate::util::hex;
 #[derive(Debug, Error)]
 pub enum Error {
     /// Parse Url Error
-    #[error("`{0}`")]
+    #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
     /// Utf8 parse error
-    #[error("`{0}`")]
+    #[error(transparent)]
     Utf8ParseError(#[from] FromUtf8Error),
     /// Serde Json error
-    #[error("`{0}`")]
+    #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
     /// Base64 error
-    #[error("`{0}`")]
+    #[error(transparent)]
     Base64Error(#[from] base64::DecodeError),
     /// From hex error
-    #[error("`{0}`")]
+    #[error(transparent)]
     HexError(#[from] hex::Error),
     /// Secp256k1 error
-    #[error("`{0}`")]
+    #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),
     #[error("No Key for Amoun")]
     AmountKey,
@@ -53,16 +53,16 @@ pub enum Error {
     InvalidSignature,
     #[error("Locktime in past")]
     LocktimeInPast,
-    #[error("`{0}`")]
+    #[error(transparent)]
     Secret(#[from] super::secret::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
     #[cfg(feature = "nut13")]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Bip32(#[from] bitcoin::bip32::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     ParseInt(#[from] std::num::ParseIntError),
     /// Custom error
     #[error("`{0}`")]

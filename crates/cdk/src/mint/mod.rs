@@ -44,15 +44,15 @@ pub enum Error {
     UnpaidQuote,
     #[error("`{0}`")]
     Custom(String),
-    #[error("`{0}`")]
+    #[error(transparent)]
     CashuMint(#[from] crate::error::mint::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     Cashu(#[from] crate::error::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     Localstore(#[from] localstore::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     Secret(#[from] crate::secret::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     Nut12(#[from] crate::nuts::nut12::Error),
     #[error("Unknown quote")]
     UnknownQuote,
