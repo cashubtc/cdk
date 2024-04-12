@@ -1,22 +1,21 @@
 //! Minreq http Client
 
 use async_trait::async_trait;
-use cashu::error::ErrorResponse;
-use cashu::nuts::nut09::{RestoreRequest, RestoreResponse};
-use cashu::nuts::{
-    BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
-    KeysetResponse, MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo,
-    MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey, SwapRequest,
-    SwapResponse,
-};
-use cashu::{Amount, Bolt11Invoice};
 use serde_json::Value;
 use tracing::warn;
 use url::Url;
 
 use super::join_url;
 use crate::client::{Client, Error};
+use crate::error::ErrorResponse;
+use crate::nuts::{
+    BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
+    KeysetResponse, MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo,
+    MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+};
+use crate::{Amount, Bolt11Invoice};
 
 #[derive(Debug, Clone)]
 pub struct HttpClient {}

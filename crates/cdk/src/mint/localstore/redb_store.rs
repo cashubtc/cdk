@@ -3,17 +3,17 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu::dhke::hash_to_curve;
-use cashu::nuts::{
-    BlindSignature, CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey,
-};
-use cashu::secret::Secret;
-use cashu::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
 use tracing::debug;
 
 use super::{Error, LocalStore};
+use crate::dhke::hash_to_curve;
+use crate::nuts::{
+    BlindSignature, CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey,
+};
+use crate::secret::Secret;
+use crate::types::{MeltQuote, MintQuote};
 
 const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("active_keysets");
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");

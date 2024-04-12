@@ -30,8 +30,7 @@ pub use nut05::{
     MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
 };
 pub use nut06::{MintInfo, MintVersion, Nuts};
-#[cfg(feature = "wallet")]
-pub use nut07::{CheckStateRequest, CheckStateResponse};
+pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
 pub use nut09::{RestoreRequest, RestoreResponse};
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
 pub use nut11::{P2PKConditions, SigFlag, Signatures, SigningKey, VerifyingKey};

@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, Proofs};
-use cashu::types::{MeltQuote, MintQuote};
-use cashu::url::UncheckedUrl;
 use tokio::sync::Mutex;
 
 use super::{Error, LocalStore};
+use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, Proofs};
+use crate::types::{MeltQuote, MintQuote};
+use crate::url::UncheckedUrl;
 
 #[derive(Default, Debug, Clone)]
 pub struct MemoryLocalStore {
