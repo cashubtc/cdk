@@ -12,7 +12,7 @@ license.workspace = true
 [features]
 default = ["mint", "wallet", "all-nuts", "redb"]
 mint = ["dep:bip39"]
-wallet = ["dep:minreq"]
+wallet = ["nut13", "dep:minreq", "dep:bip39"]
 gloo = ["dep:gloo"]
 all-nuts = ["nut13"]
 nut13 = ["dep:bip39"]
