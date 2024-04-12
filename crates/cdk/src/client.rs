@@ -1,10 +1,11 @@
-//! Wallet HTTP wallet client
+//! Wallet client
 
 use reqwest::Client;
 use serde_json::Value;
+use thiserror::Error;
 use url::Url;
 
-use crate::error::{Error, ErrorResponse};
+use crate::error::ErrorResponse;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
     KeysetResponse, MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request,
@@ -14,16 +15,38 @@ use crate::nuts::{
 };
 use crate::{Amount, Bolt11Invoice};
 
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Unknown Keyset
+    #[error("Url Path segments could not be joined")]
+    UrlPathSegments,
+    /// Serde Json error
+    #[error(transparent)]
+    SerdeJsonError(#[from] serde_json::Error),
+    /// From hex error
+    #[error(transparent)]
+    ReqwestError(#[from] reqwest::Error),
+    ///  Min req error
+    #[error("Unknown Error response")]
+    UnknownErrorResponse(crate::error::ErrorResponse),
+}
+
+impl From<ErrorResponse> for Error {
+    fn from(err: ErrorResponse) -> Error {
+        Self::UnknownErrorResponse(err)
+    }
+}
+
 fn join_url(url: Url, paths: &[&str]) -> Result<Url, Error> {
     let mut url = url;
     for path in paths {
         if !url.path().ends_with('/') {
             url.path_segments_mut()
-                .map_err(|_| Error::CustomError("Url Path Segmants".to_string()))?
+                .map_err(|_| Error::UrlPathSegments)?
                 .push(path);
         } else {
             url.path_segments_mut()
-                .map_err(|_| Error::CustomError("Url Path Segmants".to_string()))?
+                .map_err(|_| Error::UrlPathSegments)?
                 .pop()
                 .push(path);
         }
