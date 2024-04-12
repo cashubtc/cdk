@@ -100,22 +100,22 @@ pub mod wallet {
     #[derive(Debug, Error)]
     pub enum Error {
         /// Serde Json error
-        #[error("`{0}`")]
+        #[error(transparent)]
         SerdeJsonError(#[from] serde_json::Error),
         /// Secp256k1 error
-        #[error("`{0}`")]
+        #[error(transparent)]
         Secp256k1(#[from] bitcoin::secp256k1::Error),
         /// NUT01 error
-        #[error("`{0}`")]
+        #[error(transparent)]
         NUT01(#[from] nut01::Error),
         /// Insufficient Funds
         #[error("Insufficient funds")]
         InsufficientFunds,
         /// Utf8 parse error
-        #[error("`{0}`")]
+        #[error(transparent)]
         Utf8ParseError(#[from] FromUtf8Error),
         /// Base64 error
-        #[error("`{0}`")]
+        #[error(transparent)]
         Base64Error(#[from] base64::DecodeError),
         /// Unsupported Token
         #[error("Token unsupported")]
@@ -126,9 +126,9 @@ pub mod wallet {
         /// Url Parse error
         #[error("Url Parse")]
         UrlParse,
-        #[error("`{0}`")]
+        #[error(transparent)]
         Secret(#[from] crate::secret::Error),
-        #[error("`{0}`")]
+        #[error(transparent)]
         Cashu(#[from] super::Error),
         /// Custom Error message
         #[error("`{0}`")]
@@ -156,10 +156,10 @@ pub mod mint {
         #[error("Token Already Spent")]
         TokenSpent,
         /// Secp256k1 error
-        #[error("`{0}`")]
+        #[error(transparent)]
         Secp256k1(#[from] bitcoin::secp256k1::Error),
         /// NUT01 error
-        #[error("`{0}`")]
+        #[error(transparent)]
         NUT01(#[from] nut01::Error),
         #[error("`Token not verified`")]
         TokenNotVerifed,
@@ -174,9 +174,9 @@ pub mod mint {
         /// Keyset is not known
         #[error("Unknown Keyset")]
         UnknownKeySet,
-        #[error("`{0}`")]
+        #[error(transparent)]
         Secret(#[from] crate::secret::Error),
-        #[error("`{0}`")]
+        #[error(transparent)]
         Cashu(#[from] super::Error),
         #[error("`{0}`")]
         CustomError(String),
