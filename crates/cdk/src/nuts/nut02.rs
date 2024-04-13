@@ -49,6 +49,7 @@ impl Id {
     const STRLEN: usize = 14;
 
     pub fn to_bytes(&self) -> Vec<u8> {
+        // TODO: Remove unwrap when struct holds bytes instead of string
         hex::decode(self.to_string()).unwrap()
     }
 
