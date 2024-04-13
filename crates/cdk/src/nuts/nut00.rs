@@ -29,6 +29,9 @@ pub enum Error {
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
+    /// Ciborium error
+    #[error(transparent)]
+    CiboriumError(#[from] ciborium::de::Error<std::io::Error>),
     /// Utf8 parse error
     #[error(transparent)]
     Utf8ParseError(#[from] FromUtf8Error),
@@ -143,7 +146,6 @@ pub mod wallet {
 
     use base64::engine::{general_purpose, GeneralPurpose};
     use base64::{alphabet, Engine as _};
-    use serde::ser::Error;
     use serde::{Deserialize, Serialize};
     use url::Url;
 
@@ -450,6 +452,7 @@ pub mod wallet {
 
     impl fmt::Display for TokenV4 {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            use serde::ser::Error;
             let mut data = Vec::new();
             ciborium::into_writer(self, &mut data)
                 .map_err(|e| fmt::Error::custom(e.to_string()))?;
