@@ -19,35 +19,37 @@ use crate::types::{MeltQuote, MintQuote};
 #[derive(Debug, Error)]
 pub enum Error {
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Redb(#[from] redb::Error),
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Database(#[from] redb::DatabaseError),
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Transaction(#[from] redb::TransactionError),
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Commit(#[from] redb::CommitError),
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Table(#[from] redb::TableError),
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Storage(#[from] redb::StorageError),
     #[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-    #[error("`{0}`")]
+    #[error(transparent)]
     Serde(#[from] serde_json::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     ParseInt(#[from] ParseIntError),
     #[error("Unknown Mint Info")]
     UnknownMintInfo,
-    #[error("`{0}`")]
+    #[error(transparent)]
     Cashu(#[from] crate::error::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
+    NUT00(#[from] crate::nuts::nut00::Error),
+    #[error(transparent)]
     CashuNut02(#[from] crate::nuts::nut02::Error),
-    #[error("`{0}`")]
+    #[error(transparent)]
     Secret(#[from] crate::secret::Error),
 }
 

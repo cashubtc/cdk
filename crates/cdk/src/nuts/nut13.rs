@@ -63,7 +63,7 @@ mod wallet {
     use bip39::Mnemonic;
 
     use crate::dhke::blind_message;
-    use crate::error::wallet;
+    use crate::error::Error;
     use crate::nuts::{BlindedMessage, Id, PreMint, PreMintSecrets, SecretKey};
     use crate::secret::Secret;
     use crate::Amount;
@@ -77,7 +77,7 @@ mod wallet {
             mnemonic: &Mnemonic,
             amount: Amount,
             zero_amount: bool,
-        ) -> Result<Self, wallet::Error> {
+        ) -> Result<Self, Error> {
             let mut pre_mint_secrets = PreMintSecrets::default();
 
             let mut counter = counter;
@@ -113,7 +113,7 @@ mod wallet {
             mnemonic: &Mnemonic,
             start_count: u64,
             end_count: u64,
-        ) -> Result<Self, wallet::Error> {
+        ) -> Result<Self, Error> {
             let mut pre_mint_secrets = PreMintSecrets::default();
 
             for i in start_count..=end_count {
