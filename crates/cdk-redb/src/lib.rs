@@ -1,5 +1,9 @@
-pub mod mint_redb;
-pub mod wallet_redb;
+#[cfg(feature = "mint")]
+pub mod mint;
+#[cfg(feature = "wallet")]
+pub mod wallet;
 
-pub use mint_redb::MintRedbDatabase;
-pub use wallet_redb::RedbWalletDatabase;
+#[cfg(feature = "mint")]
+pub use mint::MintRedbDatabase;
+#[cfg(feature = "wallet")]
+pub use wallet::RedbWalletDatabase;
