@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use std::num::ParseIntError;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database::{self, MintDatabase};
+use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
 use cdk::nuts::{
     BlindSignature, CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey,
@@ -12,9 +11,10 @@ use cdk::nuts::{
 use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
-use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::debug;
+
+use super::error::Error;
 
 const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("active_keysets");
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");
@@ -29,42 +29,6 @@ const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
 
 const DATABASE_VERSION: u64 = 0;
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error(transparent)]
-    Redb(#[from] redb::Error),
-    #[error(transparent)]
-    Database(#[from] redb::DatabaseError),
-    #[error(transparent)]
-    Transaction(#[from] redb::TransactionError),
-    #[error(transparent)]
-    Commit(#[from] redb::CommitError),
-    #[error(transparent)]
-    Table(#[from] redb::TableError),
-    #[error(transparent)]
-    Storage(#[from] redb::StorageError),
-    #[error(transparent)]
-    Serde(#[from] serde_json::Error),
-    #[error(transparent)]
-    ParseInt(#[from] ParseIntError),
-    #[error(transparent)]
-    CDKDatabase(#[from] cdk_database::Error),
-    #[error(transparent)]
-    CDK(#[from] cdk::error::Error),
-    #[error(transparent)]
-    CDKNUT02(#[from] cdk::nuts::nut02::Error),
-    #[error(transparent)]
-    CDKNUT00(#[from] cdk::nuts::nut00::Error),
-    #[error("Unknown Mint Info")]
-    UnknownMintInfo,
-}
-
-impl From<Error> for cdk_database::Error {
-    fn from(e: Error) -> Self {
-        Self::Database(Box::new(e))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct MintRedbDatabase {

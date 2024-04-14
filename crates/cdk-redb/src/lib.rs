@@ -1,3 +1,5 @@
+pub mod error;
+
 #[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "wallet")]
