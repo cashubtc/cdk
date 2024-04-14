@@ -7,11 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info};
 
-pub mod localstore;
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-pub use self::localstore::RedbLocalStore;
-pub use self::localstore::{LocalStore, MemoryLocalStore};
+use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::ErrorResponse;
 use crate::nuts::*;
@@ -43,8 +39,6 @@ pub enum Error {
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),
     #[error(transparent)]
-    Localstore(#[from] localstore::Error),
-    #[error(transparent)]
     Secret(#[from] crate::secret::Error),
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
@@ -52,6 +46,9 @@ pub enum Error {
     NUT11(#[from] crate::nuts::nut11::Error),
     #[error(transparent)]
     Nut12(#[from] crate::nuts::nut12::Error),
+    /// Database Error
+    #[error(transparent)]
+    Database(#[from] crate::cdk_database::Error),
     #[error("Unknown quote")]
     UnknownQuote,
     #[error("Unknown secret kind")]
@@ -60,6 +57,12 @@ pub enum Error {
     MultipleUnits,
     #[error("Blinded Message is already signed")]
     BlindedMessageAlreadySigned,
+}
+
+impl From<Error> for cdk_database::Error {
+    fn from(e: Error) -> Self {
+        Self::Database(Box::new(e))
+    }
 }
 
 impl From<Error> for ErrorResponse {
@@ -83,12 +86,12 @@ pub struct Mint {
     //    pub pubkey: PublicKey
     mnemonic: Mnemonic,
     pub fee_reserve: FeeReserve,
-    pub localstore: Arc<dyn LocalStore + Send + Sync>,
+    pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
 }
 
 impl Mint {
     pub async fn new(
-        localstore: Arc<dyn LocalStore + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
         mnemonic: Mnemonic,
         keysets_info: HashSet<MintKeySetInfo>,
         min_fee_reserve: Amount,

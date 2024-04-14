@@ -25,6 +25,7 @@ tokio = { version = "1.32", default-features = false }
 cdk = { path = "./crates/cdk", default-features = false }
 thiserror = "1.0.50"
 async-trait = "0.1.74"
+tracing = { version = "0.1", default-features = false }
 
 [profile]
 

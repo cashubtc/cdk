@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use super::{Error, LocalStore};
+use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
 use crate::nuts::nut02::MintKeySet;
 use crate::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
@@ -12,7 +12,7 @@ use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
 
 #[derive(Debug, Clone)]
-pub struct MemoryLocalStore {
+pub struct MintMemoryDatabase {
     mint_info: Arc<Mutex<MintInfo>>,
     active_keysets: Arc<Mutex<HashMap<CurrencyUnit, Id>>>,
     keysets: Arc<Mutex<HashMap<Id, MintKeySet>>>,
@@ -23,7 +23,7 @@ pub struct MemoryLocalStore {
     blinded_signatures: Arc<Mutex<HashMap<[u8; 33], BlindSignature>>>,
 }
 
-impl MemoryLocalStore {
+impl MintMemoryDatabase {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         mint_info: MintInfo,
@@ -63,25 +63,27 @@ impl MemoryLocalStore {
 }
 
 #[async_trait]
-impl LocalStore for MemoryLocalStore {
-    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Error> {
+impl MintDatabase for MintMemoryDatabase {
+    type Err = Error;
+
+    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Self::Err> {
         let mut mi = self.mint_info.lock().await;
         *mi = mint_info.clone();
         Ok(())
     }
-    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
         Ok(self.mint_info.lock().await.clone())
     }
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
+    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         self.active_keysets.lock().await.insert(unit, id);
         Ok(())
     }
 
-    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Error> {
+    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         Ok(self.active_keysets.lock().await.get(unit).cloned())
     }
 
-    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Error> {
+    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         Ok(self.active_keysets.lock().await.clone())
     }
 
@@ -106,21 +108,21 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         Ok(self.mint_quotes.lock().await.get(quote_id).cloned())
     }
 
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         Ok(self.mint_quotes.lock().await.values().cloned().collect())
     }
 
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         self.mint_quotes.lock().await.remove(quote_id);
 
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Error> {
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
         self.melt_quotes
             .lock()
             .await
@@ -128,21 +130,21 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Error> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
         Ok(self.melt_quotes.lock().await.get(quote_id).cloned())
     }
 
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
         Ok(self.melt_quotes.lock().await.values().cloned().collect())
     }
 
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         self.melt_quotes.lock().await.remove(quote_id);
 
         Ok(())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error> {
+    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
         let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
         self.spent_proofs
             .lock()
@@ -151,7 +153,7 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
         Ok(self
             .spent_proofs
             .lock()
@@ -160,11 +162,11 @@ impl LocalStore for MemoryLocalStore {
             .cloned())
     }
 
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
+    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
         Ok(self.spent_proofs.lock().await.get(&y.to_bytes()).cloned())
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
+    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
         self.pending_proofs
             .lock()
             .await
@@ -172,7 +174,10 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
-    async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+    async fn get_pending_proof_by_secret(
+        &self,
+        secret: &Secret,
+    ) -> Result<Option<Proof>, Self::Err> {
         let secret_point = hash_to_curve(&secret.to_bytes())?;
         Ok(self
             .pending_proofs
@@ -182,11 +187,11 @@ impl LocalStore for MemoryLocalStore {
             .cloned())
     }
 
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
+    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
         Ok(self.pending_proofs.lock().await.get(&y.to_bytes()).cloned())
     }
 
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error> {
+    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
         let secret_point = hash_to_curve(&secret.to_bytes())?;
         self.pending_proofs
             .lock()
@@ -199,7 +204,7 @@ impl LocalStore for MemoryLocalStore {
         &self,
         blinded_message: PublicKey,
         blinded_signature: BlindSignature,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Self::Err> {
         self.blinded_signatures
             .lock()
             .await
@@ -210,7 +215,7 @@ impl LocalStore for MemoryLocalStore {
     async fn get_blinded_signature(
         &self,
         blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Error> {
+    ) -> Result<Option<BlindSignature>, Self::Err> {
         Ok(self
             .blinded_signatures
             .lock()
@@ -222,7 +227,7 @@ impl LocalStore for MemoryLocalStore {
     async fn get_blinded_signatures(
         &self,
         blinded_messages: Vec<PublicKey>,
-    ) -> Result<Vec<Option<BlindSignature>>, Error> {
+    ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let mut signatures = Vec::with_capacity(blinded_messages.len());
 
         let blinded_signatures = self.blinded_signatures.lock().await;
