@@ -15,4 +15,5 @@ cdk.workspace = true
 redb = "2.0.0"
 tokio.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 serde_json = "1.0.96"
