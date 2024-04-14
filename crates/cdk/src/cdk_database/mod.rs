@@ -13,7 +13,9 @@ use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
 use crate::url::UncheckedUrl;
 
+#[cfg(feature = "mint")]
 pub mod mint_memory;
+#[cfg(feature = "wallet")]
 pub mod wallet_memory;
 
 #[derive(Debug, Error)]
