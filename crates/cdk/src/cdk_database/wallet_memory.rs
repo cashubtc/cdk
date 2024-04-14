@@ -1,16 +1,19 @@
+//! Memory Database
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use super::{Error, LocalStore};
+use super::WalletDatabase;
+use crate::cdk_database::Error;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, Proofs};
 use crate::types::{MeltQuote, MintQuote};
 use crate::url::UncheckedUrl;
 
 #[derive(Default, Debug, Clone)]
-pub struct MemoryLocalStore {
+pub struct WalletMemoryDatabase {
     mints: Arc<Mutex<HashMap<UncheckedUrl, Option<MintInfo>>>>,
     mint_keysets: Arc<Mutex<HashMap<UncheckedUrl, HashSet<KeySetInfo>>>>,
     mint_quotes: Arc<Mutex<HashMap<String, MintQuote>>>,
@@ -18,11 +21,10 @@ pub struct MemoryLocalStore {
     mint_keys: Arc<Mutex<HashMap<Id, Keys>>>,
     proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
     pending_proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
-    #[cfg(feature = "nut13")]
     keyset_counter: Arc<Mutex<HashMap<Id, u64>>>,
 }
 
-impl MemoryLocalStore {
+impl WalletMemoryDatabase {
     pub fn new(
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
@@ -43,24 +45,25 @@ impl MemoryLocalStore {
             )),
             proofs: Arc::new(Mutex::new(HashMap::new())),
             pending_proofs: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(feature = "nut13")]
             keyset_counter: Arc::new(Mutex::new(keyset_counter)),
         }
     }
 }
 
 #[async_trait]
-impl LocalStore for MemoryLocalStore {
+impl WalletDatabase for WalletMemoryDatabase {
+    type Err = Error;
+
     async fn add_mint(
         &self,
         mint_url: UncheckedUrl,
         mint_info: Option<MintInfo>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Self::Err> {
         self.mints.lock().await.insert(mint_url, mint_info);
         Ok(())
     }
 
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Error> {
+    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         Ok(self.mints.lock().await.get(&mint_url).cloned().flatten())
     }
 
@@ -211,7 +214,6 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
-    #[cfg(feature = "nut13")]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
         let keyset_counter = self.keyset_counter.lock().await;
         let current_counter = keyset_counter.get(keyset_id).unwrap_or(&0);
@@ -222,7 +224,6 @@ impl LocalStore for MemoryLocalStore {
         Ok(())
     }
 
-    #[cfg(feature = "nut13")]
     async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u64>, Error> {
         Ok(self.keyset_counter.lock().await.get(id).cloned())
     }

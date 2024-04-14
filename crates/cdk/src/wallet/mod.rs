@@ -6,10 +6,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use localstore::LocalStore;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+use crate::cdk_database::wallet_memory::WalletMemoryDatabase;
+use crate::cdk_database::{self, WalletDatabase};
 use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve, unblind_message};
 use crate::nuts::{
@@ -22,8 +23,6 @@ use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::{Amount, Bolt11Invoice};
 
-pub mod localstore;
-
 #[derive(Debug, Error)]
 pub enum Error {
     /// Insufficient Funds
@@ -35,8 +34,6 @@ pub enum Error {
     QuoteUnknown,
     #[error("No active keyset")]
     NoActiveKeyset,
-    #[error(transparent)]
-    LocalStore(#[from] localstore::Error),
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),
     #[error("Could not verify Dleq")]
@@ -61,21 +58,40 @@ pub enum Error {
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    /// Database Error
+    #[error(transparent)]
+    Database(#[from] crate::cdk_database::Error),
     #[error("`{0}`")]
     Custom(String),
+}
+
+impl From<Error> for cdk_database::Error {
+    fn from(e: Error) -> Self {
+        Self::Database(Box::new(e))
+    }
 }
 
 #[derive(Clone)]
 pub struct Wallet {
     pub client: HttpClient,
-    pub localstore: Arc<dyn LocalStore + Send + Sync>,
+    pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     mnemonic: Option<Mnemonic>,
+}
+
+impl Default for Wallet {
+    fn default() -> Self {
+        Self {
+            localstore: Arc::new(WalletMemoryDatabase::default()),
+            client: HttpClient::default(),
+            mnemonic: None,
+        }
+    }
 }
 
 impl Wallet {
     pub async fn new(
         client: HttpClient,
-        localstore: Arc<dyn LocalStore + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
         mnemonic: Option<Mnemonic>,
     ) -> Self {
         Self {

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/cdk",
+    "crates/cdk-redb",
 ]
 resolver = "2"
 
@@ -21,6 +22,9 @@ keywords = ["bitcoin", "e-cash", "cashu"]
 
 [workspace.dependencies]
 tokio = { version = "1.32", default-features = false }
+cdk = { path = "./crates/cdk", default-features = false }
+thiserror = "1.0.50"
+async-trait = "0.1.74"
 
 [profile]
 
