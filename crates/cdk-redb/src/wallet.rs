@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::ParseIntError;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -8,9 +9,36 @@ use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cdk::types::{MeltQuote, MintQuote};
 use cdk::url::UncheckedUrl;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+use thiserror::Error;
 use tokio::sync::Mutex;
 
-use super::error::Error;
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(transparent)]
+    Redb(#[from] redb::Error),
+    #[error(transparent)]
+    Database(#[from] redb::DatabaseError),
+    #[error(transparent)]
+    Transaction(#[from] redb::TransactionError),
+    #[error(transparent)]
+    Commit(#[from] redb::CommitError),
+    #[error(transparent)]
+    Table(#[from] redb::TableError),
+    #[error(transparent)]
+    Storage(#[from] redb::StorageError),
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
+    #[error(transparent)]
+    ParseInt(#[from] ParseIntError),
+    #[error(transparent)]
+    CDKDatabase(#[from] cdk_database::Error),
+}
+
+impl From<Error> for cdk_database::Error {
+    fn from(e: Error) -> Self {
+        Self::Database(Box::new(e))
+    }
+}
 
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
 const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &str> =
