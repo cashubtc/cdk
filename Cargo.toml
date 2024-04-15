@@ -5,17 +5,17 @@ members = [
 resolver = "2"
 
 [workspace.package]
-license = "BSD-3-Clause"
-homepage = "https://github.com/thesimplekid/cashu-crab"
-repository = "https://github.com/thesimplekid/cashu-crab.git"
+license = "MIT"
+homepage = "https://github.com/cashu/cdk"
+repository = "https://github.com/cashu/cdk.git"
 rust-version = "1.70.0" # MSRV
 
 [workspace.metadata]
-authors = ["thesimplekid"]
+authors = ["CDK Developers"]
 edition = "2021"
-description = "cashu-crab"
+description = "Cashu Development Kit"
 readme = "README.md"
-repository = "https://github.com/thesimplekid/cashu-crab"
+repository = "https://github.com/cashu/cdk"
 license-file = "LICENSE"
 keywords = ["bitcoin", "e-cash", "cashu"]
 
