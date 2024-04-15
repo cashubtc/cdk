@@ -1,11 +1,14 @@
 > **Warning**
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind loosing.
 
-Cashu Crab is a rust library for [Cashu](https://github.com/cashubtc) wallets and mints written in Rust.
+
+# Cashu Development Kit
+
+
+CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wallets and mints written in Rust.
 
 **ALPHA** This library is in early development, the api will change.
 
-Experimental bindings for this project can be found in the [cashu-crab-bindings](https://github.com/thesimplekid/cashu-crab-bindings) repository.
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
@@ -27,14 +30,10 @@ Experimental bindings for this project can be found in the [cashu-crab-bindings]
 
 ## License
 
-Code is under the [BSD 3-Clause License](LICENSE)
+Code is under the [MIT License](LICENSE)
 
 ## Contribution
 
 All contributions welcome.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, shall be licensed as above, without any additional terms or conditions.
-
-## Contact
-
-I can be contacted for comments or questions on nostr at _@thesimplekid.com (npub1qjgcmlpkeyl8mdkvp4s0xls4ytcux6my606tgfx9xttut907h0zs76lgjw) or via email tsk@thesimplekid.com.
