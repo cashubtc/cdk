@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use bitcoin::secp256k1;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 mod public_key;
@@ -66,9 +67,31 @@ impl Keys {
 }
 
 /// Mint Public Keys [NUT-01]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KeysResponse {
     pub keysets: Vec<KeySet>,
+}
+
+impl<'de> Deserialize<'de> for KeysResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let keys_response: Value = Value::deserialize(deserializer)?;
+
+        let keysets = keys_response
+            .get("keysets")
+            .ok_or(de::Error::custom("Keysets not found"))?
+            .as_array()
+            .ok_or(de::Error::custom("Keysets not found"))?;
+
+        let keysets = keysets
+            .iter()
+            .flat_map(|keyset| serde_json::from_value(keyset.clone()))
+            .collect();
+
+        Ok(KeysResponse { keysets })
+    }
 }
 
 /// Mint keys
