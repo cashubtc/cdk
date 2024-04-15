@@ -2,7 +2,7 @@
 name = "cdk"
 version = "0.1.0"
 edition = "2021"
-authors = ["thesimplekid"]
+authors = ["CDK Developers"]
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true # MSRV
