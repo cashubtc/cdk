@@ -6,8 +6,8 @@ resolver = "2"
 
 [workspace.package]
 license = "MIT"
-homepage = "https://github.com/cashu/cdk"
-repository = "https://github.com/cashu/cdk.git"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.70.0" # MSRV
 
 [workspace.metadata]
@@ -15,7 +15,7 @@ authors = ["CDK Developers"]
 edition = "2021"
 description = "Cashu Development Kit"
 readme = "README.md"
-repository = "https://github.com/cashu/cdk"
+repository = "https://github.com/cashubtc/cdk"
 license-file = "LICENSE"
 keywords = ["bitcoin", "e-cash", "cashu"]
 
