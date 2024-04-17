@@ -2,6 +2,7 @@
 members = [
     "crates/cdk",
     "crates/cdk-redb",
+    "crates/cdk-rexie",
 ]
 resolver = "2"
 

@@ -3,6 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cdk::types::{MeltQuote, MintQuote};
@@ -24,7 +25,7 @@ const PENDING_PROOFS_TABLE: MultimapTableDefinition<&str, &str> =
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u64> = TableDefinition::new("keyset_counter");
 
-const DATABASE_VERSION: u64 = 0;
+const DATABASE_VERSION: u32 = 0;
 
 #[derive(Debug, Clone)]
 pub struct RedbWalletDatabase {
@@ -46,7 +47,7 @@ impl RedbWalletDatabase {
 
             match db_version {
                 Some(db_version) => {
-                    let current_file_version = u64::from_str(&db_version)?;
+                    let current_file_version = u32::from_str(&db_version)?;
                     if current_file_version.ne(&DATABASE_VERSION) {
                         // Database needs to be upgraded
                         todo!()
@@ -120,12 +121,8 @@ impl WalletDatabase for RedbWalletDatabase {
 
     async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
         let db = self.db.lock().await;
-        let read_txn = db
-            .begin_read()
-            .map_err(Into::<Error>::into)
-            .map_err(Error::from)?;
+        let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
-
         let mints = table
             .iter()
             .map_err(Error::from)?
