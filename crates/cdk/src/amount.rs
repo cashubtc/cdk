@@ -1,6 +1,5 @@
 use std::fmt;
 
-// https://github.com/clarkmoody/cashu-rs
 use serde::{Deserialize, Serialize};
 
 /// Number of satoshis

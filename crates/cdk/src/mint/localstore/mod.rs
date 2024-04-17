@@ -1,17 +1,17 @@
-pub mod memory;
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-pub mod redb_store;
-
 use std::collections::HashMap;
 use std::num::ParseIntError;
 
 use async_trait::async_trait;
-pub use memory::MemoryLocalStore;
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-pub use redb_store::RedbLocalStore;
 use thiserror::Error;
 
-use crate::nuts::nut02::mint::KeySet;
+pub mod memory;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub mod redb_store;
+
+pub use self::memory::MemoryLocalStore;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub use self::redb_store::RedbLocalStore;
+use crate::nuts::nut02::MintKeySet;
 use crate::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, PublicKey};
 use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
@@ -72,9 +72,9 @@ pub trait LocalStore {
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error>;
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error>;
 
-    async fn add_keyset(&self, keyset: KeySet) -> Result<(), Error>;
-    async fn get_keyset(&self, id: &Id) -> Result<Option<KeySet>, Error>;
-    async fn get_keysets(&self) -> Result<Vec<KeySet>, Error>;
+    async fn add_keyset(&self, keyset: MintKeySet) -> Result<(), Error>;
+    async fn get_keyset(&self, id: &Id) -> Result<Option<MintKeySet>, Error>;
+    async fn get_keysets(&self) -> Result<Vec<MintKeySet>, Error>;
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error>;
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error>;

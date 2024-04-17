@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use super::{Error, LocalStore};
 use crate::dhke::hash_to_curve;
-use crate::nuts::nut02::mint::KeySet;
+use crate::nuts::nut02::MintKeySet;
 use crate::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
 use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
@@ -15,7 +15,7 @@ use crate::types::{MeltQuote, MintQuote};
 pub struct MemoryLocalStore {
     mint_info: Arc<Mutex<MintInfo>>,
     active_keysets: Arc<Mutex<HashMap<CurrencyUnit, Id>>>,
-    keysets: Arc<Mutex<HashMap<Id, KeySet>>>,
+    keysets: Arc<Mutex<HashMap<Id, MintKeySet>>>,
     mint_quotes: Arc<Mutex<HashMap<String, MintQuote>>>,
     melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
     pending_proofs: Arc<Mutex<HashMap<[u8; 33], Proof>>>,
@@ -28,7 +28,7 @@ impl MemoryLocalStore {
     pub fn new(
         mint_info: MintInfo,
         active_keysets: HashMap<CurrencyUnit, Id>,
-        keysets: Vec<KeySet>,
+        keysets: Vec<MintKeySet>,
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
         pending_proofs: Proofs,
@@ -85,16 +85,16 @@ impl LocalStore for MemoryLocalStore {
         Ok(self.active_keysets.lock().await.clone())
     }
 
-    async fn add_keyset(&self, keyset: KeySet) -> Result<(), Error> {
+    async fn add_keyset(&self, keyset: MintKeySet) -> Result<(), Error> {
         self.keysets.lock().await.insert(keyset.id, keyset);
         Ok(())
     }
 
-    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<KeySet>, Error> {
+    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<MintKeySet>, Error> {
         Ok(self.keysets.lock().await.get(keyset_id).cloned())
     }
 
-    async fn get_keysets(&self) -> Result<Vec<KeySet>, Error> {
+    async fn get_keysets(&self) -> Result<Vec<MintKeySet>, Error> {
         Ok(self.keysets.lock().await.values().cloned().collect())
     }
 

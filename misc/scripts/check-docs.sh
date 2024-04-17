@@ -3,8 +3,7 @@
 set -euo pipefail
 
 buildargs=(
-    "-p cashu"
-    "-p cashu-sdk"
+    "-p cdk"
 )
 
 for arg in "${buildargs[@]}"; do

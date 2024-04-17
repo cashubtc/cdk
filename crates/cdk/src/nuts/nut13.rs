@@ -8,11 +8,14 @@ use bip39::Mnemonic;
 use bitcoin::bip32::{DerivationPath, ExtendedPrivKey};
 use bitcoin::Network;
 
-use super::{Id, SecretKey};
+use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
+use super::nut01::SecretKey;
+use super::nut02::Id;
+use crate::dhke::blind_message;
 use crate::error::Error;
 use crate::secret::Secret;
 use crate::util::hex;
-use crate::SECP256K1;
+use crate::{Amount, SECP256K1};
 
 impl Secret {
     pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
@@ -58,90 +61,78 @@ impl SecretKey {
     }
 }
 
-#[cfg(feature = "wallet")]
-mod wallet {
-    use bip39::Mnemonic;
+impl PreMintSecrets {
+    /// Generate blinded messages from predetermined secrets and blindings
+    /// factor
+    pub fn from_seed(
+        keyset_id: Id,
+        counter: u64,
+        mnemonic: &Mnemonic,
+        amount: Amount,
+        zero_amount: bool,
+    ) -> Result<Self, Error> {
+        let mut pre_mint_secrets = PreMintSecrets::default();
 
-    use crate::dhke::blind_message;
-    use crate::error::Error;
-    use crate::nuts::{BlindedMessage, Id, PreMint, PreMintSecrets, SecretKey};
-    use crate::secret::Secret;
-    use crate::Amount;
+        let mut counter = counter;
 
-    impl PreMintSecrets {
-        /// Generate blinded messages from predetermined secrets and blindings
-        /// factor
-        pub fn from_seed(
-            keyset_id: Id,
-            counter: u64,
-            mnemonic: &Mnemonic,
-            amount: Amount,
-            zero_amount: bool,
-        ) -> Result<Self, Error> {
-            let mut pre_mint_secrets = PreMintSecrets::default();
+        for amount in amount.split() {
+            let secret = Secret::from_seed(mnemonic, keyset_id, counter)?;
+            let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, counter)?;
 
-            let mut counter = counter;
+            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
-            for amount in amount.split() {
-                let secret = Secret::from_seed(mnemonic, keyset_id, counter)?;
-                let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, counter)?;
+            let amount = if zero_amount { Amount::ZERO } else { amount };
 
-                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
-                let amount = if zero_amount { Amount::ZERO } else { amount };
+            let pre_mint = PreMint {
+                blinded_message,
+                secret: secret.clone(),
+                r,
+                amount,
+            };
 
-                let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
-
-                let pre_mint = PreMint {
-                    blinded_message,
-                    secret: secret.clone(),
-                    r,
-                    amount,
-                };
-
-                pre_mint_secrets.secrets.push(pre_mint);
-                counter += 1;
-            }
-
-            Ok(pre_mint_secrets)
+            pre_mint_secrets.secrets.push(pre_mint);
+            counter += 1;
         }
 
-        /// Generate blinded messages from predetermined secrets and blindings
-        /// factor
-        pub fn restore_batch(
-            keyset_id: Id,
-            mnemonic: &Mnemonic,
-            start_count: u64,
-            end_count: u64,
-        ) -> Result<Self, Error> {
-            let mut pre_mint_secrets = PreMintSecrets::default();
+        Ok(pre_mint_secrets)
+    }
 
-            for i in start_count..=end_count {
-                let secret = Secret::from_seed(mnemonic, keyset_id, i)?;
-                let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, i)?;
+    /// Generate blinded messages from predetermined secrets and blindings
+    /// factor
+    pub fn restore_batch(
+        keyset_id: Id,
+        mnemonic: &Mnemonic,
+        start_count: u64,
+        end_count: u64,
+    ) -> Result<Self, Error> {
+        let mut pre_mint_secrets = PreMintSecrets::default();
 
-                let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+        for i in start_count..=end_count {
+            let secret = Secret::from_seed(mnemonic, keyset_id, i)?;
+            let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, i)?;
 
-                let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
-                let pre_mint = PreMint {
-                    blinded_message,
-                    secret: secret.clone(),
-                    r,
-                    amount: Amount::ZERO,
-                };
+            let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
-                pre_mint_secrets.secrets.push(pre_mint);
-            }
+            let pre_mint = PreMint {
+                blinded_message,
+                secret: secret.clone(),
+                r,
+                amount: Amount::ZERO,
+            };
 
-            Ok(pre_mint_secrets)
+            pre_mint_secrets.secrets.push(pre_mint);
         }
+
+        Ok(pre_mint_secrets)
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     #[test]

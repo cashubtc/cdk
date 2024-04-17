@@ -4,8 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
-use crate::nuts::Proofs;
+use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use crate::types::MeltQuote;
 use crate::{Amount, Bolt11Invoice};
 

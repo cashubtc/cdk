@@ -1,17 +1,16 @@
-mod memory;
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-mod redb_store;
-
 use std::collections::HashMap;
 use std::num::ParseIntError;
 
 use async_trait::async_trait;
-pub use memory::MemoryLocalStore;
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-pub use redb_store::RedbLocalStore;
 use thiserror::Error;
 
+mod memory;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+mod redb_store;
+
+pub use self::memory::MemoryLocalStore;
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub use self::redb_store::RedbLocalStore;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use crate::types::{MeltQuote, MintQuote};
 use crate::url::UncheckedUrl;

@@ -70,7 +70,7 @@ pub enum Error {
     Secret(#[from] crate::secret::Error),
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Signatures {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -78,11 +78,13 @@ pub struct Signatures {
 }
 
 impl Signatures {
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.signatures.is_empty()
     }
 }
 
+/// Serialize [Signatures] as stringified JSON
 pub fn witness_serialize<S>(x: &Option<Signatures>, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -90,9 +92,10 @@ where
     s.serialize_str(&serde_json::to_string(&x).map_err(ser::Error::custom)?)
 }
 
+/// Serialize [Signatures] from stringified JSON
 pub fn witness_deserialize<'de, D>(deserializer: D) -> Result<Option<Signatures>, D::Error>
 where
-    D: de::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
     let s: String = String::deserialize(deserializer)?;
     serde_json::from_str(&s).map_err(de::Error::custom)
@@ -176,7 +179,7 @@ impl Proof {
 
 impl BlindedMessage {
     pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg: [u8; 33] = self.b.to_bytes();
+        let msg: [u8; 33] = self.blinded_secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
         self.witness
@@ -197,13 +200,16 @@ impl BlindedMessage {
         if let Some(witness) = &self.witness {
             for signature in &witness.signatures {
                 for v in pubkeys {
-                    let msg = &self.b.to_bytes();
+                    let msg = &self.blinded_secret.to_bytes();
                     let sig = Signature::from_str(signature)?;
 
                     if v.verify(msg, &sig).is_ok() {
                         valid_sigs += 1;
                     } else {
-                        tracing::debug!("Could not verify signature: {sig} on message: {}", self.b)
+                        tracing::debug!(
+                            "Could not verify signature: {sig} on message: {}",
+                            self.blinded_secret
+                        )
                     }
                 }
             }

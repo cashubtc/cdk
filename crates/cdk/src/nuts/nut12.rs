@@ -8,7 +8,9 @@ use bitcoin::secp256k1::{self, Scalar};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{BlindSignature, Id, Proof, PublicKey, SecretKey};
+use super::nut00::{BlindSignature, Proof};
+use super::nut01::{PublicKey, SecretKey};
+use super::nut02::Id;
 use crate::dhke::{hash_e, hash_to_curve};
 use crate::{Amount, SECP256K1};
 
@@ -182,7 +184,6 @@ impl BlindSignature {
     e = hash(R1,R2,A,C')
     s = r + e*a
     */
-    #[cfg(feature = "mint")]
     pub fn add_dleq_proof(
         &mut self,
         blinded_message: &PublicKey,

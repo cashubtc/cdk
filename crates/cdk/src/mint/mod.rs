@@ -7,16 +7,16 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info};
 
+pub mod localstore;
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
+pub use self::localstore::RedbLocalStore;
+pub use self::localstore::{LocalStore, MemoryLocalStore};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::ErrorResponse;
 use crate::nuts::*;
 use crate::types::{MeltQuote, MintQuote};
 use crate::Amount;
-
-pub mod localstore;
-#[cfg(all(not(target_arch = "wasm32"), feature = "redb"))]
-pub use localstore::RedbLocalStore;
-pub use localstore::{LocalStore, MemoryLocalStore};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -97,12 +97,8 @@ impl Mint {
         let mut active_units: HashSet<CurrencyUnit> = HashSet::default();
 
         if keysets_info.is_empty() {
-            let keyset = nut02::mint::KeySet::generate(
-                &mnemonic.to_seed_normalized(""),
-                CurrencyUnit::Sat,
-                "",
-                64,
-            );
+            let keyset =
+                MintKeySet::generate(&mnemonic.to_seed_normalized(""), CurrencyUnit::Sat, "", 64);
 
             localstore
                 .add_active_keyset(CurrencyUnit::Sat, keyset.id)
@@ -116,7 +112,7 @@ impl Mint {
                     todo!()
                 }
 
-                let keyset = nut02::mint::KeySet::generate(
+                let keyset = MintKeySet::generate(
                     &mnemonic.to_seed_normalized(""),
                     keyset_info.unit.clone(),
                     &keyset_info.derivation_path.clone(),
@@ -284,11 +280,14 @@ impl Mint {
         for blinded_message in &mint_request.outputs {
             if self
                 .localstore
-                .get_blinded_signature(&blinded_message.b)
+                .get_blinded_signature(&blinded_message.blinded_secret)
                 .await?
                 .is_some()
             {
-                error!("Output has already been signed: {}", blinded_message.b);
+                error!(
+                    "Output has already been signed: {}",
+                    blinded_message.blinded_secret
+                );
                 return Err(Error::BlindedMessageAlreadySigned);
             }
         }
@@ -305,10 +304,10 @@ impl Mint {
 
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
-        for blinded_message in mint_request.outputs {
+        for blinded_message in mint_request.outputs.into_iter() {
             let blinded_signature = self.blind_sign(&blinded_message).await?;
             self.localstore
-                .add_blinded_signature(blinded_message.b, blinded_signature.clone())
+                .add_blinded_signature(blinded_message.blinded_secret, blinded_signature.clone())
                 .await?;
             blind_signatures.push(blinded_signature);
         }
@@ -321,7 +320,7 @@ impl Mint {
     async fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindSignature, Error> {
         let BlindedMessage {
             amount,
-            b,
+            blinded_secret,
             keyset_id,
             ..
         } = blinded_message;
@@ -343,18 +342,18 @@ impl Mint {
             return Err(Error::InactiveKeyset);
         }
 
-        let Some(key_pair) = keyset.keys.0.get(amount) else {
+        let Some(key_pair) = keyset.keys.get(amount) else {
             // No key for amount
             return Err(Error::AmountKey);
         };
 
-        let c = sign_message(&key_pair.secret_key, b)?;
+        let c = sign_message(&key_pair.secret_key, blinded_secret)?;
 
         let blinded_signature = BlindSignature::new(
             *amount,
             c,
             keyset.id,
-            &blinded_message.b,
+            &blinded_message.blinded_secret,
             key_pair.secret_key.clone(),
         )?;
 
@@ -368,11 +367,14 @@ impl Mint {
         for blinded_message in &swap_request.outputs {
             if self
                 .localstore
-                .get_blinded_signature(&blinded_message.b)
+                .get_blinded_signature(&blinded_message.blinded_secret)
                 .await?
                 .is_some()
             {
-                error!("Output has already been signed: {}", blinded_message.b);
+                error!(
+                    "Output has already been signed: {}",
+                    blinded_message.blinded_secret
+                );
                 return Err(Error::BlindedMessageAlreadySigned);
             }
         }
@@ -447,7 +449,7 @@ impl Mint {
         for blinded_message in swap_request.outputs {
             let blinded_signature = self.blind_sign(&blinded_message).await?;
             self.localstore
-                .add_blinded_signature(blinded_message.b, blinded_signature.clone())
+                .add_blinded_signature(blinded_message.blinded_secret, blinded_signature.clone())
                 .await?;
             promises.push(blinded_signature);
         }
@@ -484,7 +486,7 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownKeySet)?;
 
-        let Some(keypair) = keyset.keys.0.get(&proof.amount) else {
+        let Some(keypair) = keyset.keys.get(&proof.amount) else {
             return Err(Error::AmountKey);
         };
 
@@ -613,11 +615,14 @@ impl Mint {
             for blinded_message in outputs {
                 if self
                     .localstore
-                    .get_blinded_signature(&blinded_message.b)
+                    .get_blinded_signature(&blinded_message.blinded_secret)
                     .await?
                     .is_some()
                 {
-                    error!("Output has already been signed: {}", blinded_message.b);
+                    error!(
+                        "Output has already been signed: {}",
+                        blinded_message.blinded_secret
+                    );
                     return Err(Error::BlindedMessageAlreadySigned);
                 }
             }
@@ -653,7 +658,10 @@ impl Mint {
 
                 let blinded_signature = self.blind_sign(&blinded_message).await?;
                 self.localstore
-                    .add_blinded_signature(blinded_message.b, blinded_signature.clone())
+                    .add_blinded_signature(
+                        blinded_message.blinded_secret,
+                        blinded_signature.clone(),
+                    )
                     .await?;
                 change_sigs.push(blinded_signature)
             }
@@ -699,7 +707,8 @@ impl Mint {
         let mut outputs = Vec::with_capacity(output_len);
         let mut signatures = Vec::with_capacity(output_len);
 
-        let blinded_message: Vec<PublicKey> = request.outputs.iter().map(|b| b.b).collect();
+        let blinded_message: Vec<PublicKey> =
+            request.outputs.iter().map(|b| b.blinded_secret).collect();
 
         let blinded_signatures = self
             .localstore

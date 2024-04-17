@@ -3,6 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/01.md>
 
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
 use bitcoin::secp256k1;
 use serde::{Deserialize, Serialize};
@@ -30,8 +31,8 @@ pub enum Error {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Keys(BTreeMap<Amount, PublicKey>);
 
-impl From<mint::Keys> for Keys {
-    fn from(keys: mint::Keys) -> Self {
+impl From<MintKeys> for Keys {
+    fn from(keys: MintKeys) -> Self {
         Self(
             keys.0
                 .iter()
@@ -70,71 +71,43 @@ pub struct KeysResponse {
     pub keysets: Vec<KeySet>,
 }
 
-/*
-impl<'de> serde::de::Deserialize<'de> for KeysResponse {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct KeysVisitor;
+/// Mint keys
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintKeys(BTreeMap<Amount, MintKeyPair>);
 
-        impl<'de> serde::de::Visitor<'de> for KeysVisitor {
-            type Value = KeysResponse;
+impl Deref for MintKeys {
+    type Target = BTreeMap<Amount, MintKeyPair>;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("")
-            }
-
-            fn visit_map<M>(self, mut m: M) -> Result<Self::Value, M::Error>
-            where
-                M: serde::de::MapAccess<'de>,
-            {
-                let mut keys: BTreeMap<Amount, PublicKey> = BTreeMap::new();
-
-                while let Some((a, k)) = m.next_entry::<String, String>()? {
-                    let amount = a.parse::<u64>();
-                    let pub_key = PublicKey::from_hex(k);
-
-                    if let (Ok(amount), Ok(pubkey)) = (amount, pub_key) {
-                        let amount = Amount::from(amount);
-
-                        keys.insert(amount, pubkey);
-                    }
-                    // TODO: Should return an error if an amount or key is
-                    // invalid and not continue
-                }
-
-                Ok(KeysResponse { keys: Keys(keys) })
-            }
-        }
-
-        deserializer.deserialize_map(KeysVisitor)
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
-*/
-pub mod mint {
-    use std::collections::BTreeMap;
 
-    use serde::{Deserialize, Serialize};
-
-    use super::{PublicKey, SecretKey};
-    use crate::Amount;
-
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Keys(pub BTreeMap<Amount, KeyPair>);
-
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct KeyPair {
-        pub public_key: PublicKey,
-        pub secret_key: SecretKey,
+impl DerefMut for MintKeys {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
+}
 
-    impl KeyPair {
-        pub fn from_secret_key(secret_key: SecretKey) -> Self {
-            Self {
-                public_key: secret_key.public_key(),
-                secret_key,
-            }
+impl MintKeys {
+    #[inline]
+    pub fn new(map: BTreeMap<Amount, MintKeyPair>) -> Self {
+        Self(map)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintKeyPair {
+    pub public_key: PublicKey,
+    pub secret_key: SecretKey,
+}
+
+impl MintKeyPair {
+    #[inline]
+    pub fn from_secret_key(secret_key: SecretKey) -> Self {
+        Self {
+            public_key: secret_key.public_key(),
+            secret_key,
         }
     }
 }

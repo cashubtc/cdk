@@ -15,7 +15,6 @@ pub mod error;
 pub mod mint;
 pub mod nuts;
 pub mod secret;
-pub mod serde_utils;
 pub mod types;
 pub mod url;
 pub mod util;
