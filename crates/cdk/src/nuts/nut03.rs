@@ -4,14 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::nut00::BlindSignature;
-#[cfg(feature = "wallet")]
-use crate::nuts::PreMintSecrets;
-use crate::nuts::{BlindedMessage, Proofs};
+use super::nut00::{BlindSignature, BlindedMessage, PreMintSecrets, Proofs};
 use crate::Amount;
-pub use crate::Bolt11Invoice;
 
-#[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreSwap {
     pub pre_mint_secrets: PreMintSecrets,

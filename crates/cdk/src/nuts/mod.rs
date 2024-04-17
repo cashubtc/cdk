@@ -14,12 +14,12 @@ pub mod nut12;
 #[cfg(feature = "nut13")]
 pub mod nut13;
 
-#[cfg(feature = "wallet")]
-pub use nut00::wallet::{PreMint, PreMintSecrets, Token};
-pub use nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof};
+pub use nut00::{
+    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, PreMint, PreMintSecrets, Proof,
+    Proofs, Token,
+};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
-pub use nut02::mint::KeySet as MintKeySet;
-pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
+pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse, MintKeySet};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
@@ -35,5 +35,3 @@ pub use nut09::{RestoreRequest, RestoreResponse};
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
 pub use nut11::{P2PKConditions, SigFlag, Signatures, SigningKey, VerifyingKey};
 pub use nut12::{BlindSignatureDleq, ProofDleq};
-
-pub type Proofs = Vec<Proof>;

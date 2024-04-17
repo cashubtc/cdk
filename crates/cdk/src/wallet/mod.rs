@@ -1,4 +1,5 @@
 //! Cashu Wallet
+
 use std::collections::{HashMap, HashSet};
 use std::num::ParseIntError;
 use std::str::FromStr;
@@ -12,7 +13,7 @@ use tracing::{debug, warn};
 use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve, unblind_message};
 use crate::nuts::{
-    BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
+    nut12, BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
     PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SigFlag,
     SigningKey, State, SwapRequest, Token,
 };
@@ -360,9 +361,8 @@ impl Wallet {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.get_keyset_keys(&mint_url, sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::UnknownKey)?;
-                match sig.verify_dleq(key, premint.blinded_message.b) {
-                    Ok(_) => (),
-                    Err(crate::nuts::nut12::Error::MissingDleqProof) => (),
+                match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
+                    Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
                 }
             }
@@ -401,7 +401,7 @@ impl Wallet {
         let unit = token_data.unit.unwrap_or_default();
 
         // Verify the signature DLEQ is valid
-        // Verify that all proofs in the token have a vlid DLEQ proof if one is supplied
+        // Verify that all proofs in the token have a valid DLEQ proof if one is supplied
         {
             for mint_proof in &token_data.token {
                 let mint_url = &mint_proof.mint;
@@ -411,8 +411,7 @@ impl Wallet {
                     let keys = self.get_keyset_keys(mint_url, proof.keyset_id).await?;
                     let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
                     match proof.verify_dleq(key) {
-                        Ok(_) => continue,
-                        Err(crate::nuts::nut12::Error::MissingDleqProof) => continue,
+                        Ok(_) | Err(nut12::Error::MissingDleqProof) => continue,
                         Err(_) => return Err(Error::CouldNotVerifyDleq),
                     }
                 }
@@ -570,9 +569,8 @@ impl Wallet {
                     .await?
                     .ok_or(Error::UnknownKey)?;
                 let key = keys.amount_key(promise.amount).ok_or(Error::UnknownKey)?;
-                match promise.verify_dleq(key, premint.blinded_message.b) {
-                    Ok(_) => (),
-                    Err(crate::nuts::nut12::Error::MissingDleqProof) => (),
+                match promise.verify_dleq(key, premint.blinded_message.blinded_secret) {
+                    Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
                 }
             }

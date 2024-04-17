@@ -4,15 +4,18 @@
 
 use core::fmt;
 use core::str::FromStr;
+use std::collections::BTreeMap;
 
-use bitcoin::hashes::{sha256, Hash};
-use serde::{Deserialize, Serialize};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
-use super::nut01::Keys;
-use super::CurrencyUnit;
+use super::nut01::{Keys, MintKeyPair, MintKeys, SecretKey};
+use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
+use crate::Amount;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum Error {
@@ -88,7 +91,7 @@ impl FromStr for Id {
     }
 }
 
-impl serde::ser::Serialize for Id {
+impl Serialize for Id {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -97,10 +100,10 @@ impl serde::ser::Serialize for Id {
     }
 }
 
-impl<'de> serde::de::Deserialize<'de> for Id {
+impl<'de> Deserialize<'de> for Id {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         struct IdVisitor;
 
@@ -151,7 +154,7 @@ impl From<&Keys> for Id {
             .collect::<Vec<[u8; 33]>>()
             .concat();
 
-        let hash = sha256::Hash::hash(&pubkeys_concat);
+        let hash = Sha256::hash(&pubkeys_concat);
         let hex_of_hash = hex::encode(hash.to_byte_array());
         // First 9 bytes of hash will encode as the first 12 Base64 characters later
         Self {
@@ -190,8 +193,8 @@ pub struct KeySet {
     pub keys: Keys,
 }
 
-impl From<mint::KeySet> for KeySet {
-    fn from(keyset: mint::KeySet) -> Self {
+impl From<MintKeySet> for KeySet {
+    fn from(keyset: MintKeySet) -> Self {
         Self {
             id: keyset.id,
             unit: keyset.unit,
@@ -217,83 +220,69 @@ impl From<KeySet> for KeySetInfo {
     }
 }
 
-pub mod mint {
-    use std::collections::BTreeMap;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintKeySet {
+    pub id: Id,
+    pub unit: CurrencyUnit,
+    pub keys: MintKeys,
+}
 
-    use bitcoin::hashes::sha256::Hash as Sha256;
-    use bitcoin::hashes::{Hash, HashEngine};
-    use serde::{Deserialize, Serialize};
+impl MintKeySet {
+    pub fn generate(
+        secret: &[u8],
+        unit: CurrencyUnit,
+        derivation_path: &str,
+        max_order: u8,
+    ) -> Self {
+        // Elliptic curve math context
 
-    use super::Id;
-    use crate::nuts::nut01::mint::{KeyPair, Keys};
-    use crate::nuts::nut01::SecretKey;
-    use crate::nuts::CurrencyUnit;
-    use crate::Amount;
+        /* NUT-02 § 2.1
+            for i in range(MAX_ORDER):
+                k_i = HASH_SHA256(s + D + i)[:32]
+        */
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct KeySet {
-        pub id: Id,
-        pub unit: CurrencyUnit,
-        pub keys: Keys,
-    }
+        let mut map = BTreeMap::new();
 
-    impl KeySet {
-        pub fn generate(
-            secret: &[u8],
-            unit: CurrencyUnit,
-            derivation_path: &str,
-            max_order: u8,
-        ) -> Self {
-            // Elliptic curve math context
+        // SHA-256 midstate, for quicker hashing
+        let mut engine = Sha256::engine();
+        engine.input(secret);
+        engine.input(derivation_path.as_bytes());
 
-            /* NUT-02 § 2.1
-                for i in range(MAX_ORDER):
-                    k_i = HASH_SHA256(s + D + i)[:32]
-            */
+        for i in 0..max_order {
+            let amount = Amount::from(2_u64.pow(i as u32));
 
-            let mut map = BTreeMap::new();
+            // Reuse midstate
+            let mut e = engine.clone();
+            e.input(i.to_string().as_bytes());
+            let hash = Sha256::from_engine(e);
+            let secret_key = SecretKey::from_slice(&hash.to_byte_array()).unwrap(); // TODO: remove unwrap
+            let keypair = MintKeyPair::from_secret_key(secret_key);
+            map.insert(amount, keypair);
+        }
 
-            // SHA-256 midstate, for quicker hashing
-            let mut engine = Sha256::engine();
-            engine.input(secret);
-            engine.input(derivation_path.as_bytes());
+        let keys = MintKeys::new(map);
 
-            for i in 0..max_order {
-                let amount = Amount::from(2_u64.pow(i as u32));
-
-                // Reuse midstate
-                let mut e = engine.clone();
-                e.input(i.to_string().as_bytes());
-                let hash = Sha256::from_engine(e);
-                let secret_key = SecretKey::from_slice(&hash.to_byte_array()).unwrap(); // TODO: remove unwrap
-                let keypair = KeyPair::from_secret_key(secret_key);
-                map.insert(amount, keypair);
-            }
-
-            let keys = Keys(map);
-
-            Self {
-                id: (&keys).into(),
-                unit,
-                keys,
-            }
+        Self {
+            id: (&keys).into(),
+            unit,
+            keys,
         }
     }
+}
 
-    impl From<KeySet> for Id {
-        fn from(keyset: KeySet) -> Id {
-            let keys: super::KeySet = keyset.into();
+impl From<MintKeySet> for Id {
+    fn from(keyset: MintKeySet) -> Id {
+        let keys: super::KeySet = keyset.into();
 
-            Id::from(&keys.keys)
-        }
+        Id::from(&keys.keys)
     }
+}
 
-    impl From<&Keys> for Id {
-        fn from(map: &Keys) -> Self {
-            let keys: super::Keys = map.clone().into();
+impl From<&MintKeys> for Id {
+    fn from(map: &MintKeys) -> Self {
+        let keys: super::Keys = map.clone().into();
 
-            Id::from(&keys)
-        }
+        Id::from(&keys)
     }
 }
 

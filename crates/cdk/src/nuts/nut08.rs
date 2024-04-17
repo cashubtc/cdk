@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{MeltBolt11Request, MeltBolt11Response};
+use super::nut05::{MeltBolt11Request, MeltBolt11Response};
 use crate::Amount;
 
 impl MeltBolt11Request {

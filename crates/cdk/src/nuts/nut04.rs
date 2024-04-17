@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use crate::types::MintQuote;
 use crate::Amount;
 

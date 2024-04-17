@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{BlindSignature, BlindedMessage};
+use super::nut00::{BlindSignature, BlindedMessage};
 
 /// Restore Request [NUT-09]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

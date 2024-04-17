@@ -1,4 +1,4 @@
-//! Types for `cashu-crab`
+//! Types
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
