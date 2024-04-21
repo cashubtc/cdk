@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database::WalletDatabase;
+use cdk::cdk_database::{self, WalletDatabase};
 use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cdk::types::{MeltQuote, MintQuote};
 use cdk::url::UncheckedUrl;
@@ -76,7 +76,7 @@ impl RedbWalletDatabase {
 
 #[async_trait]
 impl WalletDatabase for RedbWalletDatabase {
-    type Err = Error;
+    type Err = cdk_database::Error;
 
     async fn add_mint(
         &self,
@@ -85,20 +85,20 @@ impl WalletDatabase for RedbWalletDatabase {
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn
-                .open_table(MINTS_TABLE)
-                .map_err(Into::<Error>::into)?;
-            table.insert(
-                mint_url.to_string().as_str(),
-                serde_json::to_string(&mint_info)
-                    .map_err(Into::<Error>::into)?
-                    .as_str(),
-            )?;
+            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            table
+                .insert(
+                    mint_url.to_string().as_str(),
+                    serde_json::to_string(&mint_info)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
@@ -106,10 +106,13 @@ impl WalletDatabase for RedbWalletDatabase {
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
-        let table = read_txn.open_table(MINTS_TABLE)?;
+        let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(mint_url.to_string().as_str())? {
-            return Ok(serde_json::from_str(mint_info.value())?);
+        if let Some(mint_info) = table
+            .get(mint_url.to_string().as_str())
+            .map_err(Error::from)?
+        {
+            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
         }
 
         Ok(None)
@@ -117,13 +120,15 @@ impl WalletDatabase for RedbWalletDatabase {
 
     async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
         let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
-        let table = read_txn
-            .open_table(MINTS_TABLE)
-            .map_err(Into::<Error>::into)?;
+        let read_txn = db
+            .begin_read()
+            .map_err(Into::<Error>::into)
+            .map_err(Error::from)?;
+        let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
         let mints = table
-            .iter()?
+            .iter()
+            .map_err(Error::from)?
             .flatten()
             .map(|(mint, mint_info)| {
                 (
@@ -143,19 +148,25 @@ impl WalletDatabase for RedbWalletDatabase {
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+            let mut table = write_txn
+                .open_multimap_table(MINT_KEYSETS_TABLE)
+                .map_err(Error::from)?;
 
             for keyset in keysets {
-                table.insert(
-                    mint_url.to_string().as_str(),
-                    serde_json::to_string(&keyset)?.as_str(),
-                )?;
+                table
+                    .insert(
+                        mint_url.to_string().as_str(),
+                        serde_json::to_string(&keyset)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
             }
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
@@ -166,10 +177,13 @@ impl WalletDatabase for RedbWalletDatabase {
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
-        let table = read_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+        let table = read_txn
+            .open_multimap_table(MINT_KEYSETS_TABLE)
+            .map_err(Error::from)?;
 
         let keysets = table
-            .get(mint_url.to_string().as_str())?
+            .get(mint_url.to_string().as_str())
+            .map_err(Error::from)?
             .flatten()
             .flat_map(|k| serde_json::from_str(k.value()))
             .collect();
@@ -179,16 +193,21 @@ impl WalletDatabase for RedbWalletDatabase {
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_table(MINT_QUOTES_TABLE)?;
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
             table
-                .insert(quote.id.as_str(), serde_json::to_string(&quote)?.as_str())
-                .map_err(Into::<Error>::into)?;
+                .insert(
+                    quote.id.as_str(),
+                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
         }
 
-        write_txn.commit().map_err(Into::<Error>::into)?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
@@ -196,10 +215,12 @@ impl WalletDatabase for RedbWalletDatabase {
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
-        let table = read_txn.open_table(MINT_QUOTES_TABLE)?;
+        let table = read_txn
+            .open_table(MINT_QUOTES_TABLE)
+            .map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(quote_id)? {
-            return Ok(serde_json::from_str(mint_info.value())?);
+        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
+            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
         }
 
         Ok(None)
@@ -207,39 +228,50 @@ impl WalletDatabase for RedbWalletDatabase {
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_table(MINT_QUOTES_TABLE)?;
-            table.remove(quote_id)?;
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table.remove(quote_id).map_err(Error::from)?;
         }
 
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
 
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_table(MELT_QUOTES_TABLE)?;
-            table.insert(quote.id.as_str(), serde_json::to_string(&quote)?.as_str())?;
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    quote.id.as_str(),
+                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
         }
 
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
 
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
-        let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(MELT_QUOTES_TABLE)?;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(MELT_QUOTES_TABLE)
+            .map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(quote_id)? {
-            return Ok(serde_json::from_str(mint_info.value())?);
+        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
+            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
         }
 
         Ok(None)
@@ -247,42 +279,46 @@ impl WalletDatabase for RedbWalletDatabase {
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_table(MELT_QUOTES_TABLE)?;
-            table.remove(quote_id)?;
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table.remove(quote_id).map_err(Error::from)?;
         }
 
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
 
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_table(MINT_KEYS_TABLE)?;
-            table.insert(
-                Id::from(&keys).to_string().as_str(),
-                serde_json::to_string(&keys)?.as_str(),
-            )?;
+            let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
+            table
+                .insert(
+                    Id::from(&keys).to_string().as_str(),
+                    serde_json::to_string(&keys).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
         }
 
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
 
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err> {
         let db = self.db.lock().await;
-        let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(MINT_KEYS_TABLE)?;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(id.to_string().as_str())? {
-            return Ok(serde_json::from_str(mint_info.value())?);
+        if let Some(mint_info) = table.get(id.to_string().as_str()).map_err(Error::from)? {
+            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
         }
 
         Ok(None)
@@ -290,15 +326,15 @@ impl WalletDatabase for RedbWalletDatabase {
 
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_table(MINT_KEYS_TABLE)?;
+            let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
-            table.remove(id.to_string().as_str())?;
+            table.remove(id.to_string().as_str()).map_err(Error::from)?;
         }
 
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
@@ -306,30 +342,37 @@ impl WalletDatabase for RedbWalletDatabase {
     async fn add_proofs(&self, mint_url: UncheckedUrl, proofs: Proofs) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_multimap_table(PROOFS_TABLE)?;
+            let mut table = write_txn
+                .open_multimap_table(PROOFS_TABLE)
+                .map_err(Error::from)?;
 
             for proof in proofs {
-                table.insert(
-                    mint_url.to_string().as_str(),
-                    serde_json::to_string(&proof)?.as_str(),
-                )?;
+                table
+                    .insert(
+                        mint_url.to_string().as_str(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
             }
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
 
     async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Self::Err> {
         let db = self.db.lock().await;
-        let read_txn = db.begin_read()?;
-        let table = read_txn.open_multimap_table(PROOFS_TABLE)?;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_multimap_table(PROOFS_TABLE)
+            .map_err(Error::from)?;
 
         let proofs = table
-            .get(mint_url.to_string().as_str())?
+            .get(mint_url.to_string().as_str())
+            .map_err(Error::from)?
             .flatten()
             .flat_map(|k| serde_json::from_str(k.value()))
             .collect();
@@ -344,19 +387,23 @@ impl WalletDatabase for RedbWalletDatabase {
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_multimap_table(PROOFS_TABLE)?;
+            let mut table = write_txn
+                .open_multimap_table(PROOFS_TABLE)
+                .map_err(Error::from)?;
 
             for proof in proofs {
-                table.remove(
-                    mint_url.to_string().as_str(),
-                    serde_json::to_string(&proof)?.as_str(),
-                )?;
+                table
+                    .remove(
+                        mint_url.to_string().as_str(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
             }
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
@@ -368,19 +415,23 @@ impl WalletDatabase for RedbWalletDatabase {
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_multimap_table(PENDING_PROOFS_TABLE)?;
+            let mut table = write_txn
+                .open_multimap_table(PENDING_PROOFS_TABLE)
+                .map_err(Error::from)?;
 
             for proof in proofs {
-                table.insert(
-                    mint_url.to_string().as_str(),
-                    serde_json::to_string(&proof)?.as_str(),
-                )?;
+                table
+                    .insert(
+                        mint_url.to_string().as_str(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
             }
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
@@ -390,11 +441,14 @@ impl WalletDatabase for RedbWalletDatabase {
         mint_url: UncheckedUrl,
     ) -> Result<Option<Proofs>, Self::Err> {
         let db = self.db.lock().await;
-        let read_txn = db.begin_read()?;
-        let table = read_txn.open_multimap_table(PENDING_PROOFS_TABLE)?;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_multimap_table(PENDING_PROOFS_TABLE)
+            .map_err(Error::from)?;
 
         let proofs = table
-            .get(mint_url.to_string().as_str())?
+            .get(mint_url.to_string().as_str())
+            .map_err(Error::from)?
             .flatten()
             .flat_map(|k| serde_json::from_str(k.value()))
             .collect();
@@ -409,19 +463,23 @@ impl WalletDatabase for RedbWalletDatabase {
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_multimap_table(PENDING_PROOFS_TABLE)?;
+            let mut table = write_txn
+                .open_multimap_table(PENDING_PROOFS_TABLE)
+                .map_err(Error::from)?;
 
             for proof in proofs {
-                table.remove(
-                    mint_url.to_string().as_str(),
-                    serde_json::to_string(&proof)?.as_str(),
-                )?;
+                table
+                    .remove(
+                        mint_url.to_string().as_str(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
             }
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
@@ -431,9 +489,11 @@ impl WalletDatabase for RedbWalletDatabase {
 
         let current_counter;
         {
-            let read_txn = db.begin_read()?;
-            let table = read_txn.open_table(KEYSET_COUNTER)?;
-            let counter = table.get(keyset_id.to_string().as_str())?;
+            let read_txn = db.begin_read().map_err(Error::from)?;
+            let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+            let counter = table
+                .get(keyset_id.to_string().as_str())
+                .map_err(Error::from)?;
 
             current_counter = match counter {
                 Some(c) => c.value(),
@@ -441,24 +501,28 @@ impl WalletDatabase for RedbWalletDatabase {
             };
         }
 
-        let write_txn = db.begin_write()?;
+        let write_txn = db.begin_write().map_err(Error::from)?;
         {
-            let mut table = write_txn.open_table(KEYSET_COUNTER)?;
+            let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
             let new_counter = current_counter + count;
 
-            table.insert(keyset_id.to_string().as_str(), new_counter)?;
+            table
+                .insert(keyset_id.to_string().as_str(), new_counter)
+                .map_err(Error::from)?;
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(())
     }
 
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Self::Err> {
         let db = self.db.lock().await;
-        let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(KEYSET_COUNTER)?;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
 
-        let counter = table.get(keyset_id.to_string().as_str())?;
+        let counter = table
+            .get(keyset_id.to_string().as_str())
+            .map_err(Error::from)?;
 
         Ok(counter.map(|c| c.value()))
     }
