@@ -82,7 +82,7 @@ impl MintRedbDatabase {
 impl MintDatabase for MintRedbDatabase {
     type Err = Error;
 
-    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Error> {
+    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -96,7 +96,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(CONFIG_TABLE)?;
@@ -106,7 +106,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(serde_json::from_str(mint_info.value())?)
     }
 
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
+    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -120,7 +120,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Error> {
+    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
@@ -132,7 +132,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(None)
     }
 
-    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Error> {
+    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
@@ -149,7 +149,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(active_keysets)
     }
 
-    async fn add_keyset(&self, keyset: KeySet) -> Result<(), Error> {
+    async fn add_keyset(&self, keyset: KeySet) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -166,7 +166,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<KeySet>, Error> {
+    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<KeySet>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(KEYSETS_TABLE)?;
@@ -177,7 +177,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn get_keysets(&self) -> Result<Vec<KeySet>, Error> {
+    async fn get_keysets(&self) -> Result<Vec<KeySet>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(KEYSETS_TABLE)?;
@@ -193,7 +193,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(keysets)
     }
 
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -207,7 +207,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(MINT_QUOTES_TABLE)?;
@@ -218,7 +218,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(MINT_QUOTES_TABLE)?;
@@ -234,7 +234,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(quotes)
     }
 
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -248,7 +248,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Error> {
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -262,7 +262,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Error> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(MELT_QUOTES_TABLE)?;
@@ -272,7 +272,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }
 
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(MELT_QUOTES_TABLE)?;
@@ -288,7 +288,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(quotes)
     }
 
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -302,7 +302,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Error> {
+    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -318,7 +318,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
+    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
@@ -329,7 +329,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(SPENT_PROOFS_TABLE)?;
@@ -342,7 +342,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Error> {
+    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -359,7 +359,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Error> {
+    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(PENDING_PROOFS_TABLE)?;
@@ -370,7 +370,10 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn get_pending_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Error> {
+    async fn get_pending_proof_by_secret(
+        &self,
+        secret: &Secret,
+    ) -> Result<Option<Proof>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(PENDING_PROOFS_TABLE)?;
@@ -383,7 +386,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Error> {
+    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write()?;
@@ -402,7 +405,7 @@ impl MintDatabase for MintRedbDatabase {
         &self,
         blinded_message: PublicKey,
         blinded_signature: BlindSignature,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write()?;
 
@@ -422,7 +425,7 @@ impl MintDatabase for MintRedbDatabase {
     async fn get_blinded_signature(
         &self,
         blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Error> {
+    ) -> Result<Option<BlindSignature>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(BLINDED_SIGNATURES)?;
@@ -436,7 +439,7 @@ impl MintDatabase for MintRedbDatabase {
     async fn get_blinded_signatures(
         &self,
         blinded_messages: Vec<PublicKey>,
-    ) -> Result<Vec<Option<BlindSignature>>, Error> {
+    ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(BLINDED_SIGNATURES)?;

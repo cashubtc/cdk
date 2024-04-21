@@ -83,7 +83,7 @@ pub trait WalletDatabase {
 
 #[async_trait]
 pub trait MintDatabase {
-    type Err: Into<Error>;
+    type Err: Into<Error> + From<Error>;
 
     async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Self::Err>;
     async fn get_mint_info(&self) -> Result<MintInfo, Self::Err>;
