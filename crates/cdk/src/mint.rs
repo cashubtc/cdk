@@ -1,7 +1,9 @@
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use bitcoin::bip32::DerivationPath;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -100,8 +102,17 @@ impl Mint {
         let mut active_units: HashSet<CurrencyUnit> = HashSet::default();
 
         if keysets_info.is_empty() {
+<<<<<<< Updated upstream
             let keyset =
-                MintKeySet::generate(&mnemonic.to_seed_normalized(""), CurrencyUnit::Sat, "", 64);
+                MintKeySet::generate(&mnemonic.to_seed_normalized(""), CurrencyUnit::Sat, &DerivationPath::from_str("").unwrap(), 64);
+=======
+            let keyset = MintKeySet::generate(
+                &mnemonic.to_seed_normalized(""),
+                CurrencyUnit::Sat,
+                &DerivationPath::from_str("").unwrap(),
+                64,
+            );
+>>>>>>> Stashed changes
 
             localstore
                 .add_active_keyset(CurrencyUnit::Sat, keyset.id)
@@ -257,7 +268,7 @@ impl Mint {
     pub async fn rotate_keyset(
         &mut self,
         unit: CurrencyUnit,
-        derivation_path: &str,
+        derivation_path: &DerivationPath,
         max_order: u8,
     ) -> Result<(), Error> {
         let new_keyset = MintKeySet::generate(
@@ -749,7 +760,7 @@ pub struct MintKeySetInfo {
     pub active: bool,
     pub valid_from: u64,
     pub valid_to: Option<u64>,
-    pub derivation_path: String,
+    pub derivation_path: DerivationPath,
     pub max_order: u8,
 }
 

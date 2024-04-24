@@ -6,6 +6,7 @@ use core::fmt;
 use core::str::FromStr;
 use std::collections::BTreeMap;
 
+use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::{Hash, HashEngine};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -231,7 +232,7 @@ impl MintKeySet {
     pub fn generate(
         secret: &[u8],
         unit: CurrencyUnit,
-        derivation_path: &str,
+        derivation_path: &DerivationPath,
         max_order: u8,
     ) -> Self {
         // Elliptic curve math context
@@ -246,7 +247,7 @@ impl MintKeySet {
         // SHA-256 midstate, for quicker hashing
         let mut engine = Sha256::engine();
         engine.input(secret);
-        engine.input(derivation_path.as_bytes());
+        engine.input(derivation_path.to_string().as_bytes());
 
         for i in 0..max_order {
             let amount = Amount::from(2_u64.pow(i as u32));
