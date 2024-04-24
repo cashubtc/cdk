@@ -242,8 +242,11 @@ impl MintKeySet {
         for i in 0..max_order {
             let amount = Amount::from(2_u64.pow(i as u32));
             let secret_key = xpriv
-                .derive_priv(secp, &[ChildNumber::from_hardened_idx(i as u32).unwrap()])
-                .unwrap()
+                .derive_priv(
+                    secp,
+                    &[ChildNumber::from_hardened_idx(i as u32).expect("order is valid index")],
+                )
+                .expect("RNG busted")
                 .private_key;
             let public_key = secret_key.public_key(secp);
             map.insert(
