@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use bip39::Mnemonic;
+use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
+use bitcoin::secp256k1::{self, Secp256k1};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -83,52 +85,40 @@ impl From<Error> for (StatusCode, ErrorResponse) {
 
 #[derive(Clone)]
 pub struct Mint {
-    //    pub pubkey: PublicKey
-    mnemonic: Mnemonic,
+    secp_ctx: Secp256k1<secp256k1::All>,
+    xpriv: ExtendedPrivKey,
     pub fee_reserve: FeeReserve,
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
 }
 
 impl Mint {
     pub async fn new(
+        seed: &[u8],
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
-        mnemonic: Mnemonic,
-        keysets_info: HashSet<MintKeySetInfo>,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
     ) -> Result<Self, Error> {
-        let mut active_units: HashSet<CurrencyUnit> = HashSet::default();
+        let secp_ctx = Secp256k1::new();
+        let xpriv =
+            ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
+        let keysets_info = localstore.get_keysets().await?;
         if keysets_info.is_empty() {
-            let keyset =
-                MintKeySet::generate(&mnemonic.to_seed_normalized(""), CurrencyUnit::Sat, "", 64);
-
+            let derivation_path = DerivationPath::from(vec![
+                ChildNumber::from_hardened_idx(0).expect("0 is a valid index")
+            ]);
+            let (_, keyset_info) =
+                create_new_keyset(&secp_ctx, xpriv, derivation_path, CurrencyUnit::Sat, 64);
             localstore
-                .add_active_keyset(CurrencyUnit::Sat, keyset.id)
+                .add_active_keyset(CurrencyUnit::Sat, keyset_info.id)
                 .await?;
-            localstore.add_keyset(keyset).await?;
-        } else {
-            // Check that there is only one active keyset per unit
-            for keyset_info in keysets_info {
-                if keyset_info.active && !active_units.insert(keyset_info.unit.clone()) {
-                    // TODO: Handle Error
-                    todo!()
-                }
-
-                let keyset = MintKeySet::generate(
-                    &mnemonic.to_seed_normalized(""),
-                    keyset_info.unit.clone(),
-                    &keyset_info.derivation_path.clone(),
-                    keyset_info.max_order,
-                );
-
-                localstore.add_keyset(keyset).await?;
-            }
+            localstore.add_keyset(keyset_info).await?;
         }
 
         Ok(Self {
+            secp_ctx,
+            xpriv,
             localstore,
-            mnemonic,
             fee_reserve: FeeReserve {
                 min_fee_reserve,
                 percent_fee_reserve,
@@ -199,13 +189,13 @@ impl Mint {
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
-        let keyset = match self.localstore.get_keyset(keyset_id).await? {
+        let keyset_info = match self.localstore.get_keyset(keyset_id).await? {
             Some(keyset) => keyset.clone(),
             None => {
                 return Err(Error::UnknownKeySet);
             }
         };
-
+        let keyset = self.generate_keyset(keyset_info);
         Ok(KeysResponse {
             keysets: vec![keyset.into()],
         })
@@ -217,7 +207,10 @@ impl Mint {
         let keysets = self.localstore.get_keysets().await?;
 
         Ok(KeysResponse {
-            keysets: keysets.into_iter().map(|k| k.into()).collect(),
+            keysets: keysets
+                .into_iter()
+                .map(|info| self.generate_keyset(info).into())
+                .collect(),
         })
     }
 
@@ -249,7 +242,7 @@ impl Mint {
             .localstore
             .get_keyset(id)
             .await?
-            .map(|ks| ks.clone().into()))
+            .map(|info| self.generate_keyset(info).into()))
     }
 
     /// Add current keyset to inactive keysets
@@ -257,20 +250,20 @@ impl Mint {
     pub async fn rotate_keyset(
         &mut self,
         unit: CurrencyUnit,
-        derivation_path: &str,
+        derivation_path: DerivationPath,
         max_order: u8,
     ) -> Result<(), Error> {
-        let new_keyset = MintKeySet::generate(
-            &self.mnemonic.to_seed_normalized(""),
-            unit.clone(),
+        let (_, keyset_info) = create_new_keyset(
+            &self.secp_ctx,
+            self.xpriv,
             derivation_path,
+            unit.clone(),
             max_order,
         );
-
-        self.localstore.add_keyset(new_keyset.clone()).await?;
+        self.localstore.add_keyset(keyset_info.clone()).await?;
 
         self.localstore
-            .add_active_keyset(unit, new_keyset.id)
+            .add_active_keyset(unit, keyset_info.id)
             .await?;
 
         Ok(())
@@ -328,7 +321,7 @@ impl Mint {
             ..
         } = blinded_message;
 
-        let keyset = self
+        let keyset_info = self
             .localstore
             .get_keyset(keyset_id)
             .await?
@@ -336,15 +329,16 @@ impl Mint {
 
         let active = self
             .localstore
-            .get_active_keyset_id(&keyset.unit)
+            .get_active_keyset_id(&keyset_info.unit)
             .await?
             .ok_or(Error::InactiveKeyset)?;
 
         // Check that the keyset is active and should be used to sign
-        if keyset.id.ne(&active) {
+        if keyset_info.id.ne(&active) {
             return Err(Error::InactiveKeyset);
         }
 
+        let keyset = self.generate_keyset(keyset_info.clone());
         let Some(key_pair) = keyset.keys.get(amount) else {
             // No key for amount
             return Err(Error::AmountKey);
@@ -355,7 +349,7 @@ impl Mint {
         let blinded_signature = BlindSignature::new(
             *amount,
             c,
-            keyset.id,
+            keyset_info.id,
             &blinded_message.blinded_secret,
             key_pair.secret_key.clone(),
         )?;
@@ -483,12 +477,13 @@ impl Mint {
             return Err(Error::TokenPending);
         }
 
-        let keyset = self
+        let keyset_info = self
             .localstore
             .get_keyset(&proof.keyset_id)
             .await?
             .ok_or(Error::UnknownKeySet)?;
 
+        let keyset = self.generate_keyset(keyset_info);
         let Some(keypair) = keyset.keys.get(&proof.amount) else {
             return Err(Error::AmountKey);
         };
@@ -734,6 +729,10 @@ impl Mint {
             signatures,
         })
     }
+
+    fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
+        MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -749,7 +748,7 @@ pub struct MintKeySetInfo {
     pub active: bool,
     pub valid_from: u64,
     pub valid_to: Option<u64>,
-    pub derivation_path: String,
+    pub derivation_path: DerivationPath,
     pub max_order: u8,
 }
 
@@ -761,4 +760,34 @@ impl From<MintKeySetInfo> for KeySetInfo {
             active: keyset_info.active,
         }
     }
+}
+
+fn create_new_keyset<C: secp256k1::Signing>(
+    secp: &secp256k1::Secp256k1<C>,
+    xpriv: ExtendedPrivKey,
+    derivation_path: DerivationPath,
+    unit: CurrencyUnit,
+    max_order: u8,
+) -> (MintKeySet, MintKeySetInfo) {
+    let keyset = MintKeySet::generate(
+        secp,
+        xpriv
+            .derive_priv(secp, &derivation_path)
+            .expect("RNG busted"),
+        unit,
+        max_order,
+    );
+    let keyset_info = MintKeySetInfo {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: true,
+        valid_from: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs(),
+        valid_to: None,
+        derivation_path,
+        max_order,
+    };
+    (keyset, keyset_info)
 }

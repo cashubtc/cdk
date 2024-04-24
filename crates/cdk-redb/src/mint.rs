@@ -5,9 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::dhke::hash_to_curve;
-use cdk::nuts::{
-    BlindSignature, CurrencyUnit, Id, MintInfo, MintKeySet as KeySet, Proof, PublicKey,
-};
+use cdk::mint::MintKeySetInfo;
+use cdk::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, PublicKey};
 use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -167,7 +166,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(active_keysets)
     }
 
-    async fn add_keyset(&self, keyset: KeySet) -> Result<(), Self::Err> {
+    async fn add_keyset(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -176,7 +175,7 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
             table
                 .insert(
-                    Id::from(keyset.clone()).to_string().as_str(),
+                    keyset.id.to_string().as_str(),
                     serde_json::to_string(&keyset)
                         .map_err(Error::from)?
                         .as_str(),
@@ -188,7 +187,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<KeySet>, Self::Err> {
+    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
@@ -202,7 +201,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn get_keysets(&self) -> Result<Vec<KeySet>, Self::Err> {
+    async fn get_keysets(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
