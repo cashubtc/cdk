@@ -5,17 +5,29 @@
 use core::fmt;
 use core::str::FromStr;
 use std::array::TryFromSliceError;
+#[cfg(feature = "mint")]
 use std::collections::BTreeMap;
 
+#[cfg(feature = "mint")]
+use bitcoin::bip32::{ChildNumber, ExtendedPrivKey};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::Hash;
+#[cfg(feature = "mint")]
+use bitcoin::key::Secp256k1;
+#[cfg(feature = "mint")]
+use bitcoin::secp256k1;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
-use super::nut01::{Keys, MintKeyPair, MintKeys, SecretKey};
+use super::nut01::Keys;
+#[cfg(feature = "mint")]
+use super::nut01::{MintKeyPair, MintKeys};
+#[cfg(feature = "mint")]
+use crate::mint::MintKeySetInfo;
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
+#[cfg(feature = "mint")]
 use crate::Amount;
 
 #[derive(Debug, Error)]
@@ -220,6 +232,7 @@ pub struct KeySet {
     pub keys: Keys,
 }
 
+#[cfg(feature = "mint")]
 impl From<MintKeySet> for KeySet {
     fn from(keyset: MintKeySet) -> Self {
         Self {
@@ -247,6 +260,7 @@ impl From<KeySet> for KeySetInfo {
     }
 }
 
+#[cfg(feature = "mint")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeySet {
     pub id: Id,
@@ -254,49 +268,66 @@ pub struct MintKeySet {
     pub keys: MintKeys,
 }
 
+#[cfg(feature = "mint")]
 impl MintKeySet {
-    pub fn generate(
-        secret: &[u8],
+    pub fn generate<C: secp256k1::Signing>(
+        secp: &Secp256k1<C>,
+        xpriv: ExtendedPrivKey,
         unit: CurrencyUnit,
-        derivation_path: &str,
         max_order: u8,
     ) -> Self {
-        // Elliptic curve math context
-
-        /* NUT-02 § 2.1
-            for i in range(MAX_ORDER):
-                k_i = HASH_SHA256(s + D + i)[:32]
-        */
-
         let mut map = BTreeMap::new();
-
-        // SHA-256 midstate, for quicker hashing
-        let mut engine = Sha256::engine();
-        engine.input(secret);
-        engine.input(derivation_path.as_bytes());
-
         for i in 0..max_order {
             let amount = Amount::from(2_u64.pow(i as u32));
-
-            // Reuse midstate
-            let mut e = engine.clone();
-            e.input(i.to_string().as_bytes());
-            let hash = Sha256::from_engine(e);
-            let secret_key = SecretKey::from_slice(&hash.to_byte_array()).unwrap(); // TODO: remove unwrap
-            let keypair = MintKeyPair::from_secret_key(secret_key);
-            map.insert(amount, keypair);
+            let secret_key = xpriv
+                .derive_priv(
+                    secp,
+                    &[ChildNumber::from_hardened_idx(i as u32).expect("order is valid index")],
+                )
+                .expect("RNG busted")
+                .private_key;
+            let public_key = secret_key.public_key(secp);
+            map.insert(
+                amount,
+                MintKeyPair {
+                    secret_key: secret_key.into(),
+                    public_key: public_key.into(),
+                },
+            );
         }
 
         let keys = MintKeys::new(map);
-
         Self {
             id: (&keys).into(),
             unit,
             keys,
         }
     }
+
+    pub fn generate_from_seed<C: secp256k1::Signing>(
+        secp: &Secp256k1<C>,
+        seed: &[u8],
+        info: MintKeySetInfo,
+    ) -> Self {
+        let xpriv =
+            ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
+        let max_order = info.max_order;
+        let unit = info.unit;
+        Self::generate(secp, xpriv, unit, max_order)
+    }
+
+    pub fn generate_from_xpriv<C: secp256k1::Signing>(
+        secp: &Secp256k1<C>,
+        xpriv: ExtendedPrivKey,
+        info: MintKeySetInfo,
+    ) -> Self {
+        let max_order = info.max_order;
+        let unit = info.unit;
+        Self::generate(secp, xpriv, unit, max_order)
+    }
 }
 
+#[cfg(feature = "mint")]
 impl From<MintKeySet> for Id {
     fn from(keyset: MintKeySet) -> Id {
         let keys: super::KeySet = keyset.into();
@@ -305,6 +336,7 @@ impl From<MintKeySet> for Id {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<&MintKeys> for Id {
     fn from(map: &MintKeys) -> Self {
         let keys: super::Keys = map.clone().into();

@@ -1,16 +1,25 @@
 //! CDK Database
 
+#[cfg(any(feature = "wallet", feature = "mint"))]
 use std::collections::HashMap;
 
+#[cfg(any(feature = "wallet", feature = "mint"))]
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::nuts::{
-    BlindSignature, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, MintKeySet, Proof, Proofs,
-    PublicKey,
-};
+#[cfg(feature = "mint")]
+use crate::mint::MintKeySetInfo;
+#[cfg(feature = "mint")]
+use crate::nuts::{BlindSignature, CurrencyUnit, Proof, PublicKey};
+#[cfg(any(feature = "wallet", feature = "mint"))]
+use crate::nuts::{Id, MintInfo};
+#[cfg(feature = "wallet")]
+use crate::nuts::{KeySetInfo, Keys, Proofs};
+#[cfg(feature = "mint")]
 use crate::secret::Secret;
+#[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::types::{MeltQuote, MintQuote};
+#[cfg(feature = "wallet")]
 use crate::url::UncheckedUrl;
 
 #[cfg(feature = "mint")]
@@ -26,6 +35,7 @@ pub enum Error {
     Cdk(#[from] crate::error::Error),
 }
 
+#[cfg(feature = "wallet")]
 #[async_trait]
 pub trait WalletDatabase {
     type Err: Into<Error> + From<Error>;
@@ -81,6 +91,7 @@ pub trait WalletDatabase {
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Self::Err>;
 }
 
+#[cfg(feature = "mint")]
 #[async_trait]
 pub trait MintDatabase {
     type Err: Into<Error> + From<Error>;
@@ -102,9 +113,9 @@ pub trait MintDatabase {
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err>;
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
-    async fn add_keyset(&self, keyset: MintKeySet) -> Result<(), Self::Err>;
-    async fn get_keyset(&self, id: &Id) -> Result<Option<MintKeySet>, Self::Err>;
-    async fn get_keysets(&self) -> Result<Vec<MintKeySet>, Self::Err>;
+    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
+    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
+    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err>;
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err>;
