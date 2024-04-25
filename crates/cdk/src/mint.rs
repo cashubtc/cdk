@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
@@ -102,17 +101,12 @@ impl Mint {
         let mut active_units: HashSet<CurrencyUnit> = HashSet::default();
 
         if keysets_info.is_empty() {
-<<<<<<< Updated upstream
-            let keyset =
-                MintKeySet::generate(&mnemonic.to_seed_normalized(""), CurrencyUnit::Sat, &DerivationPath::from_str("").unwrap(), 64);
-=======
             let keyset = MintKeySet::generate(
                 &mnemonic.to_seed_normalized(""),
                 CurrencyUnit::Sat,
-                &DerivationPath::from_str("").unwrap(),
+                &DerivationPath::default(),
                 64,
             );
->>>>>>> Stashed changes
 
             localstore
                 .add_active_keyset(CurrencyUnit::Sat, keyset.id)
