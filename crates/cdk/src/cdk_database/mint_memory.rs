@@ -87,16 +87,16 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.active_keysets.lock().await.clone())
     }
 
-    async fn add_keyset(&self, keyset: MintKeySetInfo) -> Result<(), Error> {
+    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Error> {
         self.keysets.lock().await.insert(keyset.id, keyset);
         Ok(())
     }
 
-    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Error> {
+    async fn get_keyset_info(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Error> {
         Ok(self.keysets.lock().await.get(keyset_id).cloned())
     }
 
-    async fn get_keysets(&self) -> Result<Vec<MintKeySetInfo>, Error> {
+    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Error> {
         Ok(self.keysets.lock().await.values().cloned().collect())
     }
 

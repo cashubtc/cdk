@@ -102,9 +102,9 @@ pub trait MintDatabase {
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err>;
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
-    async fn add_keyset(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
-    async fn get_keyset(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
-    async fn get_keysets(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
+    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
+    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err>;
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err>;

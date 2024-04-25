@@ -166,7 +166,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(active_keysets)
     }
 
-    async fn add_keyset(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -187,7 +187,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_keyset(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+    async fn get_keyset_info(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
@@ -201,7 +201,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn get_keysets(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
