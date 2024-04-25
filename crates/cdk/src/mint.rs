@@ -252,18 +252,19 @@ impl Mint {
         derivation_path: DerivationPath,
         max_order: u8,
     ) -> Result<(), Error> {
-        let (_, keyset_info) = create_new_keyset(
+        let (keyset, keyset_info) = create_new_keyset(
             &self.secp_ctx,
             self.xpriv,
             derivation_path,
             unit.clone(),
             max_order,
         );
-        self.localstore.add_keyset_info(keyset_info.clone()).await?;
+        let id = keyset_info.id;
+        self.localstore.add_keyset_info(keyset_info).await?;
+        self.localstore.add_active_keyset(unit, id).await?;
 
-        self.localstore
-            .add_active_keyset(unit, keyset_info.id)
-            .await?;
+        let mut keysets = self.keysets.write().await;
+        keysets.insert(id, keyset);
 
         Ok(())
     }
