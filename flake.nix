@@ -20,7 +20,7 @@
         flakeboxLib = flakebox.lib.${system} { };
         rustSrc = flakeboxLib.filterSubPaths {
           root = builtins.path {
-            name = "cashu-sdk";
+            name = "cdk";
             path = ./.;
           };
           paths = [ "crates/cashu" "crates/cashu-sdk" ];
@@ -30,7 +30,7 @@
         toolchainsStd = flakeboxLib.mkStdToolchains { };
 
         toolchainNative = flakeboxLib.mkFenixToolchain {
-          targets = (pkgs.lib.getAttrs [ "default" ] targetsStd);
+          targets = (pkgs.lib.getAttrs [ "default" "wasm32-unknown" ] targetsStd);
         };
 
         commonArgs = {
