@@ -742,7 +742,7 @@ impl Mint {
             .ok_or(Error::UnknownKeySet)?;
         let id = keyset_info.id;
         keysets.insert(id, self.generate_keyset(keyset_info));
-        return Ok(());
+        Ok(())
     }
 
     fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {

@@ -4,21 +4,29 @@
 
 use core::fmt;
 use core::str::FromStr;
+#[cfg(feature = "mint")]
 use std::collections::BTreeMap;
 
+#[cfg(feature = "mint")]
 use bitcoin::bip32::{ChildNumber, ExtendedPrivKey};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
+#[cfg(feature = "mint")]
 use bitcoin::key::Secp256k1;
+#[cfg(feature = "mint")]
 use bitcoin::secp256k1;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
-use super::nut01::{Keys, MintKeyPair, MintKeys};
+use super::nut01::Keys;
+#[cfg(feature = "mint")]
+use super::nut01::{MintKeyPair, MintKeys};
+#[cfg(feature = "mint")]
 use crate::mint::MintKeySetInfo;
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
+#[cfg(feature = "mint")]
 use crate::Amount;
 
 #[derive(Debug, Error, PartialEq)]
@@ -197,6 +205,7 @@ pub struct KeySet {
     pub keys: Keys,
 }
 
+#[cfg(feature = "mint")]
 impl From<MintKeySet> for KeySet {
     fn from(keyset: MintKeySet) -> Self {
         Self {
@@ -224,6 +233,7 @@ impl From<KeySet> for KeySetInfo {
     }
 }
 
+#[cfg(feature = "mint")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeySet {
     pub id: Id,
@@ -231,6 +241,7 @@ pub struct MintKeySet {
     pub keys: MintKeys,
 }
 
+#[cfg(feature = "mint")]
 impl MintKeySet {
     pub fn generate<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
@@ -289,6 +300,7 @@ impl MintKeySet {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<MintKeySet> for Id {
     fn from(keyset: MintKeySet) -> Id {
         let keys: super::KeySet = keyset.into();
@@ -297,6 +309,7 @@ impl From<MintKeySet> for Id {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<&MintKeys> for Id {
     fn from(map: &MintKeys) -> Self {
         let keys: super::Keys = map.clone().into();
