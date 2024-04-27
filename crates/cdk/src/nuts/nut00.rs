@@ -199,6 +199,7 @@ where
         match currency.as_ref() {
             "sat" => Self::Sat,
             "usd" => Self::Usd,
+            "msat" => Self::Msat,
             o => Self::Custom(o.to_string()),
         }
     }
