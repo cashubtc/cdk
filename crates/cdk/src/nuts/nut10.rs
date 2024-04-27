@@ -2,21 +2,23 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use core::str::FromStr;
+use std::str::FromStr;
 
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::error::Error;
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+///  NUT10 Secret Kind
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
     /// NUT-11 P2PK
-    #[default]
     P2PK,
+    /// NUT-14 HTLC
+    HTLC,
 }
 
-#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SecretData {
     /// Unique random string
     pub nonce: String,
@@ -27,23 +29,25 @@ pub struct SecretData {
     pub tags: Vec<Vec<String>>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 pub struct Secret {
     ///  Kind of the spending condition
     pub kind: Kind,
+    /// Secret Data
     pub secret_data: SecretData,
 }
 
 impl Secret {
-    pub fn new<S>(kind: Kind, data: S, tags: Vec<Vec<String>>) -> Self
+    pub fn new<S, V>(kind: Kind, data: S, tags: V) -> Self
     where
         S: Into<String>,
+        V: Into<Vec<Vec<String>>>,
     {
         let nonce = crate::secret::Secret::generate().to_string();
         let secret_data = SecretData {
             nonce,
             data: data.into(),
-            tags,
+            tags: tags.into(),
         };
 
         Self { kind, secret_data }

@@ -9,6 +9,7 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
+use self::nut11::enforce_sig_flag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::ErrorResponse;
@@ -49,6 +50,8 @@ pub enum Error {
     NUT11(#[from] crate::nuts::nut11::Error),
     #[error(transparent)]
     Nut12(#[from] crate::nuts::nut12::Error),
+    #[error(transparent)]
+    Nut14(#[from] crate::nuts::nut14::Error),
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::cdk_database::Error),
@@ -439,6 +442,15 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
+        let (sig_flag, pubkeys) = enforce_sig_flag(swap_request.inputs.clone());
+
+        if sig_flag.eq(&SigFlag::SigAll) {
+            let pubkeys = pubkeys.into_iter().collect();
+            for blinded_messaage in &swap_request.outputs {
+                blinded_messaage.verify_p2pk(&pubkeys, 1)?;
+            }
+        }
+
         for proof in swap_request.inputs {
             self.localstore.add_spent_proof(proof).await?;
         }
@@ -461,11 +473,18 @@ impl Mint {
         if let Ok(secret) =
             <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)
         {
-            // Verify if p2pk
-            if secret.kind.eq(&Kind::P2PK) {
-                proof.verify_p2pk()?;
-            } else {
-                return Err(Error::UnknownSecretKind);
+            // Checks and verifes known secret kinds.
+            // If it is an unknown secret kind it will be treated as a normal secret.
+            // Spending conditions will **not** be check. It is up to the wallet to ensure
+            // only supported secret kinds are used as there is no way for the mint to enforce
+            // only signing supported secrets as they are blinded at that point.
+            match secret.kind {
+                Kind::P2PK => {
+                    proof.verify_p2pk()?;
+                }
+                Kind::HTLC => {
+                    proof.verify_htlc()?;
+                }
             }
         }
 
@@ -552,6 +571,15 @@ impl Mint {
         }
 
         if let Some(outputs) = &melt_request.outputs {
+            let (sig_flag, pubkeys) = enforce_sig_flag(melt_request.inputs.clone());
+
+            if sig_flag.eq(&SigFlag::SigAll) {
+                let pubkeys = pubkeys.into_iter().collect();
+                for blinded_messaage in outputs {
+                    blinded_messaage.verify_p2pk(&pubkeys, 1)?;
+                }
+            }
+
             let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
             for id in output_keysets_ids {
                 let keyset = self

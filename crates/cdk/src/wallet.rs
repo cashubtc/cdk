@@ -6,21 +6,22 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use thiserror::Error;
-use tracing::{debug, warn};
 
 use crate::cdk_database::wallet_memory::WalletMemoryDatabase;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve, unblind_message};
 use crate::nuts::{
-    nut12, BlindSignature, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, P2PKConditions,
+    nut12, BlindSignature, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind, MintInfo,
     PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SigFlag,
-    SigningKey, State, SwapRequest, Token,
+    SigningKey, SpendingConditions, State, SwapRequest, Token, VerifyingKey,
 };
 use crate::types::{MeltQuote, Melted, MintQuote};
 use crate::url::UncheckedUrl;
-use crate::util::unix_time;
+use crate::util::{hex, unix_time};
 use crate::{Amount, Bolt11Invoice};
 
 #[derive(Debug, Error)]
@@ -42,6 +43,8 @@ pub enum Error {
     P2PKConditionsNotMet(String),
     #[error("Invalid Spending Conditions: `{0}`")]
     InvalidSpendConditions(String),
+    #[error("Preimage not provided")]
+    PreimageNotProvided,
     #[error("Unknown Key")]
     UnknownKey,
     #[error(transparent)]
@@ -61,6 +64,8 @@ pub enum Error {
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::cdk_database::Error),
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
     #[error("`{0}`")]
     Custom(String),
 }
@@ -136,7 +141,7 @@ impl Wallet {
         {
             Ok(mint_info) => Some(mint_info),
             Err(err) => {
-                warn!("Could not get mint info {}", err);
+                tracing::warn!("Could not get mint info {}", err);
                 None
             }
         };
@@ -410,87 +415,6 @@ impl Wallet {
         Ok(minted_amount)
     }
 
-    /// Receive
-    pub async fn receive(&mut self, encoded_token: &str) -> Result<(), Error> {
-        let token_data = Token::from_str(encoded_token)?;
-
-        let unit = token_data.unit.unwrap_or_default();
-
-        // Verify the signature DLEQ is valid
-        // Verify that all proofs in the token have a valid DLEQ proof if one is supplied
-        {
-            for mint_proof in &token_data.token {
-                let mint_url = &mint_proof.mint;
-                let proofs = &mint_proof.proofs;
-
-                for proof in proofs {
-                    let keys = self.get_keyset_keys(mint_url, proof.keyset_id).await?;
-                    let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
-                    match proof.verify_dleq(key) {
-                        Ok(_) | Err(nut12::Error::MissingDleqProof) => continue,
-                        Err(_) => return Err(Error::CouldNotVerifyDleq),
-                    }
-                }
-            }
-        }
-
-        let mut proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
-        for token in token_data.token {
-            if token.proofs.is_empty() {
-                continue;
-            }
-
-            let active_keyset_id = self.active_mint_keyset(&token.mint, &unit).await?;
-
-            // TODO: if none fetch keyset for mint
-
-            let keys = if let Some(keys) = self.localstore.get_keys(&active_keyset_id).await? {
-                keys
-            } else {
-                self.get_keyset_keys(&token.mint, active_keyset_id).await?;
-                self.localstore.get_keys(&active_keyset_id).await?.unwrap()
-            };
-
-            // Sum amount of all proofs
-            let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
-
-            let pre_swap = self
-                .create_swap(&token.mint, &unit, Some(amount), token.proofs)
-                .await?;
-
-            let swap_response = self
-                .client
-                .post_swap(token.mint.clone().try_into()?, pre_swap.swap_request)
-                .await?;
-
-            // Proof to keep
-            let p = construct_proofs(
-                swap_response.signatures,
-                pre_swap.pre_mint_secrets.rs(),
-                pre_swap.pre_mint_secrets.secrets(),
-                &keys,
-            )?;
-
-            #[cfg(feature = "nut13")]
-            if self.mnemonic.is_some() {
-                self.localstore
-                    .increment_keyset_counter(&active_keyset_id, p.len() as u64)
-                    .await?;
-            }
-
-            let mint_proofs = proofs.entry(token.mint).or_default();
-
-            mint_proofs.extend(p);
-        }
-
-        for (mint, p) in proofs {
-            self.add_mint(mint.clone()).await?;
-            self.localstore.add_proofs(mint, p).await?;
-        }
-
-        Ok(())
-    }
-
     /// Create Swap Payload
     async fn create_swap(
         &mut self,
@@ -498,6 +422,7 @@ impl Wallet {
         unit: &CurrencyUnit,
         amount: Option<Amount>,
         proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
     ) -> Result<PreSwap, Error> {
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
 
@@ -505,59 +430,112 @@ impl Wallet {
         let proofs_total = proofs.iter().map(|p| p.amount).sum();
 
         let desired_amount = amount.unwrap_or(proofs_total);
-
-        let mut counter = None;
+        let change_amount = proofs_total - desired_amount;
 
         let mut desired_messages;
+        let change_messages;
 
         #[cfg(not(feature = "nut13"))]
         {
-            desired_messages = PreMintSecrets::random(active_keyset_id, desired_amount)?;
+            (desired_messages, change_messages) = match spendig_conditions {
+                Some(conditions) => (
+                    PreMintSecrets::with_conditions(active_keyset_id, desired_amount, conditions)?,
+                    PreMintSecrets::random(active_keyset_id, change_amount),
+                ),
+                None => (
+                    PreMintSecrets::random(active_keyset_id, proofs_total)?,
+                    PreMintSecrets::default(),
+                ),
+            };
         }
 
         #[cfg(feature = "nut13")]
         {
-            desired_messages = if let Some(mnemonic) = &self.mnemonic {
-                let count = self
-                    .localstore
-                    .get_keyset_counter(&active_keyset_id)
-                    .await?;
+            (desired_messages, change_messages) = match &self.mnemonic {
+                Some(mnemonic) => match spending_conditions {
+                    Some(conditions) => {
+                        let count = self
+                            .localstore
+                            .get_keyset_counter(&active_keyset_id)
+                            .await?;
 
-                let count = if let Some(count) = count {
-                    count + 1
-                } else {
-                    0
-                };
+                        let count = if let Some(count) = count {
+                            count + 1
+                        } else {
+                            0
+                        };
 
-                let premint_secrets = PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    mnemonic,
-                    desired_amount,
-                    false,
-                )?;
+                        let change_premint_secrets = PreMintSecrets::from_seed(
+                            active_keyset_id,
+                            count,
+                            mnemonic,
+                            change_amount,
+                            false,
+                        )?;
 
-                counter = Some(count + premint_secrets.len() as u64);
+                        (
+                            PreMintSecrets::with_conditions(
+                                active_keyset_id,
+                                desired_amount,
+                                conditions,
+                            )?,
+                            change_premint_secrets,
+                        )
+                    }
+                    None => {
+                        let count = self
+                            .localstore
+                            .get_keyset_counter(&active_keyset_id)
+                            .await?;
 
-                premint_secrets
-            } else {
-                PreMintSecrets::random(active_keyset_id, desired_amount)?
+                        let count = if let Some(count) = count {
+                            count + 1
+                        } else {
+                            0
+                        };
+
+                        let premint_secrets = PreMintSecrets::from_seed(
+                            active_keyset_id,
+                            count,
+                            mnemonic,
+                            desired_amount,
+                            false,
+                        )?;
+
+                        let count = count + premint_secrets.len() as u64;
+
+                        let change_premint_secrets = PreMintSecrets::from_seed(
+                            active_keyset_id,
+                            count,
+                            mnemonic,
+                            change_amount,
+                            false,
+                        )?;
+
+                        (premint_secrets, change_premint_secrets)
+                    }
+                },
+                None => match spending_conditions {
+                    Some(conditions) => (
+                        PreMintSecrets::with_conditions(
+                            active_keyset_id,
+                            desired_amount,
+                            conditions,
+                        )?,
+                        PreMintSecrets::random(active_keyset_id, change_amount)?,
+                    ),
+                    None => (
+                        PreMintSecrets::random(active_keyset_id, desired_amount)?,
+                        PreMintSecrets::random(active_keyset_id, change_amount)?,
+                    ),
+                },
             };
         }
 
-        if let Some(amt) = amount {
-            let change_amount = proofs_total - amt;
-
-            let change_messages = if let (Some(count), Some(mnemonic)) = (counter, &self.mnemonic) {
-                PreMintSecrets::from_seed(active_keyset_id, count, mnemonic, change_amount, false)?
-            } else {
-                PreMintSecrets::random(active_keyset_id, change_amount)?
-            };
-            // Combine the BlindedMessages totoalling the desired amount with change
-            desired_messages.combine(change_messages);
-            // Sort the premint secrets to avoid finger printing
-            desired_messages.sort_secrets();
-        };
+        // Combine the BlindedMessages totoalling the desired amount with change
+        desired_messages.combine(change_messages);
+        // Sort the premint secrets to avoid finger printing
+        desired_messages.sort_secrets();
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
 
@@ -633,11 +611,20 @@ impl Wallet {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Amount,
+        conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        let proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
+        let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
+
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
 
         let pre_swap = self
-            .create_swap(mint_url, unit, Some(amount), proofs.clone())
+            .create_swap(
+                mint_url,
+                unit,
+                Some(amount),
+                input_proofs.clone(),
+                conditions,
+            )
             .await?;
 
         let swap_response = self
@@ -655,12 +642,10 @@ impl Wallet {
             &self.active_keys(mint_url, unit).await?.unwrap(),
         )?;
 
-        let active_keyset = self.active_mint_keyset(mint_url, unit).await?;
-
         #[cfg(feature = "nut13")]
         if self.mnemonic.is_some() {
             self.localstore
-                .increment_keyset_counter(&active_keyset, post_swap_proofs.len() as u64)
+                .increment_keyset_counter(&active_keyset_id, post_swap_proofs.len() as u64)
                 .await?;
         }
 
@@ -677,18 +662,19 @@ impl Wallet {
         let send_amount: Amount = send_proofs.iter().map(|p| p.amount).sum();
 
         if send_amount.ne(&amount) {
-            warn!(
+            tracing::warn!(
                 "Send amount proofs is {:?} expected {:?}",
-                send_amount, amount
+                send_amount,
+                amount
             );
         }
 
         self.localstore
-            .remove_proofs(mint_url.clone(), &proofs)
+            .remove_proofs(mint_url.clone(), &input_proofs)
             .await?;
 
         self.localstore
-            .add_pending_proofs(mint_url.clone(), proofs)
+            .add_pending_proofs(mint_url.clone(), input_proofs)
             .await?;
         self.localstore
             .add_pending_proofs(mint_url.clone(), send_proofs.clone())
@@ -874,7 +860,7 @@ impl Wallet {
         };
 
         if let Some(change_proofs) = change_proofs {
-            debug!(
+            tracing::debug!(
                 "Change amount returned from melt: {}",
                 change_proofs.iter().map(|p| p.amount).sum::<Amount>()
             );
@@ -901,89 +887,13 @@ impl Wallet {
         Ok(melted)
     }
 
-    /// Create P2PK locked proofs
-    /// Uses a swap to swap proofs for locked p2pk conditions
-    pub async fn send_p2pk(
-        &mut self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
-        amount: Amount,
-        conditions: P2PKConditions,
-    ) -> Result<Proofs, Error> {
-        let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
-
-        let input_amount: Amount = input_proofs.iter().map(|p| p.amount).sum();
-        let change_amount = input_amount - amount;
-
-        let send_premint_secrets =
-            PreMintSecrets::with_p2pk_conditions(active_keyset_id, amount, conditions)?;
-
-        let change_premint_secrets = PreMintSecrets::random(active_keyset_id, change_amount)?;
-        let mut pre_mint_secrets = send_premint_secrets;
-        pre_mint_secrets.combine(change_premint_secrets);
-
-        let swap_request =
-            SwapRequest::new(input_proofs.clone(), pre_mint_secrets.blinded_messages());
-
-        let pre_swap = PreSwap {
-            pre_mint_secrets,
-            swap_request,
-        };
-
-        let swap_response = self
-            .client
-            .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
-            .await?;
-
-        let post_swap_proofs = construct_proofs(
-            swap_response.signatures,
-            pre_swap.pre_mint_secrets.rs(),
-            pre_swap.pre_mint_secrets.secrets(),
-            &self.active_keys(mint_url, unit).await?.unwrap(),
-        )?;
-
-        let mut send_proofs = vec![];
-        let mut change_proofs = vec![];
-
-        for proof in post_swap_proofs {
-            let conditions: Result<crate::nuts::nut10::Secret, _> = (&proof.secret).try_into();
-            if conditions.is_ok() {
-                send_proofs.push(proof);
-            } else {
-                change_proofs.push(proof);
-            }
-        }
-
-        self.localstore
-            .remove_proofs(mint_url.clone(), &input_proofs)
-            .await?;
-
-        self.localstore
-            .add_pending_proofs(mint_url.clone(), input_proofs)
-            .await?;
-        self.localstore
-            .add_pending_proofs(mint_url.clone(), send_proofs.clone())
-            .await?;
-        self.localstore
-            .add_proofs(mint_url.clone(), change_proofs.clone())
-            .await?;
-
-        Ok(send_proofs)
-    }
-
-    /// Receive p2pk
-    pub async fn receive_p2pk(
+    /// Receive
+    pub async fn receive(
         &mut self,
         encoded_token: &str,
-        signing_keys: Vec<SigningKey>,
+        signing_keys: Option<Vec<SigningKey>>,
+        preimages: Option<Vec<String>>,
     ) -> Result<(), Error> {
-        let signing_key = signing_keys[0].clone();
-        let pubkey_secret_key: HashMap<String, SigningKey> = signing_keys
-            .into_iter()
-            .map(|s| (s.public_key().to_string(), s))
-            .collect();
-
         let token_data = Token::from_str(encoded_token)?;
 
         let unit = token_data.unit.unwrap_or_default();
@@ -1005,7 +915,27 @@ impl Wallet {
 
             let mut proofs = token.proofs;
 
-            let mut sig_flag = None;
+            let mut sig_flag = SigFlag::SigInputs;
+
+            let pubkey_secret_key = match &signing_keys {
+                Some(signing_keys) => signing_keys
+                    .iter()
+                    .map(|s| (s.verifying_key().to_string(), s))
+                    .collect(),
+                None => HashMap::new(),
+            };
+
+            // Map hash of preimage to preimage
+            let hashed_to_preimage = match preimages {
+                Some(ref preimages) => preimages
+                    .iter()
+                    .flat_map(|p| match hex::decode(p) {
+                        Ok(hex_bytes) => Some((Sha256Hash::hash(&hex_bytes).to_string(), p)),
+                        Err(_) => None,
+                    })
+                    .collect(),
+                None => HashMap::new(),
+            };
 
             for proof in &mut proofs {
                 // Verify that proof DLEQ is valid
@@ -1020,29 +950,45 @@ impl Wallet {
                         proof.secret.clone(),
                     )
                 {
-                    let conditions: Result<P2PKConditions, _> = secret.try_into();
+                    let conditions: Result<Conditions, _> = secret.secret_data.tags.try_into();
                     if let Ok(conditions) = conditions {
-                        let pubkeys = conditions.pubkeys;
+                        let mut pubkeys = conditions.pubkeys.unwrap_or_default();
 
+                        match secret.kind {
+                            Kind::P2PK => {
+                                let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
+
+                                pubkeys.push(data_key);
+                            }
+                            Kind::HTLC => {
+                                let hashed_preimage = &secret.secret_data.data;
+                                let preimage = hashed_to_preimage
+                                    .get(hashed_preimage)
+                                    .ok_or(Error::PreimageNotProvided)?;
+                                proof.add_preimage(preimage.to_string());
+                            }
+                        }
                         for pubkey in pubkeys {
                             if let Some(signing) = pubkey_secret_key.get(&pubkey.to_string()) {
-                                proof.sign_p2pk(signing.clone())?;
+                                proof.sign_p2pk(signing.to_owned().clone())?;
                             }
                         }
 
-                        sig_flag = Some(conditions.sig_flag);
+                        if conditions.sig_flag.eq(&SigFlag::SigAll) {
+                            sig_flag = SigFlag::SigAll;
+                        }
                     }
                 }
             }
 
             let mut pre_swap = self
-                .create_swap(&token.mint, &unit, Some(amount), proofs)
+                .create_swap(&token.mint, &unit, Some(amount), proofs, None)
                 .await?;
 
-            if let Some(sigflag) = sig_flag {
-                if sigflag.eq(&SigFlag::SigAll) {
-                    for blinded_message in &mut pre_swap.swap_request.outputs {
-                        blinded_message.sign_p2pk(signing_key.clone()).unwrap();
+            if sig_flag.eq(&SigFlag::SigAll) {
+                for blinded_message in &mut pre_swap.swap_request.outputs {
+                    for signing_key in pubkey_secret_key.values() {
+                        blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                     }
                 }
             }
@@ -1112,7 +1058,7 @@ impl Wallet {
                     start_counter + 100,
                 )?;
 
-                debug!(
+                tracing::debug!(
                     "Attempting to restore counter {}-{} for mint {} keyset {}",
                     start_counter,
                     start_counter + 100,
@@ -1158,7 +1104,7 @@ impl Wallet {
                     &keys,
                 )?;
 
-                debug!("Restored {} proofs", proofs.len());
+                tracing::debug!("Restored {} proofs", proofs.len());
 
                 #[cfg(feature = "nut13")]
                 self.localstore
@@ -1196,12 +1142,12 @@ impl Wallet {
     pub fn verify_token_p2pk(
         &self,
         token: &Token,
-        spending_conditions: P2PKConditions,
+        spending_conditions: Conditions,
     ) -> Result<(), Error> {
         use crate::nuts::nut10;
 
         if spending_conditions.refund_keys.is_some() && spending_conditions.locktime.is_none() {
-            warn!(
+            tracing::warn!(
                 "Invalid spending conditions set: Locktime must be set if refund keys are allowed"
             );
             return Err(Error::InvalidSpendConditions(
@@ -1211,14 +1157,15 @@ impl Wallet {
 
         for mint_proof in &token.token {
             for proof in &mint_proof.proofs {
-                let secret: nut10::Secret = (&proof.secret).try_into().unwrap();
+                let secret: nut10::Secret = (&proof.secret).try_into()?;
 
-                let proof_conditions: P2PKConditions = secret.try_into().unwrap();
+                let proof_conditions: Conditions = secret.secret_data.tags.try_into()?;
 
                 if spending_conditions.num_sigs.ne(&proof_conditions.num_sigs) {
-                    debug!(
+                    tracing::debug!(
                         "Spending condition requires: {:?} sigs proof secret specifies: {:?}",
-                        spending_conditions.num_sigs, proof_conditions.num_sigs
+                        spending_conditions.num_sigs,
+                        proof_conditions.num_sigs
                     );
 
                     return Err(Error::P2PKConditionsNotMet(
@@ -1226,17 +1173,17 @@ impl Wallet {
                     ));
                 }
 
+                let spending_condition_pubkeys =
+                    spending_conditions.pubkeys.clone().unwrap_or_default();
+                let proof_pubkeys = proof_conditions.pubkeys.unwrap_or_default();
+
                 // Check the Proof has the required pubkeys
-                if proof_conditions
-                    .pubkeys
-                    .len()
-                    .ne(&spending_conditions.pubkeys.len())
-                    || !proof_conditions
-                        .pubkeys
+                if proof_pubkeys.len().ne(&spending_condition_pubkeys.len())
+                    || !proof_pubkeys
                         .iter()
-                        .all(|pubkey| spending_conditions.pubkeys.contains(pubkey))
+                        .all(|pubkey| spending_condition_pubkeys.contains(pubkey))
                 {
-                    debug!("Proof did not included Publickeys meeting condition");
+                    tracing::debug!("Proof did not included Publickeys meeting condition");
                     return Err(Error::P2PKConditionsNotMet(
                         "Pubkeys in proof not allowed by spending condition".to_string(),
                     ));

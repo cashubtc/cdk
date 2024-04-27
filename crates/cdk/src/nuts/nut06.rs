@@ -5,10 +5,10 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-use super::{nut04, nut05, nut07, nut08};
+use super::{nut04, nut05};
 
 /// Mint Version
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MintVersion {
     pub name: String,
     pub version: String,
@@ -42,7 +42,7 @@ impl<'de> Deserialize<'de> for MintVersion {
 }
 
 /// Mint Info [NIP-09]
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,7 +69,8 @@ pub struct MintInfo {
     pub motd: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Supported nuts and settings
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "4")]
@@ -79,21 +80,40 @@ pub struct Nuts {
     pub nut05: nut05::Settings,
     #[serde(default)]
     #[serde(rename = "7")]
-    pub nut07: nut07::Settings,
+    pub nut07: SupportedSettings,
     #[serde(default)]
     #[serde(rename = "8")]
-    pub nut08: nut08::Settings,
-    // TODO: Change to nut settings
+    pub nut08: SupportedSettings,
     #[serde(default)]
     #[serde(rename = "9")]
-    pub nut09: nut07::Settings,
-    // TODO: Change to nut settings
+    pub nut09: SupportedSettings,
+    #[serde(rename = "10")]
     #[serde(default)]
-    pub nut10: nut07::Settings,
-    // TODO: Change to nut settings
+    pub nut10: SupportedSettings,
+    #[serde(rename = "11")]
+    #[serde(default)]
+    pub nut11: SupportedSettings,
     #[serde(default)]
     #[serde(rename = "12")]
-    pub nut12: nut07::Settings,
+    pub nut12: SupportedSettings,
+    #[serde(default)]
+    #[serde(rename = "13")]
+    pub nut13: SupportedSettings,
+    #[serde(default)]
+    #[serde(rename = "14")]
+    pub nut14: SupportedSettings,
+}
+
+/// Check state Settings
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SupportedSettings {
+    supported: bool,
+}
+
+impl Default for SupportedSettings {
+    fn default() -> Self {
+        Self { supported: true }
+    }
 }
 
 #[cfg(test)]
@@ -150,7 +170,8 @@ mod tests {
         "min_amount": 0,
         "max_amount": 10000
         }
-      ]
+      ],
+      "disabled": false
     },
     "7": {"supported": true},
     "8": {"supported": true},

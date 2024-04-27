@@ -2,8 +2,6 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/08.md>
 
-use serde::{Deserialize, Serialize};
-
 use super::nut05::{MeltBolt11Request, MeltBolt11Response};
 use crate::Amount;
 
@@ -21,10 +19,4 @@ impl MeltBolt11Response {
             .as_ref()
             .map(|c| c.iter().map(|b| b.amount).sum())
     }
-}
-
-/// Melt Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Settings {
-    supported: bool,
 }

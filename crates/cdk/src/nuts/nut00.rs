@@ -14,11 +14,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use url::Url;
 
+use super::nut10;
+use super::nut11::SpendingConditions;
 use crate::dhke::blind_message;
 use crate::nuts::nut01::{PublicKey, SecretKey};
-use crate::nuts::nut11::{witness_deserialize, witness_serialize, Signatures};
+use crate::nuts::nut11::{serde_p2pk_witness, P2PKWitness};
 use crate::nuts::nut12::BlindSignatureDleq;
-use crate::nuts::{Id, P2PKConditions, ProofDleq};
+use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
+use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::url::UncheckedUrl;
 use crate::Amount;
@@ -77,11 +80,8 @@ pub struct BlindedMessage {
     /// Witness
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/11.md>
-    #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    //#[serde(serialize_with = "witness_serialize")]
-    //#[serde(deserialize_with = "witness_deserialize")]
-    pub witness: Option<Signatures>,
+    pub witness: Option<Witness>,
 }
 
 impl BlindedMessage {
@@ -97,9 +97,9 @@ impl BlindedMessage {
     }
 
     /// Add witness
-    pub fn witness(mut self, witness: Signatures) -> Self {
+    #[inline]
+    pub fn witness(&mut self, witness: Witness) {
         self.witness = Some(witness);
-        self
     }
 }
 
@@ -123,9 +123,42 @@ pub struct BlindSignature {
     /// DLEQ Proof
     ///
     /// <https://github.com/cashubtc/nuts/blob/main/12.md>
-    #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dleq: Option<BlindSignatureDleq>,
+}
+
+/// Witness
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Witness {
+    /// P2PK Witness
+    #[serde(with = "serde_p2pk_witness")]
+    P2PKWitness(P2PKWitness),
+    /// HTLC Witness
+    #[serde(with = "serde_htlc_witness")]
+    HTLCWitness(HTLCWitness),
+}
+
+impl Witness {
+    pub fn add_signatures(&mut self, signatues: Vec<String>) {
+        match self {
+            Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
+            Self::HTLCWitness(htlc_witness) => {
+                htlc_witness.signatures = htlc_witness.signatures.clone().map(|sigs| {
+                    let mut sigs = sigs;
+                    sigs.extend(signatues);
+                    sigs
+                });
+            }
+        }
+    }
+
+    pub fn signatures(&self) -> Option<Vec<String>> {
+        match self {
+            Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
+            Self::HTLCWitness(witness) => witness.signatures.clone(),
+        }
+    }
 }
 
 /// Proofs
@@ -142,12 +175,10 @@ pub struct Proof {
     #[serde(rename = "C")]
     pub c: PublicKey,
     /// Witness
-    #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(serialize_with = "witness_serialize")]
-    #[serde(deserialize_with = "witness_deserialize")]
-    pub witness: Option<Signatures>,
+    pub witness: Option<Witness>,
     /// DLEQ Proof
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
 }
 
@@ -381,17 +412,19 @@ impl PreMintSecrets {
         Ok(PreMintSecrets { secrets: output })
     }
 
-    pub fn with_p2pk_conditions(
+    pub fn with_conditions(
         keyset_id: Id,
         amount: Amount,
-        conditions: P2PKConditions,
+        conditions: SpendingConditions,
     ) -> Result<Self, Error> {
         let amount_split = amount.split();
 
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            let secret: Secret = conditions.clone().try_into()?;
+            let secret: nut10::Secret = conditions.clone().into();
+
+            let secret: Secret = secret.try_into()?;
             let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);

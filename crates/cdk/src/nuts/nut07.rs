@@ -39,9 +39,3 @@ pub struct ProofState {
 pub struct CheckStateResponse {
     pub states: Vec<ProofState>,
 }
-
-/// Spendable Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Settings {
-    supported: bool,
-}
