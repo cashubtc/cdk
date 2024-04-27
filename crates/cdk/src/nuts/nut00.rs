@@ -186,6 +186,7 @@ impl PartialOrd for Proof {
 pub enum CurrencyUnit {
     #[default]
     Sat,
+    Msat,
     Usd,
     Custom(String),
 }
@@ -207,6 +208,7 @@ impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CurrencyUnit::Sat => write!(f, "sat"),
+            CurrencyUnit::Msat => write!(f, "msat"),
             CurrencyUnit::Usd => write!(f, "usd"),
             CurrencyUnit::Custom(unit) => write!(f, "{unit}"),
         }
