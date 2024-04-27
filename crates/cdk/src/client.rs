@@ -234,7 +234,6 @@ impl HttpClient {
         let value = res.json::<Value>().await?;
         let response: Result<SwapResponse, serde_json::Error> =
             serde_json::from_value(value.clone());
-
         match response {
             Ok(res) => Ok(res),
             Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),

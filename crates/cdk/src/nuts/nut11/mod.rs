@@ -2,7 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
@@ -15,21 +15,26 @@ use bitcoin::secp256k1::{
 };
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
-use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+use super::nut00::Witness;
 use super::nut01::PublicKey;
-use super::nut10::{Secret, SecretData};
-use super::{Proof, SecretKey};
+use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
 use crate::util::{hex, unix_time};
 use crate::SECP256K1;
+
+pub mod serde_p2pk_witness;
 
 #[derive(Debug, Error)]
 pub enum Error {
     /// Incorrect secret kind
     #[error("Secret is not a p2pk secret")]
     IncorrectSecretKind,
+    /// Incorrect secret kind
+    #[error("Witness is not a p2pk witness")]
+    IncorrectWitnessKind,
     /// P2PK locktime has already passed
     #[error("Locktime in past")]
     LocktimeInPast,
@@ -39,14 +44,24 @@ pub enum Error {
     /// Unknown tag in P2PK secret
     #[error("Unknown Tag P2PK secret")]
     UnknownTag,
+    /// Unknown Sigflag
+    #[error("Unknown Sigflag")]
+    UnknownSigFlag,
     /// P2PK Spend conditions not meet
     #[error("P2PK Spend conditions are not met")]
     SpendConditionsNotMet,
     /// Pubkey must be in data field of P2PK
     #[error("P2PK Required in secret data")]
     P2PKPubkeyRequired,
+    /// Unknown Kind
     #[error("Kind not found")]
     KindNotFound,
+    /// HTLC hash invalid
+    #[error("Invalid Hash")]
+    InvalidHash,
+    /// Witness Signatures not provided
+    #[error("Witness Signatures not provided")]
+    SignaturesNotProvided,
     /// Parse Url Error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
@@ -70,66 +85,73 @@ pub enum Error {
     Secret(#[from] crate::secret::Error),
 }
 
+/// P2Pk Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Signatures {
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+pub struct P2PKWitness {
     pub signatures: Vec<String>,
 }
 
-impl Signatures {
+impl P2PKWitness {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.signatures.is_empty()
     }
 }
 
-/// Serialize [Signatures] as stringified JSON
-pub fn witness_serialize<S>(x: &Option<Signatures>, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    s.serialize_str(&serde_json::to_string(&x).map_err(ser::Error::custom)?)
-}
-
-/// Serialize [Signatures] from stringified JSON
-pub fn witness_deserialize<'de, D>(deserializer: D) -> Result<Option<Signatures>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = String::deserialize(deserializer)?;
-    serde_json::from_str(&s).map_err(de::Error::custom)
-}
-
 impl Proof {
-    pub fn verify_p2pk(&self) -> Result<(), Error> {
-        if !self.secret.is_p2pk() {
-            return Err(Error::IncorrectSecretKind);
-        }
+    /// Sign [Proof]
+    pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
+        let msg: Vec<u8> = self.secret.to_bytes();
+        let signature: Signature = secret_key.sign(&msg)?;
 
-        let secret: Secret = self.secret.clone().try_into()?;
-        let spending_conditions: P2PKConditions = secret.clone().try_into()?;
+        let signatures = vec![signature.to_string()];
+
+        match self.witness.as_mut() {
+            Some(witness) => {
+                witness.add_signatures(signatures);
+            }
+            None => {
+                let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
+                p2pk_witness.add_signatures(signatures);
+                self.witness = Some(p2pk_witness);
+            }
+        };
+
+        Ok(())
+    }
+
+    /// Verify P2PK signature on [Proof]
+    pub fn verify_p2pk(&self) -> Result<(), Error> {
+        let secret: Nut10Secret = self.secret.clone().try_into()?;
+        let spending_conditions: Conditions = secret.secret_data.tags.try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
         let mut valid_sigs = 0;
 
-        if let Some(witness) = &self.witness {
-            for signature in witness.signatures.iter() {
-                let mut pubkeys = spending_conditions.pubkeys.clone();
+        let witness_signatures = match &self.witness {
+            Some(witness) => witness.signatures(),
+            None => None,
+        };
 
-                pubkeys.push(VerifyingKey::from_str(&secret.secret_data.data)?);
+        let witness_signatures = witness_signatures.ok_or(Error::SignaturesNotProvided)?;
 
-                for v in &spending_conditions.pubkeys {
-                    let sig = Signature::from_str(signature)?;
+        let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
 
-                    if v.verify(msg, &sig).is_ok() {
-                        valid_sigs += 1;
-                    } else {
-                        tracing::debug!(
-                            "Could not verify signature: {sig} on message: {}",
-                            self.secret.to_string()
-                        )
-                    }
+        if secret.kind.eq(&Kind::P2PK) {
+            pubkeys.push(VerifyingKey::from_str(&secret.secret_data.data)?);
+        }
+
+        for signature in witness_signatures.iter() {
+            for v in &pubkeys {
+                let sig = Signature::from_str(signature)?;
+
+                if v.verify(msg, &sig).is_ok() {
+                    valid_sigs += 1;
+                } else {
+                    tracing::debug!(
+                        "Could not verify signature: {sig} on message: {}",
+                        self.secret.to_string()
+                    )
                 }
             }
         }
@@ -144,16 +166,13 @@ impl Proof {
         ) {
             // If lock time has passed check if refund witness signature is valid
             if locktime.lt(&unix_time()) {
-                if let Some(signatures) = &self.witness {
-                    for s in &signatures.signatures {
-                        for v in &refund_keys {
-                            let sig =
-                                Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
+                for s in witness_signatures.iter() {
+                    for v in &refund_keys {
+                        let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
 
-                            // As long as there is one valid refund signature it can be spent
-                            if v.verify(msg, &sig).is_ok() {
-                                return Ok(());
-                            }
+                        // As long as there is one valid refund signature it can be spent
+                        if v.verify(msg, &sig).is_ok() {
+                            return Ok(());
                         }
                     }
                 }
@@ -162,35 +181,46 @@ impl Proof {
 
         Err(Error::SpendConditionsNotMet)
     }
+}
 
-    pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
-        let msg: Vec<u8> = self.secret.to_bytes();
-        let signature: Signature = secret_key.sign(&msg)?;
+/// Returns count of valid signatures
+pub fn valid_signatures(msg: &[u8], pubkeys: &[VerifyingKey], signatures: &[Signature]) -> u64 {
+    let mut count = 0;
 
-        self.witness
-            .as_mut()
-            .unwrap_or(&mut Signatures::default())
-            .signatures
-            .push(signature.to_string());
-
-        Ok(())
+    for pubkey in pubkeys {
+        for signature in signatures {
+            if pubkey.verify(msg, signature).is_ok() {
+                count += 1;
+            }
+        }
     }
+
+    count
 }
 
 impl BlindedMessage {
+    /// Sign [BlindedMessage]
     pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
         let msg: [u8; 33] = self.blinded_secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
-        self.witness
-            .as_mut()
-            .unwrap_or(&mut Signatures::default())
-            .signatures
-            .push(signature.to_string());
+        let signatures = vec![signature.to_string()];
+
+        match self.witness.as_mut() {
+            Some(witness) => {
+                witness.add_signatures(signatures);
+            }
+            None => {
+                let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
+                p2pk_witness.add_signatures(signatures);
+                self.witness = Some(p2pk_witness);
+            }
+        };
 
         Ok(())
     }
 
+    /// Verify P2PK conditions on [BlindedMessage]
     pub fn verify_p2pk(
         &self,
         pubkeys: &Vec<VerifyingKey>,
@@ -198,7 +228,11 @@ impl BlindedMessage {
     ) -> Result<(), Error> {
         let mut valid_sigs = 0;
         if let Some(witness) = &self.witness {
-            for signature in &witness.signatures {
+            for signature in witness
+                .signatures()
+                .ok_or(Error::SignaturesNotProvided)?
+                .iter()
+            {
                 for v in pubkeys {
                     let msg = &self.blinded_secret.to_bytes();
                     let sig = Signature::from_str(signature)?;
@@ -223,11 +257,87 @@ impl BlindedMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct P2PKConditions {
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SpendingConditions {
+    /// NUT11 Spending conditions
+    P2PKConditions {
+        data: VerifyingKey,
+        conditions: Conditions,
+    },
+    /// NUT14 Spending conditions
+    HTLCConditions {
+        data: Sha256Hash,
+        conditions: Conditions,
+    },
+}
+
+impl SpendingConditions {
+    /// New HTLC [SpendingConditions]
+    pub fn new_htlc(preimage: String, conditions: Conditions) -> Result<Self, Error> {
+        let htlc = Sha256Hash::hash(&hex::decode(preimage)?);
+
+        Ok(Self::HTLCConditions {
+            data: htlc,
+            conditions,
+        })
+    }
+
+    /// New P2PK [SpendingConditions]
+    pub fn new_p2pk(pubkey: VerifyingKey, conditions: Conditions) -> Self {
+        Self::P2PKConditions {
+            data: pubkey,
+            conditions,
+        }
+    }
+
+    /// Kind of [SpendingConditions]
+    pub fn kind(&self) -> Kind {
+        match self {
+            Self::P2PKConditions { .. } => Kind::P2PK,
+            Self::HTLCConditions { .. } => Kind::HTLC,
+        }
+    }
+}
+
+impl TryFrom<Nut10Secret> for SpendingConditions {
+    type Error = Error;
+    fn try_from(secret: Nut10Secret) -> Result<SpendingConditions, Error> {
+        match secret.kind {
+            Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
+                data: VerifyingKey::from_str(&secret.secret_data.data)?,
+                conditions: secret.secret_data.tags.try_into()?,
+            }),
+            Kind::HTLC => Ok(Self::HTLCConditions {
+                data: Sha256Hash::from_str(&secret.secret_data.data)
+                    .map_err(|_| Error::InvalidHash)?,
+                conditions: secret.secret_data.tags.try_into()?,
+            }),
+        }
+    }
+}
+
+impl From<SpendingConditions> for super::nut10::Secret {
+    fn from(conditions: SpendingConditions) -> super::nut10::Secret {
+        match conditions {
+            SpendingConditions::P2PKConditions { data, conditions } => super::nut10::Secret::new(
+                Kind::P2PK,
+                data.to_normalized_public_key().to_hex(),
+                conditions,
+            ),
+            SpendingConditions::HTLCConditions { data, conditions } => {
+                super::nut10::Secret::new(Kind::HTLC, data.to_string(), conditions)
+            }
+        }
+    }
+}
+
+/// P2PK and HTLC spending conditions
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Conditions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locktime: Option<u64>,
-    pub pubkeys: Vec<VerifyingKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkeys: Option<Vec<VerifyingKey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refund_keys: Option<Vec<VerifyingKey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,10 +345,10 @@ pub struct P2PKConditions {
     pub sig_flag: SigFlag,
 }
 
-impl P2PKConditions {
+impl Conditions {
     pub fn new(
         locktime: Option<u64>,
-        pubkeys: Vec<VerifyingKey>,
+        pubkeys: Option<Vec<VerifyingKey>>,
         refund_keys: Option<Vec<VerifyingKey>>,
         num_sigs: Option<u64>,
         sig_flag: Option<SigFlag>,
@@ -258,11 +368,9 @@ impl P2PKConditions {
         })
     }
 }
-
-impl TryFrom<P2PKConditions> for Secret {
-    type Error = Error;
-    fn try_from(conditions: P2PKConditions) -> Result<Secret, Self::Error> {
-        let P2PKConditions {
+impl From<Conditions> for Vec<Vec<String>> {
+    fn from(conditions: Conditions) -> Vec<Vec<String>> {
+        let Conditions {
             locktime,
             pubkeys,
             refund_keys,
@@ -270,17 +378,10 @@ impl TryFrom<P2PKConditions> for Secret {
             sig_flag,
         } = conditions;
 
-        let data = match pubkeys.first() {
-            Some(data) => data.to_string(),
-            None => return Err(Error::P2PKPubkeyRequired),
-        };
-
-        let data = data.to_string();
-
         let mut tags = Vec::new();
 
-        if pubkeys.len().gt(&1) {
-            tags.push(Tag::PubKeys(pubkeys.into_iter().skip(1).collect()).as_vec());
+        if let Some(pubkeys) = pubkeys {
+            tags.push(Tag::PubKeys(pubkeys.into_iter().collect()).as_vec());
         }
 
         if let Some(locktime) = locktime {
@@ -295,48 +396,23 @@ impl TryFrom<P2PKConditions> for Secret {
             tags.push(Tag::Refund(refund_keys).as_vec())
         }
         tags.push(Tag::SigFlag(sig_flag).as_vec());
-
-        Ok(Secret {
-            kind: super::nut10::Kind::P2PK,
-            secret_data: SecretData {
-                nonce: crate::secret::Secret::default().to_string(),
-                data,
-                tags,
-            },
-        })
+        tags
     }
 }
 
-impl TryFrom<P2PKConditions> for crate::secret::Secret {
+impl TryFrom<Vec<Vec<String>>> for Conditions {
     type Error = Error;
-    fn try_from(conditions: P2PKConditions) -> Result<crate::secret::Secret, Self::Error> {
-        let secret: Secret = conditions.try_into()?;
-
-        secret.try_into().map_err(|_| Error::IncorrectSecretKind)
-    }
-}
-
-impl TryFrom<Secret> for P2PKConditions {
-    type Error = Error;
-    fn try_from(secret: Secret) -> Result<P2PKConditions, Self::Error> {
-        let tags: HashMap<TagKind, Tag> = secret
-            .clone()
-            .secret_data
-            .tags
+    fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
+        let tags: HashMap<TagKind, Tag> = tags
             .into_iter()
             .map(|t| Tag::try_from(t).unwrap())
             .map(|t| (t.kind(), t))
             .collect();
 
-        let mut pubkeys: Vec<VerifyingKey> = vec![];
-
-        if let Some(Tag::PubKeys(keys)) = tags.get(&TagKind::Pubkeys) {
-            let mut keys = keys.clone();
-            pubkeys.append(&mut keys);
-        }
-
-        let data_pubkey = VerifyingKey::from_str(&secret.secret_data.data)?;
-        pubkeys.push(data_pubkey);
+        let pubkeys = match tags.get(&TagKind::Pubkeys) {
+            Some(Tag::PubKeys(pubkeys)) => Some(pubkeys.clone()),
+            _ => None,
+        };
 
         let locktime = if let Some(tag) = tags.get(&TagKind::Locktime) {
             match tag {
@@ -374,7 +450,7 @@ impl TryFrom<Secret> for P2PKConditions {
             None
         };
 
-        Ok(P2PKConditions {
+        Ok(Conditions {
             locktime,
             pubkeys,
             refund_keys,
@@ -384,7 +460,8 @@ impl TryFrom<Secret> for P2PKConditions {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// P2PK and HTLC Spending condition tags
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum TagKind {
     /// Signature flag
@@ -436,7 +513,6 @@ pub enum SigFlag {
     #[default]
     SigInputs,
     SigAll,
-    Custom(String),
 }
 
 impl fmt::Display for SigFlag {
@@ -444,25 +520,48 @@ impl fmt::Display for SigFlag {
         match self {
             Self::SigAll => write!(f, "SIG_ALL"),
             Self::SigInputs => write!(f, "SIG_INPUTS"),
-            Self::Custom(flag) => write!(f, "{}", flag),
         }
     }
 }
 
-impl<S> From<S> for SigFlag
-where
-    S: AsRef<str>,
-{
-    fn from(tag: S) -> Self {
-        match tag.as_ref() {
-            "SIG_ALL" => Self::SigAll,
-            "SIG_INPUTS" => Self::SigInputs,
-            tag => Self::Custom(tag.to_string()),
+impl FromStr for SigFlag {
+    type Err = Error;
+    fn from_str(tag: &str) -> Result<Self, Self::Err> {
+        match tag {
+            "SIG_ALL" => Ok(Self::SigAll),
+            "SIG_INPUTS" => Ok(Self::SigInputs),
+            _ => Err(Error::UnknownSigFlag),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<VerifyingKey>) {
+    let mut sig_flag = SigFlag::SigInputs;
+    let mut pubkeys = HashSet::new();
+    for proof in proofs {
+        if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
+            if secret.kind.eq(&Kind::P2PK) {
+                if let Ok(verifying_key) = VerifyingKey::from_str(&secret.secret_data.data) {
+                    pubkeys.insert(verifying_key);
+                }
+            }
+
+            if let Ok(conditions) = Conditions::try_from(secret.secret_data.tags) {
+                if conditions.sig_flag.eq(&SigFlag::SigAll) {
+                    sig_flag = SigFlag::SigAll;
+                }
+
+                if let Some(pubs) = conditions.pubkeys {
+                    pubkeys.extend(pubs);
+                }
+            }
+        }
+    }
+
+    (sig_flag, pubkeys)
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Tag {
     SigFlag(SigFlag),
     NSigs(u64),
@@ -501,7 +600,7 @@ where
         };
 
         match tag_kind {
-            TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from(tag[1].as_ref()))),
+            TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from_str(tag[1].as_ref())?)),
             TagKind::NSigs => Ok(Tag::NSigs(tag[1].as_ref().parse()?)),
             TagKind::Locktime => Ok(Tag::LockTime(tag[1].as_ref().parse()?)),
             TagKind::Refund => {
@@ -535,7 +634,6 @@ impl From<Tag> for Vec<String> {
             Tag::LockTime(locktime) => vec![TagKind::Locktime.to_string(), locktime.to_string()],
             Tag::PubKeys(pubkeys) => {
                 let mut tag = vec![TagKind::Pubkeys.to_string()];
-
                 for pubkey in pubkeys.into_iter() {
                     let pubkey: PublicKey = pubkey.to_normalized_public_key();
                     tag.push(pubkey.to_string())
@@ -579,7 +677,7 @@ impl<'de> Deserialize<'de> for Tag {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct VerifyingKey(XOnlyPublicKey);
 
@@ -706,17 +804,19 @@ mod tests {
 
     use super::*;
     use crate::nuts::Id;
+    use crate::secret::Secret;
     use crate::Amount;
 
     #[test]
     fn test_secret_ser() {
-        let conditions = P2PKConditions {
+        let data = VerifyingKey::from_str(
+            "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+        )
+        .unwrap();
+
+        let conditions = Conditions {
             locktime: Some(99999),
-            pubkeys: vec![
-                VerifyingKey::from_str(
-                    "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
-                )
-                .unwrap(),
+            pubkeys: Some(vec![
                 VerifyingKey::from_str(
                     "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
                 )
@@ -725,7 +825,7 @@ mod tests {
                     "023192200a0cfd3867e48eb63b03ff599c7e46c8f4e41146b2d281173ca6c50c54",
                 )
                 .unwrap(),
-            ],
+            ]),
             refund_keys: Some(vec![VerifyingKey::from_str(
                 "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
             )
@@ -734,11 +834,11 @@ mod tests {
             sig_flag: SigFlag::SigAll,
         };
 
-        let secret: Secret = conditions.try_into().unwrap();
+        let secret: Nut10Secret = Nut10Secret::new(Kind::P2PK, data.to_string(), conditions);
 
         let secret_str = serde_json::to_string(&secret).unwrap();
 
-        let secret_der: Secret = serde_json::from_str(&secret_str).unwrap();
+        let secret_der: Nut10Secret = serde_json::from_str(&secret_str).unwrap();
 
         assert_eq!(secret_der, secret);
     }
@@ -763,15 +863,17 @@ mod tests {
         let v_key_two: VerifyingKey = signing_key_two.verifying_key();
         let v_key_three: VerifyingKey = signing_key_three.verifying_key();
 
-        let conditions = P2PKConditions {
+        let conditions = Conditions {
             locktime: Some(21),
-            pubkeys: vec![v_key.clone(), v_key_two, v_key_three],
-            refund_keys: Some(vec![v_key]),
+            pubkeys: Some(vec![v_key_two, v_key_three]),
+            refund_keys: Some(vec![v_key.clone()]),
             num_sigs: Some(2),
             sig_flag: SigFlag::SigInputs,
         };
 
-        let secret: super::Secret = conditions.try_into().unwrap();
+        let secret: Secret = Nut10Secret::new(Kind::P2PK, v_key.to_string(), conditions)
+            .try_into()
+            .unwrap();
 
         let mut proof = Proof {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
@@ -781,7 +883,7 @@ mod tests {
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
-            witness: Some(Signatures { signatures: vec![] }),
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
             dleq: None,
         };
 

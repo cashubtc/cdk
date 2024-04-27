@@ -67,20 +67,22 @@ pub struct MintBolt11Response {
 }
 
 /// Mint Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
     method: PaymentMethod,
     /// Currency Unit e.g. sat
     unit: CurrencyUnit,
     /// Min Amount
-    min_amount: Amount,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_amount: Option<Amount>,
     /// Max Amount
-    max_amount: Amount,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_amount: Option<Amount>,
 }
 
 /// Mint Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Settings {
     methods: Vec<MintMethodSettings>,
     disabled: bool,
