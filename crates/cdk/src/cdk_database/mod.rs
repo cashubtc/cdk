@@ -2,6 +2,9 @@
 
 use std::collections::HashMap;
 
+#[cfg(any(feature = "wallet", feature = "mint"))]
+use std::collections::HashMap;
+#[cfg(any(feature = "wallet", feature = "mint"))]
 use async_trait::async_trait;
 use thiserror::Error;
 
