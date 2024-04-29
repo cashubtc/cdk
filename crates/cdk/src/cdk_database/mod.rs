@@ -12,6 +12,7 @@ use thiserror::Error;
 use crate::mint::MintKeySetInfo;
 #[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, CurrencyUnit, Proof, PublicKey};
+#[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::nuts::{Id, MintInfo};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, Proofs};
