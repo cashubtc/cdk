@@ -1,11 +1,9 @@
 //! CDK Database
 
-use std::collections::HashMap;
-
-#[cfg(any(feature = "wallet", feature = "mint"))]
-use std::collections::HashMap;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use async_trait::async_trait;
+#[cfg(any(feature = "wallet", feature = "mint"))]
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[cfg(feature = "mint")]
