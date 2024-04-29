@@ -4,7 +4,9 @@ use std::ops::Deref;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{Parity, PublicKey as NormalizedPublicKey, Scalar, XOnlyPublicKey};
+use bitcoin::secp256k1::{
+    Parity, PublicKey as NormalizedPublicKey, Scalar, Secp256k1, XOnlyPublicKey,
+};
 
 use crate::error::Error;
 use crate::nuts::nut01::{PublicKey, SecretKey};
@@ -142,7 +144,9 @@ pub fn verify_message(
     let y: PublicKey = hash_to_curve(msg)?;
 
     // Compute the expected unblinded message
-    let expected_unblinded_message: PublicKey = y.combine(&a.public_key())?.into();
+    let expected_unblinded_message: PublicKey = y
+        .mul_tweak(&Secp256k1::new(), &Scalar::from(*a.deref()))?
+        .into();
 
     // Compare the unblinded_message with the expected value
     if unblinded_message == expected_unblinded_message {
