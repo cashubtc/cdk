@@ -18,6 +18,7 @@ use crate::nuts::{Id, MintInfo};
 use crate::nuts::{KeySetInfo, Keys, Proofs};
 #[cfg(feature = "mint")]
 use crate::secret::Secret;
+#[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::types::{MeltQuote, MintQuote};
 #[cfg(feature = "wallet")]
 use crate::url::UncheckedUrl;
