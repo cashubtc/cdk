@@ -47,29 +47,36 @@ pub enum Error {
     PreimageNotProvided,
     #[error("Unknown Key")]
     UnknownKey,
+    /// Mnemonic Required
+    #[error("Mnemonic Required")]
+    MnemonicRequired,
     /// Spending Locktime not provided
     #[error("Spending condition locktime not provided")]
     LocktimeNotProvided,
-    #[error(transparent)]
-    ParseInt(#[from] ParseIntError),
     /// Cashu Url Error
     #[error(transparent)]
     CashuUrl(#[from] crate::url::Error),
     /// NUT11 Error
     #[error(transparent)]
     Client(#[from] crate::client::Error),
+    /// Database Error
+    #[error(transparent)]
+    Database(#[from] crate::cdk_database::Error),
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    /// NUT12 Error
+    #[error(transparent)]
+    NUT12(#[from] crate::nuts::nut12::Error),
+    /// Parse int
+    #[error(transparent)]
+    ParseInt(#[from] ParseIntError),
     /// Parse invoice error
     #[error(transparent)]
     Invoice(#[from] lightning_invoice::ParseOrSemanticError),
-    /// Database Error
-    #[error(transparent)]
-    Database(#[from] crate::cdk_database::Error),
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
     #[error("`{0}`")]
@@ -193,6 +200,7 @@ impl Wallet {
         Ok(keysets.keysets)
     }
 
+    /// Get active mint keyset
     pub async fn get_active_mint_keys(
         &self,
         mint_url: &UncheckedUrl,
@@ -210,6 +218,44 @@ impl Wallet {
             .await?;
 
         Ok(keysets)
+    }
+
+    /// Refresh Mint keys
+    pub async fn refresh_mint_keys(&self, mint_url: &UncheckedUrl) -> Result<(), Error> {
+        let current_mint_keysets_info = self
+            .client
+            .get_mint_keysets(mint_url.try_into()?)
+            .await?
+            .keysets;
+
+        match self.localstore.get_mint_keysets(mint_url.clone()).await? {
+            Some(stored_keysets) => {
+                let mut unseen_keysets = current_mint_keysets_info.clone();
+                unseen_keysets.retain(|ks| !stored_keysets.contains(ks));
+
+                for keyset in unseen_keysets {
+                    let keys = self
+                        .client
+                        .get_mint_keyset(mint_url.try_into()?, keyset.id)
+                        .await?;
+
+                    self.localstore.add_keys(keys.keys).await?;
+                }
+            }
+            None => {
+                let mint_keys = self.client.get_mint_keys(mint_url.try_into()?).await?;
+
+                for keys in mint_keys {
+                    self.localstore.add_keys(keys.keys).await?;
+                }
+            }
+        }
+
+        self.localstore
+            .add_mint_keysets(mint_url.clone(), current_mint_keysets_info)
+            .await?;
+
+        Ok(())
     }
 
     /// Check if a proof is spent
@@ -922,9 +968,7 @@ impl Wallet {
 
             let active_keyset_id = self.active_mint_keyset(&token.mint, &unit).await?;
 
-            // TODO: if none fetch keyset for mint
-
-            let keys = self.localstore.get_keys(&active_keyset_id).await?;
+            let keys = self.get_keyset_keys(&token.mint, active_keyset_id).await?;
 
             // Sum amount of all proofs
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
@@ -956,9 +1000,9 @@ impl Wallet {
             for proof in &mut proofs {
                 // Verify that proof DLEQ is valid
                 {
-                    let keys = self.localstore.get_keys(&proof.keyset_id).await?.unwrap();
-                    let key = keys.amount_key(proof.amount).unwrap();
-                    proof.verify_dleq(key).unwrap();
+                    let keys = self.get_keyset_keys(&token.mint, proof.keyset_id).await?;
+                    let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
+                    proof.verify_dleq(key)?;
                 }
 
                 if let Ok(secret) =
@@ -1019,7 +1063,7 @@ impl Wallet {
                 swap_response.signatures,
                 pre_swap.pre_mint_secrets.rs(),
                 pre_swap.pre_mint_secrets.secrets(),
-                &keys.ok_or(Error::UnknownKey)?,
+                &keys,
             )?;
             let mint_proofs = received_proofs.entry(token.mint).or_default();
 
@@ -1069,7 +1113,7 @@ impl Wallet {
             while empty_batch.lt(&3) {
                 let premint_secrets = PreMintSecrets::restore_batch(
                     keyset.id,
-                    &self.mnemonic.clone().unwrap(),
+                    &self.mnemonic.clone().ok_or(Error::MnemonicRequired)?,
                     start_counter,
                     start_counter + 100,
                 )?;
