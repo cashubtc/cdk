@@ -47,6 +47,9 @@ pub enum Error {
     PreimageNotProvided,
     #[error("Unknown Key")]
     UnknownKey,
+    /// Spending Locktime not provided
+    #[error("Spending condition locktime not provided")]
+    LocktimeNotProvided,
     #[error(transparent)]
     ParseInt(#[from] ParseIntError),
     /// Cashu Url Error
@@ -61,6 +64,9 @@ pub enum Error {
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    /// Parse invoice error
+    #[error(transparent)]
+    Invoice(#[from] lightning_invoice::ParseOrSemanticError),
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::cdk_database::Error),
@@ -573,12 +579,12 @@ impl Wallet {
                 .localstore
                 .get_keys(&promise.keyset_id)
                 .await?
-                .unwrap()
+                .ok_or(Error::UnknownKey)?
                 .amount_key(promise.amount)
-                .unwrap()
+                .ok_or(Error::UnknownKey)?
                 .to_owned();
 
-            let unblinded_sig = unblind_message(&promise.c, &premint.r, &a).unwrap();
+            let unblinded_sig = unblind_message(&promise.c, &premint.r, &a)?;
 
             let count = proof_count.get(&promise.keyset_id).unwrap_or(&0);
             proof_count.insert(promise.keyset_id, count + 1);
@@ -639,7 +645,10 @@ impl Wallet {
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
-            &self.active_keys(mint_url, unit).await?.unwrap(),
+            &self
+                .active_keys(mint_url, unit)
+                .await?
+                .ok_or(Error::UnknownKey)?,
         )?;
 
         #[cfg(feature = "nut13")]
@@ -699,7 +708,7 @@ impl Wallet {
             .post_melt_quote(
                 mint_url.clone().try_into()?,
                 unit.clone(),
-                Bolt11Invoice::from_str(&request.clone()).unwrap(),
+                Bolt11Invoice::from_str(&request.clone())?,
             )
             .await?;
 
@@ -731,7 +740,11 @@ impl Wallet {
             .await?
             .ok_or(Error::InsufficientFunds)?;
 
-        let mint_keysets = self.localstore.get_mint_keysets(mint_url).await?.unwrap();
+        let mint_keysets = self
+            .localstore
+            .get_mint_keysets(mint_url)
+            .await?
+            .ok_or(Error::UnknownKey)?;
 
         let (active, inactive): (HashSet<KeySetInfo>, HashSet<KeySetInfo>) = mint_keysets
             .into_iter()
@@ -848,7 +861,10 @@ impl Wallet {
                 change,
                 premint_secrets.rs(),
                 premint_secrets.secrets(),
-                &self.active_keys(mint_url, &quote_info.unit).await?.unwrap(),
+                &self
+                    .active_keys(mint_url, &quote_info.unit)
+                    .await?
+                    .ok_or(Error::UnknownKey)?,
             )?),
             None => None,
         };
@@ -1003,7 +1019,7 @@ impl Wallet {
                 swap_response.signatures,
                 pre_swap.pre_mint_secrets.rs(),
                 pre_swap.pre_mint_secrets.secrets(),
-                &keys.unwrap(),
+                &keys.ok_or(Error::UnknownKey)?,
             )?;
             let mint_proofs = received_proofs.entry(token.mint).or_default();
 
@@ -1073,8 +1089,7 @@ impl Wallet {
                 let response = self
                     .client
                     .post_restore(mint_url.clone().try_into()?, restore_request)
-                    .await
-                    .unwrap();
+                    .await?;
 
                 if response.signatures.is_empty() {
                     empty_batch += 1;
@@ -1195,7 +1210,9 @@ impl Wallet {
                 // locktime
 
                 if let Some(proof_refund_keys) = proof_conditions.refund_keys {
-                    let proof_locktime = proof_conditions.locktime.unwrap();
+                    let proof_locktime = proof_conditions
+                        .locktime
+                        .ok_or(Error::LocktimeNotProvided)?;
 
                     if let (Some(condition_refund_keys), Some(condition_locktime)) = (
                         &spending_conditions.refund_keys,
@@ -1243,7 +1260,11 @@ impl Wallet {
                 let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                     Some(keys) => keys.amount_key(proof.amount),
                     None => {
-                        let keys = self.localstore.get_keys(&proof.keyset_id).await?.unwrap();
+                        let keys = self
+                            .localstore
+                            .get_keys(&proof.keyset_id)
+                            .await?
+                            .ok_or(Error::UnknownKey)?;
 
                         let key = keys.amount_key(proof.amount);
                         keys_cache.insert(proof.keyset_id, keys);
