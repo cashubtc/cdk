@@ -31,12 +31,11 @@ pub enum Error {
     CDKDatabase(#[from] cdk::cdk_database::Error),
     /// Rexie Error
     #[error(transparent)]
-    Redb(#[from] rexie::Error),
+    Rexie(#[from] rexie::Error),
     /// Serde Wasm Error
     #[error(transparent)]
     SerdeBindgen(#[from] serde_wasm_bindgen::Error),
 }
-
 impl From<Error> for cdk::cdk_database::Error {
     fn from(e: Error) -> Self {
         Self::Database(Box::new(e))
@@ -53,8 +52,8 @@ pub struct RexieWalletDatabase {
 }
 
 // These are okay because we never actually send across threads in the browser
-//unsafe impl Send for RexieWalletDatabase {}
-//unsafe impl Sync for RexieWalletDatabase {}
+unsafe impl Send for RexieWalletDatabase {}
+unsafe impl Sync for RexieWalletDatabase {}
 
 impl RexieWalletDatabase {
     pub async fn new() -> Result<Self, Error> {
@@ -125,51 +124,65 @@ impl RexieWalletDatabase {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl WalletDatabase for RexieWalletDatabase {
-    type Err = Error;
+    type Err = cdk::cdk_database::Error;
+
     async fn add_mint(
         &self,
         mint_url: UncheckedUrl,
         mint_info: Option<MintInfo>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINTS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MINTS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let mints_store = transaction.store(MINTS)?;
+        let mints_store = transaction.store(MINTS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let mint_info = serde_wasm_bindgen::to_value(&mint_info)?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let mint_info = serde_wasm_bindgen::to_value(&mint_info).map_err(Error::from)?;
 
-        mints_store.add(&mint_info, Some(&mint_url)).await?;
+        mints_store
+            .add(&mint_info, Some(&mint_url))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Error> {
+    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINTS], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[MINTS], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let mints_store = transaction.store(MINTS)?;
+        let mints_store = transaction.store(MINTS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let mint_info = mints_store.get(&mint_url).await?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let mint_info = mints_store.get(&mint_url).await.map_err(Error::from)?;
 
-        let mint_info: Option<MintInfo> = serde_wasm_bindgen::from_value(mint_info)?;
+        let mint_info: Option<MintInfo> =
+            serde_wasm_bindgen::from_value(mint_info).map_err(Error::from)?;
 
         Ok(mint_info)
     }
 
-    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Error> {
+    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINTS], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[MINTS], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let mints_store = transaction.store(MINTS)?;
+        let mints_store = transaction.store(MINTS).map_err(Error::from)?;
 
-        let mints = mints_store.get_all(None, None, None, None).await?;
+        let mints = mints_store
+            .get_all(None, None, None, None)
+            .await
+            .map_err(Error::from)?;
 
         let mints: HashMap<UncheckedUrl, Option<MintInfo>> = mints
             .into_iter()
@@ -188,19 +201,24 @@ impl WalletDatabase for RexieWalletDatabase {
         &self,
         mint_url: UncheckedUrl,
         keysets: Vec<KeySetInfo>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_KEYSETS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MINT_KEYSETS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let keysets_store = transaction.store(MINT_KEYSETS)?;
+        let keysets_store = transaction.store(MINT_KEYSETS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let keysets = serde_wasm_bindgen::to_value(&keysets)?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let keysets = serde_wasm_bindgen::to_value(&keysets).map_err(Error::from)?;
 
-        keysets_store.add(&keysets, Some(&mint_url)).await?;
+        keysets_store
+            .add(&keysets, Some(&mint_url))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
@@ -208,158 +226,190 @@ impl WalletDatabase for RexieWalletDatabase {
     async fn get_mint_keysets(
         &self,
         mint_url: UncheckedUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Error> {
+    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_KEYSETS], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[MINT_KEYSETS], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let mints_store = transaction.store(MINT_KEYSETS)?;
+        let mints_store = transaction.store(MINT_KEYSETS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let keysets = mints_store.get(&mint_url).await?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let keysets = mints_store.get(&mint_url).await.map_err(Error::from)?;
 
-        let keysets: Option<Vec<KeySetInfo>> = serde_wasm_bindgen::from_value(keysets)?;
+        let keysets: Option<Vec<KeySetInfo>> =
+            serde_wasm_bindgen::from_value(keysets).map_err(Error::from)?;
 
         Ok(keysets)
     }
 
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_QUOTES], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MINT_QUOTES], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let quotes_store = transaction.store(MINT_QUOTES)?;
+        let quotes_store = transaction.store(MINT_QUOTES).map_err(Error::from)?;
 
-        let quote_id = serde_wasm_bindgen::to_value(&quote.id)?;
-        let quote = serde_wasm_bindgen::to_value(&quote)?;
+        let quote_id = serde_wasm_bindgen::to_value(&quote.id).map_err(Error::from)?;
+        let quote = serde_wasm_bindgen::to_value(&quote).map_err(Error::from)?;
 
-        quotes_store.add(&quote, Some(&quote_id)).await?;
+        quotes_store
+            .add(&quote, Some(&quote_id))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_QUOTES], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[MINT_QUOTES], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let quotes_store = transaction.store(MINT_QUOTES)?;
+        let quotes_store = transaction.store(MINT_QUOTES).map_err(Error::from)?;
 
-        let quote_id = serde_wasm_bindgen::to_value(&quote_id)?;
-        let keysets = quotes_store.get(&quote_id).await?;
+        let quote_id = serde_wasm_bindgen::to_value(&quote_id).map_err(Error::from)?;
+        let keysets = quotes_store.get(&quote_id).await.map_err(Error::from)?;
 
-        let quote: Option<MintQuote> = serde_wasm_bindgen::from_value(keysets)?;
+        let quote: Option<MintQuote> =
+            serde_wasm_bindgen::from_value(keysets).map_err(Error::from)?;
 
         Ok(quote)
     }
 
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_QUOTES], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MINT_QUOTES], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let quotes_store = transaction.store(MINT_QUOTES)?;
+        let quotes_store = transaction.store(MINT_QUOTES).map_err(Error::from)?;
 
-        let quote_id = serde_wasm_bindgen::to_value(&quote_id)?;
+        let quote_id = serde_wasm_bindgen::to_value(&quote_id).map_err(Error::from)?;
 
-        quotes_store.delete(&quote_id).await?;
+        quotes_store.delete(&quote_id).await.map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Error> {
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MELT_QUOTES], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MELT_QUOTES], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let quotes_store = transaction.store(MELT_QUOTES)?;
+        let quotes_store = transaction.store(MELT_QUOTES).map_err(Error::from)?;
 
-        let quote_id = serde_wasm_bindgen::to_value(&quote.id)?;
-        let quote = serde_wasm_bindgen::to_value(&quote)?;
+        let quote_id = serde_wasm_bindgen::to_value(&quote.id).map_err(Error::from)?;
+        let quote = serde_wasm_bindgen::to_value(&quote).map_err(Error::from)?;
 
-        quotes_store.add(&quote, Some(&quote_id)).await?;
+        quotes_store
+            .add(&quote, Some(&quote_id))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Error> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MELT_QUOTES], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[MELT_QUOTES], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let quotes_store = transaction.store(MELT_QUOTES)?;
+        let quotes_store = transaction.store(MELT_QUOTES).map_err(Error::from)?;
 
-        let quote_id = serde_wasm_bindgen::to_value(&quote_id)?;
-        let keysets = quotes_store.get(&quote_id).await?;
+        let quote_id = serde_wasm_bindgen::to_value(&quote_id).map_err(Error::from)?;
+        let keysets = quotes_store.get(&quote_id).await.map_err(Error::from)?;
 
-        let quote: Option<MeltQuote> = serde_wasm_bindgen::from_value(keysets)?;
+        let quote: Option<MeltQuote> =
+            serde_wasm_bindgen::from_value(keysets).map_err(Error::from)?;
 
         Ok(quote)
     }
 
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MELT_QUOTES], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MELT_QUOTES], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let quotes_store = transaction.store(MELT_QUOTES)?;
+        let quotes_store = transaction.store(MELT_QUOTES).map_err(Error::from)?;
 
-        let quote_id = serde_wasm_bindgen::to_value(&quote_id)?;
+        let quote_id = serde_wasm_bindgen::to_value(&quote_id).map_err(Error::from)?;
 
-        quotes_store.delete(&quote_id).await?;
+        quotes_store.delete(&quote_id).await.map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn add_keys(&self, keys: Keys) -> Result<(), Error> {
+    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_KEYS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MINT_KEYS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let keys_store = transaction.store(MINT_KEYS)?;
+        let keys_store = transaction.store(MINT_KEYS).map_err(Error::from)?;
 
-        let keyset_id = serde_wasm_bindgen::to_value(&Id::from(&keys))?;
-        let keys = serde_wasm_bindgen::to_value(&keys)?;
+        let keyset_id = serde_wasm_bindgen::to_value(&Id::from(&keys)).map_err(Error::from)?;
+        let keys = serde_wasm_bindgen::to_value(&keys).map_err(Error::from)?;
 
-        keys_store.add(&keys, Some(&keyset_id)).await?;
+        keys_store
+            .add(&keys, Some(&keyset_id))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Error> {
+    async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_KEYS], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[MINT_KEYS], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let keys_store = transaction.store(MINT_KEYS)?;
+        let keys_store = transaction.store(MINT_KEYS).map_err(Error::from)?;
 
-        let keyset_id = serde_wasm_bindgen::to_value(id)?;
-        let keys = keys_store.get(&keyset_id).await?;
+        let keyset_id = serde_wasm_bindgen::to_value(id).map_err(Error::from)?;
+        let keys = keys_store.get(&keyset_id).await.map_err(Error::from)?;
 
-        let keys: Option<Keys> = serde_wasm_bindgen::from_value(keys)?;
+        let keys: Option<Keys> = serde_wasm_bindgen::from_value(keys).map_err(Error::from)?;
 
         Ok(keys)
     }
 
-    async fn remove_keys(&self, id: &Id) -> Result<(), Error> {
+    async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[MINT_KEYS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[MINT_KEYS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let keys_store = transaction.store(MINT_KEYS)?;
+        let keys_store = transaction.store(MINT_KEYS).map_err(Error::from)?;
 
-        let keyset_id = serde_wasm_bindgen::to_value(id)?;
-        keys_store.delete(&keyset_id).await?;
+        let keyset_id = serde_wasm_bindgen::to_value(id).map_err(Error::from)?;
+        keys_store.delete(&keyset_id).await.map_err(Error::from)?;
 
         Ok(())
     }
@@ -367,58 +417,73 @@ impl WalletDatabase for RexieWalletDatabase {
     async fn add_proofs(&self, mint_url: UncheckedUrl, proofs: Proofs) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[PROOFS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[PROOFS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let proofs_store = transaction.store(PROOFS)?;
+        let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
 
-        let current_proofs = proofs_store.get(&mint_url).await?;
+        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
-        let current_proofs: Proofs = serde_wasm_bindgen::from_value(current_proofs)?;
+        let current_proofs: Proofs =
+            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
 
         let all_proofs: Proofs = current_proofs
             .into_iter()
             .chain(proofs.into_iter())
             .collect();
 
-        let all_proofs = serde_wasm_bindgen::to_value(&all_proofs)?;
+        let all_proofs = serde_wasm_bindgen::to_value(&all_proofs).map_err(Error::from)?;
 
-        proofs_store.add(&all_proofs, Some(&mint_url)).await?;
+        proofs_store
+            .add(&all_proofs, Some(&mint_url))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
+    async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[PROOFS], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[PROOFS], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let proofs_store = transaction.store(PROOFS)?;
+        let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let proofs = proofs_store.get(&mint_url).await?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
-        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs)?;
+        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs).map_err(Error::from)?;
 
         Ok(proofs)
     }
 
-    async fn remove_proofs(&self, mint_url: UncheckedUrl, proofs: &Proofs) -> Result<(), Error> {
+    async fn remove_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+        proofs: &Proofs,
+    ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[PROOFS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[PROOFS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let proofs_store = transaction.store(PROOFS)?;
+        let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let current_proofs = proofs_store.get(&mint_url).await?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
-        let current_proofs: Option<Proofs> = serde_wasm_bindgen::from_value(current_proofs)?;
+        let current_proofs: Option<Proofs> =
+            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
 
         if let Some(current_proofs) = current_proofs {
             let proofs: Proofs = current_proofs
@@ -426,12 +491,15 @@ impl WalletDatabase for RexieWalletDatabase {
                 .filter(|p| !proofs.contains(p))
                 .collect();
 
-            let proofs = serde_wasm_bindgen::to_value(&proofs)?;
+            let proofs = serde_wasm_bindgen::to_value(&proofs).map_err(Error::from)?;
 
-            proofs_store.add(&proofs, Some(&mint_url)).await?;
+            proofs_store
+                .add(&proofs, Some(&mint_url))
+                .await
+                .map_err(Error::from)?;
         }
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
@@ -443,43 +511,54 @@ impl WalletDatabase for RexieWalletDatabase {
     ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[PENDING_PROOFS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[PENDING_PROOFS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let proofs_store = transaction.store(PENDING_PROOFS)?;
+        let proofs_store = transaction.store(PENDING_PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
 
-        let current_proofs = proofs_store.get(&mint_url).await?;
+        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
-        let current_proofs: Proofs = serde_wasm_bindgen::from_value(current_proofs)?;
+        let current_proofs: Proofs =
+            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
 
         let all_proofs: Proofs = current_proofs
             .into_iter()
             .chain(proofs.into_iter())
             .collect();
 
-        let all_proofs = serde_wasm_bindgen::to_value(&all_proofs)?;
+        let all_proofs = serde_wasm_bindgen::to_value(&all_proofs).map_err(Error::from)?;
 
-        proofs_store.add(&all_proofs, Some(&mint_url)).await?;
+        proofs_store
+            .add(&all_proofs, Some(&mint_url))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_pending_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
+    async fn get_pending_proofs(
+        &self,
+        mint_url: UncheckedUrl,
+    ) -> Result<Option<Proofs>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[PENDING_PROOFS], TransactionMode::ReadOnly)?;
+        let transaction = rexie
+            .transaction(&[PENDING_PROOFS], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
 
-        let proofs_store = transaction.store(PENDING_PROOFS)?;
+        let proofs_store = transaction.store(PENDING_PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let proofs = proofs_store.get(&mint_url).await?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
-        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs)?;
+        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs).map_err(Error::from)?;
 
         Ok(proofs)
     }
@@ -488,17 +567,20 @@ impl WalletDatabase for RexieWalletDatabase {
         &self,
         mint_url: UncheckedUrl,
         proofs: &Proofs,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[PENDING_PROOFS], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[PENDING_PROOFS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let proofs_store = transaction.store(PENDING_PROOFS)?;
+        let proofs_store = transaction.store(PENDING_PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url)?;
-        let current_proofs = proofs_store.get(&mint_url).await?;
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
-        let current_proofs: Option<Proofs> = serde_wasm_bindgen::from_value(current_proofs)?;
+        let current_proofs: Option<Proofs> =
+            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
 
         if let Some(current_proofs) = current_proofs {
             let proofs: Proofs = current_proofs
@@ -506,50 +588,62 @@ impl WalletDatabase for RexieWalletDatabase {
                 .filter(|p| !proofs.contains(p))
                 .collect();
 
-            let proofs = serde_wasm_bindgen::to_value(&proofs)?;
+            let proofs = serde_wasm_bindgen::to_value(&proofs).map_err(Error::from)?;
 
-            proofs_store.add(&proofs, Some(&mint_url)).await?;
+            proofs_store
+                .add(&proofs, Some(&mint_url))
+                .await
+                .map_err(Error::from)?;
         }
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[KEYSET_COUNTER], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[KEYSET_COUNTER], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let counter_store = transaction.store(KEYSET_COUNTER)?;
+        let counter_store = transaction.store(KEYSET_COUNTER).map_err(Error::from)?;
 
-        let keyset_id = serde_wasm_bindgen::to_value(keyset_id)?;
+        let keyset_id = serde_wasm_bindgen::to_value(keyset_id).map_err(Error::from)?;
 
-        let current_count = counter_store.get(&keyset_id).await?;
-        let current_count: Option<u64> = serde_wasm_bindgen::from_value(current_count)?;
+        let current_count = counter_store.get(&keyset_id).await.map_err(Error::from)?;
+        let current_count: Option<u64> =
+            serde_wasm_bindgen::from_value(current_count).map_err(Error::from)?;
 
         let new_count = current_count.unwrap_or_default() + count;
 
-        let new_count = serde_wasm_bindgen::to_value(&new_count)?;
+        let new_count = serde_wasm_bindgen::to_value(&new_count).map_err(Error::from)?;
 
-        counter_store.add(&new_count, Some(&keyset_id)).await?;
+        counter_store
+            .add(&new_count, Some(&keyset_id))
+            .await
+            .map_err(Error::from)?;
 
-        transaction.done().await?;
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Error> {
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Self::Err> {
         let rexie = self.db.lock().await;
 
-        let transaction = rexie.transaction(&[KEYSET_COUNTER], TransactionMode::ReadWrite)?;
+        let transaction = rexie
+            .transaction(&[KEYSET_COUNTER], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
 
-        let counter_store = transaction.store(KEYSET_COUNTER)?;
+        let counter_store = transaction.store(KEYSET_COUNTER).map_err(Error::from)?;
 
-        let keyset_id = serde_wasm_bindgen::to_value(keyset_id)?;
+        let keyset_id = serde_wasm_bindgen::to_value(keyset_id).map_err(Error::from)?;
 
-        let current_count = counter_store.get(&keyset_id).await?;
-        let current_count: Option<u64> = serde_wasm_bindgen::from_value(current_count)?;
+        let current_count = counter_store.get(&keyset_id).await.map_err(Error::from)?;
+        let current_count: Option<u64> =
+            serde_wasm_bindgen::from_value(current_count).map_err(Error::from)?;
 
         Ok(current_count)
     }
