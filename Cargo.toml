@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "bindings/cdk-js",
+    "bindings/uniffi-bindgen",
     "crates/cdk",
     "crates/cdk-redb",
     "crates/cdk-rexie",
@@ -22,13 +24,15 @@ license-file = "LICENSE"
 keywords = ["bitcoin", "e-cash", "cashu"]
 
 [workspace.dependencies]
-tokio = { version = "1.32", default-features = false }
-cdk = { path = "./crates/cdk", default-features = false }
-thiserror = "1.0.50"
 async-trait = "0.1.74"
+cdk = { path = "./crates/cdk", default-features = false }
+cdk-rexie = { path = "./crates/cdk-rexie", default-features = false }
+tokio = { version = "1.32", default-features = false }
+thiserror = "1"
 tracing = { version = "0.1", default-features = false }
-serde = { version = "1.0.160", default-features = false, features = ["derive"]}
-serde_json = "1.0.96"
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+uniffi = { version = "0.27.1", default-features = false }
 
 [profile]
 
