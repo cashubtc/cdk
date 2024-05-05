@@ -276,8 +276,6 @@ impl Wallet {
             )
             .await?;
 
-        // Separate proofs in spent and unspent based on mint response
-
         Ok(spendable.states)
     }
 

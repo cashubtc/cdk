@@ -54,7 +54,7 @@
         devShells = flakeboxLib.mkShells {
           toolchain = toolchainNative;
           packages = [ ];
-          nativeBuildInputs = with pkgs; [ ];
+          nativeBuildInputs = with pkgs; [ wasm-pack ];
         };
       });
 }
