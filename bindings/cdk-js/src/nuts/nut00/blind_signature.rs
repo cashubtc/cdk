@@ -34,7 +34,7 @@ impl JsBlindSignature {
             inner: BlindSignature {
                 keyset_id: *keyset_id.deref(),
                 amount: *amount.deref(),
-                c: c.deref().clone(),
+                c: *c.deref(),
                 dleq: dleq.map(|b| b.deref().clone()),
             },
         }

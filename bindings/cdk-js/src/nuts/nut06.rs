@@ -81,7 +81,7 @@ impl JsMintInfo {
         Ok(JsMintInfo {
             inner: MintInfo {
                 name,
-                pubkey: pubkey.map(|p| p.deref().clone()),
+                pubkey: pubkey.map(|p| *p.deref()),
                 version: version.map(|v| v.deref().clone()),
                 description,
                 description_long,
@@ -101,7 +101,7 @@ impl JsMintInfo {
     /// Get Pubkey
     #[wasm_bindgen(getter)]
     pub fn pubkey(&self) -> Option<JsPublicKey> {
-        self.inner.pubkey.clone().map(|p| p.into())
+        self.inner.pubkey.map(|p| p.into())
     }
 
     /// Get Version
