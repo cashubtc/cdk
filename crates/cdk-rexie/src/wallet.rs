@@ -1,6 +1,6 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::result::Result;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk::cdk_database::WalletDatabase;
@@ -48,7 +48,7 @@ unsafe impl Sync for Error {}
 
 #[derive(Debug, Clone)]
 pub struct RexieWalletDatabase {
-    db: Arc<Mutex<Rexie>>,
+    db: Rc<Mutex<Rexie>>,
 }
 
 // These are okay because we never actually send across threads in the browser
@@ -105,7 +105,7 @@ impl RexieWalletDatabase {
             .unwrap();
 
         Ok(Self {
-            db: Arc::new(Mutex::new(rexie)),
+            db: Rc::new(Mutex::new(rexie)),
         })
     }
 }

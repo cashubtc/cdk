@@ -23,9 +23,9 @@ pub struct MeltQuoteBolt11Response {
     /// Quote Id
     pub quote: String,
     /// The amount that needs to be provided
-    pub amount: u64,
+    pub amount: Amount,
     /// The fee reserve that is required
-    pub fee_reserve: u64,
+    pub fee_reserve: Amount,
     /// Whether the the request haas be paid
     pub paid: bool,
     /// Unix timestamp until the quote is valid
@@ -36,8 +36,8 @@ impl From<MeltQuote> for MeltQuoteBolt11Response {
     fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response {
         MeltQuoteBolt11Response {
             quote: melt_quote.id,
-            amount: u64::from(melt_quote.amount),
-            fee_reserve: u64::from(melt_quote.fee_reserve),
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
             paid: melt_quote.paid,
             expiry: melt_quote.expiry,
         }
