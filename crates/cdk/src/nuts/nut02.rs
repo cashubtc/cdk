@@ -186,9 +186,11 @@ impl From<&Keys> for Id {
             5 - prefix it with a keyset ID version byte
         */
 
-        // Note: Keys are a BTreeMap so are already sorted by amount in ascending order
+        let mut keys: Vec<(&String, &super::PublicKey)> = map.iter().collect();
 
-        let pubkeys_concat: Vec<u8> = map
+        keys.sort_by_key(|(k, _v)| u64::from_str(k).unwrap());
+
+        let pubkeys_concat: Vec<u8> = keys
             .iter()
             .map(|(_, pubkey)| pubkey.to_bytes())
             .collect::<Vec<[u8; 33]>>()

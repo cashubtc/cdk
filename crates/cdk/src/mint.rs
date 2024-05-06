@@ -716,8 +716,8 @@ impl Mint {
             quote: quote.id,
             paid: quote.paid,
             expiry: quote.expiry,
-            amount: u64::from(quote.amount),
-            fee_reserve: u64::from(quote.fee_reserve),
+            amount: quote.amount,
+            fee_reserve: quote.fee_reserve,
         })
     }
 

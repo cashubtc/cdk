@@ -538,7 +538,7 @@ impl Token {
         })
     }
 
-    pub fn token_info(&self) -> (u64, String) {
+    pub fn token_info(&self) -> (Amount, String) {
         let mut amount = Amount::ZERO;
 
         for proofs in &self.token {
@@ -547,7 +547,7 @@ impl Token {
             }
         }
 
-        (amount.into(), self.token[0].mint.to_string())
+        (amount, self.token[0].mint.to_string())
     }
 }
 

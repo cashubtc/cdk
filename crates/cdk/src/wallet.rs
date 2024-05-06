@@ -425,7 +425,7 @@ impl Wallet {
             )
             .await?;
 
-        let keys = self.get_keyset_keys(&mint_url, active_keyset_id).await?;
+        let keys = self.localstore.get_keys(&active_keyset_id).await?; //.get_keyset_keys(&mint_url, active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
         {
@@ -443,7 +443,7 @@ impl Wallet {
             mint_res.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
-            &keys,
+            &keys.unwrap(),
         )?;
 
         let minted_amount = proofs.iter().map(|p| p.amount).sum();
@@ -758,10 +758,10 @@ impl Wallet {
 
         let quote = MeltQuote {
             id: quote_res.quote,
-            amount: quote_res.amount.into(),
+            amount: quote_res.amount,
             request,
             unit,
-            fee_reserve: quote_res.fee_reserve.into(),
+            fee_reserve: quote_res.fee_reserve,
             paid: quote_res.paid,
             expiry: quote_res.expiry,
         };
