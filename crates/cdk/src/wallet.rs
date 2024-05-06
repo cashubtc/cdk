@@ -660,9 +660,10 @@ impl Wallet {
         &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
+        memo: Option<String>,
         amount: Amount,
         conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
+    ) -> Result<String, Error> {
         let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
 
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
@@ -737,7 +738,9 @@ impl Wallet {
             .add_proofs(mint_url.clone(), keep_proofs)
             .await?;
 
-        Ok(send_proofs)
+        Ok(self
+            .proofs_to_token(mint_url.clone(), send_proofs, memo, Some(unit.clone()))?
+            .to_string())
     }
 
     /// Melt Quote
