@@ -485,7 +485,7 @@ impl WalletDatabase for RexieWalletDatabase {
             let proofs = serde_wasm_bindgen::to_value(&proofs).map_err(Error::from)?;
 
             proofs_store
-                .add(&proofs, Some(&mint_url))
+                .put(&proofs, Some(&mint_url))
                 .await
                 .map_err(Error::from)?;
         }
