@@ -31,6 +31,7 @@ buildargs=(
     "-p cdk-redb"
     "-p cdk-redb --no-default-features --features wallet"
     "-p cdk-redb --no-default-features --features mint"
+    "-p cdk-js --no-default-features --features"
 )
 
 for arg in "${buildargs[@]}"; do
