@@ -39,7 +39,7 @@ impl JsBlindedMessage {
             inner: BlindedMessage {
                 keyset_id: *keyset_id.deref(),
                 amount: *amount.deref(),
-                blinded_secret: blinded_secret.deref().clone(),
+                blinded_secret: *blinded_secret.deref(),
                 witness: witness.map(|w| w.deref().clone()),
             },
         }
@@ -60,7 +60,7 @@ impl JsBlindedMessage {
     /// Blinded Secret
     #[wasm_bindgen(getter)]
     pub fn blinded_secret(&self) -> JsPublicKey {
-        self.inner.blinded_secret.clone().into()
+        self.inner.blinded_secret.into()
     }
 
     /// Witness

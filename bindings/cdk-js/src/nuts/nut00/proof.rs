@@ -42,7 +42,7 @@ impl JsProof {
             inner: Proof {
                 amount: *amount.deref(),
                 secret: secret.deref().clone(),
-                c: c.deref().clone(),
+                c: *c.deref(),
                 keyset_id: *keyset_id.deref(),
                 witness: witness.map(|w| w.deref().clone()),
                 dleq: dleq.map(|d| d.deref().clone()),
@@ -65,7 +65,7 @@ impl JsProof {
     /// C
     #[wasm_bindgen(getter)]
     pub fn c(&self) -> JsPublicKey {
-        self.inner.c.clone().into()
+        self.inner.c.into()
     }
 
     /// Keyset Id
