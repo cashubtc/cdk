@@ -42,7 +42,7 @@ impl From<MeltQuoteBolt11Response> for JsMeltQuoteBolt11Response {
     }
 }
 
-#[wasm_bindgen(js_name = MintBolt11Request)]
+#[wasm_bindgen(js_name = MeltBolt11Request)]
 pub struct JsMeltBolt11Request {
     inner: MeltBolt11Request,
 }
@@ -96,7 +96,7 @@ impl From<MeltMethodSettings> for JsMeltMethodSettings {
     }
 }
 
-#[wasm_bindgen(js_name = Settings)]
+#[wasm_bindgen(js_name = Nut05Settings)]
 pub struct JsSettings {
     inner: NUT05Settings,
 }

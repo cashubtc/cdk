@@ -78,7 +78,7 @@ impl JsMintBolt11Request {
     }
 
     #[wasm_bindgen(js_name = totalAmount)]
-    pub fn totoal_amount(&self) -> JsAmount {
+    pub fn total_amount(&self) -> JsAmount {
         self.inner.total_amount().into()
     }
 }

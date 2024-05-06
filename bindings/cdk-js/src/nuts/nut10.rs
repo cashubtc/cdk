@@ -45,7 +45,7 @@ impl From<SecretData> for JsSecretData {
     }
 }
 
-#[wasm_bindgen(js_name = Secret)]
+#[wasm_bindgen(js_name = Nut10Secret)]
 pub struct JsNut10Secret {
     inner: Nut10Secret,
 }

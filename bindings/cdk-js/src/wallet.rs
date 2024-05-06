@@ -75,13 +75,13 @@ impl JsWallet {
     pub async fn mint_quote(
         &mut self,
         mint_url: String,
-        amount: JsAmount,
+        amount: u64,
         unit: JsCurrencyUnit,
     ) -> Result<JsMintQuote> {
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let quote = self
             .inner
-            .mint_quote(mint_url, *amount.deref(), unit.into())
+            .mint_quote(mint_url, amount.into(), unit.into())
             .await
             .map_err(into_err)?;
 
