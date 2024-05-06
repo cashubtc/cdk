@@ -22,7 +22,7 @@ const PENDING_PROOFS: &str = "pending_proofs";
 const CONFIG: &str = "config";
 const KEYSET_COUNTER: &str = "keyset_counter";
 
-const DATABASE_VERSION: u32 = 0;
+const DATABASE_VERSION: u32 = 1;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -63,51 +63,40 @@ impl RexieWalletDatabase {
             // Add an object store named `employees`
             .add_object_store(
                 ObjectStore::new(PROOFS)
-                    // Set the key path to `id`
-                    .key_path("y")
                     // Add an index named `email` with the key path `email` with unique enabled
                     .add_index(Index::new("y", "y").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(MINTS)
-                    // Set the key path to `id`
-                    .key_path("mint_url")
                     // Add an index named `email` with the key path `email` with unique enabled
                     .add_index(Index::new("mint_url", "mint_url").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(MINT_KEYSETS)
-                    .key_path("keyset_id")
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(MINT_KEYS)
-                    .key_path("keyset_id")
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(MINT_QUOTES)
-                    .key_path("keyset_id")
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(MELT_QUOTES)
-                    .key_path("keyset_id")
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(PENDING_PROOFS)
-                    .key_path("keyset_id")
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(CONFIG)
-                    .key_path("keyset_id")
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(KEYSET_COUNTER)
-                    .key_path("keyset_id")
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             // Build the database
@@ -143,7 +132,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let mint_info = serde_wasm_bindgen::to_value(&mint_info).map_err(Error::from)?;
 
         mints_store
-            .add(&mint_info, Some(&mint_url))
+            .put(&mint_info, Some(&mint_url))
             .await
             .map_err(Error::from)?;
 
@@ -214,7 +203,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let keysets = serde_wasm_bindgen::to_value(&keysets).map_err(Error::from)?;
 
         keysets_store
-            .add(&keysets, Some(&mint_url))
+            .put(&keysets, Some(&mint_url))
             .await
             .map_err(Error::from)?;
 
@@ -373,7 +362,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let keys = serde_wasm_bindgen::to_value(&keys).map_err(Error::from)?;
 
         keys_store
-            .add(&keys, Some(&keyset_id))
+            .put(&keys, Some(&keyset_id))
             .await
             .map_err(Error::from)?;
 
@@ -428,7 +417,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
         let current_proofs: Proofs =
-            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
+            serde_wasm_bindgen::from_value(current_proofs).unwrap_or_default();
 
         let all_proofs: Proofs = current_proofs
             .into_iter()
@@ -437,8 +426,10 @@ impl WalletDatabase for RexieWalletDatabase {
 
         let all_proofs = serde_wasm_bindgen::to_value(&all_proofs).map_err(Error::from)?;
 
+        web_sys::console::log_1(&all_proofs);
+
         proofs_store
-            .add(&all_proofs, Some(&mint_url))
+            .put(&all_proofs, Some(&mint_url))
             .await
             .map_err(Error::from)?;
 
@@ -522,7 +513,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
 
         let current_proofs: Proofs =
-            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
+            serde_wasm_bindgen::from_value(current_proofs).unwrap_or_default();
 
         let all_proofs: Proofs = current_proofs
             .into_iter()
@@ -532,7 +523,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let all_proofs = serde_wasm_bindgen::to_value(&all_proofs).map_err(Error::from)?;
 
         proofs_store
-            .add(&all_proofs, Some(&mint_url))
+            .put(&all_proofs, Some(&mint_url))
             .await
             .map_err(Error::from)?;
 
@@ -558,7 +549,7 @@ impl WalletDatabase for RexieWalletDatabase {
 
         transaction.done().await.map_err(Error::from)?;
 
-        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs).map_err(Error::from)?;
+        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs).unwrap_or(None);
 
         Ok(proofs)
     }
@@ -621,7 +612,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let new_count = serde_wasm_bindgen::to_value(&new_count).map_err(Error::from)?;
 
         counter_store
-            .add(&new_count, Some(&keyset_id))
+            .put(&new_count, Some(&keyset_id))
             .await
             .map_err(Error::from)?;
 
