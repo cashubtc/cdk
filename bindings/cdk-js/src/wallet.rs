@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cdk::nuts::SigningKey;
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
-use cdk::HttpClient;
+use cdk::{Amount, HttpClient};
 use cdk_rexie::RexieWalletDatabase;
 use wasm_bindgen::prelude::*;
 
@@ -146,5 +146,21 @@ impl JsWallet {
             .map_err(into_err)?;
 
         Ok(())
+    }
+
+    #[wasm_bindgen(js_name = send)]
+    pub async fn send(
+        &mut self,
+        mint_url: String,
+        unit: JsCurrencyUnit,
+        memo: Option<String>,
+        amount: u64,
+    ) -> Result<String> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+
+        self.inner
+            .send(&mint_url, &unit.into(), memo, Amount::from(amount), None)
+            .await
+            .map_err(into_err)
     }
 }
