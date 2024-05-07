@@ -3,9 +3,9 @@
 //! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
+use std::{fmt, vec};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -297,6 +297,39 @@ impl SpendingConditions {
             Self::HTLCConditions { .. } => Kind::HTLC,
         }
     }
+
+    pub fn num_sigs(&self) -> Option<u64> {
+        match self {
+            Self::P2PKConditions { conditions, .. } => conditions.num_sigs,
+            Self::HTLCConditions { conditions, .. } => conditions.num_sigs,
+        }
+    }
+
+    pub fn pubkeys(&self) -> Option<Vec<VerifyingKey>> {
+        match self {
+            Self::P2PKConditions { data, conditions } => {
+                let mut pubkeys = vec![data.clone()];
+                pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default().into_iter());
+
+                Some(pubkeys)
+            }
+            Self::HTLCConditions { conditions, .. } => conditions.pubkeys.clone(),
+        }
+    }
+
+    pub fn locktime(&self) -> Option<u64> {
+        match self {
+            Self::P2PKConditions { conditions, .. } => conditions.locktime,
+            Self::HTLCConditions { conditions, .. } => conditions.locktime,
+        }
+    }
+
+    pub fn refund_keys(&self) -> &Option<Vec<VerifyingKey>> {
+        match self {
+            Self::P2PKConditions { conditions, .. } => &conditions.refund_keys,
+            Self::HTLCConditions { conditions, .. } => &conditions.refund_keys,
+        }
+    }
 }
 
 impl TryFrom<Nut10Secret> for SpendingConditions {
@@ -332,7 +365,7 @@ impl From<SpendingConditions> for super::nut10::Secret {
 }
 
 /// P2PK and HTLC spending conditions
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Conditions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locktime: Option<u64>,

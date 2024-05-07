@@ -15,9 +15,9 @@ use crate::cdk_database::{self, WalletDatabase};
 use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve, unblind_message};
 use crate::nuts::{
-    nut12, BlindSignature, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind, MintInfo,
-    PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SigFlag,
-    SigningKey, SpendingConditions, State, SwapRequest, Token, VerifyingKey,
+    nut10, nut12, BlindSignature, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind,
+    MintInfo, PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest,
+    SigFlag, SigningKey, SpendingConditions, State, SwapRequest, Token, VerifyingKey,
 };
 use crate::types::{MeltQuote, Melted, MintQuote};
 use crate::url::UncheckedUrl;
@@ -416,6 +416,7 @@ impl Wallet {
                 None => PreMintSecrets::random(active_keyset_id, quote_info.amount)?,
             };
         }
+
         let mint_res = self
             .client
             .post_mint(
@@ -425,7 +426,7 @@ impl Wallet {
             )
             .await?;
 
-        let keys = self.localstore.get_keys(&active_keyset_id).await?; //.get_keyset_keys(&mint_url, active_keyset_id).await?;
+        let keys = self.get_keyset_keys(&mint_url, active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
         {
@@ -443,7 +444,7 @@ impl Wallet {
             mint_res.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
-            &keys.unwrap(),
+            &keys,
         )?;
 
         let minted_amount = proofs.iter().map(|p| p.amount).sum();
@@ -705,7 +706,18 @@ impl Wallet {
 
         post_swap_proofs.reverse();
 
+        let mut left_proofs = vec![];
+
         for proof in post_swap_proofs {
+            let nut10: Result<nut10::Secret, _> = proof.secret.clone().try_into();
+
+            match nut10 {
+                Ok(_) => send_proofs.push(proof),
+                Err(_) => left_proofs.push(proof),
+            }
+        }
+
+        for proof in left_proofs {
             if (proof.amount + send_proofs.iter().map(|p| p.amount).sum()).gt(&amount) {
                 keep_proofs.push(proof);
             } else {
@@ -1202,11 +1214,30 @@ impl Wallet {
     pub fn verify_token_p2pk(
         &self,
         token: &Token,
-        spending_conditions: Conditions,
+        spending_conditions: SpendingConditions,
     ) -> Result<(), Error> {
-        use crate::nuts::nut10;
+        let (refund_keys, pubkeys, locktime, num_sigs) = match spending_conditions {
+            SpendingConditions::P2PKConditions { data, conditions } => {
+                let mut pubkeys = vec![data];
 
-        if spending_conditions.refund_keys.is_some() && spending_conditions.locktime.is_none() {
+                pubkeys.extend(conditions.pubkeys.unwrap_or_default());
+
+                (
+                    conditions.refund_keys,
+                    Some(pubkeys),
+                    conditions.locktime,
+                    conditions.num_sigs,
+                )
+            }
+            SpendingConditions::HTLCConditions { conditions, .. } => (
+                conditions.refund_keys,
+                conditions.pubkeys,
+                conditions.locktime,
+                conditions.num_sigs,
+            ),
+        };
+
+        if refund_keys.is_some() && locktime.is_none() {
             tracing::warn!(
                 "Invalid spending conditions set: Locktime must be set if refund keys are allowed"
             );
@@ -1219,13 +1250,13 @@ impl Wallet {
             for proof in &mint_proof.proofs {
                 let secret: nut10::Secret = (&proof.secret).try_into()?;
 
-                let proof_conditions: Conditions = secret.secret_data.tags.try_into()?;
+                let proof_conditions: SpendingConditions = secret.try_into()?;
 
-                if spending_conditions.num_sigs.ne(&proof_conditions.num_sigs) {
+                if num_sigs.ne(&proof_conditions.num_sigs()) {
                     tracing::debug!(
                         "Spending condition requires: {:?} sigs proof secret specifies: {:?}",
-                        spending_conditions.num_sigs,
-                        proof_conditions.num_sigs
+                        num_sigs,
+                        proof_conditions.num_sigs()
                     );
 
                     return Err(Error::P2PKConditionsNotMet(
@@ -1233,9 +1264,8 @@ impl Wallet {
                     ));
                 }
 
-                let spending_condition_pubkeys =
-                    spending_conditions.pubkeys.clone().unwrap_or_default();
-                let proof_pubkeys = proof_conditions.pubkeys.unwrap_or_default();
+                let spending_condition_pubkeys = pubkeys.clone().unwrap_or_default();
+                let proof_pubkeys = proof_conditions.pubkeys().unwrap_or_default();
 
                 // Check the Proof has the required pubkeys
                 if proof_pubkeys.len().ne(&spending_condition_pubkeys.len())
@@ -1244,6 +1274,8 @@ impl Wallet {
                         .all(|pubkey| spending_condition_pubkeys.contains(pubkey))
                 {
                     tracing::debug!("Proof did not included Publickeys meeting condition");
+                    tracing::debug!("{:?}", proof_pubkeys);
+                    tracing::debug!("{:?}", spending_condition_pubkeys);
                     return Err(Error::P2PKConditionsNotMet(
                         "Pubkeys in proof not allowed by spending condition".to_string(),
                     ));
@@ -1254,15 +1286,14 @@ impl Wallet {
                 // it is one of them Check that proof locktime is > condition
                 // locktime
 
-                if let Some(proof_refund_keys) = proof_conditions.refund_keys {
+                if let Some(proof_refund_keys) = proof_conditions.refund_keys() {
                     let proof_locktime = proof_conditions
-                        .locktime
+                        .locktime()
                         .ok_or(Error::LocktimeNotProvided)?;
 
-                    if let (Some(condition_refund_keys), Some(condition_locktime)) = (
-                        &spending_conditions.refund_keys,
-                        spending_conditions.locktime,
-                    ) {
+                    if let (Some(condition_refund_keys), Some(condition_locktime)) =
+                        (&refund_keys, locktime)
+                    {
                         // Proof locktime must be greater then condition locktime to ensure it
                         // cannot be claimed back
                         if proof_locktime.lt(&condition_locktime) {
@@ -1306,10 +1337,8 @@ impl Wallet {
                     Some(keys) => keys.amount_key(proof.amount),
                     None => {
                         let keys = self
-                            .localstore
-                            .get_keys(&proof.keyset_id)
-                            .await?
-                            .ok_or(Error::UnknownKey)?;
+                            .get_keyset_keys(&mint_proof.mint, proof.keyset_id)
+                            .await?;
 
                         let key = keys.amount_key(proof.amount);
                         keys_cache.insert(proof.keyset_id, keys);
