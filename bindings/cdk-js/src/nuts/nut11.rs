@@ -1,7 +1,10 @@
 use std::ops::Deref;
+use std::str::FromStr;
 
-use cdk::nuts::{Conditions, P2PKWitness};
+use cdk::nuts::{Conditions, P2PKWitness, SigFlag, SpendingConditions, VerifyingKey};
 use wasm_bindgen::prelude::*;
+
+use crate::error::{into_err, Result};
 
 #[wasm_bindgen(js_name = P2PKWitness)]
 pub struct JsP2PKWitness {
@@ -21,9 +24,58 @@ impl From<P2PKWitness> for JsP2PKWitness {
     }
 }
 
+#[wasm_bindgen(js_name = P2PKSpendingConditions)]
+pub struct JsP2PKSpendingConditions {
+    inner: SpendingConditions,
+}
+
+impl Deref for JsP2PKSpendingConditions {
+    type Target = SpendingConditions;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[wasm_bindgen(js_class = P2PKSpendingConditions)]
+impl JsP2PKSpendingConditions {
+    #[wasm_bindgen(constructor)]
+    pub fn new(pubkey: String, conditions: JsConditions) -> Result<JsP2PKSpendingConditions> {
+        let pubkey = VerifyingKey::from_str(&pubkey).map_err(into_err)?;
+        Ok(Self {
+            inner: SpendingConditions::new_p2pk(pubkey, conditions.deref().clone()),
+        })
+    }
+}
+
 #[wasm_bindgen(js_name = Conditions)]
 pub struct JsConditions {
     inner: Conditions,
+}
+
+#[wasm_bindgen(js_class = Conditions)]
+impl JsConditions {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        locktime: Option<u64>,
+        pubkeys: JsValue,
+        refund_key: JsValue,
+        num_sigs: Option<u64>,
+        sig_flag: String,
+    ) -> Result<JsConditions> {
+        let pubkeys: Result<Vec<VerifyingKey>, _> = serde_wasm_bindgen::from_value(pubkeys);
+        let refund_key: Result<Vec<VerifyingKey>, _> = serde_wasm_bindgen::from_value(refund_key);
+
+        Ok(Self {
+            inner: Conditions::new(
+                locktime,
+                pubkeys.ok(),
+                refund_key.ok(),
+                num_sigs,
+                Some(SigFlag::from_str(&sig_flag).unwrap_or_default()),
+            )
+            .map_err(into_err)?,
+        })
+    }
 }
 
 impl Deref for JsConditions {
