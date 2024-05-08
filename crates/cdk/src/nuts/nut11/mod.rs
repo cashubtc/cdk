@@ -309,7 +309,7 @@ impl SpendingConditions {
         match self {
             Self::P2PKConditions { data, conditions } => {
                 let mut pubkeys = vec![data.clone()];
-                pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default().into_iter());
+                pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
 
                 Some(pubkeys)
             }

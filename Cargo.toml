@@ -32,6 +32,8 @@ thiserror = "1"
 tracing = { version = "0.1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
+serde-wasm-bindgen = { version = "0.6.5", default-features = false }
+web-sys =  { version = "0.3.68", default-features = false, features = ["console"] }
 uniffi = { version = "0.27.1", default-features = false }
 
 [profile]
