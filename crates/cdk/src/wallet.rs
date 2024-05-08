@@ -467,7 +467,7 @@ impl Wallet {
     }
 
     /// Swap
-    async fn swap(
+    pub async fn swap(
         &mut self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,

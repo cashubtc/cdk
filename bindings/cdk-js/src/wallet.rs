@@ -2,7 +2,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::nuts::SigningKey;
+use cdk::nuts::{Proofs, SigningKey};
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
 use cdk::{Amount, HttpClient};
@@ -12,7 +12,7 @@ use wasm_bindgen::prelude::*;
 use crate::error::{into_err, Result};
 use crate::nuts::nut11::JsP2PKSpendingConditions;
 use crate::nuts::nut14::JsHTLCSpendingConditions;
-use crate::nuts::{JsCurrencyUnit, JsMintInfo};
+use crate::nuts::{JsCurrencyUnit, JsMintInfo, JsProof};
 use crate::types::melt_quote::JsMeltQuote;
 use crate::types::{JsAmount, JsMelted, JsMintQuote};
 
@@ -183,5 +183,45 @@ impl JsWallet {
             )
             .await
             .map_err(into_err)
+    }
+
+    #[wasm_bindgen(js_name = swap)]
+    pub async fn swap(
+        &mut self,
+        mint_url: String,
+        unit: JsCurrencyUnit,
+        amount: u64,
+        input_proofs: Vec<JsProof>,
+        p2pk_condition: Option<JsP2PKSpendingConditions>,
+        htlc_condition: Option<JsHTLCSpendingConditions>,
+    ) -> Result<JsValue> {
+        let conditions = match (p2pk_condition, htlc_condition) {
+            (Some(_), Some(_)) => {
+                return Err(JsValue::from_str(
+                    "Cannot define both p2pk and htlc conditions",
+                ));
+            }
+            (None, Some(htlc_condition)) => Some(htlc_condition.deref().clone()),
+            (Some(p2pk_condition), None) => Some(p2pk_condition.deref().clone()),
+            (None, None) => None,
+        };
+
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+
+        let proofs: Proofs = input_proofs.iter().map(|p| p.deref()).cloned().collect();
+
+        let post_swap_proofs = self
+            .inner
+            .swap(
+                &mint_url,
+                &unit.into(),
+                Some(Amount::from(amount)),
+                proofs,
+                conditions,
+            )
+            .await
+            .map_err(into_err)?;
+
+        Ok(serde_wasm_bindgen::to_value(&post_swap_proofs)?)
     }
 }
