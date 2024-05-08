@@ -11,6 +11,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
 use crate::nuts::nut11::JsP2PKSpendingConditions;
+use crate::nuts::nut14::JsHTLCSpendingConditions;
 use crate::nuts::{JsCurrencyUnit, JsMintInfo};
 use crate::types::melt_quote::JsMeltQuote;
 use crate::types::{JsAmount, JsMelted, JsMintQuote};
@@ -157,7 +158,19 @@ impl JsWallet {
         memo: Option<String>,
         amount: u64,
         p2pk_condition: Option<JsP2PKSpendingConditions>,
+        htlc_condition: Option<JsHTLCSpendingConditions>,
     ) -> Result<String> {
+        let conditions = match (p2pk_condition, htlc_condition) {
+            (Some(_), Some(_)) => {
+                return Err(JsValue::from_str(
+                    "Cannot define both p2pk and htlc conditions",
+                ));
+            }
+            (None, Some(htlc_condition)) => Some(htlc_condition.deref().clone()),
+            (Some(p2pk_condition), None) => Some(p2pk_condition.deref().clone()),
+            (None, None) => None,
+        };
+
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
 
         self.inner
@@ -166,7 +179,7 @@ impl JsWallet {
                 &unit.into(),
                 memo,
                 Amount::from(amount),
-                p2pk_condition.map(|c| c.deref().clone()),
+                conditions,
             )
             .await
             .map_err(into_err)
