@@ -19,6 +19,6 @@ pub use nut03::{JsSwapRequest, JsSwapResponse};
 pub use nut06::{JsMintInfo, JsMintVersion};
 pub use nut07::*;
 pub use nut09::{JsRestoreRequest, JsRestoreResponse};
-pub use nut11::JsP2PKWitness;
+pub use nut11::*;
 pub use nut12::{JsBlindSignatureDleq, JsProofDleq};
 pub use nut14::JsHTLCWitness;

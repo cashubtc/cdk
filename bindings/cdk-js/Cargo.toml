@@ -21,3 +21,4 @@ serde_json.workspace = true
 serde.workspace = true
 wasm-bindgen = { version = "0.2.92", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4.41"
+web-sys =  { version = "0.3.68", features = ["console"] }

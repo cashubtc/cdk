@@ -10,6 +10,7 @@ use cdk_rexie::RexieWalletDatabase;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
+use crate::nuts::nut11::JsP2PKSpendingConditions;
 use crate::nuts::{JsCurrencyUnit, JsMintInfo};
 use crate::types::melt_quote::JsMeltQuote;
 use crate::types::{JsAmount, JsMelted, JsMintQuote};
@@ -155,11 +156,18 @@ impl JsWallet {
         unit: JsCurrencyUnit,
         memo: Option<String>,
         amount: u64,
+        p2pk_condition: Option<JsP2PKSpendingConditions>,
     ) -> Result<String> {
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
 
         self.inner
-            .send(&mint_url, &unit.into(), memo, Amount::from(amount), None)
+            .send(
+                &mint_url,
+                &unit.into(),
+                memo,
+                Amount::from(amount),
+                p2pk_condition.map(|c| c.deref().clone()),
+            )
             .await
             .map_err(into_err)
     }
