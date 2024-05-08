@@ -45,4 +45,9 @@ impl JsAmount {
     pub fn split(&self) -> Result<JsValue> {
         serde_wasm_bindgen::to_value(&self.inner.split()).map_err(into_err)
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn value(&self) -> u64 {
+        self.inner.into()
+    }
 }
