@@ -466,6 +466,113 @@ impl Wallet {
         Ok(minted_amount)
     }
 
+    /// Swap
+    async fn swap(
+        &mut self,
+        mint_url: &UncheckedUrl,
+        unit: &CurrencyUnit,
+        amount: Option<Amount>,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Option<Proofs>, Error> {
+        let pre_swap = self
+            .create_swap(
+                mint_url,
+                unit,
+                amount,
+                input_proofs.clone(),
+                spending_conditions,
+            )
+            .await?;
+
+        let swap_response = self
+            .client
+            .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
+            .await?;
+
+        let mut post_swap_proofs = construct_proofs(
+            swap_response.signatures,
+            pre_swap.pre_mint_secrets.rs(),
+            pre_swap.pre_mint_secrets.secrets(),
+            &self
+                .active_keys(mint_url, unit)
+                .await?
+                .ok_or(Error::UnknownKey)?,
+        )?;
+
+        #[cfg(feature = "nut13")]
+        if self.mnemonic.is_some() {
+            let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
+
+            self.localstore
+                .increment_keyset_counter(&active_keyset_id, post_swap_proofs.len() as u64)
+                .await?;
+        }
+
+        let mut keep_proofs = Proofs::new();
+        let proofs_to_send;
+
+        match amount {
+            Some(amount) => {
+                post_swap_proofs.reverse();
+
+                let mut left_proofs = vec![];
+                let mut send_proofs = vec![];
+
+                for proof in post_swap_proofs {
+                    let nut10: Result<nut10::Secret, _> = proof.secret.clone().try_into();
+
+                    match nut10 {
+                        Ok(_) => send_proofs.push(proof),
+                        Err(_) => left_proofs.push(proof),
+                    }
+                }
+
+                for proof in left_proofs {
+                    if (proof.amount + send_proofs.iter().map(|p| p.amount).sum()).gt(&amount) {
+                        keep_proofs.push(proof);
+                    } else {
+                        send_proofs.push(proof);
+                    }
+                }
+
+                let send_amount: Amount = send_proofs.iter().map(|p| p.amount).sum();
+
+                if send_amount.ne(&amount) {
+                    tracing::warn!(
+                        "Send amount proofs is {:?} expected {:?}",
+                        send_amount,
+                        amount
+                    );
+                }
+
+                self.localstore
+                    .add_pending_proofs(mint_url.clone(), send_proofs.clone())
+                    .await?;
+
+                proofs_to_send = Some(send_proofs);
+            }
+            None => {
+                keep_proofs = post_swap_proofs;
+                proofs_to_send = None;
+            }
+        }
+
+        self.localstore
+            .remove_proofs(mint_url.clone(), &input_proofs)
+            .await?;
+
+        self.localstore
+            .add_pending_proofs(mint_url.clone(), input_proofs)
+            .await?;
+
+        self.localstore
+            .add_proofs(mint_url.clone(), keep_proofs)
+            .await?;
+
+        Ok(proofs_to_send)
+    }
+
     /// Create Swap Payload
     async fn create_swap(
         &mut self,
@@ -667,91 +774,17 @@ impl Wallet {
     ) -> Result<String, Error> {
         let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
 
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
-
-        let pre_swap = self
-            .create_swap(
-                mint_url,
-                unit,
-                Some(amount),
-                input_proofs.clone(),
-                conditions,
-            )
-            .await?;
-
-        let swap_response = self
-            .client
-            .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
-            .await?;
-
-        let mut keep_proofs = Proofs::new();
-        let mut send_proofs = Proofs::new();
-
-        let mut post_swap_proofs = construct_proofs(
-            swap_response.signatures,
-            pre_swap.pre_mint_secrets.rs(),
-            pre_swap.pre_mint_secrets.secrets(),
-            &self
-                .active_keys(mint_url, unit)
-                .await?
-                .ok_or(Error::UnknownKey)?,
-        )?;
-
-        #[cfg(feature = "nut13")]
-        if self.mnemonic.is_some() {
-            self.localstore
-                .increment_keyset_counter(&active_keyset_id, post_swap_proofs.len() as u64)
-                .await?;
-        }
-
-        post_swap_proofs.reverse();
-
-        let mut left_proofs = vec![];
-
-        for proof in post_swap_proofs {
-            let nut10: Result<nut10::Secret, _> = proof.secret.clone().try_into();
-
-            match nut10 {
-                Ok(_) => send_proofs.push(proof),
-                Err(_) => left_proofs.push(proof),
-            }
-        }
-
-        for proof in left_proofs {
-            if (proof.amount + send_proofs.iter().map(|p| p.amount).sum()).gt(&amount) {
-                keep_proofs.push(proof);
-            } else {
-                send_proofs.push(proof);
-            }
-        }
-
-        let send_amount: Amount = send_proofs.iter().map(|p| p.amount).sum();
-
-        if send_amount.ne(&amount) {
-            tracing::warn!(
-                "Send amount proofs is {:?} expected {:?}",
-                send_amount,
-                amount
-            );
-        }
-
-        self.localstore
-            .remove_proofs(mint_url.clone(), &input_proofs)
-            .await?;
-
-        self.localstore
-            .add_pending_proofs(mint_url.clone(), input_proofs)
-            .await?;
-        self.localstore
-            .add_pending_proofs(mint_url.clone(), send_proofs.clone())
-            .await?;
-
-        self.localstore
-            .add_proofs(mint_url.clone(), keep_proofs)
+        let send_proofs = self
+            .swap(mint_url, unit, Some(amount), input_proofs, conditions)
             .await?;
 
         Ok(self
-            .proofs_to_token(mint_url.clone(), send_proofs, memo, Some(unit.clone()))?
+            .proofs_to_token(
+                mint_url.clone(),
+                send_proofs.ok_or(Error::InsufficientFunds)?,
+                memo,
+                Some(unit.clone()),
+            )?
             .to_string())
     }
 
