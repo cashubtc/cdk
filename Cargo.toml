@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "bindings/cdk-js",
-    "bindings/uniffi-bindgen",
     "crates/cdk",
     "crates/cdk-redb",
     "crates/cdk-rexie",
