@@ -13,11 +13,11 @@ use thiserror::Error;
 use crate::cdk_database::wallet_memory::WalletMemoryDatabase;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::client::HttpClient;
-use crate::dhke::{construct_proofs, hash_to_curve, unblind_message};
+use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::{
-    nut10, nut12, BlindSignature, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind,
-    MintInfo, PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest,
-    SigFlag, SigningKey, SpendingConditions, State, SwapRequest, Token, VerifyingKey,
+    nut10, nut12, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind, MintInfo,
+    PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SigFlag,
+    SigningKey, SpendingConditions, State, SwapRequest, Token, VerifyingKey,
 };
 use crate::types::{MeltQuote, Melted, MintQuote};
 use crate::url::UncheckedUrl;
@@ -703,66 +703,6 @@ impl Wallet {
         })
     }
 
-    pub async fn process_swap_response(
-        &self,
-        blinded_messages: PreMintSecrets,
-        promises: Vec<BlindSignature>,
-    ) -> Result<Proofs, Error> {
-        let mut proofs = vec![];
-
-        let mut proof_count: HashMap<Id, u64> = HashMap::new();
-
-        for (promise, premint) in promises.iter().zip(blinded_messages) {
-            // Verify the signature DLEQ is valid
-            {
-                let keys = self
-                    .localstore
-                    .get_keys(&promise.keyset_id)
-                    .await?
-                    .ok_or(Error::UnknownKey)?;
-                let key = keys.amount_key(promise.amount).ok_or(Error::UnknownKey)?;
-                match promise.verify_dleq(key, premint.blinded_message.blinded_secret) {
-                    Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
-                    Err(_) => return Err(Error::CouldNotVerifyDleq),
-                }
-            }
-
-            let a = self
-                .localstore
-                .get_keys(&promise.keyset_id)
-                .await?
-                .ok_or(Error::UnknownKey)?
-                .amount_key(promise.amount)
-                .ok_or(Error::UnknownKey)?
-                .to_owned();
-
-            let unblinded_sig = unblind_message(&promise.c, &premint.r, &a)?;
-
-            let count = proof_count.get(&promise.keyset_id).unwrap_or(&0);
-            proof_count.insert(promise.keyset_id, count + 1);
-
-            let proof = Proof::new(
-                promise.amount,
-                promise.keyset_id,
-                premint.secret,
-                unblinded_sig,
-            );
-
-            proofs.push(proof);
-        }
-
-        #[cfg(feature = "nut13")]
-        if self.mnemonic.is_some() {
-            for (keyset_id, count) in proof_count {
-                self.localstore
-                    .increment_keyset_counter(&keyset_id, count)
-                    .await?;
-            }
-        }
-
-        Ok(proofs)
-    }
-
     /// Send
     pub async fn send(
         &mut self,
@@ -774,9 +714,18 @@ impl Wallet {
     ) -> Result<String, Error> {
         let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
 
-        let send_proofs = self
-            .swap(mint_url, unit, Some(amount), input_proofs, conditions)
-            .await?;
+        let send_proofs = match input_proofs
+            .iter()
+            .map(|p| p.amount)
+            .sum::<Amount>()
+            .eq(&amount)
+        {
+            true => Some(input_proofs),
+            false => {
+                self.swap(mint_url, unit, Some(amount), input_proofs, conditions)
+                    .await?
+            }
+        };
 
         Ok(self
             .proofs_to_token(
