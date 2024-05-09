@@ -52,6 +52,19 @@ pub struct JsConditions {
     inner: Conditions,
 }
 
+impl Deref for JsConditions {
+    type Target = Conditions;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl From<Conditions> for JsConditions {
+    fn from(inner: Conditions) -> JsConditions {
+        JsConditions { inner }
+    }
+}
+
 #[wasm_bindgen(js_class = Conditions)]
 impl JsConditions {
     #[wasm_bindgen(constructor)]
@@ -76,17 +89,29 @@ impl JsConditions {
             .map_err(into_err)?,
         })
     }
-}
 
-impl Deref for JsConditions {
-    type Target = Conditions;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+    #[wasm_bindgen(getter)]
+    pub fn locktime(&self) -> Option<u64> {
+        self.inner.locktime
     }
-}
 
-impl From<Conditions> for JsConditions {
-    fn from(inner: Conditions) -> JsConditions {
-        JsConditions { inner }
+    #[wasm_bindgen(getter)]
+    pub fn pubkeys(&self) -> Result<JsValue> {
+        Ok(serde_wasm_bindgen::to_value(&self.inner.pubkeys)?)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn refund_keys(&self) -> Result<JsValue> {
+        Ok(serde_wasm_bindgen::to_value(&self.inner.refund_keys)?)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn num_sigs(&self) -> Option<u64> {
+        self.inner.num_sigs
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sig_flag(&self) -> String {
+        self.inner.sig_flag.to_string()
     }
 }
