@@ -44,4 +44,9 @@ impl JsWitness {
     pub fn signatures(&self) -> Option<Vec<String>> {
         self.inner.signatures()
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn preimage(&self) -> Option<String> {
+        self.inner.preimage()
+    }
 }

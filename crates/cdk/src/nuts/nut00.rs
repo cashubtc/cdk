@@ -159,6 +159,13 @@ impl Witness {
             Self::HTLCWitness(witness) => witness.signatures.clone(),
         }
     }
+
+    pub fn preimage(&self) -> Option<String> {
+        match self {
+            Self::P2PKWitness(_witness) => None,
+            Self::HTLCWitness(witness) => Some(witness.preimage.clone()),
+        }
+    }
 }
 
 /// Proofs
