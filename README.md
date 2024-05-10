@@ -4,7 +4,6 @@
 
 # Cashu Development Kit
 
-
 CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wallets and mints written in Rust.
 
 **ALPHA** This library is in early development, the api will change.
@@ -28,6 +27,9 @@ CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wall
 - :heavy_check_mark: [NUT-13](https://github.com/cashubtc/nuts/blob/main/13.md)
 - :heavy_check_mark: [NUT-14](https://github.com/cashubtc/nuts/blob/main/14.md)
 
+## Bindings
+
+Experimental bindings can be found in the [bindings](./bindings/) folder.
 
 ## License
 
