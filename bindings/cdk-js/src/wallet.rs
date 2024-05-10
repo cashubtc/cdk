@@ -44,6 +44,11 @@ impl JsWallet {
         Wallet::new(client, Arc::new(db), None).await.into()
     }
 
+    #[wasm_bindgen(js_name = totalBalance)]
+    pub async fn total_balance(&self) -> Result<JsAmount> {
+        Ok(self.inner.total_balance().await.map_err(into_err)?.into())
+    }
+
     #[wasm_bindgen(js_name = mintBalances)]
     pub async fn mint_balances(&self) -> Result<JsValue> {
         let mint_balances = self.inner.mint_balances().await.map_err(into_err)?;
