@@ -124,6 +124,22 @@ impl Wallet {
         self.mnemonic.clone()
     }
 
+    /// Total Balance of wallet
+    pub async fn total_balance(&self) -> Result<Amount, Error> {
+        let mints = self.localstore.get_mints().await?;
+        let mut balance = Amount::ZERO;
+
+        for (mint, _) in mints {
+            if let Some(proofs) = self.localstore.get_proofs(mint.clone()).await? {
+                let amount = proofs.iter().map(|p| p.amount).sum();
+
+                balance += amount;
+            }
+        }
+
+        Ok(balance)
+    }
+
     pub async fn mint_balances(&self) -> Result<HashMap<UncheckedUrl, Amount>, Error> {
         let mints = self.localstore.get_mints().await?;
 
