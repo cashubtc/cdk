@@ -59,9 +59,9 @@ pub struct MintInfo {
     /// long description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description_long: Option<String>,
-    /// contact methods to reach the mint operator
+    /// Contact info
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub contact: Option<Vec<Vec<String>>>,
+    pub contact: Option<Vec<ContactInfo>>,
     /// shows which NUTs the mint supports
     pub nuts: Nuts,
     /// message of the day that the wallet must display to the user
@@ -119,6 +119,15 @@ impl Default for SupportedSettings {
     }
 }
 
+/// Contact Info
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ContactInfo {
+    /// Contact Method i.e. nostr
+    pub method: String,
+    /// Contact info i.e. npub...
+    pub info: String,
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -148,9 +157,10 @@ mod tests {
   "description": "The short mint description",
   "description_long": "A description that can be a long piece of text.",
   "contact": [
-    ["email", "contact@me.com"],
-    ["twitter", "@me"],
-    ["nostr" ,"npub..."]
+    {
+        "method": "email",
+        "info": "contact@me.com"
+    }
   ],
   "motd": "Message to display to users.",
   "nuts": {

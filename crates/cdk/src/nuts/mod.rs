@@ -34,7 +34,7 @@ pub use nut05::{
     MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
-pub use nut06::{MintInfo, MintVersion, Nuts};
+pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
 pub use nut09::{RestoreRequest, RestoreResponse};
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
