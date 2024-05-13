@@ -10,6 +10,8 @@ use cdk_rexie::RexieWalletDatabase;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
+use crate::nuts::nut04::JsMintQuoteBolt11Response;
+use crate::nuts::nut05::JsMeltQuoteBolt11Response;
 use crate::nuts::nut11::JsP2PKSpendingConditions;
 use crate::nuts::nut14::JsHTLCSpendingConditions;
 use crate::nuts::{JsCurrencyUnit, JsMintInfo, JsProof};
@@ -95,6 +97,23 @@ impl JsWallet {
         Ok(quote.into())
     }
 
+    #[wasm_bindgen(js_name = mintQuoteStatus)]
+    pub async fn mint_quote_status(
+        &self,
+        mint_url: String,
+        quote_id: String,
+    ) -> Result<JsMintQuoteBolt11Response> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+
+        let quote = self
+            .inner
+            .mint_quote_status(mint_url, &quote_id)
+            .await
+            .map_err(into_err)?;
+
+        Ok(quote.into())
+    }
+
     #[wasm_bindgen(js_name = mint)]
     pub async fn mint(&mut self, mint_url: String, quote_id: String) -> Result<JsAmount> {
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
@@ -122,6 +141,23 @@ impl JsWallet {
             .map_err(into_err)?;
 
         Ok(melt_quote.into())
+    }
+
+    #[wasm_bindgen(js_name = meltQuoteStatus)]
+    pub async fn melt_quote_status(
+        &self,
+        mint_url: String,
+        quote_id: String,
+    ) -> Result<JsMeltQuoteBolt11Response> {
+        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+
+        let quote = self
+            .inner
+            .melt_quote_status(mint_url, &quote_id)
+            .await
+            .map_err(into_err)?;
+
+        Ok(quote.into())
     }
 
     #[wasm_bindgen(js_name = melt)]
