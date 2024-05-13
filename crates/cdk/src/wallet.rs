@@ -730,14 +730,16 @@ impl Wallet {
     ) -> Result<String, Error> {
         let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
 
-        let send_proofs = match input_proofs
-            .iter()
-            .map(|p| p.amount)
-            .sum::<Amount>()
-            .eq(&amount)
-        {
-            true => Some(input_proofs),
-            false => {
+        let send_proofs = match (
+            input_proofs
+                .iter()
+                .map(|p| p.amount)
+                .sum::<Amount>()
+                .eq(&amount),
+            &conditions,
+        ) {
+            (true, None) => Some(input_proofs),
+            _ => {
                 self.swap(mint_url, unit, Some(amount), input_proofs, conditions)
                     .await?
             }
