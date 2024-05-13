@@ -15,9 +15,10 @@ use crate::cdk_database::{self, WalletDatabase};
 use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::{
-    nut10, nut12, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind, MintInfo,
-    PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SigFlag,
-    SigningKey, SpendingConditions, State, SwapRequest, Token, VerifyingKey,
+    nut10, nut12, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind,
+    MeltQuoteBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets, PreSwap, Proof,
+    ProofState, Proofs, PublicKey, RestoreRequest, SigFlag, SigningKey, SpendingConditions, State,
+    SwapRequest, Token, VerifyingKey,
 };
 use crate::types::{MeltQuote, Melted, MintQuote};
 use crate::url::UncheckedUrl;
@@ -319,6 +320,32 @@ impl Wallet {
         self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
+    }
+
+    /// Mint quote status
+    pub async fn mint_quote_status(
+        &self,
+        mint_url: UncheckedUrl,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt11Response, Error> {
+        let response = self
+            .client
+            .get_mint_quote_status(mint_url.try_into()?, quote_id)
+            .await?;
+
+        match self.localstore.get_mint_quote(quote_id).await? {
+            Some(quote) => {
+                let mut quote = quote;
+
+                quote.paid = response.paid;
+                self.localstore.add_mint_quote(quote).await?;
+            }
+            None => {
+                tracing::info!("Quote mint {} unknown", quote_id);
+            }
+        }
+
+        Ok(response)
     }
 
     async fn active_mint_keyset(
@@ -784,6 +811,32 @@ impl Wallet {
         self.localstore.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
+    }
+
+    /// Melt quote status
+    pub async fn melt_quote_status(
+        &self,
+        mint_url: UncheckedUrl,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let response = self
+            .client
+            .get_melt_quote_status(mint_url.try_into()?, quote_id)
+            .await?;
+
+        match self.localstore.get_melt_quote(quote_id).await? {
+            Some(quote) => {
+                let mut quote = quote;
+
+                quote.paid = response.paid;
+                self.localstore.add_melt_quote(quote).await?;
+            }
+            None => {
+                tracing::info!("Quote melt {} unknown", quote_id);
+            }
+        }
+
+        Ok(response)
     }
 
     // Select proofs

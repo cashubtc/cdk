@@ -136,6 +136,27 @@ impl HttpClient {
         }
     }
 
+    /// Mint Quote status
+    pub async fn get_mint_quote_status(
+        &self,
+        mint_url: Url,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11", quote_id])?;
+
+        let res = self.inner.get(url).send().await?;
+
+        let status = res.status();
+
+        let response: Result<MintQuoteBolt11Response, serde_json::Error> =
+            serde_json::from_value(res.json().await?);
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(ErrorResponse::from_json(&status.to_string())?.into()),
+        }
+    }
+
     /// Mint Tokens [NUT-04]
     pub async fn post_mint(
         &self,
@@ -189,6 +210,27 @@ impl HttpClient {
         match response {
             Ok(res) => Ok(res),
             Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),
+        }
+    }
+
+    /// Melt Quote Status
+    pub async fn get_melt_quote_status(
+        &self,
+        mint_url: Url,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "melt", "quote", "bolt11", quote_id])?;
+
+        let res = self.inner.get(url).send().await?;
+
+        let status = res.status();
+
+        let response: Result<MeltQuoteBolt11Response, serde_json::Error> =
+            serde_json::from_value(res.json().await?);
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(ErrorResponse::from_json(&status.to_string())?.into()),
         }
     }
 
