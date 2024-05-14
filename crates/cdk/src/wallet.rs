@@ -162,12 +162,12 @@ impl Wallet {
         Ok(balances)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
         Ok(self.localstore.get_proofs(mint_url).await?)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn add_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Error> {
         let mint_info = match self
             .client
@@ -188,7 +188,7 @@ impl Wallet {
         Ok(mint_info)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_keyset_keys(
         &self,
         mint_url: &UncheckedUrl,
@@ -210,7 +210,7 @@ impl Wallet {
         Ok(keys)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keysets(
         &self,
         mint_url: &UncheckedUrl,
@@ -225,7 +225,7 @@ impl Wallet {
     }
 
     /// Get active mint keyset
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_active_mint_keys(
         &self,
         mint_url: &UncheckedUrl,
@@ -246,7 +246,7 @@ impl Wallet {
     }
 
     /// Refresh Mint keys
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn refresh_mint_keys(&self, mint_url: &UncheckedUrl) -> Result<(), Error> {
         let current_mint_keysets_info = self
             .client
@@ -285,7 +285,7 @@ impl Wallet {
     }
 
     /// Check if a proof is spent
-    #[instrument(skip(self, proofs))]
+    #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
     pub async fn check_proofs_spent(
         &self,
         mint_url: UncheckedUrl,
@@ -307,7 +307,7 @@ impl Wallet {
     }
 
     /// Mint Quote
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn mint_quote(
         &mut self,
         mint_url: UncheckedUrl,
@@ -334,6 +334,7 @@ impl Wallet {
     }
 
     /// Mint quote status
+    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
     pub async fn mint_quote_status(
         &self,
         mint_url: UncheckedUrl,
@@ -359,6 +360,7 @@ impl Wallet {
         Ok(response)
     }
 
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     async fn active_mint_keyset(
         &mut self,
         mint_url: &UncheckedUrl,
@@ -389,7 +391,7 @@ impl Wallet {
         Err(Error::NoActiveKeyset)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     async fn active_keys(
         &mut self,
         mint_url: &UncheckedUrl,
@@ -415,7 +417,7 @@ impl Wallet {
     }
 
     /// Mint
-    #[instrument(skip(self, quote_id))]
+    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
     pub async fn mint(&mut self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
@@ -523,7 +525,7 @@ impl Wallet {
     }
 
     /// Swap
-    #[instrument(skip(self, input_proofs))]
+    #[instrument(skip(self, input_proofs), fields(mint_url = %mint_url))]
     pub async fn swap(
         &mut self,
         mint_url: &UncheckedUrl,
@@ -631,7 +633,7 @@ impl Wallet {
     }
 
     /// Create Swap Payload
-    #[instrument(skip(self, proofs))]
+    #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
     async fn create_swap(
         &mut self,
         mint_url: &UncheckedUrl,
@@ -762,7 +764,7 @@ impl Wallet {
     }
 
     /// Send
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn send(
         &mut self,
         mint_url: &UncheckedUrl,
@@ -799,7 +801,7 @@ impl Wallet {
     }
 
     /// Melt Quote
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn melt_quote(
         &mut self,
         mint_url: UncheckedUrl,
@@ -831,6 +833,7 @@ impl Wallet {
     }
 
     /// Melt quote status
+    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
     pub async fn melt_quote_status(
         &self,
         mint_url: UncheckedUrl,
@@ -857,7 +860,7 @@ impl Wallet {
     }
 
     // Select proofs
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn select_proofs(
         &self,
         mint_url: UncheckedUrl,
@@ -918,7 +921,7 @@ impl Wallet {
     }
 
     /// Melt
-    #[instrument(skip(self, quote_id))]
+    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
     pub async fn melt(&mut self, mint_url: &UncheckedUrl, quote_id: &str) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
 
@@ -1180,7 +1183,7 @@ impl Wallet {
         Ok(())
     }
 
-    #[instrument(skip(self, proofs))]
+    #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
     pub fn proofs_to_token(
         &self,
         mint_url: UncheckedUrl,
@@ -1192,7 +1195,7 @@ impl Wallet {
     }
 
     #[cfg(feature = "nut13")]
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn restore(&mut self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
