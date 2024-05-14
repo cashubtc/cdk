@@ -75,7 +75,7 @@ impl HttpClient {
     }
 
     /// Get Active Mint Keys [NUT-01]
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
         let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = self.inner.get(url).send().await?.json::<Value>().await?;
