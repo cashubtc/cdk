@@ -10,6 +10,7 @@ use cdk::types::{MeltQuote, MintQuote};
 use cdk::url::UncheckedUrl;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
+use tracing::instrument;
 
 use super::error::Error;
 
@@ -23,7 +24,7 @@ const PROOFS_TABLE: MultimapTableDefinition<&str, &str> = MultimapTableDefinitio
 const PENDING_PROOFS_TABLE: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("pending_proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
-const KEYSET_COUNTER: TableDefinition<&str, u64> = TableDefinition::new("keyset_counter");
+const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 
 const DATABASE_VERSION: u32 = 0;
 
@@ -79,6 +80,7 @@ impl RedbWalletDatabase {
 impl WalletDatabase for RedbWalletDatabase {
     type Err = cdk_database::Error;
 
+    #[instrument(skip(self))]
     async fn add_mint(
         &self,
         mint_url: UncheckedUrl,
@@ -104,6 +106,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
@@ -119,6 +122,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(None)
     }
 
+    #[instrument(skip(self))]
     async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -138,6 +142,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(mints)
     }
 
+    #[instrument(skip(self))]
     async fn add_mint_keysets(
         &self,
         mint_url: UncheckedUrl,
@@ -168,6 +173,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
         mint_url: UncheckedUrl,
@@ -188,6 +194,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(keysets)
     }
 
+    #[instrument(skip_all)]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -209,6 +216,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
@@ -223,6 +231,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(None)
     }
 
+    #[instrument(skip_all)]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -239,6 +248,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -260,6 +270,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -274,6 +285,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(None)
     }
 
+    #[instrument(skip_all)]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -290,6 +302,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -309,6 +322,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -321,6 +335,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(None)
     }
 
+    #[instrument(skip(self))]
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -336,6 +351,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self, proofs))]
     async fn add_proofs(&self, mint_url: UncheckedUrl, proofs: Proofs) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
@@ -360,6 +376,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -377,6 +394,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(proofs)
     }
 
+    #[instrument(skip(self, proofs))]
     async fn remove_proofs(
         &self,
         mint_url: UncheckedUrl,
@@ -405,6 +423,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self, proofs))]
     async fn add_pending_proofs(
         &self,
         mint_url: UncheckedUrl,
@@ -433,6 +452,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_pending_proofs(
         &self,
         mint_url: UncheckedUrl,
@@ -453,6 +473,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(proofs)
     }
 
+    #[instrument(skip(self, proofs))]
     async fn remove_pending_proofs(
         &self,
         mint_url: UncheckedUrl,
@@ -481,7 +502,8 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Self::Err> {
+    #[instrument(skip(self))]
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let current_counter;
@@ -512,7 +534,8 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Self::Err> {
+    #[instrument(skip(self))]
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;

@@ -88,8 +88,8 @@ pub trait WalletDatabase {
         proofs: &Proofs,
     ) -> Result<(), Self::Err>;
 
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Self::Err>;
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Self::Err>;
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
 }
 
 #[cfg(feature = "mint")]

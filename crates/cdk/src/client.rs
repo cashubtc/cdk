@@ -3,6 +3,7 @@
 use reqwest::Client;
 use serde_json::Value;
 use thiserror::Error;
+use tracing::instrument;
 use url::Url;
 
 use crate::error::ErrorResponse;
@@ -74,6 +75,7 @@ impl HttpClient {
     }
 
     /// Get Active Mint Keys [NUT-01]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
         let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = self.inner.get(url).send().await?.json::<Value>().await?;
@@ -83,6 +85,7 @@ impl HttpClient {
     }
 
     /// Get Keyset Keys [NUT-01]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keyset(&self, mint_url: Url, keyset_id: Id) -> Result<KeySet, Error> {
         let url = join_url(mint_url, &["v1", "keys", &keyset_id.to_string()])?;
         let keys = self
@@ -99,6 +102,7 @@ impl HttpClient {
     }
 
     /// Get Keysets [NUT-02]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error> {
         let url = join_url(mint_url, &["v1", "keysets"])?;
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
@@ -113,6 +117,7 @@ impl HttpClient {
     }
 
     /// Mint Quote [NUT-04]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn post_mint_quote(
         &self,
         mint_url: Url,
@@ -136,7 +141,30 @@ impl HttpClient {
         }
     }
 
+    /// Mint Quote status
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    pub async fn get_mint_quote_status(
+        &self,
+        mint_url: Url,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11", quote_id])?;
+
+        let res = self.inner.get(url).send().await?;
+
+        let status = res.status();
+
+        let response: Result<MintQuoteBolt11Response, serde_json::Error> =
+            serde_json::from_value(res.json().await?);
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(ErrorResponse::from_json(&status.to_string())?.into()),
+        }
+    }
+
     /// Mint Tokens [NUT-04]
+    #[instrument(skip(self, quote, premint_secrets), fields(mint_url = %mint_url))]
     pub async fn post_mint(
         &self,
         mint_url: Url,
@@ -169,6 +197,7 @@ impl HttpClient {
     }
 
     /// Melt Quote [NUT-05]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn post_melt_quote(
         &self,
         mint_url: Url,
@@ -192,8 +221,31 @@ impl HttpClient {
         }
     }
 
+    /// Melt Quote Status
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    pub async fn get_melt_quote_status(
+        &self,
+        mint_url: Url,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "melt", "quote", "bolt11", quote_id])?;
+
+        let res = self.inner.get(url).send().await?;
+
+        let status = res.status();
+
+        let response: Result<MeltQuoteBolt11Response, serde_json::Error> =
+            serde_json::from_value(res.json().await?);
+
+        match response {
+            Ok(res) => Ok(res),
+            Err(_) => Err(ErrorResponse::from_json(&status.to_string())?.into()),
+        }
+    }
+
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
+    #[instrument(skip(self, quote, inputs, outputs), fields(mint_url = %mint_url))]
     pub async fn post_melt(
         &self,
         mint_url: Url,
@@ -222,6 +274,7 @@ impl HttpClient {
     }
 
     /// Split Token [NUT-06]
+    #[instrument(skip(self, swap_request), fields(mint_url = %mint_url))]
     pub async fn post_swap(
         &self,
         mint_url: Url,
@@ -241,6 +294,7 @@ impl HttpClient {
     }
 
     /// Get Mint Info [NUT-06]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
         let url = join_url(mint_url, &["v1", "info"])?;
 
@@ -255,6 +309,7 @@ impl HttpClient {
     }
 
     /// Spendable check [NUT-07]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn post_check_state(
         &self,
         mint_url: Url,
@@ -281,6 +336,7 @@ impl HttpClient {
         }
     }
 
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_restore(
         &self,
         mint_url: Url,

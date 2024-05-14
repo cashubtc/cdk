@@ -2,11 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/13.md>
 
-use core::str::FromStr;
-
-use bip39::Mnemonic;
-use bitcoin::bip32::{DerivationPath, ExtendedPrivKey};
-use bitcoin::Network;
+use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
 use super::nut01::SecretKey;
@@ -18,21 +14,12 @@ use crate::util::hex;
 use crate::{Amount, SECP256K1};
 
 impl Secret {
-    pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
-        tracing::debug!(
-            "Deriving secret for {} with count {}",
-            keyset_id.to_string(),
-            counter.to_string()
-        );
-        let path: DerivationPath = DerivationPath::from_str(&format!(
-            "m/129372'/0'/{}'/{}'/0",
-            u64::try_from(keyset_id)?,
-            counter
-        ))?;
-
-        let seed: [u8; 64] = mnemonic.to_seed("");
-        let bip32_root_key = ExtendedPrivKey::new_master(Network::Bitcoin, &seed)?;
-        let derived_xpriv = bip32_root_key.derive_priv(&SECP256K1, &path)?;
+    pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
+        tracing::debug!("Deriving secret for {} with count {}", keyset_id, counter);
+        let path = derive_path_from_keyset_id(keyset_id)?
+            .child(ChildNumber::from_hardened_idx(counter)?)
+            .child(ChildNumber::from_normal_idx(0)?);
+        let derived_xpriv = xpriv.derive_priv(&SECP256K1, &path)?;
 
         Ok(Self::new(hex::encode(
             derived_xpriv.private_key.secret_bytes(),
@@ -41,21 +28,12 @@ impl Secret {
 }
 
 impl SecretKey {
-    pub fn from_seed(mnemonic: &Mnemonic, keyset_id: Id, counter: u64) -> Result<Self, Error> {
-        tracing::debug!(
-            "Deriving key for {} with count {}",
-            keyset_id.to_string(),
-            counter.to_string()
-        );
-        let path = DerivationPath::from_str(&format!(
-            "m/129372'/0'/{}'/{}'/1",
-            u64::try_from(keyset_id)?,
-            counter
-        ))?;
-
-        let seed: [u8; 64] = mnemonic.to_seed("");
-        let bip32_root_key = ExtendedPrivKey::new_master(Network::Bitcoin, &seed)?;
-        let derived_xpriv = bip32_root_key.derive_priv(&SECP256K1, &path)?;
+    pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
+        tracing::debug!("Deriving key for {} with count {}", keyset_id, counter);
+        let path = derive_path_from_keyset_id(keyset_id)?
+            .child(ChildNumber::from_hardened_idx(counter)?)
+            .child(ChildNumber::from_normal_idx(1)?);
+        let derived_xpriv = xpriv.derive_priv(&SECP256K1, &path)?;
 
         Ok(Self::from(derived_xpriv.private_key))
     }
@@ -64,10 +42,10 @@ impl SecretKey {
 impl PreMintSecrets {
     /// Generate blinded messages from predetermined secrets and blindings
     /// factor
-    pub fn from_seed(
+    pub fn from_xpriv(
         keyset_id: Id,
-        counter: u64,
-        mnemonic: &Mnemonic,
+        counter: u32,
+        xpriv: ExtendedPrivKey,
         amount: Amount,
         zero_amount: bool,
     ) -> Result<Self, Error> {
@@ -76,8 +54,8 @@ impl PreMintSecrets {
         let mut counter = counter;
 
         for amount in amount.split() {
-            let secret = Secret::from_seed(mnemonic, keyset_id, counter)?;
-            let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, counter)?;
+            let secret = Secret::from_xpriv(xpriv, keyset_id, counter)?;
+            let blinding_factor = SecretKey::from_xpriv(xpriv, keyset_id, counter)?;
 
             let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
@@ -103,15 +81,15 @@ impl PreMintSecrets {
     /// factor
     pub fn restore_batch(
         keyset_id: Id,
-        mnemonic: &Mnemonic,
-        start_count: u64,
-        end_count: u64,
+        xpriv: ExtendedPrivKey,
+        start_count: u32,
+        end_count: u32,
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::default();
 
         for i in start_count..=end_count {
-            let secret = Secret::from_seed(mnemonic, keyset_id, i)?;
-            let blinding_factor = SecretKey::from_seed(mnemonic, keyset_id, i)?;
+            let secret = Secret::from_xpriv(xpriv, keyset_id, i)?;
+            let blinding_factor = SecretKey::from_xpriv(xpriv, keyset_id, i)?;
 
             let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
@@ -131,8 +109,23 @@ impl PreMintSecrets {
     }
 }
 
+fn derive_path_from_keyset_id(id: Id) -> Result<DerivationPath, Error> {
+    let index = (u64::try_from(id)? % (2u64.pow(31) - 1)) as u32;
+    let keyset_child_number = ChildNumber::from_hardened_idx(index)?;
+    Ok(DerivationPath::from(vec![
+        ChildNumber::from_hardened_idx(129372)?,
+        ChildNumber::from_hardened_idx(0)?,
+        keyset_child_number,
+    ]))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use bip39::Mnemonic;
+    use bitcoin::Network;
+
     use super::*;
 
     #[test]
@@ -140,6 +133,8 @@ mod tests {
         let seed =
             "half depart obvious quality work element tank gorilla view sugar picture humble";
         let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+        let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, &seed).unwrap();
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
 
         let test_secrets = [
@@ -151,7 +146,7 @@ mod tests {
         ];
 
         for (i, test_secret) in test_secrets.iter().enumerate() {
-            let secret = Secret::from_seed(&mnemonic, keyset_id, i.try_into().unwrap()).unwrap();
+            let secret = Secret::from_xpriv(xpriv, keyset_id, i.try_into().unwrap()).unwrap();
             assert_eq!(secret, Secret::from_str(test_secret).unwrap())
         }
     }
@@ -160,6 +155,8 @@ mod tests {
         let seed =
             "half depart obvious quality work element tank gorilla view sugar picture humble";
         let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+        let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, &seed).unwrap();
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
 
         let test_rs = [
@@ -171,7 +168,7 @@ mod tests {
         ];
 
         for (i, test_r) in test_rs.iter().enumerate() {
-            let r = SecretKey::from_seed(&mnemonic, keyset_id, i.try_into().unwrap()).unwrap();
+            let r = SecretKey::from_xpriv(xpriv, keyset_id, i.try_into().unwrap()).unwrap();
             assert_eq!(r, SecretKey::from_hex(test_r).unwrap())
         }
     }

@@ -21,7 +21,7 @@ pub struct WalletMemoryDatabase {
     mint_keys: Arc<Mutex<HashMap<Id, Keys>>>,
     proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
     pending_proofs: Arc<Mutex<HashMap<UncheckedUrl, HashSet<Proof>>>>,
-    keyset_counter: Arc<Mutex<HashMap<Id, u64>>>,
+    keyset_counter: Arc<Mutex<HashMap<Id, u32>>>,
 }
 
 impl WalletMemoryDatabase {
@@ -29,7 +29,7 @@ impl WalletMemoryDatabase {
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
         mint_keys: Vec<Keys>,
-        keyset_counter: HashMap<Id, u64>,
+        keyset_counter: HashMap<Id, u32>,
     ) -> Self {
         Self {
             mints: Arc::new(Mutex::new(HashMap::new())),
@@ -215,7 +215,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Error> {
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error> {
         let keyset_counter = self.keyset_counter.lock().await;
         let current_counter = keyset_counter.get(keyset_id).unwrap_or(&0);
         self.keyset_counter
@@ -225,7 +225,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u64>, Error> {
+    async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u32>, Error> {
         Ok(self.keyset_counter.lock().await.get(id).cloned())
     }
 }
