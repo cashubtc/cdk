@@ -302,7 +302,7 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
