@@ -592,7 +592,7 @@ impl WalletDatabase for RexieWalletDatabase {
         Ok(())
     }
 
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u64) -> Result<(), Self::Err> {
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -604,7 +604,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let keyset_id = serde_wasm_bindgen::to_value(keyset_id).map_err(Error::from)?;
 
         let current_count = counter_store.get(&keyset_id).await.map_err(Error::from)?;
-        let current_count: Option<u64> =
+        let current_count: Option<u32> =
             serde_wasm_bindgen::from_value(current_count).map_err(Error::from)?;
 
         let new_count = current_count.unwrap_or_default() + count;
@@ -621,7 +621,7 @@ impl WalletDatabase for RexieWalletDatabase {
         Ok(())
     }
 
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u64>, Self::Err> {
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -633,7 +633,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let keyset_id = serde_wasm_bindgen::to_value(keyset_id).map_err(Error::from)?;
 
         let current_count = counter_store.get(&keyset_id).await.map_err(Error::from)?;
-        let current_count: Option<u64> =
+        let current_count: Option<u32> =
             serde_wasm_bindgen::from_value(current_count).map_err(Error::from)?;
 
         Ok(current_count)

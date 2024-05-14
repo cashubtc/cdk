@@ -21,25 +21,39 @@ nut13 = ["dep:bip39"]
 async-trait = "0.1"
 base64 = "0.22" # bitcoin uses v0.13 (optional dep)
 bip39 = { version = "2.0", optional = true }
-bitcoin = { version = "0.30", features = ["serde", "rand", "rand-std"] } # lightning-invoice uses v0.30
+bitcoin = { version = "0.30", features = [
+    "serde",
+    "rand",
+    "rand-std",
+] } # lightning-invoice uses v0.30
 http = "1.0"
 lightning-invoice = { version = "0.30", features = ["serde"] }
 once_cell = "1.19"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"], optional = true }
-serde = { version = "1.0", default-features = false, features = ["derive"]}
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "socks",
+], optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.4"
-tracing = { version = "0.1", default-features = false }
+tracing = { version = "0.1", default-features = false, features = [
+    "attributes",
+    "log",
+] }
 thiserror = "1.0"
 url = "2.3"
 uuid = { version = "1.6", features = ["v4"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "time",
+    "macros",
+    "sync",
+] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
-instant = { version = "0.1", features = [ "wasm-bindgen", "inaccurate" ] }
-
-
+instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
