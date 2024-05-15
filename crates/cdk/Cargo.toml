@@ -10,12 +10,9 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet", "all-nuts"]
+default = ["mint", "wallet"]
 mint = ["dep:bip39"]
-wallet = ["nut13", "dep:bip39", "dep:reqwest"]
-all-nuts = ["nut13"]
-nut13 = ["dep:bip39"]
-
+wallet = ["dep:bip39", "dep:reqwest"]
 
 [dependencies]
 async-trait = "0.1"

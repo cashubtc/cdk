@@ -37,7 +37,6 @@ pub enum Error {
     #[error(transparent)]
     Secret(#[from] super::secret::Error),
     /// Bip32 error
-    #[cfg(feature = "nut13")]
     #[error(transparent)]
     Bip32(#[from] bitcoin::bip32::Error),
     /// Parse int error
