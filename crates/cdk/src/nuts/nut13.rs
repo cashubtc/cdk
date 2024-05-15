@@ -15,7 +15,6 @@ use crate::{Amount, SECP256K1};
 
 impl Secret {
     pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
-        tracing::debug!("Deriving secret for {} with count {}", keyset_id, counter);
         let path = derive_path_from_keyset_id(keyset_id)?
             .child(ChildNumber::from_hardened_idx(counter)?)
             .child(ChildNumber::from_normal_idx(0)?);
@@ -29,7 +28,6 @@ impl Secret {
 
 impl SecretKey {
     pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
-        tracing::debug!("Deriving key for {} with count {}", keyset_id, counter);
         let path = derive_path_from_keyset_id(keyset_id)?
             .child(ChildNumber::from_hardened_idx(counter)?)
             .child(ChildNumber::from_normal_idx(1)?);
