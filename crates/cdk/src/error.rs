@@ -1,5 +1,6 @@
 //! Errors
 
+use std::fmt;
 use std::string::FromUtf8Error;
 
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,18 @@ pub struct ErrorResponse {
     pub code: u32,
     pub error: Option<String>,
     pub detail: Option<String>,
+}
+
+impl fmt::Display for ErrorResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "code: {}, error: {}, detail: {}",
+            self.code,
+            self.error.clone().unwrap_or_default(),
+            self.detail.clone().unwrap_or_default()
+        )
+    }
 }
 
 impl ErrorResponse {

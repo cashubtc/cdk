@@ -27,14 +27,14 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
-    ///  Min req error
-    #[error("Unknown Error response")]
-    UnknownErrorResponse(crate::error::ErrorResponse),
+    ///  Unknown error response
+    #[error("Unknown Error response: `{0}`")]
+    UnknownErrorResponse(String),
 }
 
 impl From<ErrorResponse> for Error {
     fn from(err: ErrorResponse) -> Error {
-        Self::UnknownErrorResponse(err)
+        Self::UnknownErrorResponse(err.to_string())
     }
 }
 
