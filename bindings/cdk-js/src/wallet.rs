@@ -179,16 +179,15 @@ impl JsWallet {
         encoded_token: String,
         signing_keys: JsValue,
         preimages: JsValue,
-    ) -> Result<()> {
+    ) -> Result<JsAmount> {
         let signing_keys: Option<Vec<SigningKey>> = serde_wasm_bindgen::from_value(signing_keys)?;
         let preimages: Option<Vec<String>> = serde_wasm_bindgen::from_value(preimages)?;
 
         self.inner
             .receive(&encoded_token, signing_keys, preimages)
             .await
-            .map_err(into_err)?;
-
-        Ok(())
+            .map_err(into_err)?
+            .into()
     }
 
     #[wasm_bindgen(js_name = send)]
