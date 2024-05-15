@@ -921,7 +921,7 @@ impl Wallet {
         encoded_token: &str,
         signing_keys: Option<Vec<SigningKey>>,
         preimages: Option<Vec<String>>,
-    ) -> Result<(), Error> {
+    ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
 
         let unit = token_data.unit.unwrap_or_default();
@@ -1050,11 +1050,13 @@ impl Wallet {
             mint_proofs.extend(p);
         }
 
+        let mut total_amount = Amount::ZERO;
         for (mint, proofs) in received_proofs {
+            total_amount += proofs.iter().map(|p| p.amount).sum();
             self.localstore.add_proofs(mint, proofs).await?;
         }
 
-        Ok(())
+        Ok(total_amount)
     }
 
     #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
