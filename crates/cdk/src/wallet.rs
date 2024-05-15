@@ -426,11 +426,7 @@ impl Wallet {
             .get_keyset_counter(&active_keyset_id)
             .await?;
 
-        let count = if let Some(count) = count {
-            count + 1
-        } else {
-            0
-        };
+        let count = count.map_or(0, |c| c + 1);
 
         let premint_secrets = PreMintSecrets::from_xpriv(
             active_keyset_id,
@@ -616,11 +612,7 @@ impl Wallet {
                     .get_keyset_counter(&active_keyset_id)
                     .await?;
 
-                let count = if let Some(count) = count {
-                    count + 1
-                } else {
-                    0
-                };
+                let count = count.map_or(0, |c| c + 1);
 
                 let change_premint_secrets = PreMintSecrets::from_xpriv(
                     active_keyset_id,
@@ -641,11 +633,7 @@ impl Wallet {
                     .get_keyset_counter(&active_keyset_id)
                     .await?;
 
-                let count = if let Some(count) = count {
-                    count + 1
-                } else {
-                    0
-                };
+                let mut count = count.map_or(0, |c| c + 1);
 
                 let premint_secrets = PreMintSecrets::from_xpriv(
                     active_keyset_id,
@@ -655,7 +643,7 @@ impl Wallet {
                     false,
                 )?;
 
-                let count = count + premint_secrets.len() as u32;
+                count += premint_secrets.len() as u32;
 
                 let change_premint_secrets = PreMintSecrets::from_xpriv(
                     active_keyset_id,
@@ -867,11 +855,7 @@ impl Wallet {
             .get_keyset_counter(&active_keyset_id)
             .await?;
 
-        let count = if let Some(count) = count {
-            count + 1
-        } else {
-            0
-        };
+        let count = count.map_or(0, |c| c + 1);
 
         let premint_secrets =
             PreMintSecrets::from_xpriv(active_keyset_id, count, self.xpriv, proofs_amount, true)?;
@@ -1084,7 +1068,6 @@ impl Wallet {
         Ok(Token::new(mint_url, proofs, memo, unit)?.to_string())
     }
 
-    #[cfg(feature = "nut13")]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn restore(&mut self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
         // Check that mint is in store of mints
@@ -1156,7 +1139,6 @@ impl Wallet {
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 
-                #[cfg(feature = "nut13")]
                 self.localstore
                     .increment_keyset_counter(&keyset.id, proofs.len() as u32)
                     .await?;

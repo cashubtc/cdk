@@ -11,7 +11,6 @@ pub mod nut09;
 pub mod nut10;
 pub mod nut11;
 pub mod nut12;
-#[cfg(feature = "nut13")]
 pub mod nut13;
 pub mod nut14;
 
