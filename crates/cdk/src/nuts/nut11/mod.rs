@@ -3,16 +3,12 @@
 //! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
 use std::str::FromStr;
 use std::{fmt, vec};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::secp256k1::{
-    KeyPair, Message, Parity, PublicKey as NormalizedPublicKey, XOnlyPublicKey,
-};
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -23,7 +19,6 @@ use super::nut01::PublicKey;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
 use crate::util::{hex, unix_time};
-use crate::SECP256K1;
 
 pub mod serde_p2pk_witness;
 
@@ -100,7 +95,7 @@ impl P2PKWitness {
 
 impl Proof {
     /// Sign [Proof]
-    pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
+    pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
         let msg: Vec<u8> = self.secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
@@ -138,7 +133,7 @@ impl Proof {
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
 
         if secret.kind.eq(&Kind::P2PK) {
-            pubkeys.push(VerifyingKey::from_str(&secret.secret_data.data)?);
+            pubkeys.push(PublicKey::from_str(&secret.secret_data.data)?);
         }
 
         for signature in witness_signatures.iter() {
@@ -184,7 +179,7 @@ impl Proof {
 }
 
 /// Returns count of valid signatures
-pub fn valid_signatures(msg: &[u8], pubkeys: &[VerifyingKey], signatures: &[Signature]) -> u64 {
+pub fn valid_signatures(msg: &[u8], pubkeys: &[PublicKey], signatures: &[Signature]) -> u64 {
     let mut count = 0;
 
     for pubkey in pubkeys {
@@ -200,7 +195,7 @@ pub fn valid_signatures(msg: &[u8], pubkeys: &[VerifyingKey], signatures: &[Sign
 
 impl BlindedMessage {
     /// Sign [BlindedMessage]
-    pub fn sign_p2pk(&mut self, secret_key: SigningKey) -> Result<(), Error> {
+    pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
         let msg: [u8; 33] = self.blinded_secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
@@ -221,11 +216,7 @@ impl BlindedMessage {
     }
 
     /// Verify P2PK conditions on [BlindedMessage]
-    pub fn verify_p2pk(
-        &self,
-        pubkeys: &Vec<VerifyingKey>,
-        required_sigs: u64,
-    ) -> Result<(), Error> {
+    pub fn verify_p2pk(&self, pubkeys: &Vec<PublicKey>, required_sigs: u64) -> Result<(), Error> {
         let mut valid_sigs = 0;
         if let Some(witness) = &self.witness {
             for signature in witness
@@ -261,7 +252,7 @@ impl BlindedMessage {
 pub enum SpendingConditions {
     /// NUT11 Spending conditions
     P2PKConditions {
-        data: VerifyingKey,
+        data: PublicKey,
         conditions: Conditions,
     },
     /// NUT14 Spending conditions
@@ -283,7 +274,7 @@ impl SpendingConditions {
     }
 
     /// New P2PK [SpendingConditions]
-    pub fn new_p2pk(pubkey: VerifyingKey, conditions: Conditions) -> Self {
+    pub fn new_p2pk(pubkey: PublicKey, conditions: Conditions) -> Self {
         Self::P2PKConditions {
             data: pubkey,
             conditions,
@@ -305,10 +296,10 @@ impl SpendingConditions {
         }
     }
 
-    pub fn pubkeys(&self) -> Option<Vec<VerifyingKey>> {
+    pub fn pubkeys(&self) -> Option<Vec<PublicKey>> {
         match self {
             Self::P2PKConditions { data, conditions } => {
-                let mut pubkeys = vec![data.clone()];
+                let mut pubkeys = vec![*data];
                 pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
 
                 Some(pubkeys)
@@ -324,7 +315,7 @@ impl SpendingConditions {
         }
     }
 
-    pub fn refund_keys(&self) -> &Option<Vec<VerifyingKey>> {
+    pub fn refund_keys(&self) -> &Option<Vec<PublicKey>> {
         match self {
             Self::P2PKConditions { conditions, .. } => &conditions.refund_keys,
             Self::HTLCConditions { conditions, .. } => &conditions.refund_keys,
@@ -337,7 +328,7 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
     fn try_from(secret: Nut10Secret) -> Result<SpendingConditions, Error> {
         match secret.kind {
             Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
-                data: VerifyingKey::from_str(&secret.secret_data.data)?,
+                data: PublicKey::from_str(&secret.secret_data.data)?,
                 conditions: secret.secret_data.tags.try_into()?,
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
@@ -352,11 +343,9 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
 impl From<SpendingConditions> for super::nut10::Secret {
     fn from(conditions: SpendingConditions) -> super::nut10::Secret {
         match conditions {
-            SpendingConditions::P2PKConditions { data, conditions } => super::nut10::Secret::new(
-                Kind::P2PK,
-                data.to_normalized_public_key().to_hex(),
-                conditions,
-            ),
+            SpendingConditions::P2PKConditions { data, conditions } => {
+                super::nut10::Secret::new(Kind::P2PK, data.to_hex(), conditions)
+            }
             SpendingConditions::HTLCConditions { data, conditions } => {
                 super::nut10::Secret::new(Kind::HTLC, data.to_string(), conditions)
             }
@@ -370,9 +359,9 @@ pub struct Conditions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locktime: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pubkeys: Option<Vec<VerifyingKey>>,
+    pub pubkeys: Option<Vec<PublicKey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub refund_keys: Option<Vec<VerifyingKey>>,
+    pub refund_keys: Option<Vec<PublicKey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_sigs: Option<u64>,
     pub sig_flag: SigFlag,
@@ -381,8 +370,8 @@ pub struct Conditions {
 impl Conditions {
     pub fn new(
         locktime: Option<u64>,
-        pubkeys: Option<Vec<VerifyingKey>>,
-        refund_keys: Option<Vec<VerifyingKey>>,
+        pubkeys: Option<Vec<PublicKey>>,
+        refund_keys: Option<Vec<PublicKey>>,
         num_sigs: Option<u64>,
         sig_flag: Option<SigFlag>,
     ) -> Result<Self, Error> {
@@ -568,13 +557,13 @@ impl FromStr for SigFlag {
     }
 }
 
-pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<VerifyingKey>) {
+pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<PublicKey>) {
     let mut sig_flag = SigFlag::SigInputs;
     let mut pubkeys = HashSet::new();
     for proof in proofs {
         if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
             if secret.kind.eq(&Kind::P2PK) {
-                if let Ok(verifying_key) = VerifyingKey::from_str(&secret.secret_data.data) {
+                if let Ok(verifying_key) = PublicKey::from_str(&secret.secret_data.data) {
                     pubkeys.insert(verifying_key);
                 }
             }
@@ -599,8 +588,8 @@ pub enum Tag {
     SigFlag(SigFlag),
     NSigs(u64),
     LockTime(u64),
-    Refund(Vec<VerifyingKey>),
-    PubKeys(Vec<VerifyingKey>),
+    Refund(Vec<PublicKey>),
+    PubKeys(Vec<PublicKey>),
 }
 
 impl Tag {
@@ -640,7 +629,7 @@ where
                 let pubkeys = tag
                     .iter()
                     .skip(1)
-                    .flat_map(|p| VerifyingKey::from_str(p.as_ref()))
+                    .flat_map(|p| PublicKey::from_str(p.as_ref()))
                     .collect();
 
                 Ok(Self::Refund(pubkeys))
@@ -649,7 +638,7 @@ where
                 let pubkeys = tag
                     .iter()
                     .skip(1)
-                    .flat_map(|p| VerifyingKey::from_str(p.as_ref()))
+                    .flat_map(|p| PublicKey::from_str(p.as_ref()))
                     .collect();
 
                 Ok(Self::PubKeys(pubkeys))
@@ -668,7 +657,6 @@ impl From<Tag> for Vec<String> {
             Tag::PubKeys(pubkeys) => {
                 let mut tag = vec![TagKind::Pubkeys.to_string()];
                 for pubkey in pubkeys.into_iter() {
-                    let pubkey: PublicKey = pubkey.to_normalized_public_key();
                     tag.push(pubkey.to_string())
                 }
                 tag
@@ -710,127 +698,6 @@ impl<'de> Deserialize<'de> for Tag {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct VerifyingKey(XOnlyPublicKey);
-
-impl VerifyingKey {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        Ok(Self(XOnlyPublicKey::from_slice(bytes)?))
-    }
-
-    pub fn from_public_key(public_key: PublicKey) -> Self {
-        let (pk, ..) = public_key.x_only_public_key();
-        Self(pk)
-    }
-
-    pub fn to_normalized_public_key(self) -> PublicKey {
-        NormalizedPublicKey::from_x_only_public_key(self.0, Parity::Even).into()
-    }
-
-    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), Error> {
-        let hash: Sha256Hash = Sha256Hash::hash(msg);
-        let msg = Message::from_slice(hash.as_ref())?;
-        SECP256K1.verify_schnorr(sig, &msg, &self.0)?;
-        Ok(())
-    }
-}
-
-impl FromStr for VerifyingKey {
-    type Err = Error;
-
-    fn from_str(hex: &str) -> Result<Self, Self::Err> {
-        let bytes: Vec<u8> = hex::decode(hex)?;
-
-        // Check len
-        let bytes: &[u8] = if bytes.len() == 33 {
-            &bytes[1..]
-        } else {
-            &bytes
-        };
-
-        Ok(Self(XOnlyPublicKey::from_slice(bytes)?))
-    }
-}
-
-impl fmt::Display for VerifyingKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl TryFrom<PublicKey> for VerifyingKey {
-    type Error = Error;
-    fn try_from(value: PublicKey) -> Result<VerifyingKey, Self::Error> {
-        (&value).try_into()
-    }
-}
-
-impl TryFrom<&PublicKey> for VerifyingKey {
-    type Error = Error;
-    fn try_from(value: &PublicKey) -> Result<VerifyingKey, Self::Error> {
-        let bytes = value.to_bytes();
-
-        let bytes = if bytes.len().eq(&33) {
-            bytes.iter().skip(1).cloned().collect()
-        } else {
-            bytes.to_vec()
-        };
-
-        VerifyingKey::from_bytes(&bytes)
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SigningKey {
-    secret_key: SecretKey,
-    key_pair: KeyPair,
-}
-
-impl Deref for SigningKey {
-    type Target = SecretKey;
-
-    fn deref(&self) -> &Self::Target {
-        &self.secret_key
-    }
-}
-
-impl SigningKey {
-    #[inline]
-    pub fn new(secret_key: SecretKey) -> Self {
-        Self {
-            key_pair: KeyPair::from_secret_key(&SECP256K1, &secret_key),
-            secret_key,
-        }
-    }
-    pub fn sign(&self, msg: &[u8]) -> Result<Signature, Error> {
-        let hash: Sha256Hash = Sha256Hash::hash(msg);
-        let msg = Message::from_slice(hash.as_ref())?;
-        Ok(SECP256K1.sign_schnorr(&msg, &self.key_pair))
-    }
-
-    #[inline]
-    pub fn verifying_key(&self) -> VerifyingKey {
-        let public_key: PublicKey = self.public_key();
-        VerifyingKey::from_public_key(public_key)
-    }
-}
-
-impl FromStr for SigningKey {
-    type Err = Error;
-
-    fn from_str(hex: &str) -> Result<Self, Self::Err> {
-        let secret_key = SecretKey::from_hex(hex)?;
-        Ok(Self::new(secret_key))
-    }
-}
-
-impl fmt::Display for SigningKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.secret_key)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -842,7 +709,7 @@ mod tests {
 
     #[test]
     fn test_secret_ser() {
-        let data = VerifyingKey::from_str(
+        let data = PublicKey::from_str(
             "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
         )
         .unwrap();
@@ -850,16 +717,16 @@ mod tests {
         let conditions = Conditions {
             locktime: Some(99999),
             pubkeys: Some(vec![
-                VerifyingKey::from_str(
+                PublicKey::from_str(
                     "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
                 )
                 .unwrap(),
-                VerifyingKey::from_str(
+                PublicKey::from_str(
                     "023192200a0cfd3867e48eb63b03ff599c7e46c8f4e41146b2d281173ca6c50c54",
                 )
                 .unwrap(),
             ]),
-            refund_keys: Some(vec![VerifyingKey::from_str(
+            refund_keys: Some(vec![PublicKey::from_str(
                 "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
             )
             .unwrap()]),
@@ -878,26 +745,23 @@ mod tests {
 
     #[test]
     fn sign_proof() {
-        let secret_key = SigningKey::from_str(
-            "04918dfc36c93e7db6cc0d60f37e1522f1c36b64d3f4b424c532d7c595febbc5",
-        )
-        .unwrap();
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
 
-        let signing_key_two = SigningKey::from_str(
-            "0000000000000000000000000000000000000000000000000000000000000001",
-        )
-        .unwrap();
+        let signing_key_two =
+            SecretKey::from_str("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
 
-        let signing_key_three = SigningKey::from_str(
-            "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
-        )
-        .unwrap();
-        let v_key: VerifyingKey = secret_key.verifying_key();
-        let v_key_two: VerifyingKey = signing_key_two.verifying_key();
-        let v_key_three: VerifyingKey = signing_key_three.verifying_key();
+        let signing_key_three =
+            SecretKey::from_str("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f")
+                .unwrap();
+        let v_key: PublicKey = secret_key.public_key();
+        let v_key_two: PublicKey = signing_key_two.public_key();
+        let v_key_three: PublicKey = signing_key_three.public_key();
 
         let conditions = Conditions {
-            locktime: Some(21),
+            locktime: Some(21000000000),
             pubkeys: Some(vec![v_key_two, v_key_three]),
             refund_keys: Some(vec![v_key.clone()]),
             num_sigs: Some(2),
@@ -921,6 +785,7 @@ mod tests {
         };
 
         proof.sign_p2pk(secret_key).unwrap();
+        proof.sign_p2pk(signing_key_two).unwrap();
 
         assert!(proof.verify_p2pk().is_ok());
     }
@@ -968,12 +833,12 @@ mod tests {
 
     #[test]
     fn verify_refund() {
-        let valid_proof = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"3eff971bb1ca70b16be3446a4d3feedf2f37f054c5c8621d832744df71b028f0\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"02142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"21\"],[\"n_sigs\",\"2\"],[\"refund\",\"49098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"94c6355461ca88e5d22c4e65e920b2e8253ccb4dd084675453a7bba7044e580246bd05e2520691afeccb2a88784cc56064353aec8b6a61e172727ba9cb3054a1\"]}"}"#;
+        let valid_proof = r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"902685f492ef3bb2ca35a47ddbba484a3365d143b9776d453947dcbf1ddf9689\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"21\"],[\"n_sigs\",\"2\"],[\"refund\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"710507b4bc202355c91ea3c147c0d0189c75e179d995e566336afd759cb342bcad9a593345f559d9b9e108ac2c9b5bd9f0b4b6a295028a98606a0a2e95eb54f7\"]}"}"#;
 
         let valid_proof: Proof = serde_json::from_str(valid_proof).unwrap();
         assert!(valid_proof.verify_p2pk().is_ok());
 
-        let invalid_proof = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"d14cf9be9d9438d548b6b9d29bf800611136d053421b0f48c38d1447a7a92fc8\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"02142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"2100000000000\"],[\"n_sigs\",\"2\"],[\"refund\",\"49098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"c3079dccf828e9d38bbbb17edf19c7915ee11920cf271c36b8780fdeb88b16fbfbe0328c7dcbe80e56cdc8f85c5831c79df77b27e81e5630a4dd392601fab9eb\"]}"}"#;
+        let invalid_proof = r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"64c46e5d30df27286166814b71b5d69801704f23a7ad626b05688fbdb48dcc98\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"21\"],[\"n_sigs\",\"2\"],[\"refund\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"f661d3dc046d636d47cb3d06586da42c498f0300373d1c2a4f417a44252cdf3809bce207c8888f934dba0d2b1671f1b8622d526840f2d5883e571b462630c1ff\"]}"}"#;
 
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
