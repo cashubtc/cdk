@@ -2,10 +2,14 @@ use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
 
-use bitcoin::secp256k1;
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::{self, Message};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::Error;
+use crate::SECP256K1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PublicKey {
@@ -70,6 +74,14 @@ impl PublicKey {
     #[inline]
     pub fn to_hex(&self) -> String {
         self.inner.to_string()
+    }
+
+    /// Verify schnorr signature
+    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), Error> {
+        let hash: Sha256Hash = Sha256Hash::hash(msg);
+        let msg = Message::from_slice(hash.as_ref())?;
+        SECP256K1.verify_schnorr(sig, &msg, &self.inner.x_only_public_key().0)?;
+        Ok(())
     }
 }
 

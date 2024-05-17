@@ -18,8 +18,8 @@ use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::{
     nut10, nut12, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind,
     MeltQuoteBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets, PreSwap, Proof,
-    ProofState, Proofs, PublicKey, RestoreRequest, SigFlag, SigningKey, SpendingConditions, State,
-    SwapRequest, Token, VerifyingKey,
+    ProofState, Proofs, PublicKey, RestoreRequest, SecretKey, SigFlag, SpendingConditions, State,
+    SwapRequest, Token,
 };
 use crate::types::{MeltQuote, Melted, MintQuote};
 use crate::url::UncheckedUrl;
@@ -64,6 +64,9 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT01 Error
+    #[error(transparent)]
+    NUT01(#[from] crate::nuts::nut01::Error),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
@@ -919,7 +922,7 @@ impl Wallet {
     pub async fn receive(
         &mut self,
         encoded_token: &str,
-        signing_keys: Option<Vec<SigningKey>>,
+        signing_keys: Option<Vec<SecretKey>>,
         preimages: Option<Vec<String>>,
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
@@ -956,7 +959,7 @@ impl Wallet {
             let pubkey_secret_key = match &signing_keys {
                 Some(signing_keys) => signing_keys
                     .iter()
-                    .map(|s| (s.verifying_key().to_string(), s))
+                    .map(|s| (s.public_key().to_string(), s))
                     .collect(),
                 None => HashMap::new(),
             };
@@ -992,7 +995,7 @@ impl Wallet {
 
                         match secret.kind {
                             Kind::P2PK => {
-                                let data_key = VerifyingKey::from_str(&secret.secret_data.data)?;
+                                let data_key = PublicKey::from_str(&secret.secret_data.data)?;
 
                                 pubkeys.push(data_key);
                             }

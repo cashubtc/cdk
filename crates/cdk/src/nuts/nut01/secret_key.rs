@@ -2,9 +2,12 @@ use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::rand::rngs::OsRng;
-use bitcoin::secp256k1::Scalar;
+use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::{KeyPair, Message, Scalar};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{Error, PublicKey};
@@ -72,6 +75,13 @@ impl SecretKey {
     /// Get secret key as `bytes`
     pub fn to_secret_bytes(&self) -> [u8; 32] {
         self.inner.secret_bytes()
+    }
+
+    /// Schnorr Signature on Message
+    pub fn sign(&self, msg: &[u8]) -> Result<Signature, Error> {
+        let hash: Sha256Hash = Sha256Hash::hash(msg);
+        let msg = Message::from_slice(hash.as_ref())?;
+        Ok(SECP256K1.sign_schnorr(&msg, &KeyPair::from_secret_key(&SECP256K1, &self.inner)))
     }
 
     /// Get public key

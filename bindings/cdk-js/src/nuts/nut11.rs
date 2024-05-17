@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use std::str::FromStr;
 
-use cdk::nuts::{Conditions, P2PKWitness, SigFlag, SpendingConditions, VerifyingKey};
+use cdk::nuts::{Conditions, P2PKWitness, PublicKey, SigFlag, SpendingConditions};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -40,7 +40,7 @@ impl Deref for JsP2PKSpendingConditions {
 impl JsP2PKSpendingConditions {
     #[wasm_bindgen(constructor)]
     pub fn new(pubkey: String, conditions: JsConditions) -> Result<JsP2PKSpendingConditions> {
-        let pubkey = VerifyingKey::from_str(&pubkey).map_err(into_err)?;
+        let pubkey = PublicKey::from_str(&pubkey).map_err(into_err)?;
         Ok(Self {
             inner: SpendingConditions::new_p2pk(pubkey, conditions.deref().clone()),
         })
@@ -75,8 +75,8 @@ impl JsConditions {
         num_sigs: Option<u64>,
         sig_flag: String,
     ) -> Result<JsConditions> {
-        let pubkeys: Result<Vec<VerifyingKey>, _> = serde_wasm_bindgen::from_value(pubkeys);
-        let refund_key: Result<Vec<VerifyingKey>, _> = serde_wasm_bindgen::from_value(refund_key);
+        let pubkeys: Result<Vec<PublicKey>, _> = serde_wasm_bindgen::from_value(pubkeys);
+        let refund_key: Result<Vec<PublicKey>, _> = serde_wasm_bindgen::from_value(refund_key);
 
         Ok(Self {
             inner: Conditions::new(

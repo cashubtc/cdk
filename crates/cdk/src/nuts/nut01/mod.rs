@@ -140,7 +140,6 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::nuts::nut11::VerifyingKey;
 
     #[test]
     fn pubkey() {
@@ -151,18 +150,6 @@ mod tests {
         let pubkey_str = "04918dfc36c93e7db6cc0d60f37e1522f1c36b64d3f4b424c532d7c595febbc5";
         let pubkey = PublicKey::from_hex(pubkey_str.to_string()).unwrap();
         assert_eq!(pubkey_str, pubkey.to_hex())*/
-    }
-
-    #[test]
-    fn verying_key() {
-        let key_str = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
-
-        let pubkey = PublicKey::from_str(key_str).unwrap();
-        let v_key: VerifyingKey = pubkey.try_into().unwrap();
-
-        let p: PublicKey = v_key.to_normalized_public_key();
-
-        assert_eq!(p, pubkey);
     }
 
     #[ignore]
