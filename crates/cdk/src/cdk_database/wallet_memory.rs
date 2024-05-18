@@ -8,10 +8,13 @@ use tokio::sync::RwLock;
 
 use super::WalletDatabase;
 use crate::cdk_database::Error;
+#[cfg(feature = "nostr")]
+use crate::nuts::PublicKey;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, Proofs};
 use crate::types::{MeltQuote, MintQuote};
 use crate::url::UncheckedUrl;
 
+// TODO: Change these all to RwLocks
 #[derive(Default, Debug, Clone)]
 pub struct WalletMemoryDatabase {
     mints: Arc<RwLock<HashMap<UncheckedUrl, Option<MintInfo>>>>,
@@ -22,6 +25,8 @@ pub struct WalletMemoryDatabase {
     proofs: Arc<RwLock<HashMap<UncheckedUrl, HashSet<Proof>>>>,
     pending_proofs: Arc<RwLock<HashMap<UncheckedUrl, HashSet<Proof>>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
+    #[cfg(feature = "nostr")]
+    nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
 }
 
 impl WalletMemoryDatabase {
@@ -30,6 +35,7 @@ impl WalletMemoryDatabase {
         melt_quotes: Vec<MeltQuote>,
         mint_keys: Vec<Keys>,
         keyset_counter: HashMap<Id, u32>,
+        #[cfg(feature = "nostr")] nostr_last_checked: HashMap<PublicKey, u32>,
     ) -> Self {
         Self {
             mints: Arc::new(RwLock::new(HashMap::new())),
@@ -46,6 +52,8 @@ impl WalletMemoryDatabase {
             proofs: Arc::new(RwLock::new(HashMap::new())),
             pending_proofs: Arc::new(RwLock::new(HashMap::new())),
             keyset_counter: Arc::new(RwLock::new(keyset_counter)),
+            #[cfg(feature = "nostr")]
+            nostr_last_checked: Arc::new(RwLock::new(nostr_last_checked)),
         }
     }
 }
@@ -232,5 +240,31 @@ impl WalletDatabase for WalletMemoryDatabase {
 
     async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u32>, Error> {
         Ok(self.keyset_counter.read().await.get(id).cloned())
+    }
+
+    #[cfg(feature = "nostr")]
+    async fn get_nostr_last_checked(
+        &self,
+        verifying_key: &PublicKey,
+    ) -> Result<Option<u32>, Self::Err> {
+        Ok(self
+            .nostr_last_checked
+            .read()
+            .await
+            .get(verifying_key)
+            .cloned())
+    }
+    #[cfg(feature = "nostr")]
+    async fn add_nostr_last_checked(
+        &self,
+        verifying_key: PublicKey,
+        last_checked: u32,
+    ) -> Result<(), Self::Err> {
+        self.nostr_last_checked
+            .write()
+            .await
+            .insert(verifying_key, last_checked);
+
+        Ok(())
     }
 }

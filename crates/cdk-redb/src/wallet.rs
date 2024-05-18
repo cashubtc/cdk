@@ -5,6 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
+#[cfg(feature = "nostr")]
+use cdk::nuts::PublicKey;
 use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
 use cdk::types::{MeltQuote, MintQuote};
 use cdk::url::UncheckedUrl;
@@ -25,6 +27,8 @@ const PENDING_PROOFS_TABLE: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("pending_proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
+#[cfg(feature = "nostr")]
+const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 
 const DATABASE_VERSION: u32 = 0;
 
@@ -64,6 +68,8 @@ impl RedbWalletDatabase {
                     let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
                     let _ = write_txn.open_multimap_table(PROOFS_TABLE)?;
                     let _ = write_txn.open_table(KEYSET_COUNTER)?;
+                    #[cfg(feature = "nostr")]
+                    let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
                     table.insert("db_version", "0")?;
                 }
             }
@@ -561,5 +567,46 @@ impl WalletDatabase for RedbWalletDatabase {
             .map_err(Error::from)?;
 
         Ok(counter.map(|c| c.value()))
+    }
+
+    #[cfg(feature = "nostr")]
+    #[instrument(skip(self))]
+    async fn get_nostr_last_checked(
+        &self,
+        verifying_key: &PublicKey,
+    ) -> Result<Option<u32>, Self::Err> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(NOSTR_LAST_CHECKED)
+            .map_err(Error::from)?;
+
+        let last_checked = table
+            .get(verifying_key.to_string().as_str())
+            .map_err(Error::from)?;
+
+        Ok(last_checked.map(|c| c.value()))
+    }
+    #[cfg(feature = "nostr")]
+    #[instrument(skip(self))]
+    async fn add_nostr_last_checked(
+        &self,
+        verifying_key: PublicKey,
+        last_checked: u32,
+    ) -> Result<(), Self::Err> {
+        let db = self.db.lock().await;
+        let write_txn = db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(NOSTR_LAST_CHECKED)
+                .map_err(Error::from)?;
+
+            table
+                .insert(verifying_key.to_string().as_str(), last_checked)
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
     }
 }

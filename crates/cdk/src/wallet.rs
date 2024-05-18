@@ -9,6 +9,10 @@ use bitcoin::bip32::ExtendedPrivKey;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::Network;
+#[cfg(feature = "nostr")]
+use nostr_sdk::nips::nip04;
+#[cfg(feature = "nostr")]
+use nostr_sdk::{Filter, NostrSigner, RelayPoolNotification, Timestamp};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -81,6 +85,12 @@ pub enum Error {
     Invoice(#[from] lightning_invoice::ParseOrSemanticError),
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    #[cfg(feature = "nostr")]
+    #[error(transparent)]
+    NostrClient(#[from] nostr_sdk::client::Error),
+    #[cfg(feature = "nostr")]
+    #[error(transparent)]
+    NostrKey(#[from] nostr_sdk::key::Error),
     #[error("`{0}`")]
     Custom(String),
 }
@@ -96,6 +106,8 @@ pub struct Wallet {
     pub client: HttpClient,
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     xpriv: ExtendedPrivKey,
+    #[cfg(feature = "nostr")]
+    nostr_client: nostr_sdk::Client,
 }
 
 impl Wallet {
@@ -105,11 +117,22 @@ impl Wallet {
     ) -> Self {
         let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, seed)
             .expect("Could not create master key");
+
         Self {
             client: HttpClient::new(),
             localstore,
             xpriv,
+            #[cfg(feature = "nostr")]
+            nostr_client: nostr_sdk::Client::default(),
         }
+    }
+
+    /// Add nostr relays to client
+    #[cfg(feature = "nostr")]
+    #[instrument(skip(self))]
+    pub async fn add_nostr_relays(&self, relays: Vec<String>) -> Result<(), Error> {
+        self.nostr_client.add_relays(relays).await?;
+        Ok(())
     }
 
     /// Total Balance of wallet
@@ -676,7 +699,7 @@ impl Wallet {
     /// Create Swap Payload
     #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
     async fn create_swap(
-        &mut self,
+        &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Option<Amount>,
@@ -784,7 +807,7 @@ impl Wallet {
         };
 
         Ok(self
-            .proofs_to_token(
+            .proof_to_token(
                 mint_url.clone(),
                 send_proofs.ok_or(Error::InsufficientFunds)?,
                 memo,
@@ -1003,7 +1026,7 @@ impl Wallet {
     /// Receive
     #[instrument(skip_all)]
     pub async fn receive(
-        &mut self,
+        &self,
         encoded_token: &str,
         signing_keys: Option<Vec<SecretKey>>,
         preimages: Option<Vec<String>>,
@@ -1061,7 +1084,7 @@ impl Wallet {
 
             for proof in &mut proofs {
                 // Verify that proof DLEQ is valid
-                {
+                if proof.dleq.is_some() {
                     let keys = self.get_keyset_keys(&token.mint, proof.keyset_id).await?;
                     let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
                     proof.verify_dleq(key)?;
@@ -1145,8 +1168,131 @@ impl Wallet {
         Ok(total_amount)
     }
 
+    #[cfg(feature = "nostr")]
+    #[instrument(skip(self))]
+    pub async fn nostr_receive(&self, nostr_signing_key: SecretKey) -> Result<Amount, Error> {
+        use nostr_sdk::{Keys, Kind, RelayMessage};
+        use tokio::sync::Mutex;
+
+        let verifying_key = nostr_signing_key.public_key();
+
+        let nostr_pubkey =
+            nostr_sdk::PublicKey::from_hex(verifying_key.x_only_pubkey().to_string())?;
+
+        let filter = match self
+            .localstore
+            .get_nostr_last_checked(&verifying_key)
+            .await?
+        {
+            Some(since) => Filter::new()
+                .pubkey(nostr_pubkey)
+                .since(Timestamp::from(since as u64)),
+            None => Filter::new().pubkey(nostr_pubkey),
+        };
+
+        self.nostr_client.connect().await;
+        self.nostr_client.subscribe(vec![filter], None).await;
+
+        let tokens: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+
+        // Handle subscription notifications with `handle_notifications` method
+        self.nostr_client
+            .handle_notifications(|notification| async {
+                let mut exit = false;
+                let keys = Keys::from_str(&nostr_signing_key.to_secret_hex()).unwrap();
+
+                match notification {
+                    RelayPoolNotification::Event {
+                        relay_url: _,
+                        subscription_id: _,
+                        event,
+                    } => {
+                        // Check kind
+                        if event.kind() == Kind::EncryptedDirectMessage {
+                            if let Ok(msg) = nip04::decrypt(
+                                keys.secret_key()?,
+                                event.author_ref(),
+                                event.content(),
+                            ) {
+                                println!("DM: {msg}");
+
+                                if let Some(token) = Self::token_from_text(&msg) {
+                                    tokens.lock().await.insert(token.to_string());
+                                }
+                            } else {
+                                tracing::error!("Impossible to decrypt direct message");
+                            }
+                        } else {
+                            println!("Other event: {:?}", event.kind);
+                        }
+                    }
+                    RelayPoolNotification::Message { relay_url, message } => match message {
+                        RelayMessage::Auth { challenge } => {
+                            self.nostr_client
+                                .set_signer(Some(NostrSigner::Keys(keys)))
+                                .await;
+                            let r = self.nostr_client.auth(challenge, relay_url).await?;
+
+                            tracing::debug!("Event id: {r}");
+                        }
+                        RelayMessage::Notice { message } => {
+                            tracing::debug!("Notice: {message}");
+                        }
+                        RelayMessage::Ok {
+                            event_id,
+                            status: _,
+                            message: _,
+                        } => {
+                            println!("Ok: {:?}", event_id);
+                        }
+                        RelayMessage::EndOfStoredEvents(_sub_id) => {
+                            exit = true;
+                        }
+                        _ => {
+                            tracing::debug!("{:?}", message);
+                        }
+                    },
+                    _ => {
+                        tracing::debug!("{:?}", notification);
+                    }
+                }
+
+                Ok(exit) // Set to true to exit from the loop
+            })
+            .await?;
+
+        let mut total_received = Amount::ZERO;
+        for token in tokens.lock().await.iter() {
+            match self.receive(token, None, None).await {
+                Ok(amount) => total_received += amount,
+                Err(err) => {
+                    tracing::error!("Could not receive token: {}", err);
+                }
+            }
+        }
+
+        self.localstore
+            .add_nostr_last_checked(verifying_key, unix_time() as u32)
+            .await?;
+
+        Ok(total_received)
+    }
+
+    #[cfg(feature = "nostr")]
+    fn token_from_text(text: &str) -> Option<&str> {
+        let text = text.trim();
+        if let Some(start) = text.find("cashu") {
+            match text[start..].find(' ') {
+                Some(end) => return Some(&text[start..(end + start)]),
+                None => return Some(&text[start..]),
+            }
+        }
+
+        None
+    }
+
     #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
-    pub fn proofs_to_token(
+    pub fn proof_to_token(
         &self,
         mint_url: UncheckedUrl,
         proofs: Proofs,
@@ -1408,71 +1554,20 @@ impl Wallet {
     }
 }
 
-/*
+#[cfg(feature = "nostr")]
 #[cfg(test)]
 mod tests {
 
-    use std::collections::{HashMap, HashSet};
-
     use super::*;
 
-    use crate::client::Client;
-    use crate::mint::Mint;
-    use cashu::nuts::nut04;
-
     #[test]
-    fn test_wallet() {
-        let mut mint = Mint::new(
-            "supersecretsecret",
-            "0/0/0/0",
-            HashMap::new(),
-            HashSet::new(),
-            32,
-        );
+    fn test_token_from_text() {
+        let text = " Here is some ecash: cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjIsInNlY3JldCI6ImI2Zjk1ODIxYmZlNjUyYjYwZGQ2ZjYwMDU4N2UyZjNhOTk4MzVhMGMyNWI4MTQzODNlYWIwY2QzOWFiNDFjNzUiLCJDIjoiMDI1YWU4ZGEyOTY2Y2E5OGVmYjA5ZDcwOGMxM2FiZmEwZDkxNGUwYTk3OTE4MmFjMzQ4MDllMjYxODY5YTBhNDJlIiwicmVzZXJ2ZWQiOmZhbHNlLCJpZCI6IjAwOWExZjI5MzI1M2U0MWUifSx7ImFtb3VudCI6Miwic2VjcmV0IjoiZjU0Y2JjNmNhZWZmYTY5MTUyOTgyM2M1MjU1MDkwYjRhMDZjNGQ3ZDRjNzNhNDFlZTFkNDBlM2ExY2EzZGZhNyIsIkMiOiIwMjMyMTIzN2JlYjcyMWU3NGI1NzcwNWE5MjJjNjUxMGQwOTYyYzAzNzlhZDM0OTJhMDYwMDliZTAyNjA5ZjA3NTAiLCJyZXNlcnZlZCI6ZmFsc2UsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSJ9LHsiYW1vdW50IjoxLCJzZWNyZXQiOiJhNzdhM2NjODY4YWM4ZGU3YmNiOWMxMzJmZWI3YzEzMDY4Nzg3ODk5Yzk3YTk2NWE2ZThkZTFiMzliMmQ2NmQ3IiwiQyI6IjAzMTY0YTMxNWVhNjM0NGE5NWI2NzM1NzBkYzg0YmZlMTQ2NDhmMTQwM2EwMDJiZmJlMDhlNWFhMWE0NDQ0YWE0MCIsInJlc2VydmVkIjpmYWxzZSwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0= fdfdfg
+        sdfs";
+        let token = Wallet::token_from_text(text).unwrap();
 
-        let keys = mint.active_keyset_pubkeys();
+        let token_str = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjIsInNlY3JldCI6ImI2Zjk1ODIxYmZlNjUyYjYwZGQ2ZjYwMDU4N2UyZjNhOTk4MzVhMGMyNWI4MTQzODNlYWIwY2QzOWFiNDFjNzUiLCJDIjoiMDI1YWU4ZGEyOTY2Y2E5OGVmYjA5ZDcwOGMxM2FiZmEwZDkxNGUwYTk3OTE4MmFjMzQ4MDllMjYxODY5YTBhNDJlIiwicmVzZXJ2ZWQiOmZhbHNlLCJpZCI6IjAwOWExZjI5MzI1M2U0MWUifSx7ImFtb3VudCI6Miwic2VjcmV0IjoiZjU0Y2JjNmNhZWZmYTY5MTUyOTgyM2M1MjU1MDkwYjRhMDZjNGQ3ZDRjNzNhNDFlZTFkNDBlM2ExY2EzZGZhNyIsIkMiOiIwMjMyMTIzN2JlYjcyMWU3NGI1NzcwNWE5MjJjNjUxMGQwOTYyYzAzNzlhZDM0OTJhMDYwMDliZTAyNjA5ZjA3NTAiLCJyZXNlcnZlZCI6ZmFsc2UsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSJ9LHsiYW1vdW50IjoxLCJzZWNyZXQiOiJhNzdhM2NjODY4YWM4ZGU3YmNiOWMxMzJmZWI3YzEzMDY4Nzg3ODk5Yzk3YTk2NWE2ZThkZTFiMzliMmQ2NmQ3IiwiQyI6IjAzMTY0YTMxNWVhNjM0NGE5NWI2NzM1NzBkYzg0YmZlMTQ2NDhmMTQwM2EwMDJiZmJlMDhlNWFhMWE0NDQ0YWE0MCIsInJlc2VydmVkIjpmYWxzZSwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
 
-        let client = Client::new("https://cashu-rs.thesimplekid.space/").unwrap();
-
-        let wallet = Wallet::new(client, keys.keys);
-
-        let blinded_messages = BlindedMessages::random(Amount::from_sat(64)).unwrap();
-
-        let mint_request = nut04::MintRequest {
-            outputs: blinded_messages.blinded_messages.clone(),
-        };
-
-        let res = mint.process_mint_request(mint_request).unwrap();
-
-        let proofs = wallet
-            .process_split_response(blinded_messages, res.promises)
-            .unwrap();
-        for proof in &proofs {
-            mint.verify_proof(proof).unwrap();
-        }
-
-        let split = wallet.create_split(proofs.clone()).unwrap();
-
-        let split_request = split.split_payload;
-
-        let split_response = mint.process_split_request(split_request).unwrap();
-        let p = split_response.promises;
-
-        let snd_proofs = wallet
-            .process_split_response(split.blinded_messages, p.unwrap())
-            .unwrap();
-
-        let mut error = false;
-        for proof in &snd_proofs {
-            if let Err(err) = mint.verify_proof(proof) {
-                println!("{err}{:?}", serde_json::to_string(proof));
-                error = true;
-            }
-        }
-
-        if error {
-            panic!()
-        }
+        assert_eq!(token, token_str)
     }
 }
-*/

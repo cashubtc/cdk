@@ -24,6 +24,9 @@ pub enum Error {
     Secp256k1(#[from] secp256k1::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[cfg(feature = "nostr")]
+    #[error(transparent)]
+    NostrKey(#[from] nostr_sdk::key::Error),
     #[error("Invalid public key size: expected={expected}, found={found}")]
     InvalidPublicKeySize { expected: usize, found: usize },
 }
