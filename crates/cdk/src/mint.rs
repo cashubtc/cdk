@@ -15,6 +15,7 @@ use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::ErrorResponse;
 use crate::nuts::*;
 use crate::types::{MeltQuote, MintQuote};
+use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::Amount;
 
@@ -135,12 +136,13 @@ impl Mint {
 
     pub async fn new_mint_quote(
         &self,
+        mint_url: UncheckedUrl,
         request: String,
         unit: CurrencyUnit,
         amount: Amount,
         expiry: u64,
     ) -> Result<MintQuote, Error> {
-        let quote = MintQuote::new(request, unit, amount, expiry);
+        let quote = MintQuote::new(mint_url, request, unit, amount, expiry);
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 

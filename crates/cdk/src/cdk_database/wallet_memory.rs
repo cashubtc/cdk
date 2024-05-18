@@ -109,6 +109,11 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(self.mint_quotes.lock().await.get(quote_id).cloned())
     }
 
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let quotes = self.mint_quotes.lock().await;
+        Ok(quotes.values().cloned().collect())
+    }
+
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
         self.mint_quotes.lock().await.remove(quote_id);
 

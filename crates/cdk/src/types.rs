@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::nuts::{CurrencyUnit, Proofs};
+use crate::url::UncheckedUrl;
 use crate::Amount;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +34,7 @@ pub enum InvoiceStatus {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct MintQuote {
     pub id: String,
+    pub mint_url: UncheckedUrl,
     pub amount: Amount,
     pub unit: CurrencyUnit,
     pub request: String,
@@ -41,10 +43,17 @@ pub struct MintQuote {
 }
 
 impl MintQuote {
-    pub fn new(request: String, unit: CurrencyUnit, amount: Amount, expiry: u64) -> Self {
+    pub fn new(
+        mint_url: UncheckedUrl,
+        request: String,
+        unit: CurrencyUnit,
+        amount: Amount,
+        expiry: u64,
+    ) -> Self {
         let id = Uuid::new_v4();
 
         Self {
+            mint_url,
             id: id.to_string(),
             amount,
             unit,
