@@ -80,25 +80,22 @@ impl HttpClient {
         let url = join_url(mint_url, &["v1", "keys"])?;
         let keys = self.inner.get(url).send().await?.json::<Value>().await?;
 
-        let keys: KeysResponse = serde_json::from_value(keys)?;
-        Ok(keys.keysets)
+        match serde_json::from_value::<KeysResponse>(keys.clone()) {
+            Ok(keys_response) => Ok(keys_response.keysets),
+            Err(_) => Err(ErrorResponse::from_value(keys)?.into()),
+        }
     }
 
     /// Get Keyset Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keyset(&self, mint_url: Url, keyset_id: Id) -> Result<KeySet, Error> {
         let url = join_url(mint_url, &["v1", "keys", &keyset_id.to_string()])?;
-        let keys = self
-            .inner
-            .get(url)
-            .send()
-            .await?
-            .json::<KeysResponse>()
-            .await?;
+        let keys = self.inner.get(url).send().await?.json::<Value>().await?;
 
-        // let keys: KeysResponse = serde_json::from_value(keys)?; //
-        // serde_json::from_str(&keys.to_string())?;
-        Ok(keys.keysets[0].clone())
+        match serde_json::from_value::<KeysResponse>(keys.clone()) {
+            Ok(keys_response) => Ok(keys_response.keysets[0].clone()),
+            Err(_) => Err(ErrorResponse::from_value(keys)?.into()),
+        }
     }
 
     /// Get Keysets [NUT-02]
@@ -107,12 +104,9 @@ impl HttpClient {
         let url = join_url(mint_url, &["v1", "keysets"])?;
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
-        let response: Result<KeysetResponse, serde_json::Error> =
-            serde_json::from_value(res.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
+        match serde_json::from_value::<KeysetResponse>(res.clone()) {
+            Ok(keyset_response) => Ok(keyset_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -128,16 +122,18 @@ impl HttpClient {
 
         let request = MintQuoteBolt11Request { amount, unit };
 
-        let res = self.inner.post(url).json(&request).send().await?;
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
 
-        let status = res.status();
-
-        let response: Result<MintQuoteBolt11Response, serde_json::Error> =
-            serde_json::from_value(res.json().await?);
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&status.to_string())?.into()),
+        match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -150,16 +146,11 @@ impl HttpClient {
     ) -> Result<MintQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?;
+        let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
-        let status = res.status();
-
-        let response: Result<MintQuoteBolt11Response, serde_json::Error> =
-            serde_json::from_value(res.json().await?);
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&status.to_string())?.into()),
+        match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -187,12 +178,9 @@ impl HttpClient {
             .json::<Value>()
             .await?;
 
-        let response: Result<MintBolt11Response, serde_json::Error> =
-            serde_json::from_value(res.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
+        match serde_json::from_value::<MintBolt11Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -208,16 +196,18 @@ impl HttpClient {
 
         let request = MeltQuoteBolt11Request { request, unit };
 
-        let value = self.inner.post(url).json(&request).send().await?;
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
 
-        let value = value.json::<Value>().await?;
-
-        let response: Result<MeltQuoteBolt11Response, serde_json::Error> =
-            serde_json::from_value(value.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),
+        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -230,16 +220,11 @@ impl HttpClient {
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "melt", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?;
+        let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
-        let status = res.status();
-
-        let response: Result<MeltQuoteBolt11Response, serde_json::Error> =
-            serde_json::from_value(res.json().await?);
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&status.to_string())?.into()),
+        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -261,15 +246,18 @@ impl HttpClient {
             outputs,
         };
 
-        let value = self.inner.post(url).json(&request).send().await?;
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
 
-        let value = value.json::<Value>().await?;
-        let response: Result<MeltBolt11Response, serde_json::Error> =
-            serde_json::from_value(value.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),
+        match serde_json::from_value::<MeltBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -282,14 +270,18 @@ impl HttpClient {
     ) -> Result<SwapResponse, Error> {
         let url = join_url(mint_url, &["v1", "swap"])?;
 
-        let res = self.inner.post(url).json(&swap_request).send().await?;
+        let res = self
+            .inner
+            .post(url)
+            .json(&swap_request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
 
-        let value = res.json::<Value>().await?;
-        let response: Result<SwapResponse, serde_json::Error> =
-            serde_json::from_value(value.clone());
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&value.to_string())?.into()),
+        match serde_json::from_value::<SwapResponse>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -300,11 +292,9 @@ impl HttpClient {
 
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
-        let response: Result<MintInfo, serde_json::Error> = serde_json::from_value(res.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
+        match serde_json::from_value::<MintInfo>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -327,12 +317,9 @@ impl HttpClient {
             .json::<Value>()
             .await?;
 
-        let response: Result<CheckStateResponse, serde_json::Error> =
-            serde_json::from_value(res.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
+        match serde_json::from_value::<CheckStateResponse>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 
@@ -353,12 +340,9 @@ impl HttpClient {
             .json::<Value>()
             .await?;
 
-        let response: Result<RestoreResponse, serde_json::Error> =
-            serde_json::from_value(res.clone());
-
-        match response {
-            Ok(res) => Ok(res),
-            Err(_) => Err(ErrorResponse::from_json(&res.to_string())?.into()),
+        match serde_json::from_value::<RestoreResponse>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 }

@@ -4,6 +4,7 @@ use std::fmt;
 use std::string::FromUtf8Error;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::util::hex;
@@ -97,14 +98,24 @@ impl fmt::Display for ErrorResponse {
 
 impl ErrorResponse {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        if let Ok(res) = serde_json::from_str::<ErrorResponse>(json) {
-            Ok(res)
-        } else {
-            Ok(Self {
+        match serde_json::from_str::<ErrorResponse>(json) {
+            Ok(res) => Ok(res),
+            Err(_) => Ok(Self {
                 code: 999,
                 error: Some(json.to_string()),
                 detail: None,
-            })
+            }),
+        }
+    }
+
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        match serde_json::from_value::<ErrorResponse>(value.clone()) {
+            Ok(res) => Ok(res),
+            Err(_) => Ok(Self {
+                code: 999,
+                error: Some(value.to_string()),
+                detail: None,
+            }),
         }
     }
 }
