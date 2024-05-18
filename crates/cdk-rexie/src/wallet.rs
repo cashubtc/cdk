@@ -265,12 +265,32 @@ impl WalletDatabase for RexieWalletDatabase {
         let quotes_store = transaction.store(MINT_QUOTES).map_err(Error::from)?;
 
         let quote_id = serde_wasm_bindgen::to_value(&quote_id).map_err(Error::from)?;
-        let keysets = quotes_store.get(&quote_id).await.map_err(Error::from)?;
+        let quote = quotes_store.get(&quote_id).await.map_err(Error::from)?;
 
         let quote: Option<MintQuote> =
-            serde_wasm_bindgen::from_value(keysets).map_err(Error::from)?;
+            serde_wasm_bindgen::from_value(quote).map_err(Error::from)?;
 
         Ok(quote)
+    }
+
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+        let rexie = self.db.lock().await;
+
+        let transaction = rexie
+            .transaction(&[MINT_QUOTES], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
+
+        let quotes_store = transaction.store(MINT_QUOTES).map_err(Error::from)?;
+
+        let quotes = quotes_store
+            .get_all(None, None, None, None)
+            .await
+            .map_err(Error::from)?;
+
+        Ok(quotes
+            .into_iter()
+            .flat_map(|(_id, q)| serde_wasm_bindgen::from_value(q))
+            .collect())
     }
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {

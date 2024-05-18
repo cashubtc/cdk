@@ -364,10 +364,11 @@ impl Wallet {
     ) -> Result<MintQuote, Error> {
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.try_into()?, amount, unit.clone())
+            .post_mint_quote(mint_url.clone().try_into()?, amount, unit.clone())
             .await?;
 
         let quote = MintQuote {
+            mint_url,
             id: quote_res.quote.clone(),
             amount,
             unit: unit.clone(),
@@ -408,9 +409,29 @@ impl Wallet {
         Ok(response)
     }
 
+    /// Check status of pending mint quotes
+    pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
+        let mint_quotes = self.localstore.get_mint_quotes().await?;
+        let mut total_amount = Amount::ZERO;
+
+        for mint_quote in mint_quotes {
+            let mint_quote_response = self
+                .mint_quote_status(mint_quote.mint_url.clone(), &mint_quote.id)
+                .await?;
+
+            if mint_quote_response.paid {
+                let amount = self.mint(mint_quote.mint_url, &mint_quote.id).await?;
+                total_amount += amount;
+            } else if mint_quote.expiry.le(&unix_time()) {
+                self.localstore.remove_mint_quote(&mint_quote.id).await?;
+            }
+        }
+        Ok(total_amount)
+    }
+
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     async fn active_mint_keyset(
-        &mut self,
+        &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
     ) -> Result<Id, Error> {
@@ -466,7 +487,7 @@ impl Wallet {
 
     /// Mint
     #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
-    pub async fn mint(&mut self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Amount, Error> {
+    pub async fn mint(&self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
             self.add_mint(mint_url.clone()).await?;
