@@ -32,6 +32,22 @@ impl From<secp256k1::SecretKey> for SecretKey {
     }
 }
 
+#[cfg(feature = "nostr")]
+impl TryFrom<SecretKey> for nostr_sdk::SecretKey {
+    type Error = Error;
+    fn try_from(seckey: SecretKey) -> Result<Self, Self::Error> {
+        (&seckey).try_into()
+    }
+}
+
+#[cfg(feature = "nostr")]
+impl TryFrom<&SecretKey> for nostr_sdk::SecretKey {
+    type Error = Error;
+    fn try_from(seckey: &SecretKey) -> Result<Self, Self::Error> {
+        Ok(nostr_sdk::SecretKey::from_slice(&seckey.to_secret_bytes())?)
+    }
+}
+
 impl fmt::Display for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_secret_hex())

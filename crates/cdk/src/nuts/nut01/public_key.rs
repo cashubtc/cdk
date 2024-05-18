@@ -5,7 +5,7 @@ use core::str::FromStr;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::secp256k1::{self, Message};
+use bitcoin::secp256k1::{self, Message, XOnlyPublicKey};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::Error;
@@ -27,6 +27,30 @@ impl Deref for PublicKey {
 impl From<secp256k1::PublicKey> for PublicKey {
     fn from(inner: secp256k1::PublicKey) -> Self {
         Self { inner }
+    }
+}
+
+#[cfg(feature = "nostr")]
+impl TryFrom<PublicKey> for nostr_sdk::PublicKey {
+    type Error = Error;
+    fn try_from(pubkey: PublicKey) -> Result<Self, Self::Error> {
+        Ok(nostr_sdk::PublicKey::from_slice(&pubkey.to_bytes())?)
+    }
+}
+
+#[cfg(feature = "nostr")]
+impl TryFrom<nostr_sdk::PublicKey> for PublicKey {
+    type Error = Error;
+    fn try_from(pubkey: nostr_sdk::PublicKey) -> Result<Self, Self::Error> {
+        (&pubkey).try_into()
+    }
+}
+
+#[cfg(feature = "nostr")]
+impl TryFrom<&nostr_sdk::PublicKey> for PublicKey {
+    type Error = Error;
+    fn try_from(pubkey: &nostr_sdk::PublicKey) -> Result<Self, Self::Error> {
+        PublicKey::from_slice(&pubkey.to_bytes())
     }
 }
 
@@ -68,6 +92,11 @@ impl PublicKey {
     #[inline]
     pub fn to_uncompressed_bytes(&self) -> [u8; 65] {
         self.inner.serialize_uncompressed()
+    }
+
+    #[inline]
+    pub fn x_only_pubkey(&self) -> XOnlyPublicKey {
+        self.inner.x_only_public_key().0
     }
 
     /// Get public key as `hex` string
