@@ -51,6 +51,26 @@ impl JsWallet {
         Ok(self.inner.total_balance().await.map_err(into_err)?.into())
     }
 
+    #[wasm_bindgen(js_name = totalPendingBalance)]
+    pub async fn total_pending_balance(&self) -> Result<JsAmount> {
+        Ok(self
+            .inner
+            .total_pending_balance()
+            .await
+            .map_err(into_err)?
+            .into())
+    }
+
+    #[wasm_bindgen(js_name = checkAllPendingProofs)]
+    pub async fn check_all_pending_proofs(&self) -> Result<JsAmount> {
+        Ok(self
+            .inner
+            .check_all_pending_proofs
+            .await
+            .map_err(into_err)?
+            .into())
+    }
+
     #[wasm_bindgen(js_name = mintBalances)]
     pub async fn mint_balances(&self) -> Result<JsValue> {
         let mint_balances = self.inner.mint_balances().await.map_err(into_err)?;
