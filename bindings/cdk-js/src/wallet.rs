@@ -2,10 +2,10 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::nuts::{Proofs, SigningKey};
+use cdk::nuts::{Proofs, SecretKey};
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
-use cdk::{Amount, HttpClient};
+use cdk::Amount;
 use cdk_rexie::RexieWalletDatabase;
 use wasm_bindgen::prelude::*;
 
@@ -40,10 +40,9 @@ impl From<Wallet> for JsWallet {
 impl JsWallet {
     #[wasm_bindgen(constructor)]
     pub async fn new(seed: Vec<u8>) -> Self {
-        let client = HttpClient::new();
         let db = RexieWalletDatabase::new().await.unwrap();
 
-        Wallet::new(client, Arc::new(db), &seed).await.into()
+        Wallet::new(Arc::new(db), &seed).into()
     }
 
     #[wasm_bindgen(js_name = totalBalance)]
@@ -62,10 +61,15 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = checkAllPendingProofs)]
-    pub async fn check_all_pending_proofs(&self) -> Result<JsAmount> {
+    pub async fn check_all_pending_proofs(&self, mint_url: Option<String>) -> Result<JsAmount> {
+        let mint_url = match mint_url {
+            Some(url) => Some(UncheckedUrl::from_str(&url).map_err(into_err)?),
+            None => None,
+        };
+
         Ok(self
             .inner
-            .check_all_pending_proofs
+            .check_all_pending_proofs(mint_url)
             .await
             .map_err(into_err)?
             .into())
@@ -200,14 +204,15 @@ impl JsWallet {
         signing_keys: JsValue,
         preimages: JsValue,
     ) -> Result<JsAmount> {
-        let signing_keys: Option<Vec<SigningKey>> = serde_wasm_bindgen::from_value(signing_keys)?;
+        let signing_keys: Option<Vec<SecretKey>> = serde_wasm_bindgen::from_value(signing_keys)?;
         let preimages: Option<Vec<String>> = serde_wasm_bindgen::from_value(preimages)?;
 
-        self.inner
+        Ok(self
+            .inner
             .receive(&encoded_token, signing_keys, preimages)
             .await
             .map_err(into_err)?
-            .into()
+            .into())
     }
 
     #[wasm_bindgen(js_name = send)]
