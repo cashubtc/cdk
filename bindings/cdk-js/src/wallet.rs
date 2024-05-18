@@ -138,6 +138,13 @@ impl JsWallet {
         Ok(quote.into())
     }
 
+    #[wasm_bindgen(js_name = checkAllMintQuotes)]
+    pub async fn check_all_mint_quotes(&self) -> Result<JsAmount> {
+        let amount = self.inner.check_all_mint_quotes().await.map_err(into_err)?;
+
+        Ok(amount.into())
+    }
+
     #[wasm_bindgen(js_name = mint)]
     pub async fn mint(&mut self, mint_url: String, quote_id: String) -> Result<JsAmount> {
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
