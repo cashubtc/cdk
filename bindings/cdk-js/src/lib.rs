@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 pub mod error;
 pub mod nuts;
 pub mod types;
-#[cfg(all(feature = "wallet", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub mod wallet;
 
 #[wasm_bindgen(start)]

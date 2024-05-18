@@ -311,8 +311,15 @@ impl Wallet {
 
     /// Checks pending proofs for spent status
     #[instrument(skip(self))]
-    pub async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
-        let mints = self.localstore.get_mints().await?;
+    pub async fn check_all_pending_proofs(
+        &self,
+        mint_url: Option<UncheckedUrl>,
+    ) -> Result<Amount, Error> {
+        let mints = match mint_url {
+            Some(mint_url) => HashMap::from_iter(vec![(mint_url, None)]),
+            None => self.localstore.get_mints().await?,
+        };
+
         let mut balance = Amount::ZERO;
 
         for (mint, _) in mints {
