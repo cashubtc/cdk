@@ -16,7 +16,7 @@ use url::Url;
 
 use super::nut10;
 use super::nut11::SpendingConditions;
-use crate::dhke::blind_message;
+use crate::dhke::{blind_message, hash_to_curve};
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::nuts::nut11::{serde_p2pk_witness, P2PKWitness};
 use crate::nuts::nut12::BlindSignatureDleq;
@@ -199,6 +199,10 @@ impl Proof {
             witness: None,
             dleq: None,
         }
+    }
+
+    pub fn y(&self) -> Result<PublicKey, Error> {
+        Ok(hash_to_curve(self.secret.as_bytes())?)
     }
 }
 

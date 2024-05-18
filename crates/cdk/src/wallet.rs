@@ -129,6 +129,23 @@ impl Wallet {
         Ok(balance)
     }
 
+    /// Total Balance of wallet
+    #[instrument(skip(self))]
+    pub async fn total_pending_balance(&self) -> Result<Amount, Error> {
+        let mints = self.localstore.get_mints().await?;
+        let mut balance = Amount::ZERO;
+
+        for (mint, _) in mints {
+            if let Some(proofs) = self.localstore.get_pending_proofs(mint.clone()).await? {
+                let amount = proofs.iter().map(|p| p.amount).sum();
+
+                balance += amount;
+            }
+        }
+
+        Ok(balance)
+    }
+
     #[instrument(skip(self))]
     pub async fn mint_balances(&self) -> Result<HashMap<UncheckedUrl, Amount>, Error> {
         let mints = self.localstore.get_mints().await?;
@@ -290,6 +307,44 @@ impl Wallet {
             .await?;
 
         Ok(spendable.states)
+    }
+
+    /// Checks pending proofs for spent status
+    #[instrument(skip(self))]
+    pub async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
+        let mints = self.localstore.get_mints().await?;
+        let mut balance = Amount::ZERO;
+
+        for (mint, _) in mints {
+            if let Some(proofs) = self.localstore.get_pending_proofs(mint.clone()).await? {
+                let states = self
+                    .check_proofs_spent(mint.clone(), proofs.clone())
+                    .await?;
+
+                // Both `State::Pending` and `State::Unspent` should be included in the pending table.
+                // This is because a proof that has been crated to send will be stored in the pending table
+                // in order to avoid accidentally double spending but to allow it to be explicitly reclaimed
+                let pending_states: HashSet<PublicKey> = states
+                    .into_iter()
+                    .filter(|s| s.state.ne(&State::Spent))
+                    .map(|s| s.y)
+                    .collect();
+
+                let (pending_proofs, non_pending_proofs): (Proofs, Proofs) = proofs
+                    .into_iter()
+                    .partition(|p| p.y().map(|y| pending_states.contains(&y)).unwrap_or(false));
+
+                let amount = pending_proofs.iter().map(|p| p.amount).sum();
+
+                self.localstore
+                    .remove_pending_proofs(mint, &non_pending_proofs)
+                    .await?;
+
+                balance += amount;
+            }
+        }
+
+        Ok(balance)
     }
 
     /// Mint Quote
