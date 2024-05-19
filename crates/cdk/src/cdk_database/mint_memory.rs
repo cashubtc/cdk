@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
@@ -13,14 +13,14 @@ use crate::types::{MeltQuote, MintQuote};
 
 #[derive(Debug, Clone)]
 pub struct MintMemoryDatabase {
-    mint_info: Arc<Mutex<MintInfo>>,
-    active_keysets: Arc<Mutex<HashMap<CurrencyUnit, Id>>>,
-    keysets: Arc<Mutex<HashMap<Id, MintKeySetInfo>>>,
-    mint_quotes: Arc<Mutex<HashMap<String, MintQuote>>>,
-    melt_quotes: Arc<Mutex<HashMap<String, MeltQuote>>>,
-    pending_proofs: Arc<Mutex<HashMap<[u8; 33], Proof>>>,
-    spent_proofs: Arc<Mutex<HashMap<[u8; 33], Proof>>>,
-    blinded_signatures: Arc<Mutex<HashMap<[u8; 33], BlindSignature>>>,
+    mint_info: Arc<RwLock<MintInfo>>,
+    active_keysets: Arc<RwLock<HashMap<CurrencyUnit, Id>>>,
+    keysets: Arc<RwLock<HashMap<Id, MintKeySetInfo>>>,
+    mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
+    melt_quotes: Arc<RwLock<HashMap<String, MeltQuote>>>,
+    pending_proofs: Arc<RwLock<HashMap<[u8; 33], Proof>>>,
+    spent_proofs: Arc<RwLock<HashMap<[u8; 33], Proof>>>,
+    blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
 }
 
 impl MintMemoryDatabase {
@@ -36,28 +36,30 @@ impl MintMemoryDatabase {
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
     ) -> Result<Self, Error> {
         Ok(Self {
-            mint_info: Arc::new(Mutex::new(mint_info)),
-            active_keysets: Arc::new(Mutex::new(active_keysets)),
-            keysets: Arc::new(Mutex::new(keysets.into_iter().map(|k| (k.id, k)).collect())),
-            mint_quotes: Arc::new(Mutex::new(
+            mint_info: Arc::new(RwLock::new(mint_info)),
+            active_keysets: Arc::new(RwLock::new(active_keysets)),
+            keysets: Arc::new(RwLock::new(
+                keysets.into_iter().map(|k| (k.id, k)).collect(),
+            )),
+            mint_quotes: Arc::new(RwLock::new(
                 mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
             )),
-            melt_quotes: Arc::new(Mutex::new(
+            melt_quotes: Arc::new(RwLock::new(
                 melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
             )),
-            pending_proofs: Arc::new(Mutex::new(
+            pending_proofs: Arc::new(RwLock::new(
                 pending_proofs
                     .into_iter()
                     .map(|p| (hash_to_curve(&p.secret.to_bytes()).unwrap().to_bytes(), p))
                     .collect(),
             )),
-            spent_proofs: Arc::new(Mutex::new(
+            spent_proofs: Arc::new(RwLock::new(
                 spent_proofs
                     .into_iter()
                     .map(|p| (hash_to_curve(&p.secret.to_bytes()).unwrap().to_bytes(), p))
                     .collect(),
             )),
-            blinded_signatures: Arc::new(Mutex::new(blinded_signatures)),
+            blinded_signatures: Arc::new(RwLock::new(blinded_signatures)),
         })
     }
 }
@@ -67,79 +69,79 @@ impl MintDatabase for MintMemoryDatabase {
     type Err = Error;
 
     async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Self::Err> {
-        let mut mi = self.mint_info.lock().await;
+        let mut mi = self.mint_info.write().await;
         *mi = mint_info.clone();
         Ok(())
     }
     async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
-        Ok(self.mint_info.lock().await.clone())
+        Ok(self.mint_info.read().await.clone())
     }
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
-        self.active_keysets.lock().await.insert(unit, id);
+        self.active_keysets.write().await.insert(unit, id);
         Ok(())
     }
 
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
-        Ok(self.active_keysets.lock().await.get(unit).cloned())
+        Ok(self.active_keysets.read().await.get(unit).cloned())
     }
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
-        Ok(self.active_keysets.lock().await.clone())
+        Ok(self.active_keysets.read().await.clone())
     }
 
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
-        self.keysets.lock().await.insert(keyset.id, keyset);
+        self.keysets.write().await.insert(keyset.id, keyset);
         Ok(())
     }
 
     async fn get_keyset_info(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
-        Ok(self.keysets.lock().await.get(keyset_id).cloned())
+        Ok(self.keysets.read().await.get(keyset_id).cloned())
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        Ok(self.keysets.lock().await.values().cloned().collect())
+        Ok(self.keysets.read().await.values().cloned().collect())
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         self.mint_quotes
-            .lock()
+            .write()
             .await
             .insert(quote.id.clone(), quote);
         Ok(())
     }
 
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
-        Ok(self.mint_quotes.lock().await.get(quote_id).cloned())
+        Ok(self.mint_quotes.read().await.get(quote_id).cloned())
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
-        Ok(self.mint_quotes.lock().await.values().cloned().collect())
+        Ok(self.mint_quotes.read().await.values().cloned().collect())
     }
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        self.mint_quotes.lock().await.remove(quote_id);
+        self.mint_quotes.write().await.remove(quote_id);
 
         Ok(())
     }
 
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
         self.melt_quotes
-            .lock()
+            .write()
             .await
             .insert(quote.id.clone(), quote);
         Ok(())
     }
 
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
-        Ok(self.melt_quotes.lock().await.get(quote_id).cloned())
+        Ok(self.melt_quotes.read().await.get(quote_id).cloned())
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
-        Ok(self.melt_quotes.lock().await.values().cloned().collect())
+        Ok(self.melt_quotes.read().await.values().cloned().collect())
     }
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        self.melt_quotes.lock().await.remove(quote_id);
+        self.melt_quotes.write().await.remove(quote_id);
 
         Ok(())
     }
@@ -147,7 +149,7 @@ impl MintDatabase for MintMemoryDatabase {
     async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
         let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
         self.spent_proofs
-            .lock()
+            .write()
             .await
             .insert(secret_point.to_bytes(), proof);
         Ok(())
@@ -156,19 +158,19 @@ impl MintDatabase for MintMemoryDatabase {
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
         Ok(self
             .spent_proofs
-            .lock()
+            .read()
             .await
             .get(&hash_to_curve(&secret.to_bytes())?.to_bytes())
             .cloned())
     }
 
     async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
-        Ok(self.spent_proofs.lock().await.get(&y.to_bytes()).cloned())
+        Ok(self.spent_proofs.read().await.get(&y.to_bytes()).cloned())
     }
 
     async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
         self.pending_proofs
-            .lock()
+            .write()
             .await
             .insert(hash_to_curve(&proof.secret.to_bytes())?.to_bytes(), proof);
         Ok(())
@@ -181,20 +183,20 @@ impl MintDatabase for MintMemoryDatabase {
         let secret_point = hash_to_curve(&secret.to_bytes())?;
         Ok(self
             .pending_proofs
-            .lock()
+            .read()
             .await
             .get(&secret_point.to_bytes())
             .cloned())
     }
 
     async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
-        Ok(self.pending_proofs.lock().await.get(&y.to_bytes()).cloned())
+        Ok(self.pending_proofs.read().await.get(&y.to_bytes()).cloned())
     }
 
     async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
         let secret_point = hash_to_curve(&secret.to_bytes())?;
         self.pending_proofs
-            .lock()
+            .write()
             .await
             .remove(&secret_point.to_bytes());
         Ok(())
@@ -206,7 +208,7 @@ impl MintDatabase for MintMemoryDatabase {
         blinded_signature: BlindSignature,
     ) -> Result<(), Self::Err> {
         self.blinded_signatures
-            .lock()
+            .write()
             .await
             .insert(blinded_message.to_bytes(), blinded_signature);
         Ok(())
@@ -218,7 +220,7 @@ impl MintDatabase for MintMemoryDatabase {
     ) -> Result<Option<BlindSignature>, Self::Err> {
         Ok(self
             .blinded_signatures
-            .lock()
+            .read()
             .await
             .get(&blinded_message.to_bytes())
             .cloned())
@@ -230,7 +232,7 @@ impl MintDatabase for MintMemoryDatabase {
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let mut signatures = Vec::with_capacity(blinded_messages.len());
 
-        let blinded_signatures = self.blinded_signatures.lock().await;
+        let blinded_signatures = self.blinded_signatures.read().await;
 
         for blinded_message in blinded_messages {
             let signature = blinded_signatures.get(&blinded_message.to_bytes()).cloned();
