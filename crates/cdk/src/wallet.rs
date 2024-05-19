@@ -12,7 +12,7 @@ use bitcoin::Network;
 #[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip04;
 #[cfg(feature = "nostr")]
-use nostr_sdk::{Filter, NostrSigner, RelayPoolNotification, Timestamp};
+use nostr_sdk::{Filter, Timestamp};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -1169,10 +1169,9 @@ impl Wallet {
     }
 
     #[cfg(feature = "nostr")]
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub async fn nostr_receive(&self, nostr_signing_key: SecretKey) -> Result<Amount, Error> {
-        use nostr_sdk::{Keys, Kind, RelayMessage};
-        use tokio::sync::Mutex;
+        use nostr_sdk::{Keys, Kind};
 
         let verifying_key = nostr_signing_key.public_key();
 
@@ -1186,83 +1185,41 @@ impl Wallet {
         {
             Some(since) => Filter::new()
                 .pubkey(nostr_pubkey)
+                .kind(Kind::EncryptedDirectMessage)
                 .since(Timestamp::from(since as u64)),
-            None => Filter::new().pubkey(nostr_pubkey),
+            None => Filter::new()
+                .pubkey(nostr_pubkey)
+                .kind(Kind::EncryptedDirectMessage),
         };
 
         self.nostr_client.connect().await;
-        self.nostr_client.subscribe(vec![filter], None).await;
-
-        let tokens: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
-
-        // Handle subscription notifications with `handle_notifications` method
         self.nostr_client
-            .handle_notifications(|notification| async {
-                let mut exit = false;
-                let keys = Keys::from_str(&nostr_signing_key.to_secret_hex()).unwrap();
+            .subscribe(vec![filter.clone()], None)
+            .await;
 
-                match notification {
-                    RelayPoolNotification::Event {
-                        relay_url: _,
-                        subscription_id: _,
-                        event,
-                    } => {
-                        // Check kind
-                        if event.kind() == Kind::EncryptedDirectMessage {
-                            if let Ok(msg) = nip04::decrypt(
-                                keys.secret_key()?,
-                                event.author_ref(),
-                                event.content(),
-                            ) {
-                                println!("DM: {msg}");
+        let events = self.nostr_client.get_events_of(vec![filter], None).await?;
 
-                                if let Some(token) = Self::token_from_text(&msg) {
-                                    tokens.lock().await.insert(token.to_string());
-                                }
-                            } else {
-                                tracing::error!("Impossible to decrypt direct message");
-                            }
-                        } else {
-                            println!("Other event: {:?}", event.kind);
-                        }
+        let keys = Keys::from_str(&nostr_signing_key.to_secret_hex()).unwrap();
+        let mut tokens: HashSet<String> = HashSet::new();
+
+        for event in events {
+            if event.kind() == Kind::EncryptedDirectMessage {
+                if let Ok(msg) =
+                    nip04::decrypt(keys.secret_key()?, event.author_ref(), event.content())
+                {
+                    println!("DM: {msg}");
+
+                    if let Some(token) = Self::token_from_text(&msg) {
+                        tokens.insert(token.to_string());
                     }
-                    RelayPoolNotification::Message { relay_url, message } => match message {
-                        RelayMessage::Auth { challenge } => {
-                            self.nostr_client
-                                .set_signer(Some(NostrSigner::Keys(keys)))
-                                .await;
-                            let r = self.nostr_client.auth(challenge, relay_url).await?;
-
-                            tracing::debug!("Event id: {r}");
-                        }
-                        RelayMessage::Notice { message } => {
-                            tracing::debug!("Notice: {message}");
-                        }
-                        RelayMessage::Ok {
-                            event_id,
-                            status: _,
-                            message: _,
-                        } => {
-                            println!("Ok: {:?}", event_id);
-                        }
-                        RelayMessage::EndOfStoredEvents(_sub_id) => {
-                            exit = true;
-                        }
-                        _ => {
-                            tracing::debug!("{:?}", message);
-                        }
-                    },
-                    _ => {
-                        tracing::debug!("{:?}", notification);
-                    }
+                } else {
+                    tracing::error!("Impossible to decrypt direct message");
                 }
-
-                Ok(exit) // Set to true to exit from the loop
-            })
-            .await?;
+            }
+        }
 
         let mut total_received = Amount::ZERO;
-        for token in tokens.lock().await.iter() {
+        for token in tokens.iter() {
             match self.receive(token, None, None).await {
                 Ok(amount) => total_received += amount,
                 Err(err) => {
