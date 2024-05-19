@@ -1193,9 +1193,6 @@ impl Wallet {
         };
 
         self.nostr_client.connect().await;
-        self.nostr_client
-            .subscribe(vec![filter.clone()], None)
-            .await;
 
         let events = self.nostr_client.get_events_of(vec![filter], None).await?;
 
@@ -1207,8 +1204,6 @@ impl Wallet {
                 if let Ok(msg) =
                     nip04::decrypt(keys.secret_key()?, event.author_ref(), event.content())
                 {
-                    println!("DM: {msg}");
-
                     if let Some(token) = Self::token_from_text(&msg) {
                         tokens.insert(token.to_string());
                     }
