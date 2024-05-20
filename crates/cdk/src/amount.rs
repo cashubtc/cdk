@@ -21,6 +21,48 @@ impl Amount {
             })
             .collect()
     }
+
+    /// Split into parts that are powers of two by target
+    pub fn split_targeted(&self, target: &SplitTarget) -> Vec<Self> {
+        let mut parts = vec![];
+        let mut parts_total = Amount::ZERO;
+
+        match target {
+            &SplitTarget::Value(amount) => {
+                if self.le(&amount) {
+                    return self.split();
+                }
+
+                // The powers of two that are need to create target value
+                let parts_of_value = amount.split();
+
+                while parts_total.lt(self) {
+                    for part in parts_of_value.iter().copied() {
+                        if (part + parts_total).le(self) {
+                            parts.push(part);
+                        } else {
+                            let amount_left = *self - parts_total;
+                            parts.extend(amount_left.split());
+                        }
+
+                        parts_total = parts.clone().iter().copied().sum::<Amount>();
+
+                        if parts_total.eq(self) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        parts.sort();
+        parts
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SplitTarget {
+    Value(Amount),
 }
 
 impl Default for Amount {
@@ -101,5 +143,46 @@ mod tests {
             .map(|a| Amount::from(*a))
             .collect();
         assert_eq!(Amount::from(255).split(), amounts);
+    }
+
+    #[test]
+    fn test_split_target_amount() {
+        let amount = Amount(65);
+
+        let split = amount.split_targeted(&SplitTarget::Value(Amount(32)));
+        assert_eq!(vec![Amount(1), Amount(32), Amount(32)], split);
+
+        let amount = Amount(150);
+
+        let split = amount.split_targeted(&SplitTarget::Value(Amount::from(50)));
+        assert_eq!(
+            vec![
+                Amount(2),
+                Amount(2),
+                Amount(2),
+                Amount(16),
+                Amount(16),
+                Amount(16),
+                Amount(32),
+                Amount(32),
+                Amount(32)
+            ],
+            split
+        );
+
+        let amount = Amount::from(63);
+
+        let split = amount.split_targeted(&SplitTarget::Value(Amount::from(32)));
+        assert_eq!(
+            vec![
+                Amount(1),
+                Amount(2),
+                Amount(4),
+                Amount(8),
+                Amount(16),
+                Amount(32)
+            ],
+            split
+        );
     }
 }
