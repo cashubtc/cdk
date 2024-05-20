@@ -1176,7 +1176,7 @@ impl Wallet {
         let verifying_key = nostr_signing_key.public_key();
 
         let nostr_pubkey =
-            nostr_sdk::PublicKey::from_hex(verifying_key.x_only_pubkey().to_string())?;
+            nostr_sdk::PublicKey::from_hex(verifying_key.x_only_public_key().to_string())?;
 
         let filter = match self
             .localstore
@@ -1215,7 +1215,10 @@ impl Wallet {
 
         let mut total_received = Amount::ZERO;
         for token in tokens.iter() {
-            match self.receive(token, None, None).await {
+            match self
+                .receive(token, Some(vec![nostr_signing_key.clone()]), None)
+                .await
+            {
                 Ok(amount) => total_received += amount,
                 Err(err) => {
                     tracing::error!("Could not receive token: {}", err);

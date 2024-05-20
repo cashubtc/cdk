@@ -39,6 +39,14 @@ impl TryFrom<PublicKey> for nostr_sdk::PublicKey {
 }
 
 #[cfg(feature = "nostr")]
+impl TryFrom<&PublicKey> for nostr_sdk::PublicKey {
+    type Error = Error;
+    fn try_from(pubkey: &PublicKey) -> Result<Self, Self::Error> {
+        Ok(nostr_sdk::PublicKey::from_slice(&pubkey.to_bytes())?)
+    }
+}
+
+#[cfg(feature = "nostr")]
 impl TryFrom<nostr_sdk::PublicKey> for PublicKey {
     type Error = Error;
     fn try_from(pubkey: nostr_sdk::PublicKey) -> Result<Self, Self::Error> {
@@ -95,7 +103,7 @@ impl PublicKey {
     }
 
     #[inline]
-    pub fn x_only_pubkey(&self) -> XOnlyPublicKey {
+    pub fn x_only_public_key(&self) -> XOnlyPublicKey {
         self.inner.x_only_public_key().0
     }
 
