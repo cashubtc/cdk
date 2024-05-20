@@ -16,6 +16,7 @@ use url::Url;
 
 use super::nut10;
 use super::nut11::SpendingConditions;
+use crate::amount::SplitTarget;
 use crate::dhke::{blind_message, hash_to_curve};
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::nuts::nut11::{serde_p2pk_witness, P2PKWitness};
@@ -426,9 +427,10 @@ impl PreMintSecrets {
     pub fn with_conditions(
         keyset_id: Id,
         amount: Amount,
+        amount_split_target: SplitTarget,
         conditions: SpendingConditions,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split();
+        let amount_split = amount.split_targeted(&amount_split_target);
 
         let mut output = Vec::with_capacity(amount_split.len());
 

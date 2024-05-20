@@ -16,6 +16,7 @@ use nostr_sdk::{Filter, Timestamp};
 use thiserror::Error;
 use tracing::instrument;
 
+use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve};
@@ -598,6 +599,7 @@ impl Wallet {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Option<Amount>,
+        amount_split_target: Option<SplitTarget>,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Option<Proofs>, Error> {
@@ -606,6 +608,7 @@ impl Wallet {
                 mint_url,
                 unit,
                 amount,
+                amount_split_target,
                 input_proofs.clone(),
                 spending_conditions,
             )
@@ -703,6 +706,7 @@ impl Wallet {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Option<Amount>,
+        amount_split_target: Option<SplitTarget>,
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<PreSwap, Error> {
@@ -732,7 +736,12 @@ impl Wallet {
                 )?;
 
                 (
-                    PreMintSecrets::with_conditions(active_keyset_id, desired_amount, conditions)?,
+                    PreMintSecrets::with_conditions(
+                        active_keyset_id,
+                        desired_amount,
+                        amount_split_target.unwrap_or_default(),
+                        conditions,
+                    )?,
                     change_premint_secrets,
                 )
             }
@@ -787,6 +796,7 @@ impl Wallet {
         unit: &CurrencyUnit,
         memo: Option<String>,
         amount: Amount,
+        amount_split_target: Option<SplitTarget>,
         conditions: Option<SpendingConditions>,
     ) -> Result<String, Error> {
         let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
@@ -801,8 +811,15 @@ impl Wallet {
         ) {
             (true, None) => Some(input_proofs),
             _ => {
-                self.swap(mint_url, unit, Some(amount), input_proofs, conditions)
-                    .await?
+                self.swap(
+                    mint_url,
+                    unit,
+                    Some(amount),
+                    amount_split_target,
+                    input_proofs,
+                    conditions,
+                )
+                .await?
             }
         };
 
@@ -1028,6 +1045,7 @@ impl Wallet {
     pub async fn receive(
         &self,
         encoded_token: &str,
+        amount_split_target: Option<SplitTarget>,
         signing_keys: Option<Vec<SecretKey>>,
         preimages: Option<Vec<String>>,
     ) -> Result<Amount, Error> {
@@ -1127,7 +1145,14 @@ impl Wallet {
             }
 
             let mut pre_swap = self
-                .create_swap(&token.mint, &unit, Some(amount), proofs, None)
+                .create_swap(
+                    &token.mint,
+                    &unit,
+                    Some(amount),
+                    amount_split_target,
+                    proofs,
+                    None,
+                )
                 .await?;
 
             if sig_flag.eq(&SigFlag::SigAll) {
