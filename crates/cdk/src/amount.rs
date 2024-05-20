@@ -27,8 +27,11 @@ impl Amount {
         let mut parts = vec![];
         let mut parts_total = Amount::ZERO;
 
-        match target {
-            &SplitTarget::Value(amount) => {
+        match *target {
+            SplitTarget::None => {
+                parts = self.split();
+            }
+            SplitTarget::Value(amount) => {
                 if self.le(&amount) {
                     return self.split();
                 }
@@ -60,8 +63,12 @@ impl Amount {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
 pub enum SplitTarget {
+    #[default]
+    None,
     Value(Amount),
 }
 

@@ -216,7 +216,7 @@ impl JsWallet {
 
         Ok(self
             .inner
-            .receive(&encoded_token, signing_keys, preimages)
+            .receive(&encoded_token, None, signing_keys, preimages)
             .await
             .map_err(into_err)?
             .into())
@@ -251,6 +251,7 @@ impl JsWallet {
                 &unit.into(),
                 memo,
                 Amount::from(amount),
+                None,
                 conditions,
             )
             .await
@@ -288,6 +289,7 @@ impl JsWallet {
                 &mint_url,
                 &unit.into(),
                 Some(Amount::from(amount)),
+                None,
                 proofs,
                 conditions,
             )
