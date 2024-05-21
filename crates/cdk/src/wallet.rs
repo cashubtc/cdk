@@ -522,7 +522,12 @@ impl Wallet {
 
             if mint_quote_response.paid {
                 let amount = self
-                    .mint(mint_quote.mint_url, &mint_quote.id, SplitTarget::default())
+                    .mint(
+                        mint_quote.mint_url,
+                        &mint_quote.id,
+                        SplitTarget::default(),
+                        None,
+                    )
                     .await?;
                 total_amount += amount;
             } else if mint_quote.expiry.le(&unix_time()) {
@@ -595,6 +600,7 @@ impl Wallet {
         mint_url: UncheckedUrl,
         quote_id: &str,
         amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
     ) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
@@ -622,14 +628,22 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
-        let premint_secrets = PreMintSecrets::from_xpriv(
-            active_keyset_id,
-            count,
-            self.xpriv,
-            quote_info.amount,
-            false,
-            &amount_split_target,
-        )?;
+        let premint_secrets = match &spending_conditions {
+            Some(spending_conditions) => PreMintSecrets::with_conditions(
+                active_keyset_id,
+                quote_info.amount,
+                &amount_split_target,
+                spending_conditions,
+            )?,
+            None => PreMintSecrets::from_xpriv(
+                active_keyset_id,
+                count,
+                self.xpriv,
+                quote_info.amount,
+                false,
+                &amount_split_target,
+            )?,
+        };
 
         let mint_res = self
             .client
@@ -666,10 +680,12 @@ impl Wallet {
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
 
-        // Update counter for keyset
-        self.localstore
-            .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
-            .await?;
+        if spending_conditions.is_none() {
+            // Update counter for keyset
+            self.localstore
+                .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
+                .await?;
+        }
 
         let proofs = proofs
             .into_iter()
@@ -846,7 +862,7 @@ impl Wallet {
                         active_keyset_id,
                         desired_amount,
                         amount_split_target,
-                        conditions,
+                        &conditions,
                     )?,
                     change_premint_secrets,
                 )
