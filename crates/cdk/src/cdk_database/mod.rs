@@ -9,16 +9,18 @@ use thiserror::Error;
 
 #[cfg(feature = "mint")]
 use crate::mint::MintKeySetInfo;
-#[cfg(any(feature = "nostr", feature = "mint"))]
-use crate::nuts::PublicKey;
+#[cfg(feature = "wallet")]
+use crate::nuts::State;
 #[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, CurrencyUnit, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
-use crate::nuts::{Id, MintInfo};
+use crate::nuts::{Id, MintInfo, PublicKey};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, Proofs};
 #[cfg(feature = "mint")]
 use crate::secret::Secret;
+#[cfg(feature = "wallet")]
+use crate::types::ProofInfo;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::types::{MeltQuote, MintQuote};
 #[cfg(feature = "wallet")]
@@ -35,6 +37,8 @@ pub enum Error {
     Database(Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     Cdk(#[from] crate::error::Error),
+    #[error(transparent)]
+    NUT01(#[from] crate::nuts::nut00::Error),
 }
 
 #[cfg(feature = "wallet")]
@@ -73,23 +77,15 @@ pub trait WalletDatabase {
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err>;
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err>;
 
-    async fn add_proofs(&self, mint_url: UncheckedUrl, proof: Proofs) -> Result<(), Self::Err>;
-    async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Self::Err>;
-    async fn remove_proofs(&self, mint_url: UncheckedUrl, proofs: &Proofs)
-        -> Result<(), Self::Err>;
+    async fn add_proofs(&self, proof_info: Vec<ProofInfo>) -> Result<(), Self::Err>;
+    async fn get_proofs(
+        &self,
+        mint_url: Option<UncheckedUrl>,
+        state: Option<Vec<State>>,
+    ) -> Result<Option<Proofs>, Self::Err>;
+    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err>;
 
-    async fn add_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proof: Proofs,
-    ) -> Result<(), Self::Err>;
-    async fn get_pending_proofs(&self, mint_url: UncheckedUrl)
-        -> Result<Option<Proofs>, Self::Err>;
-    async fn remove_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: &Proofs,
-    ) -> Result<(), Self::Err>;
+    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err>;
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;

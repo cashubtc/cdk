@@ -5,10 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
-#[cfg(feature = "nostr")]
-use cdk::nuts::PublicKey;
-use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
-use cdk::types::{MeltQuote, MintQuote};
+use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, State};
+use cdk::types::{MeltQuote, MintQuote, ProofInfo};
 use cdk::url::UncheckedUrl;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
@@ -22,9 +20,8 @@ const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &str> =
 const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
 const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
 const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_keys");
-const PROOFS_TABLE: MultimapTableDefinition<&str, &str> = MultimapTableDefinition::new("proofs");
-const PENDING_PROOFS_TABLE: MultimapTableDefinition<&str, &str> =
-    MultimapTableDefinition::new("pending_proofs");
+// <Y, (Proof, Status, Mint url)>
+const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 #[cfg(feature = "nostr")]
@@ -66,7 +63,7 @@ impl RedbWalletDatabase {
                     let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
                     let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
                     let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
-                    let _ = write_txn.open_multimap_table(PROOFS_TABLE)?;
+                    let _ = write_txn.open_table(PROOFS_TABLE)?;
                     let _ = write_txn.open_table(KEYSET_COUNTER)?;
                     #[cfg(feature = "nostr")]
                     let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
@@ -373,22 +370,22 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self, proofs))]
-    async fn add_proofs(&self, mint_url: UncheckedUrl, proofs: Proofs) -> Result<(), Self::Err> {
+    #[instrument(skip(self, proofs_info))]
+    async fn add_proofs(&self, proofs_info: Vec<ProofInfo>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn
-                .open_multimap_table(PROOFS_TABLE)
-                .map_err(Error::from)?;
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-            for proof in proofs {
+            for proof_info in proofs_info.iter() {
                 table
                     .insert(
-                        mint_url.to_string().as_str(),
-                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                        proof_info.y.to_bytes().as_slice(),
+                        serde_json::to_string(&proof_info)
+                            .map_err(Error::from)?
+                            .as_str(),
                     )
                     .map_err(Error::from)?;
             }
@@ -399,129 +396,109 @@ impl WalletDatabase for RedbWalletDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_multimap_table(PROOFS_TABLE)
-            .map_err(Error::from)?;
-
-        let proofs = table
-            .get(mint_url.to_string().as_str())
-            .map_err(Error::from)?
-            .flatten()
-            .flat_map(|k| serde_json::from_str(k.value()))
-            .collect();
-
-        Ok(proofs)
-    }
-
-    #[instrument(skip(self, proofs))]
-    async fn remove_proofs(
+    async fn get_proofs(
         &self,
-        mint_url: UncheckedUrl,
-        proofs: &Proofs,
-    ) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn
-                .open_multimap_table(PROOFS_TABLE)
-                .map_err(Error::from)?;
-
-            for proof in proofs {
-                table
-                    .remove(
-                        mint_url.to_string().as_str(),
-                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
-            }
-        }
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self, proofs))]
-    async fn add_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: Proofs,
-    ) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn
-                .open_multimap_table(PENDING_PROOFS_TABLE)
-                .map_err(Error::from)?;
-
-            for proof in proofs {
-                table
-                    .insert(
-                        mint_url.to_string().as_str(),
-                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
-            }
-        }
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn get_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
+        mint_url: Option<UncheckedUrl>,
+        state: Option<Vec<State>>,
     ) -> Result<Option<Proofs>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_multimap_table(PENDING_PROOFS_TABLE)
-            .map_err(Error::from)?;
 
-        let proofs = table
-            .get(mint_url.to_string().as_str())
+        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+        let proofs: Proofs = table
+            .iter()
             .map_err(Error::from)?
             .flatten()
-            .flat_map(|k| serde_json::from_str(k.value()))
+            .filter_map(|(_k, v)| {
+                let mut proof = None;
+
+                if let Ok(proof_info) = serde_json::from_str::<ProofInfo>(v.value()) {
+                    match (&mint_url, &state) {
+                        (Some(mint_url), Some(state)) => {
+                            if state.contains(&proof_info.state)
+                                && mint_url.eq(&proof_info.mint_url)
+                            {
+                                proof = Some(proof_info.proof);
+                            }
+                        }
+                        (Some(mint_url), None) => {
+                            if mint_url.eq(&proof_info.mint_url) {
+                                proof = Some(proof_info.proof);
+                            }
+                        }
+                        (None, Some(state)) => {
+                            if state.contains(&proof_info.state) {
+                                proof = Some(proof_info.proof);
+                            }
+                        }
+                        (None, None) => proof = Some(proof_info.proof),
+                    }
+                }
+
+                proof
+            })
             .collect();
 
-        Ok(proofs)
+        if proofs.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(proofs))
     }
 
     #[instrument(skip(self, proofs))]
-    async fn remove_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: &Proofs,
-    ) -> Result<(), Self::Err> {
+    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn
-                .open_multimap_table(PENDING_PROOFS_TABLE)
-                .map_err(Error::from)?;
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
             for proof in proofs {
-                table
-                    .remove(
-                        mint_url.to_string().as_str(),
-                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
+                let y_slice = proof.y().map_err(Error::from)?.to_bytes();
+                table.remove(y_slice.as_slice()).map_err(Error::from)?;
             }
         }
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+        let y_slice = y.to_bytes();
+        let proof = table.get(y_slice.as_slice()).map_err(Error::from)?;
+
+        let write_txn = db.begin_write().map_err(Error::from)?;
+
+        if let Some(proof) = proof {
+            let mut proof_info =
+                serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
+
+            proof_info.state = state;
+
+            {
+                let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+                table
+                    .insert(
+                        y_slice.as_slice(),
+                        serde_json::to_string(&proof_info)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Err(Error::UnknownY.into())
     }
 
     #[instrument(skip(self))]

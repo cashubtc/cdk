@@ -26,7 +26,7 @@ use crate::nuts::{
     ProofState, Proofs, PublicKey, RestoreRequest, SecretKey, SigFlag, SpendingConditions, State,
     SwapRequest, Token,
 };
-use crate::types::{MeltQuote, Melted, MintQuote};
+use crate::types::{MeltQuote, Melted, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 use crate::util::{hex, unix_time};
 use crate::{Amount, Bolt11Invoice};
@@ -139,15 +139,16 @@ impl Wallet {
     /// Total Balance of wallet
     #[instrument(skip(self))]
     pub async fn total_balance(&self) -> Result<Amount, Error> {
-        let mints = self.localstore.get_mints().await?;
         let mut balance = Amount::ZERO;
 
-        for (mint, _) in mints {
-            if let Some(proofs) = self.localstore.get_proofs(mint.clone()).await? {
-                let amount = proofs.iter().map(|p| p.amount).sum();
+        if let Some(proofs) = self
+            .localstore
+            .get_proofs(None, Some(vec![State::Unspent]))
+            .await?
+        {
+            let amount = proofs.iter().map(|p| p.amount).sum();
 
-                balance += amount;
-            }
+            balance += amount;
         }
 
         Ok(balance)
@@ -156,15 +157,16 @@ impl Wallet {
     /// Total Balance of wallet
     #[instrument(skip(self))]
     pub async fn total_pending_balance(&self) -> Result<Amount, Error> {
-        let mints = self.localstore.get_mints().await?;
         let mut balance = Amount::ZERO;
 
-        for (mint, _) in mints {
-            if let Some(proofs) = self.localstore.get_pending_proofs(mint.clone()).await? {
-                let amount = proofs.iter().map(|p| p.amount).sum();
+        if let Some(proofs) = self
+            .localstore
+            .get_proofs(None, Some(vec![State::Pending]))
+            .await?
+        {
+            let amount = proofs.iter().map(|p| p.amount).sum();
 
-                balance += amount;
-            }
+            balance += amount;
         }
 
         Ok(balance)
@@ -177,7 +179,7 @@ impl Wallet {
         let mut balances = HashMap::new();
 
         for (mint, _) in mints {
-            if let Some(proofs) = self.localstore.get_proofs(mint.clone()).await? {
+            if let Some(proofs) = self.localstore.get_proofs(Some(mint.clone()), None).await? {
                 let amount = proofs.iter().map(|p| p.amount).sum();
 
                 balances.insert(mint, amount);
@@ -191,7 +193,10 @@ impl Wallet {
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
-        Ok(self.localstore.get_proofs(mint_url).await?)
+        Ok(self
+            .localstore
+            .get_proofs(Some(mint_url), Some(vec![State::Unspent]))
+            .await?)
     }
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
@@ -347,7 +352,14 @@ impl Wallet {
         let mut balance = Amount::ZERO;
 
         for (mint, _) in mints {
-            if let Some(proofs) = self.localstore.get_pending_proofs(mint.clone()).await? {
+            if let Some(proofs) = self
+                .localstore
+                .get_proofs(
+                    Some(mint.clone()),
+                    Some(vec![State::Unspent, State::Pending]),
+                )
+                .await?
+            {
                 let states = self
                     .check_proofs_spent(mint.clone(), proofs.clone())
                     .await?;
@@ -367,9 +379,7 @@ impl Wallet {
 
                 let amount = pending_proofs.iter().map(|p| p.amount).sum();
 
-                self.localstore
-                    .remove_pending_proofs(mint, &non_pending_proofs)
-                    .await?;
+                self.localstore.remove_proofs(&non_pending_proofs).await?;
 
                 balance += amount;
             }
@@ -594,8 +604,13 @@ impl Wallet {
             .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
             .await?;
 
+        let proofs = proofs
+            .into_iter()
+            .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent))
+            .collect();
+
         // Add new proofs to store
-        self.localstore.add_proofs(mint_url, proofs).await?;
+        self.localstore.add_proofs(proofs).await?;
 
         Ok(minted_amount)
     }
@@ -680,9 +695,13 @@ impl Wallet {
                     );
                 }
 
-                self.localstore
-                    .add_pending_proofs(mint_url.clone(), send_proofs.clone())
-                    .await?;
+                let send_proofs_info = send_proofs
+                    .clone()
+                    .into_iter()
+                    .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Reserved))
+                    .collect();
+
+                self.localstore.add_proofs(send_proofs_info).await?;
 
                 proofs_to_send = Some(send_proofs);
             }
@@ -692,17 +711,20 @@ impl Wallet {
             }
         }
 
-        self.localstore
-            .remove_proofs(mint_url.clone(), &input_proofs)
-            .await?;
+        self.localstore.remove_proofs(&input_proofs).await?;
 
-        self.localstore
-            .add_pending_proofs(mint_url.clone(), input_proofs)
-            .await?;
+        for proof in input_proofs {
+            self.localstore
+                .set_proof_state(proof.y()?, State::Reserved)
+                .await?;
+        }
 
-        self.localstore
-            .add_proofs(mint_url.clone(), keep_proofs)
-            .await?;
+        let keep_proofs = keep_proofs
+            .into_iter()
+            .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent))
+            .collect();
+
+        self.localstore.add_proofs(keep_proofs).await?;
 
         Ok(proofs_to_send)
     }
@@ -913,7 +935,7 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         let mint_proofs = self
             .localstore
-            .get_proofs(mint_url.clone())
+            .get_proofs(Some(mint_url.clone()), Some(vec![State::Unspent]))
             .await?
             .ok_or(Error::InsufficientFunds)?;
 
@@ -1048,16 +1070,17 @@ impl Wallet {
                 .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
                 .await?;
 
-            self.localstore
-                .add_proofs(mint_url.clone(), change_proofs)
-                .await?;
+            let change_proofs_info = change_proofs
+                .into_iter()
+                .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent))
+                .collect();
+
+            self.localstore.add_proofs(change_proofs_info).await?;
         }
 
         self.localstore.remove_melt_quote(&quote_info.id).await?;
 
-        self.localstore
-            .remove_proofs(mint_url.clone(), &proofs)
-            .await?;
+        self.localstore.remove_proofs(&proofs).await?;
 
         Ok(melted)
     }
@@ -1209,7 +1232,11 @@ impl Wallet {
         let mut total_amount = Amount::ZERO;
         for (mint, proofs) in received_proofs {
             total_amount += proofs.iter().map(|p| p.amount).sum();
-            self.localstore.add_proofs(mint, proofs).await?;
+            let proofs = proofs
+                .into_iter()
+                .flat_map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent))
+                .collect();
+            self.localstore.add_proofs(proofs).await?;
         }
 
         Ok(total_amount)
@@ -1402,9 +1429,12 @@ impl Wallet {
 
                 restored_value += unspent_proofs.iter().map(|p| p.amount).sum();
 
-                self.localstore
-                    .add_proofs(mint_url.clone(), unspent_proofs)
-                    .await?;
+                let unspent_proofs = unspent_proofs
+                    .into_iter()
+                    .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent))
+                    .collect();
+
+                self.localstore.add_proofs(unspent_proofs).await?;
 
                 empty_batch = 0;
                 start_counter += 100;

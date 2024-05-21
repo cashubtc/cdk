@@ -2,16 +2,56 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/07.md>
 
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use super::nut01::PublicKey;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// NUT07 Error
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum Error {
+    /// Unknown State error
+    #[error("Unknown State")]
+    UnknownState,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum State {
     Spent,
     Unspent,
     Pending,
+    Reserved,
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            State::Spent => "SPENT",
+            State::Unspent => "UNSPENT",
+            State::Pending => "PENDING",
+            State::Reserved => "RESERVED",
+        };
+
+        write!(f, "{}", s)
+    }
+}
+
+impl FromStr for State {
+    type Err = Error;
+
+    fn from_str(state: &str) -> Result<Self, Self::Err> {
+        match state {
+            "SPENT" => Ok(Self::Spent),
+            "UNSPENT" => Ok(Self::Unspent),
+            "PENDING" => Ok(Self::Pending),
+            "RESERVED" => Ok(Self::Reserved),
+            _ => Err(Error::UnknownState),
+        }
+    }
 }
 
 /// Check spendabale request [NUT-07]
