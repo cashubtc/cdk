@@ -7,12 +7,6 @@ use crate::nuts::{CurrencyUnit, Proofs};
 use crate::url::UncheckedUrl;
 use crate::Amount;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProofsStatus {
-    pub spendable: Proofs,
-    pub spent: Proofs,
-}
-
 /// Melt response with proofs
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Melted {
