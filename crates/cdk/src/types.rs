@@ -3,12 +3,13 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::nuts::{CurrencyUnit, Proofs};
+use crate::error::Error;
+use crate::nuts::{CurrencyUnit, Proof, Proofs, PublicKey, State};
 use crate::url::UncheckedUrl;
 use crate::Amount;
 
 /// Melt response with proofs
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Melted {
     pub paid: bool,
     pub preimage: Option<String>,
@@ -16,7 +17,7 @@ pub struct Melted {
 }
 
 /// Possible states of an invoice
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvoiceStatus {
     Unpaid,
     Paid,
@@ -25,7 +26,7 @@ pub enum InvoiceStatus {
 }
 
 /// Mint Quote Info
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {
     pub id: String,
     pub mint_url: UncheckedUrl,
@@ -59,7 +60,7 @@ impl MintQuote {
 }
 
 /// Melt Quote Info
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     pub id: String,
     pub unit: CurrencyUnit,
@@ -89,5 +90,28 @@ impl MeltQuote {
             paid: false,
             expiry,
         }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofInfo {
+    pub proof: Proof,
+    pub y: PublicKey,
+    pub mint_url: UncheckedUrl,
+    pub state: State,
+}
+
+impl ProofInfo {
+    pub fn new(proof: Proof, mint_url: UncheckedUrl, state: State) -> Result<Self, Error> {
+        let y = proof
+            .y()
+            .map_err(|_| Error::CustomError("Could not find y".to_string()))?;
+
+        Ok(Self {
+            proof,
+            y,
+            mint_url,
+            state,
+        })
     }
 }

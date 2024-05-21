@@ -8,10 +8,8 @@ use tokio::sync::RwLock;
 
 use super::WalletDatabase;
 use crate::cdk_database::Error;
-#[cfg(feature = "nostr")]
-use crate::nuts::PublicKey;
-use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, Proofs};
-use crate::types::{MeltQuote, MintQuote};
+use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, State};
+use crate::types::{MeltQuote, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 
 // TODO: Change these all to RwLocks
@@ -22,8 +20,7 @@ pub struct WalletMemoryDatabase {
     mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
     melt_quotes: Arc<RwLock<HashMap<String, MeltQuote>>>,
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
-    proofs: Arc<RwLock<HashMap<UncheckedUrl, HashSet<Proof>>>>,
-    pending_proofs: Arc<RwLock<HashMap<UncheckedUrl, HashSet<Proof>>>>,
+    proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
     #[cfg(feature = "nostr")]
     nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
@@ -50,7 +47,6 @@ impl WalletMemoryDatabase {
                 mint_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
             )),
             proofs: Arc::new(RwLock::new(HashMap::new())),
-            pending_proofs: Arc::new(RwLock::new(HashMap::new())),
             keyset_counter: Arc::new(RwLock::new(keyset_counter)),
             #[cfg(feature = "nostr")]
             nostr_last_checked: Arc::new(RwLock::new(nostr_last_checked)),
@@ -160,69 +156,81 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, mint_url: UncheckedUrl, proofs: Proofs) -> Result<(), Error> {
+    async fn add_proofs(&self, proofs_info: Vec<ProofInfo>) -> Result<(), Error> {
         let mut all_proofs = self.proofs.write().await;
 
-        let mint_proofs = all_proofs.entry(mint_url).or_insert(HashSet::new());
-        mint_proofs.extend(proofs);
-
-        Ok(())
-    }
-
-    async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
-        Ok(self
-            .proofs
-            .read()
-            .await
-            .get(&mint_url)
-            .map(|p| p.iter().cloned().collect()))
-    }
-
-    async fn remove_proofs(&self, mint_url: UncheckedUrl, proofs: &Proofs) -> Result<(), Error> {
-        let mut mint_proofs = self.proofs.write().await;
-
-        if let Some(mint_proofs) = mint_proofs.get_mut(&mint_url) {
-            for proof in proofs {
-                mint_proofs.remove(proof);
-            }
+        for proof_info in proofs_info.into_iter() {
+            all_proofs.insert(proof_info.y, proof_info);
         }
 
         Ok(())
     }
 
-    async fn add_pending_proofs(
+    async fn get_proofs(
         &self,
-        mint_url: UncheckedUrl,
-        proofs: Proofs,
-    ) -> Result<(), Error> {
-        let mut all_proofs = self.pending_proofs.write().await;
+        mint_url: Option<UncheckedUrl>,
+        state: Option<Vec<State>>,
+    ) -> Result<Option<Proofs>, Error> {
+        let proofs = self.proofs.read().await;
 
-        let mint_proofs = all_proofs.entry(mint_url).or_insert(HashSet::new());
-        mint_proofs.extend(proofs);
+        let proofs: Proofs = proofs
+            .clone()
+            .into_values()
+            .filter_map(|proof_info| match (mint_url.clone(), state.clone()) {
+                (Some(mint_url), Some(state)) => {
+                    if state.contains(&proof_info.state) && mint_url.eq(&proof_info.mint_url) {
+                        Some(proof_info.proof)
+                    } else {
+                        None
+                    }
+                }
+                (Some(mint_url), None) => {
+                    if proof_info.mint_url.eq(&mint_url) {
+                        Some(proof_info.proof)
+                    } else {
+                        None
+                    }
+                }
+                (None, Some(state)) => {
+                    if state.contains(&proof_info.state) {
+                        Some(proof_info.proof)
+                    } else {
+                        None
+                    }
+                }
+                (None, None) => Some(proof_info.proof),
+            })
+            .collect();
+
+        if proofs.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(proofs))
+    }
+
+    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
+        let mut mint_proofs = self.proofs.write().await;
+
+        for proof in proofs {
+            mint_proofs.remove(&proof.y().map_err(Error::from)?);
+        }
 
         Ok(())
     }
 
-    async fn get_pending_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
-        Ok(self
-            .pending_proofs
-            .read()
-            .await
-            .get(&mint_url)
-            .map(|p| p.iter().cloned().collect()))
-    }
+    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
+        let mint_proofs = self.proofs.read().await;
 
-    async fn remove_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: &Proofs,
-    ) -> Result<(), Error> {
-        let mut mint_proofs = self.pending_proofs.write().await;
+        let mint_proof = mint_proofs.get(&y);
 
-        if let Some(mint_proofs) = mint_proofs.get_mut(&mint_url) {
-            for proof in proofs {
-                mint_proofs.remove(proof);
-            }
+        let mut mint_proofs = self.proofs.write().await;
+
+        if let Some(proof_info) = mint_proof {
+            let mut proof_info = proof_info.clone();
+
+            proof_info.state = state;
+            mint_proofs.insert(y, proof_info);
         }
 
         Ok(())

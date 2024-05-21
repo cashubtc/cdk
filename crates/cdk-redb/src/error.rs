@@ -43,6 +43,9 @@ pub enum Error {
     /// Unknown Mint Info
     #[error("Unknown Mint Info")]
     UnknownMintInfo,
+    /// Unknown Proof Y
+    #[error("Unknown Proof Y")]
+    UnknownY,
 }
 
 impl From<Error> for cdk::cdk_database::Error {

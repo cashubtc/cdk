@@ -8,6 +8,7 @@ pub enum JsState {
     Spent,
     Unspent,
     Pending,
+    Reserved,
 }
 
 impl From<State> for JsState {
@@ -16,6 +17,7 @@ impl From<State> for JsState {
             State::Spent => JsState::Spent,
             State::Unspent => JsState::Unspent,
             State::Pending => JsState::Pending,
+            State::Reserved => JsState::Reserved,
         }
     }
 }
@@ -26,6 +28,7 @@ impl From<JsState> for State {
             JsState::Spent => State::Spent,
             JsState::Unspent => State::Unspent,
             JsState::Pending => State::Pending,
+            JsState::Reserved => State::Reserved,
         }
     }
 }

@@ -4,8 +4,8 @@ use std::result::Result;
 
 use async_trait::async_trait;
 use cdk::cdk_database::WalletDatabase;
-use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs};
-use cdk::types::{MeltQuote, MintQuote};
+use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, State};
+use cdk::types::{MeltQuote, MintQuote, ProofInfo};
 use cdk::url::UncheckedUrl;
 use rexie::*;
 use thiserror::Error;
@@ -18,7 +18,6 @@ const MINT_KEYS: &str = "mint_keys";
 const MINT_QUOTES: &str = "mint_quotes";
 const MELT_QUOTES: &str = "melt_quotes";
 const PROOFS: &str = "proofs";
-const PENDING_PROOFS: &str = "pending_proofs";
 const CONFIG: &str = "config";
 const KEYSET_COUNTER: &str = "keyset_counter";
 
@@ -35,6 +34,8 @@ pub enum Error {
     /// Serde Wasm Error
     #[error(transparent)]
     SerdeBindgen(#[from] serde_wasm_bindgen::Error),
+    #[error(transparent)]
+    NUT00(cdk::nuts::nut00::Error),
 }
 impl From<Error> for cdk::cdk_database::Error {
     fn from(e: Error) -> Self {
@@ -85,10 +86,6 @@ impl RexieWalletDatabase {
             )
             .add_object_store(
                 ObjectStore::new(MELT_QUOTES)
-                    .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
-            )
-            .add_object_store(
-                ObjectStore::new(PENDING_PROOFS)
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
@@ -423,7 +420,7 @@ impl WalletDatabase for RexieWalletDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, mint_url: UncheckedUrl, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Vec<ProofInfo>) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -432,33 +429,27 @@ impl WalletDatabase for RexieWalletDatabase {
 
         let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        for proof in proofs {
+            let y = proof.y;
+            let y = serde_wasm_bindgen::to_value(&y).map_err(Error::from)?;
+            let proof = serde_wasm_bindgen::to_value(&proof).map_err(Error::from)?;
 
-        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
-
-        let current_proofs: Proofs =
-            serde_wasm_bindgen::from_value(current_proofs).unwrap_or_default();
-
-        let all_proofs: Proofs = current_proofs
-            .into_iter()
-            .chain(proofs.into_iter())
-            .collect();
-
-        let all_proofs = serde_wasm_bindgen::to_value(&all_proofs).map_err(Error::from)?;
-
-        web_sys::console::log_1(&all_proofs);
-
-        proofs_store
-            .put(&all_proofs, Some(&mint_url))
-            .await
-            .map_err(Error::from)?;
+            proofs_store
+                .put(&proof, Some(&y))
+                .await
+                .map_err(Error::from)?;
+        }
 
         transaction.done().await.map_err(Error::from)?;
 
         Ok(())
     }
 
-    async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Self::Err> {
+    async fn get_proofs(
+        &self,
+        mint_url: Option<UncheckedUrl>,
+        state: Option<Vec<State>>,
+    ) -> Result<Option<Proofs>, Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -467,21 +458,53 @@ impl WalletDatabase for RexieWalletDatabase {
 
         let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
-        let proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
+        let proofs = proofs_store
+            .get_all(None, None, None, None)
+            .await
+            .map_err(Error::from)?;
+
+        let proofs: Proofs = proofs
+            .into_iter()
+            .filter_map(|(_k, v)| {
+                let mut proof = None;
+
+                if let Ok(proof_info) = serde_wasm_bindgen::from_value::<ProofInfo>(v) {
+                    match (&mint_url, &state) {
+                        (Some(mint_url), Some(state)) => {
+                            if state.contains(&proof_info.state)
+                                && mint_url.eq(&proof_info.mint_url)
+                            {
+                                proof = Some(proof_info.proof);
+                            }
+                        }
+                        (Some(mint_url), None) => {
+                            if mint_url.eq(&proof_info.mint_url) {
+                                proof = Some(proof_info.proof);
+                            }
+                        }
+                        (None, Some(state)) => {
+                            if state.contains(&proof_info.state) {
+                                proof = Some(proof_info.proof);
+                            }
+                        }
+                        (None, None) => proof = Some(proof_info.proof),
+                    }
+                }
+
+                proof
+            })
+            .collect();
 
         transaction.done().await.map_err(Error::from)?;
 
-        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs).map_err(Error::from)?;
+        if proofs.is_empty() {
+            return Ok(None);
+        }
 
-        Ok(proofs)
+        Ok(Some(proofs))
     }
 
-    async fn remove_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: &Proofs,
-    ) -> Result<(), Self::Err> {
+    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -490,24 +513,10 @@ impl WalletDatabase for RexieWalletDatabase {
 
         let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
-        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
+        for proof in proofs {
+            let y = serde_wasm_bindgen::to_value(&proof.y()?).map_err(Error::from)?;
 
-        let current_proofs: Option<Proofs> =
-            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
-
-        if let Some(current_proofs) = current_proofs {
-            let proofs: Proofs = current_proofs
-                .into_iter()
-                .filter(|p| !proofs.contains(p))
-                .collect();
-
-            let proofs = serde_wasm_bindgen::to_value(&proofs).map_err(Error::from)?;
-
-            proofs_store
-                .put(&proofs, Some(&mint_url))
-                .await
-                .map_err(Error::from)?;
+            proofs_store.delete(&y).await.map_err(Error::from)?;
         }
 
         transaction.done().await.map_err(Error::from)?;
@@ -515,97 +524,28 @@ impl WalletDatabase for RexieWalletDatabase {
         Ok(())
     }
 
-    async fn add_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: Proofs,
-    ) -> Result<(), Self::Err> {
+    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
-            .transaction(&[PENDING_PROOFS], TransactionMode::ReadWrite)
+            .transaction(&[PROOFS], TransactionMode::ReadWrite)
             .map_err(Error::from)?;
 
-        let proofs_store = transaction.store(PENDING_PROOFS).map_err(Error::from)?;
+        let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+        let y = serde_wasm_bindgen::to_value(&y).map_err(Error::from)?;
 
-        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
+        let proof = proofs_store.get(&y).await.map_err(Error::from)?;
+        let mut proof: ProofInfo = serde_wasm_bindgen::from_value(proof).map_err(Error::from)?;
 
-        let current_proofs: Proofs =
-            serde_wasm_bindgen::from_value(current_proofs).unwrap_or_default();
+        proof.state = state;
 
-        let all_proofs: Proofs = current_proofs
-            .into_iter()
-            .chain(proofs.into_iter())
-            .collect();
-
-        let all_proofs = serde_wasm_bindgen::to_value(&all_proofs).map_err(Error::from)?;
+        let proof = serde_wasm_bindgen::to_value(&proof).map_err(Error::from)?;
 
         proofs_store
-            .put(&all_proofs, Some(&mint_url))
+            .put(&proof, Some(&y))
             .await
             .map_err(Error::from)?;
-
-        transaction.done().await.map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    async fn get_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-    ) -> Result<Option<Proofs>, Self::Err> {
-        let rexie = self.db.lock().await;
-
-        let transaction = rexie
-            .transaction(&[PENDING_PROOFS], TransactionMode::ReadOnly)
-            .map_err(Error::from)?;
-
-        let proofs_store = transaction.store(PENDING_PROOFS).map_err(Error::from)?;
-
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
-        let proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
-
-        transaction.done().await.map_err(Error::from)?;
-
-        let proofs: Option<Proofs> = serde_wasm_bindgen::from_value(proofs).unwrap_or(None);
-
-        Ok(proofs)
-    }
-
-    async fn remove_pending_proofs(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: &Proofs,
-    ) -> Result<(), Self::Err> {
-        let rexie = self.db.lock().await;
-
-        let transaction = rexie
-            .transaction(&[PENDING_PROOFS], TransactionMode::ReadWrite)
-            .map_err(Error::from)?;
-
-        let proofs_store = transaction.store(PENDING_PROOFS).map_err(Error::from)?;
-
-        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
-        let current_proofs = proofs_store.get(&mint_url).await.map_err(Error::from)?;
-
-        let current_proofs: Option<Proofs> =
-            serde_wasm_bindgen::from_value(current_proofs).map_err(Error::from)?;
-
-        if let Some(current_proofs) = current_proofs {
-            let proofs: Proofs = current_proofs
-                .into_iter()
-                .filter(|p| !proofs.contains(p))
-                .collect();
-
-            let proofs = serde_wasm_bindgen::to_value(&proofs).map_err(Error::from)?;
-
-            proofs_store
-                .add(&proofs, Some(&mint_url))
-                .await
-                .map_err(Error::from)?;
-        }
 
         transaction.done().await.map_err(Error::from)?;
 
