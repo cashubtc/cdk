@@ -432,7 +432,7 @@ impl PreMintSecrets {
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
-        conditions: SpendingConditions,
+        conditions: &SpendingConditions,
     ) -> Result<Self, Error> {
         let amount_split = amount.split_targeted(amount_split_target);
 

@@ -170,16 +170,28 @@ impl JsWallet {
         &mut self,
         mint_url: String,
         quote_id: String,
+        p2pk_condition: Option<JsP2PKSpendingConditions>,
+        htlc_condition: Option<JsHTLCSpendingConditions>,
         split_target_amount: Option<JsAmount>,
     ) -> Result<JsAmount> {
         let target = split_target_amount
             .map(|a| SplitTarget::Value(*a.deref()))
             .unwrap_or_default();
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+        let conditions = match (p2pk_condition, htlc_condition) {
+            (Some(_), Some(_)) => {
+                return Err(JsValue::from_str(
+                    "Cannot define both p2pk and htlc conditions",
+                ));
+            }
+            (None, Some(htlc_condition)) => Some(htlc_condition.deref().clone()),
+            (Some(p2pk_condition), None) => Some(p2pk_condition.deref().clone()),
+            (None, None) => None,
+        };
 
         Ok(self
             .inner
-            .mint(mint_url, &quote_id, target)
+            .mint(mint_url, &quote_id, target, conditions)
             .await
             .map_err(into_err)?
             .into())
