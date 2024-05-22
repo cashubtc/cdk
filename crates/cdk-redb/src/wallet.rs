@@ -401,13 +401,13 @@ impl WalletDatabase for RedbWalletDatabase {
         mint_url: Option<UncheckedUrl>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Proofs>, Self::Err> {
+    ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
 
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-        let proofs: Proofs = table
+        let proofs: Vec<ProofInfo> = table
             .iter()
             .map_err(Error::from)?
             .flatten()
@@ -416,7 +416,7 @@ impl WalletDatabase for RedbWalletDatabase {
 
                 if let Ok(proof_info) = serde_json::from_str::<ProofInfo>(v.value()) {
                     match proof_info.matches_conditions(&mint_url, &state, &spending_conditions) {
-                        Ok(true) => proof = Some(proof_info.proof),
+                        Ok(true) => proof = Some(proof_info),
                         Ok(false) => (),
                         Err(_) => (),
                     }

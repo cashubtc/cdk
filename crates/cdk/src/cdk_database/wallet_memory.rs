@@ -171,15 +171,15 @@ impl WalletDatabase for WalletMemoryDatabase {
         mint_url: Option<UncheckedUrl>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Proofs>, Error> {
+    ) -> Result<Option<Vec<ProofInfo>>, Error> {
         let proofs = self.proofs.read().await;
 
-        let proofs: Proofs = proofs
+        let proofs: Vec<ProofInfo> = proofs
             .clone()
             .into_values()
             .filter_map(|proof_info| {
                 match proof_info.matches_conditions(&mint_url, &state, &spending_conditions) {
-                    Ok(true) => Some(proof_info.proof),
+                    Ok(true) => Some(proof_info),
                     Ok(false) => None,
                     Err(_) => None,
                 }
