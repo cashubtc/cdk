@@ -100,10 +100,16 @@ pub struct ProofInfo {
     pub mint_url: UncheckedUrl,
     pub state: State,
     pub spending_condition: Option<SpendingConditions>,
+    pub unit: CurrencyUnit,
 }
 
 impl ProofInfo {
-    pub fn new(proof: Proof, mint_url: UncheckedUrl, state: State) -> Result<Self, Error> {
+    pub fn new(
+        proof: Proof,
+        mint_url: UncheckedUrl,
+        state: State,
+        unit: CurrencyUnit,
+    ) -> Result<Self, Error> {
         let y = proof
             .y()
             .map_err(|_| Error::CustomError("Could not find y".to_string()))?;
@@ -116,6 +122,7 @@ impl ProofInfo {
             mint_url,
             state,
             spending_condition,
+            unit,
         })
     }
 

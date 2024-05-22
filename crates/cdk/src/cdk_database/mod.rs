@@ -83,7 +83,7 @@ pub trait WalletDatabase {
         mint_url: Option<UncheckedUrl>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Proofs>, Self::Err>;
+    ) -> Result<Option<Vec<ProofInfo>>, Self::Err>;
     async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err>;
 
     async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err>;

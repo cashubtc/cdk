@@ -450,7 +450,7 @@ impl WalletDatabase for RexieWalletDatabase {
         mint_url: Option<UncheckedUrl>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Proofs>, Self::Err> {
+    ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -464,7 +464,7 @@ impl WalletDatabase for RexieWalletDatabase {
             .await
             .map_err(Error::from)?;
 
-        let proofs: Proofs = proofs
+        let proofs: Vec<ProofInfo> = proofs
             .into_iter()
             .filter_map(|(_k, v)| {
                 let mut proof = None;
@@ -475,7 +475,7 @@ impl WalletDatabase for RexieWalletDatabase {
                         &state,
                         &spending_conditions,
                     ) {
-                        Ok(true) => Some(proof_info.proof),
+                        Ok(true) => Some(proof_info),
                         Ok(false) => None,
                         Err(_) => None,
                     };
