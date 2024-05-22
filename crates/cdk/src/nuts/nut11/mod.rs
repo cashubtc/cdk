@@ -18,6 +18,7 @@ use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
+use crate::secret::Secret;
 use crate::util::{hex, unix_time};
 
 pub mod serde_p2pk_witness;
@@ -320,6 +321,15 @@ impl SpendingConditions {
             Self::P2PKConditions { conditions, .. } => &conditions.refund_keys,
             Self::HTLCConditions { conditions, .. } => &conditions.refund_keys,
         }
+    }
+}
+
+impl TryFrom<&Secret> for SpendingConditions {
+    type Error = Error;
+    fn try_from(secret: &Secret) -> Result<SpendingConditions, Error> {
+        let nut10_secret: Nut10Secret = secret.try_into()?;
+
+        nut10_secret.try_into()
     }
 }
 

@@ -16,7 +16,7 @@ use crate::nuts::{BlindSignature, CurrencyUnit, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::nuts::{Id, MintInfo, PublicKey};
 #[cfg(feature = "wallet")]
-use crate::nuts::{KeySetInfo, Keys, Proofs};
+use crate::nuts::{KeySetInfo, Keys, Proofs, SpendingConditions};
 #[cfg(feature = "mint")]
 use crate::secret::Secret;
 #[cfg(feature = "wallet")]
@@ -82,6 +82,7 @@ pub trait WalletDatabase {
         &self,
         mint_url: Option<UncheckedUrl>,
         state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Proofs>, Self::Err>;
     async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err>;
 

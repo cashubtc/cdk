@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 use super::WalletDatabase;
 use crate::cdk_database::Error;
-use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, State};
+use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State};
 use crate::types::{MeltQuote, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 
@@ -170,35 +170,19 @@ impl WalletDatabase for WalletMemoryDatabase {
         &self,
         mint_url: Option<UncheckedUrl>,
         state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Proofs>, Error> {
         let proofs = self.proofs.read().await;
 
         let proofs: Proofs = proofs
             .clone()
             .into_values()
-            .filter_map(|proof_info| match (mint_url.clone(), state.clone()) {
-                (Some(mint_url), Some(state)) => {
-                    if state.contains(&proof_info.state) && mint_url.eq(&proof_info.mint_url) {
-                        Some(proof_info.proof)
-                    } else {
-                        None
-                    }
+            .filter_map(|proof_info| {
+                match proof_info.matches_conditions(&mint_url, &state, &spending_conditions) {
+                    Ok(true) => Some(proof_info.proof),
+                    Ok(false) => None,
+                    Err(_) => None,
                 }
-                (Some(mint_url), None) => {
-                    if proof_info.mint_url.eq(&mint_url) {
-                        Some(proof_info.proof)
-                    } else {
-                        None
-                    }
-                }
-                (None, Some(state)) => {
-                    if state.contains(&proof_info.state) {
-                        Some(proof_info.proof)
-                    } else {
-                        None
-                    }
-                }
-                (None, None) => Some(proof_info.proof),
             })
             .collect();
 

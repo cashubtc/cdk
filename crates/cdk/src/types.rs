@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::Error;
-use crate::nuts::{CurrencyUnit, Proof, Proofs, PublicKey, State};
+use crate::nuts::{CurrencyUnit, Proof, Proofs, PublicKey, SpendingConditions, State};
 use crate::url::UncheckedUrl;
 use crate::Amount;
 
@@ -99,6 +99,7 @@ pub struct ProofInfo {
     pub y: PublicKey,
     pub mint_url: UncheckedUrl,
     pub state: State,
+    pub spending_condition: Option<SpendingConditions>,
 }
 
 impl ProofInfo {
@@ -107,11 +108,46 @@ impl ProofInfo {
             .y()
             .map_err(|_| Error::CustomError("Could not find y".to_string()))?;
 
+        let spending_condition: Option<SpendingConditions> = (&proof.secret).try_into().ok();
+
         Ok(Self {
             proof,
             y,
             mint_url,
             state,
+            spending_condition,
         })
+    }
+
+    pub fn matches_conditions(
+        &self,
+        mint_url: &Option<UncheckedUrl>,
+        state: &Option<Vec<State>>,
+        spending_conditions: &Option<Vec<SpendingConditions>>,
+    ) -> Result<bool, Error> {
+        if let Some(mint_url) = mint_url {
+            if mint_url.ne(&self.mint_url) {
+                return Ok(false);
+            }
+        }
+
+        if let Some(state) = state {
+            if !state.contains(&self.state) {
+                return Ok(false);
+            }
+        }
+
+        if let Some(spending_conditions) = spending_conditions {
+            match &self.spending_condition {
+                None => return Ok(false),
+                Some(s) => {
+                    if !spending_conditions.contains(s) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        Ok(true)
     }
 }
