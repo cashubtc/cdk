@@ -143,7 +143,7 @@ impl Wallet {
 
         if let Some(proofs) = self
             .localstore
-            .get_proofs(None, Some(vec![State::Unspent]))
+            .get_proofs(None, Some(vec![State::Unspent]), None)
             .await?
         {
             let amount = proofs.iter().map(|p| p.amount).sum();
@@ -161,7 +161,7 @@ impl Wallet {
 
         if let Some(proofs) = self
             .localstore
-            .get_proofs(None, Some(vec![State::Pending]))
+            .get_proofs(None, Some(vec![State::Pending]), None)
             .await?
         {
             let amount = proofs.iter().map(|p| p.amount).sum();
@@ -179,7 +179,11 @@ impl Wallet {
         let mut balances = HashMap::new();
 
         for (mint, _) in mints {
-            if let Some(proofs) = self.localstore.get_proofs(Some(mint.clone()), None).await? {
+            if let Some(proofs) = self
+                .localstore
+                .get_proofs(Some(mint.clone()), None, None)
+                .await?
+            {
                 let amount = proofs.iter().map(|p| p.amount).sum();
 
                 balances.insert(mint, amount);
@@ -195,7 +199,7 @@ impl Wallet {
     pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
         Ok(self
             .localstore
-            .get_proofs(Some(mint_url), Some(vec![State::Unspent]))
+            .get_proofs(Some(mint_url), Some(vec![State::Unspent]), None)
             .await?)
     }
 
@@ -357,6 +361,7 @@ impl Wallet {
                 .get_proofs(
                     Some(mint.clone()),
                     Some(vec![State::Unspent, State::Pending]),
+                    None,
                 )
                 .await?
             {
@@ -935,7 +940,7 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         let mint_proofs = self
             .localstore
-            .get_proofs(Some(mint_url.clone()), Some(vec![State::Unspent]))
+            .get_proofs(Some(mint_url.clone()), Some(vec![State::Unspent]), None)
             .await?
             .ok_or(Error::InsufficientFunds)?;
 

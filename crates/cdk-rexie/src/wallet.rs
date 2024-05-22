@@ -4,7 +4,7 @@ use std::result::Result;
 
 use async_trait::async_trait;
 use cdk::cdk_database::WalletDatabase;
-use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, State};
+use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State};
 use cdk::types::{MeltQuote, MintQuote, ProofInfo};
 use cdk::url::UncheckedUrl;
 use rexie::*;
@@ -449,6 +449,7 @@ impl WalletDatabase for RexieWalletDatabase {
         &self,
         mint_url: Option<UncheckedUrl>,
         state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Proofs>, Self::Err> {
         let rexie = self.db.lock().await;
 
@@ -469,26 +470,15 @@ impl WalletDatabase for RexieWalletDatabase {
                 let mut proof = None;
 
                 if let Ok(proof_info) = serde_wasm_bindgen::from_value::<ProofInfo>(v) {
-                    match (&mint_url, &state) {
-                        (Some(mint_url), Some(state)) => {
-                            if state.contains(&proof_info.state)
-                                && mint_url.eq(&proof_info.mint_url)
-                            {
-                                proof = Some(proof_info.proof);
-                            }
-                        }
-                        (Some(mint_url), None) => {
-                            if mint_url.eq(&proof_info.mint_url) {
-                                proof = Some(proof_info.proof);
-                            }
-                        }
-                        (None, Some(state)) => {
-                            if state.contains(&proof_info.state) {
-                                proof = Some(proof_info.proof);
-                            }
-                        }
-                        (None, None) => proof = Some(proof_info.proof),
-                    }
+                    proof = match proof_info.matches_conditions(
+                        &mint_url,
+                        &state,
+                        &spending_conditions,
+                    ) {
+                        Ok(true) => Some(proof_info.proof),
+                        Ok(false) => None,
+                        Err(_) => None,
+                    };
                 }
 
                 proof
