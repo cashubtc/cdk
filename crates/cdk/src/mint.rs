@@ -160,7 +160,7 @@ impl Mint {
             quote: quote.id,
             request: quote.request,
             paid: quote.paid,
-            expiry: quote.expiry,
+            expiry: Some(quote.expiry),
         })
     }
 
