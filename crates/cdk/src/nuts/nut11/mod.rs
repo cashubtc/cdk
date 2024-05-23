@@ -773,7 +773,7 @@ mod tests {
         let conditions = Conditions {
             locktime: Some(21000000000),
             pubkeys: Some(vec![v_key_two, v_key_three]),
-            refund_keys: Some(vec![v_key.clone()]),
+            refund_keys: Some(vec![v_key]),
             num_sigs: Some(2),
             sig_flag: SigFlag::SigInputs,
         };
@@ -785,7 +785,7 @@ mod tests {
         let mut proof = Proof {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
-            secret: secret.clone().try_into().unwrap(),
+            secret,
             c: PublicKey::from_str(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
