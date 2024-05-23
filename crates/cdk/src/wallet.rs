@@ -1195,7 +1195,11 @@ impl Wallet {
 
     #[cfg(feature = "nostr")]
     #[instrument(skip_all)]
-    pub async fn nostr_receive(&self, nostr_signing_key: SecretKey) -> Result<Amount, Error> {
+    pub async fn nostr_receive(
+        &self,
+        nostr_signing_key: SecretKey,
+        amount_split_target: Option<SplitTarget>,
+    ) -> Result<Amount, Error> {
         use nostr_sdk::{Keys, Kind};
 
         let verifying_key = nostr_signing_key.public_key();
@@ -1241,7 +1245,12 @@ impl Wallet {
         let mut total_received = Amount::ZERO;
         for token in tokens.iter() {
             match self
-                .receive(token, Some(vec![nostr_signing_key.clone()]), None)
+                .receive(
+                    token,
+                    amount_split_target,
+                    Some(vec![nostr_signing_key.clone()]),
+                    None,
+                )
                 .await
             {
                 Ok(amount) => total_received += amount,
