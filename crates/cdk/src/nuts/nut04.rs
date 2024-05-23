@@ -27,7 +27,7 @@ pub struct MintQuoteBolt11Response {
     /// Whether the the request haas be paid
     pub paid: bool,
     /// Unix timestamp until the quote is valid
-    pub expiry: u64,
+    pub expiry: Option<u64>,
 }
 
 impl From<MintQuote> for MintQuoteBolt11Response {
@@ -36,7 +36,7 @@ impl From<MintQuote> for MintQuoteBolt11Response {
             quote: mint_quote.id,
             request: mint_quote.request,
             paid: mint_quote.paid,
-            expiry: mint_quote.expiry,
+            expiry: Some(mint_quote.expiry),
         }
     }
 }

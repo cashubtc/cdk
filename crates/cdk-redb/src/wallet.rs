@@ -466,32 +466,33 @@ impl WalletDatabase for RedbWalletDatabase {
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
         let y_slice = y.to_bytes();
-        let proof = table.get(y_slice.as_slice()).map_err(Error::from)?;
+        let proof = table
+            .get(y_slice.as_slice())
+            .map_err(Error::from)?
+            .ok_or(Error::UnknownY)?;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
 
-        if let Some(proof) = proof {
-            let mut proof_info =
-                serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
+        let mut proof_info =
+            serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
 
-            proof_info.state = state;
+        proof_info.state = state;
 
-            {
-                let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-                table
-                    .insert(
-                        y_slice.as_slice(),
-                        serde_json::to_string(&proof_info)
-                            .map_err(Error::from)?
-                            .as_str(),
-                    )
-                    .map_err(Error::from)?;
-            }
+        {
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            table
+                .insert(
+                    y_slice.as_slice(),
+                    serde_json::to_string(&proof_info)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
         }
 
         write_txn.commit().map_err(Error::from)?;
 
-        Err(Error::UnknownY.into())
+        Ok(())
     }
 
     #[instrument(skip(self))]

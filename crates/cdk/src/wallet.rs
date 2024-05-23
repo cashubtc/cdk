@@ -194,7 +194,7 @@ impl Wallet {
         for (mint, _) in mints {
             if let Some(proofs) = self
                 .localstore
-                .get_proofs(Some(mint.clone()), None, None, None)
+                .get_proofs(Some(mint.clone()), None, Some(vec![State::Unspent]), None)
                 .await?
             {
                 let mut balances = HashMap::new();
@@ -440,7 +440,7 @@ impl Wallet {
             unit: unit.clone(),
             request: quote_res.request,
             paid: quote_res.paid,
-            expiry: quote_res.expiry,
+            expiry: quote_res.expiry.unwrap_or(0),
         };
 
         self.localstore.add_mint_quote(quote.clone()).await?;
@@ -693,6 +693,7 @@ impl Wallet {
 
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
 
+        // FIXME: Should not increment keyset counter for condition proofs
         self.localstore
             .increment_keyset_counter(&active_keyset_id, post_swap_proofs.len() as u32)
             .await?;
@@ -751,8 +752,6 @@ impl Wallet {
                 proofs_to_send = None;
             }
         }
-
-        self.localstore.remove_proofs(&input_proofs).await?;
 
         for proof in input_proofs {
             self.localstore
@@ -849,7 +848,7 @@ impl Wallet {
             }
         };
 
-        // Combine the BlindedMessages totoalling the desired amount with change
+        // Combine the BlindedMessages totaling the desired amount with change
         desired_messages.combine(change_messages);
         // Sort the premint secrets to avoid finger printing
         desired_messages.sort_secrets();
@@ -926,13 +925,15 @@ impl Wallet {
             }
         };
 
+        let send_proofs = send_proofs.ok_or(Error::InsufficientFunds)?;
+        for proof in send_proofs.iter() {
+            self.localstore
+                .set_proof_state(proof.y()?, State::Reserved)
+                .await?;
+        }
+
         Ok(self
-            .proof_to_token(
-                mint_url.clone(),
-                send_proofs.ok_or(Error::InsufficientFunds)?,
-                memo,
-                Some(unit.clone()),
-            )?
+            .proof_to_token(mint_url.clone(), send_proofs, memo, Some(unit.clone()))?
             .to_string())
     }
 
