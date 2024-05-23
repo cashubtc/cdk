@@ -159,20 +159,28 @@ impl Wallet {
 
     /// Total Balance of wallet
     #[instrument(skip(self))]
-    pub async fn total_pending_balance(&self) -> Result<Amount, Error> {
-        let mut balance = Amount::ZERO;
+    pub async fn total_pending_balance(&self) -> Result<HashMap<CurrencyUnit, Amount>, Error> {
+        let mut balances = HashMap::new();
 
         if let Some(proofs) = self
             .localstore
-            .get_proofs(None, None, Some(vec![State::Pending]), None)
+            .get_proofs(
+                None,
+                None,
+                Some(vec![State::Pending, State::Reserved]),
+                None,
+            )
             .await?
         {
-            let amount = proofs.iter().map(|p| p.proof.amount).sum();
-
-            balance += amount;
+            for proof in proofs {
+                balances
+                    .entry(proof.unit)
+                    .and_modify(|ps| *ps += proof.proof.amount)
+                    .or_insert(proof.proof.amount);
+            }
         }
 
-        Ok(balance)
+        Ok(balances)
     }
 
     #[instrument(skip(self))]
