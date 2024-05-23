@@ -277,7 +277,7 @@ impl JsWallet {
         self.inner
             .send(
                 &mint_url,
-                &unit.into(),
+                unit.into(),
                 memo,
                 Amount::from(amount),
                 &target,

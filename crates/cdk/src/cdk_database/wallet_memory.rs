@@ -8,7 +8,9 @@ use tokio::sync::RwLock;
 
 use super::WalletDatabase;
 use crate::cdk_database::Error;
-use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State};
+use crate::nuts::{
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
+};
 use crate::types::{MeltQuote, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 
@@ -169,6 +171,7 @@ impl WalletDatabase for WalletMemoryDatabase {
     async fn get_proofs(
         &self,
         mint_url: Option<UncheckedUrl>,
+        unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Vec<ProofInfo>>, Error> {
@@ -178,10 +181,10 @@ impl WalletDatabase for WalletMemoryDatabase {
             .clone()
             .into_values()
             .filter_map(|proof_info| {
-                match proof_info.matches_conditions(&mint_url, &state, &spending_conditions) {
-                    Ok(true) => Some(proof_info),
-                    Ok(false) => None,
-                    Err(_) => None,
+                match proof_info.matches_conditions(&mint_url, &unit, &state, &spending_conditions)
+                {
+                    true => Some(proof_info),
+                    false => None,
                 }
             })
             .collect();

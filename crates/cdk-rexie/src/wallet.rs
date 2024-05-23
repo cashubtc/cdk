@@ -4,7 +4,9 @@ use std::result::Result;
 
 use async_trait::async_trait;
 use cdk::cdk_database::WalletDatabase;
-use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State};
+use cdk::nuts::{
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
+};
 use cdk::types::{MeltQuote, MintQuote, ProofInfo};
 use cdk::url::UncheckedUrl;
 use rexie::*;
@@ -448,6 +450,7 @@ impl WalletDatabase for RexieWalletDatabase {
     async fn get_proofs(
         &self,
         mint_url: Option<UncheckedUrl>,
+        unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
@@ -472,12 +475,12 @@ impl WalletDatabase for RexieWalletDatabase {
                 if let Ok(proof_info) = serde_wasm_bindgen::from_value::<ProofInfo>(v) {
                     proof = match proof_info.matches_conditions(
                         &mint_url,
+                        &unit,
                         &state,
                         &spending_conditions,
                     ) {
-                        Ok(true) => Some(proof_info),
-                        Ok(false) => None,
-                        Err(_) => None,
+                        true => Some(proof_info),
+                        false => None,
                     };
                 }
 
