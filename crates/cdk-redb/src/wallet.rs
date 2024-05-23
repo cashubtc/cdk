@@ -5,7 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
-use cdk::nuts::{Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State};
+use cdk::nuts::{
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
+};
 use cdk::types::{MeltQuote, MintQuote, ProofInfo};
 use cdk::url::UncheckedUrl;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
@@ -399,6 +401,7 @@ impl WalletDatabase for RedbWalletDatabase {
     async fn get_proofs(
         &self,
         mint_url: Option<UncheckedUrl>,
+        unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
@@ -415,10 +418,14 @@ impl WalletDatabase for RedbWalletDatabase {
                 let mut proof = None;
 
                 if let Ok(proof_info) = serde_json::from_str::<ProofInfo>(v.value()) {
-                    match proof_info.matches_conditions(&mint_url, &state, &spending_conditions) {
-                        Ok(true) => proof = Some(proof_info),
-                        Ok(false) => (),
-                        Err(_) => (),
+                    match proof_info.matches_conditions(
+                        &mint_url,
+                        &unit,
+                        &state,
+                        &spending_conditions,
+                    ) {
+                        true => proof = Some(proof_info),
+                        false => (),
                     }
                 }
 

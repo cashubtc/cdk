@@ -12,9 +12,9 @@ use crate::mint::MintKeySetInfo;
 #[cfg(feature = "wallet")]
 use crate::nuts::State;
 #[cfg(feature = "mint")]
-use crate::nuts::{BlindSignature, CurrencyUnit, Proof};
+use crate::nuts::{BlindSignature, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
-use crate::nuts::{Id, MintInfo, PublicKey};
+use crate::nuts::{CurrencyUnit, Id, MintInfo, PublicKey};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, Proofs, SpendingConditions};
 #[cfg(feature = "mint")]
@@ -81,6 +81,7 @@ pub trait WalletDatabase {
     async fn get_proofs(
         &self,
         mint_url: Option<UncheckedUrl>,
+        unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Vec<ProofInfo>>, Self::Err>;

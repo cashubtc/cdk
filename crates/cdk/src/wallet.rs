@@ -143,7 +143,7 @@ impl Wallet {
 
         if let Some(proofs) = self
             .localstore
-            .get_proofs(None, Some(vec![State::Unspent]), None)
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
             .await?
         {
             for proof in proofs {
@@ -164,7 +164,7 @@ impl Wallet {
 
         if let Some(proofs) = self
             .localstore
-            .get_proofs(None, Some(vec![State::Pending]), None)
+            .get_proofs(None, None, Some(vec![State::Pending]), None)
             .await?
         {
             let amount = proofs.iter().map(|p| p.proof.amount).sum();
@@ -186,7 +186,7 @@ impl Wallet {
         for (mint, _) in mints {
             if let Some(proofs) = self
                 .localstore
-                .get_proofs(Some(mint.clone()), None, None)
+                .get_proofs(Some(mint.clone()), None, None, None)
                 .await?
             {
                 let mut balances = HashMap::new();
@@ -211,7 +211,7 @@ impl Wallet {
     pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
         Ok(self
             .localstore
-            .get_proofs(Some(mint_url), Some(vec![State::Unspent]), None)
+            .get_proofs(Some(mint_url), None, Some(vec![State::Unspent]), None)
             .await?
             .map(|p| p.into_iter().map(|p| p.proof).collect()))
     }
@@ -373,8 +373,9 @@ impl Wallet {
                 .localstore
                 .get_proofs(
                     Some(mint.clone()),
-                    Some(vec![State::Unspent, State::Pending]),
                     None,
+                    Some(vec![State::Unspent, State::Pending]),
+                    Some(vec![]),
                 )
                 .await?
             {
@@ -858,33 +859,62 @@ impl Wallet {
     pub async fn send(
         &mut self,
         mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
+        unit: CurrencyUnit,
         memo: Option<String>,
         amount: Amount,
         amount_split_target: &SplitTarget,
         conditions: Option<SpendingConditions>,
     ) -> Result<String, Error> {
-        let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
+        let (condition_input_proofs, input_proofs) = self
+            .select_proofs(mint_url.clone(), unit.clone(), amount, conditions.clone())
+            .await?;
 
-        let send_proofs = match (
-            input_proofs
-                .iter()
-                .map(|p| p.amount)
-                .sum::<Amount>()
-                .eq(&amount),
-            &conditions,
-        ) {
-            (true, None) => Some(input_proofs),
-            _ => {
-                self.swap(
-                    mint_url,
-                    unit,
-                    Some(amount),
-                    amount_split_target,
-                    input_proofs,
-                    conditions,
+        let send_proofs = match conditions {
+            Some(_) => {
+                let needed_amount = condition_input_proofs
+                    .iter()
+                    .map(|p| p.amount)
+                    .sum::<Amount>();
+
+                let top_up_proofs = self
+                    .swap(
+                        mint_url,
+                        &unit,
+                        Some(needed_amount),
+                        amount_split_target,
+                        input_proofs,
+                        conditions,
+                    )
+                    .await?;
+
+                Some(
+                    [
+                        condition_input_proofs,
+                        top_up_proofs.ok_or(Error::InsufficientFunds)?,
+                    ]
+                    .concat(),
                 )
-                .await?
+            }
+            None => {
+                match input_proofs
+                    .iter()
+                    .map(|p| p.amount)
+                    .sum::<Amount>()
+                    .eq(&amount)
+                {
+                    true => Some(input_proofs),
+                    false => {
+                        self.swap(
+                            mint_url,
+                            &unit,
+                            Some(amount),
+                            amount_split_target,
+                            input_proofs,
+                            conditions,
+                        )
+                        .await?
+                    }
+                }
             }
         };
 
@@ -962,31 +992,82 @@ impl Wallet {
     pub async fn select_proofs(
         &self,
         mint_url: UncheckedUrl,
-        unit: &CurrencyUnit,
+        unit: CurrencyUnit,
         amount: Amount,
-    ) -> Result<Proofs, Error> {
-        let mint_proofs: Proofs = self
-            .localstore
-            .get_proofs(Some(mint_url.clone()), Some(vec![State::Unspent]), None)
-            .await?
-            .ok_or(Error::InsufficientFunds)?
-            .into_iter()
-            .map(|p| p.proof)
-            .collect();
+        conditions: Option<SpendingConditions>,
+    ) -> Result<(Proofs, Proofs), Error> {
+        let mut condition_mint_proofs = Vec::new();
+
+        if conditions.is_some() {
+            condition_mint_proofs = self
+                .localstore
+                .get_proofs(
+                    Some(mint_url.clone()),
+                    Some(unit.clone()),
+                    Some(vec![State::Unspent]),
+                    None,
+                )
+                .await?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.proof)
+                .collect();
+        }
 
         let mint_keysets = self
             .localstore
-            .get_mint_keysets(mint_url)
+            .get_mint_keysets(mint_url.clone())
             .await?
             .ok_or(Error::UnknownKey)?;
 
         let (active, inactive): (HashSet<KeySetInfo>, HashSet<KeySetInfo>) = mint_keysets
             .into_iter()
-            .filter(|p| p.unit.eq(unit))
+            .filter(|p| p.unit.eq(&unit.clone()))
             .partition(|x| x.active);
 
         let active: HashSet<Id> = active.iter().map(|k| k.id).collect();
         let inactive: HashSet<Id> = inactive.iter().map(|k| k.id).collect();
+
+        let (mut condition_active_proofs, mut condition_inactive_proofs): (Proofs, Proofs) =
+            condition_mint_proofs
+                .into_iter()
+                .partition(|p| active.contains(&p.keyset_id));
+
+        condition_active_proofs.reverse();
+        condition_inactive_proofs.reverse();
+
+        let condition_proofs = [condition_inactive_proofs, condition_active_proofs].concat();
+
+        let mut condition_selected_proofs: Proofs = Vec::new();
+
+        for proof in condition_proofs {
+            if condition_selected_proofs
+                .iter()
+                .map(|p| p.amount)
+                .sum::<Amount>()
+                < amount
+            {
+                condition_selected_proofs.push(proof);
+            } else {
+                return Ok((condition_selected_proofs, vec![]));
+            }
+        }
+
+        let condition_proof_total = condition_selected_proofs.iter().map(|p| p.amount).sum();
+
+        let mint_proofs: Proofs = self
+            .localstore
+            .get_proofs(
+                Some(mint_url.clone()),
+                Some(unit.clone()),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await?
+            .ok_or(Error::InsufficientFunds)?
+            .into_iter()
+            .map(|p| p.proof)
+            .collect();
 
         let mut active_proofs: Proofs = Vec::new();
         let mut inactive_proofs: Proofs = Vec::new();
@@ -1002,15 +1083,15 @@ impl Wallet {
         active_proofs.reverse();
         inactive_proofs.reverse();
 
-        inactive_proofs.append(&mut active_proofs);
-
-        let proofs = inactive_proofs;
-
         let mut selected_proofs: Proofs = Vec::new();
 
-        for proof in proofs {
-            if selected_proofs.iter().map(|p| p.amount).sum::<Amount>() < amount {
+        for proof in [inactive_proofs, active_proofs].concat() {
+            if selected_proofs.iter().map(|p| p.amount).sum::<Amount>() + condition_proof_total
+                < amount
+            {
                 selected_proofs.push(proof);
+            } else {
+                break;
             }
         }
 
@@ -1018,7 +1099,7 @@ impl Wallet {
             return Err(Error::InsufficientFunds);
         }
 
-        Ok(selected_proofs)
+        Ok((condition_selected_proofs, selected_proofs))
     }
 
     /// Melt
@@ -1042,8 +1123,14 @@ impl Wallet {
         };
 
         let proofs = self
-            .select_proofs(mint_url.clone(), &quote_info.unit, quote_info.amount)
-            .await?;
+            .select_proofs(
+                mint_url.clone(),
+                quote_info.unit.clone(),
+                quote_info.amount,
+                None,
+            )
+            .await?
+            .1;
 
         let proofs_amount = proofs.iter().map(|p| p.amount).sum();
 

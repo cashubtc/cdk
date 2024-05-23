@@ -129,32 +129,39 @@ impl ProofInfo {
     pub fn matches_conditions(
         &self,
         mint_url: &Option<UncheckedUrl>,
+        unit: &Option<CurrencyUnit>,
         state: &Option<Vec<State>>,
         spending_conditions: &Option<Vec<SpendingConditions>>,
-    ) -> Result<bool, Error> {
+    ) -> bool {
         if let Some(mint_url) = mint_url {
             if mint_url.ne(&self.mint_url) {
-                return Ok(false);
+                return false;
+            }
+        }
+
+        if let Some(unit) = unit {
+            if unit.ne(&self.unit) {
+                return false;
             }
         }
 
         if let Some(state) = state {
             if !state.contains(&self.state) {
-                return Ok(false);
+                return false;
             }
         }
 
         if let Some(spending_conditions) = spending_conditions {
             match &self.spending_condition {
-                None => return Ok(false),
+                None => return false,
                 Some(s) => {
                     if !spending_conditions.contains(s) {
-                        return Ok(false);
+                        return false;
                     }
                 }
             }
         }
 
-        Ok(true)
+        true
     }
 }
