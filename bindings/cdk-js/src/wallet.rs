@@ -54,13 +54,10 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = totalPendingBalance)]
-    pub async fn total_pending_balance(&self) -> Result<JsAmount> {
-        Ok(self
-            .inner
-            .total_pending_balance()
-            .await
-            .map_err(into_err)?
-            .into())
+    pub async fn total_pending_balance(&self) -> Result<JsValue> {
+        Ok(serde_wasm_bindgen::to_value(
+            &self.inner.total_pending_balance().await.map_err(into_err)?,
+        )?)
     }
 
     #[wasm_bindgen(js_name = checkAllPendingProofs)]
