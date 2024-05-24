@@ -908,15 +908,21 @@ impl Wallet {
         conditions: Option<SpendingConditions>,
     ) -> Result<String, Error> {
         let (condition_input_proofs, input_proofs) = self
-            .select_proofs(mint_url.clone(), unit.clone(), amount, conditions.clone())
+            .select_proofs(
+                mint_url.clone(),
+                unit.clone(),
+                amount,
+                conditions.clone().map(|p| vec![p]),
+            )
             .await?;
 
         let send_proofs = match conditions {
             Some(_) => {
-                let needed_amount = condition_input_proofs
-                    .iter()
-                    .map(|p| p.amount)
-                    .sum::<Amount>();
+                let needed_amount = amount
+                    - condition_input_proofs
+                        .iter()
+                        .map(|p| p.amount)
+                        .sum::<Amount>();
 
                 let top_up_proofs = self
                     .swap(
@@ -1038,7 +1044,7 @@ impl Wallet {
         mint_url: UncheckedUrl,
         unit: CurrencyUnit,
         amount: Amount,
-        conditions: Option<SpendingConditions>,
+        conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<(Proofs, Proofs), Error> {
         let mut condition_mint_proofs = Vec::new();
 
@@ -1049,7 +1055,7 @@ impl Wallet {
                     Some(mint_url.clone()),
                     Some(unit.clone()),
                     Some(vec![State::Unspent]),
-                    None,
+                    conditions,
                 )
                 .await?
                 .unwrap_or_default()
@@ -1139,7 +1145,8 @@ impl Wallet {
             }
         }
 
-        if selected_proofs.iter().map(|p| p.amount).sum::<Amount>() < amount {
+        if selected_proofs.iter().map(|p| p.amount).sum::<Amount>() + condition_proof_total < amount
+        {
             return Err(Error::InsufficientFunds);
         }
 
