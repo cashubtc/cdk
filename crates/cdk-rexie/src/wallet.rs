@@ -64,15 +64,9 @@ impl RexieWalletDatabase {
             // Set the version of the database to 1.0
             .version(DATABASE_VERSION)
             // Add an object store named `employees`
+            .add_object_store(ObjectStore::new(PROOFS).add_index(Index::new("y", "y").unique(true)))
             .add_object_store(
-                ObjectStore::new(PROOFS)
-                    // Add an index named `email` with the key path `email` with unique enabled
-                    .add_index(Index::new("y", "y").unique(true)),
-            )
-            .add_object_store(
-                ObjectStore::new(MINTS)
-                    // Add an index named `email` with the key path `email` with unique enabled
-                    .add_index(Index::new("mint_url", "mint_url").unique(true)),
+                ObjectStore::new(MINTS).add_index(Index::new("mint_url", "mint_url").unique(true)),
             )
             .add_object_store(
                 ObjectStore::new(MINT_KEYSETS)
@@ -82,22 +76,10 @@ impl RexieWalletDatabase {
                 ObjectStore::new(MINT_KEYS)
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
-            .add_object_store(
-                ObjectStore::new(MINT_QUOTES)
-                    .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
-            )
-            .add_object_store(
-                ObjectStore::new(MELT_QUOTES)
-                    .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
-            )
-            .add_object_store(
-                ObjectStore::new(CONFIG)
-                    .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
-            )
-            .add_object_store(
-                ObjectStore::new(KEYSET_COUNTER)
-                    .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
-            )
+            .add_object_store(ObjectStore::new(MINT_QUOTES))
+            .add_object_store(ObjectStore::new(MELT_QUOTES))
+            .add_object_store(ObjectStore::new(CONFIG))
+            .add_object_store(ObjectStore::new(KEYSET_COUNTER))
             // Build the database
             .build()
             .await
@@ -245,7 +227,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let quote = serde_wasm_bindgen::to_value(&quote).map_err(Error::from)?;
 
         quotes_store
-            .add(&quote, Some(&quote_id))
+            .put(&quote, Some(&quote_id))
             .await
             .map_err(Error::from)?;
 
@@ -323,7 +305,7 @@ impl WalletDatabase for RexieWalletDatabase {
         let quote = serde_wasm_bindgen::to_value(&quote).map_err(Error::from)?;
 
         quotes_store
-            .add(&quote, Some(&quote_id))
+            .put(&quote, Some(&quote_id))
             .await
             .map_err(Error::from)?;
 
