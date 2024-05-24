@@ -46,6 +46,26 @@ impl JsWallet {
         Wallet::new(Arc::new(db), &seed).into()
     }
 
+    #[wasm_bindgen(js_name = unitBalance)]
+    pub async fn unit_balance(&self, unit: JsCurrencyUnit) -> Result<JsAmount> {
+        Ok(self
+            .inner
+            .unit_balance(unit.into())
+            .await
+            .map_err(into_err)?
+            .into())
+    }
+
+    #[wasm_bindgen(js_name = pendingUnitBalance)]
+    pub async fn pending_unit_balance(&self, unit: JsCurrencyUnit) -> Result<JsAmount> {
+        Ok(self
+            .inner
+            .pending_unit_balance(unit.into())
+            .await
+            .map_err(into_err)?
+            .into())
+    }
+
     #[wasm_bindgen(js_name = totalBalance)]
     pub async fn total_balance(&self) -> Result<JsValue> {
         Ok(serde_wasm_bindgen::to_value(
