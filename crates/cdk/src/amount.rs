@@ -63,12 +63,15 @@ impl Amount {
     }
 }
 
+/// Kinds of targeting that are supported
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
 )]
 pub enum SplitTarget {
+    /// Default target least amount of proofs
     #[default]
     None,
+    /// Tagrget amount for wallet to have most proofs that add up to value
     Value(Amount),
 }
 
