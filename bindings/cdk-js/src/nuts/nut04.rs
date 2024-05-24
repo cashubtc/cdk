@@ -43,6 +43,29 @@ impl From<MintQuoteBolt11Response> for JsMintQuoteBolt11Response {
     }
 }
 
+#[wasm_bindgen(js_class = MintQuoteBolt11Response)]
+impl JsMintQuoteBolt11Response {
+    #[wasm_bindgen(getter)]
+    pub fn paid(&self) -> bool {
+        self.inner.paid
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn quote(&self) -> String {
+        self.inner.quote.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn request(&self) -> String {
+        self.inner.request.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn expiry(&self) -> Option<u64> {
+        self.inner.expiry
+    }
+}
+
 #[wasm_bindgen(js_name = MintBolt11Request)]
 pub struct JsMintBolt11Request {
     inner: MintBolt11Request,
