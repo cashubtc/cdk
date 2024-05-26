@@ -7,6 +7,7 @@ use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
 use super::nut01::SecretKey;
 use super::nut02::Id;
+use crate::amount::SplitTarget;
 use crate::dhke::blind_message;
 use crate::error::Error;
 use crate::secret::Secret;
@@ -46,12 +47,13 @@ impl PreMintSecrets {
         xpriv: ExtendedPrivKey,
         amount: Amount,
         zero_amount: bool,
+        amount_split_target: &SplitTarget,
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::default();
 
         let mut counter = counter;
 
-        for amount in amount.split() {
+        for amount in amount.split_targeted(amount_split_target) {
             let secret = Secret::from_xpriv(xpriv, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_xpriv(xpriv, keyset_id, counter)?;
 

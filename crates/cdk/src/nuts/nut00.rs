@@ -356,8 +356,12 @@ pub struct PreMintSecrets {
 
 impl PreMintSecrets {
     /// Outputs for speceifed amount with random secret
-    pub fn random(keyset_id: Id, amount: Amount) -> Result<Self, Error> {
-        let amount_split = amount.split();
+    pub fn random(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+    ) -> Result<Self, Error> {
+        let amount_split = amount.split_targeted(amount_split_target);
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -427,10 +431,10 @@ impl PreMintSecrets {
     pub fn with_conditions(
         keyset_id: Id,
         amount: Amount,
-        amount_split_target: SplitTarget,
+        amount_split_target: &SplitTarget,
         conditions: SpendingConditions,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(&amount_split_target);
+        let amount_split = amount.split_targeted(amount_split_target);
 
         let mut output = Vec::with_capacity(amount_split.len());
 

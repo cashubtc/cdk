@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use cdk::amount::SplitTarget;
 use cdk::nuts::{Proofs, SecretKey};
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
@@ -146,12 +147,20 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = mint)]
-    pub async fn mint(&mut self, mint_url: String, quote_id: String) -> Result<JsAmount> {
+    pub async fn mint(
+        &mut self,
+        mint_url: String,
+        quote_id: String,
+        split_target_amount: Option<JsAmount>,
+    ) -> Result<JsAmount> {
+        let target = split_target_amount
+            .map(|a| SplitTarget::Value(*a.deref()))
+            .unwrap_or_default();
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
 
         Ok(self
             .inner
-            .mint(mint_url, &quote_id)
+            .mint(mint_url, &quote_id, target)
             .await
             .map_err(into_err)?
             .into())
@@ -192,12 +201,20 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = melt)]
-    pub async fn melt(&mut self, mint_url: String, quote_id: String) -> Result<JsMelted> {
+    pub async fn melt(
+        &mut self,
+        mint_url: String,
+        quote_id: String,
+        split_target_amount: Option<JsAmount>,
+    ) -> Result<JsMelted> {
+        let target = split_target_amount
+            .map(|a| SplitTarget::Value(*a.deref()))
+            .unwrap_or_default();
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
 
         let melted = self
             .inner
-            .melt(&mint_url, &quote_id)
+            .melt(&mint_url, &quote_id, target)
             .await
             .map_err(into_err)?;
 
@@ -216,12 +233,18 @@ impl JsWallet {
 
         Ok(self
             .inner
-            .receive(&encoded_token, None, signing_keys, preimages)
+            .receive(
+                &encoded_token,
+                &SplitTarget::default(),
+                signing_keys,
+                preimages,
+            )
             .await
             .map_err(into_err)?
             .into())
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = send)]
     pub async fn send(
         &mut self,
@@ -231,6 +254,7 @@ impl JsWallet {
         amount: u64,
         p2pk_condition: Option<JsP2PKSpendingConditions>,
         htlc_condition: Option<JsHTLCSpendingConditions>,
+        split_target_amount: Option<JsAmount>,
     ) -> Result<String> {
         let conditions = match (p2pk_condition, htlc_condition) {
             (Some(_), Some(_)) => {
@@ -245,19 +269,23 @@ impl JsWallet {
 
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
 
+        let target = split_target_amount
+            .map(|a| SplitTarget::Value(*a.deref()))
+            .unwrap_or_default();
         self.inner
             .send(
                 &mint_url,
                 &unit.into(),
                 memo,
                 Amount::from(amount),
-                None,
+                &target,
                 conditions,
             )
             .await
             .map_err(into_err)
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = swap)]
     pub async fn swap(
         &mut self,
@@ -267,6 +295,7 @@ impl JsWallet {
         input_proofs: Vec<JsProof>,
         p2pk_condition: Option<JsP2PKSpendingConditions>,
         htlc_condition: Option<JsHTLCSpendingConditions>,
+        split_target_amount: Option<JsAmount>,
     ) -> Result<JsValue> {
         let conditions = match (p2pk_condition, htlc_condition) {
             (Some(_), Some(_)) => {
@@ -283,13 +312,16 @@ impl JsWallet {
 
         let proofs: Proofs = input_proofs.iter().map(|p| p.deref()).cloned().collect();
 
+        let target = split_target_amount
+            .map(|a| SplitTarget::Value(*a.deref()))
+            .unwrap_or_default();
         let post_swap_proofs = self
             .inner
             .swap(
                 &mint_url,
                 &unit.into(),
                 Some(Amount::from(amount)),
-                None,
+                &target,
                 proofs,
                 conditions,
             )

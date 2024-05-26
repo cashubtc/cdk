@@ -24,17 +24,15 @@ impl Amount {
 
     /// Split into parts that are powers of two by target
     pub fn split_targeted(&self, target: &SplitTarget) -> Vec<Self> {
-        let mut parts = vec![];
-        let mut parts_total = Amount::ZERO;
-
-        match *target {
-            SplitTarget::None => {
-                parts = self.split();
-            }
+        let mut parts = match *target {
+            SplitTarget::None => self.split(),
             SplitTarget::Value(amount) => {
                 if self.le(&amount) {
                     return self.split();
                 }
+
+                let mut parts_total = Amount::ZERO;
+                let mut parts = Vec::new();
 
                 // The powers of two that are need to create target value
                 let parts_of_value = amount.split();
@@ -55,8 +53,10 @@ impl Amount {
                         }
                     }
                 }
+
+                parts
             }
-        }
+        };
 
         parts.sort();
         parts
@@ -68,10 +68,10 @@ impl Amount {
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
 )]
 pub enum SplitTarget {
-    /// Default target least amount of proofs
+    /// Default target; least amount of proofs
     #[default]
     None,
-    /// Tagrget amount for wallet to have most proofs that add up to value
+    /// Target amount for wallet to have most proofs that add up to value
     Value(Amount),
 }
 

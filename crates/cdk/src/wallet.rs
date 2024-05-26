@@ -444,7 +444,9 @@ impl Wallet {
                 .await?;
 
             if mint_quote_response.paid {
-                let amount = self.mint(mint_quote.mint_url, &mint_quote.id).await?;
+                let amount = self
+                    .mint(mint_quote.mint_url, &mint_quote.id, SplitTarget::default())
+                    .await?;
                 total_amount += amount;
             } else if mint_quote.expiry.le(&unix_time()) {
                 self.localstore.remove_mint_quote(&mint_quote.id).await?;
@@ -511,7 +513,12 @@ impl Wallet {
 
     /// Mint
     #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
-    pub async fn mint(&self, mint_url: UncheckedUrl, quote_id: &str) -> Result<Amount, Error> {
+    pub async fn mint(
+        &self,
+        mint_url: UncheckedUrl,
+        quote_id: &str,
+        amount_split_target: SplitTarget,
+    ) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
             self.add_mint(mint_url.clone()).await?;
@@ -544,6 +551,7 @@ impl Wallet {
             self.xpriv,
             quote_info.amount,
             false,
+            &amount_split_target,
         )?;
 
         let mint_res = self
@@ -599,7 +607,7 @@ impl Wallet {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Option<Amount>,
-        amount_split_target: Option<SplitTarget>,
+        amount_split_target: &SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Option<Proofs>, Error> {
@@ -706,7 +714,7 @@ impl Wallet {
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Option<Amount>,
-        amount_split_target: Option<SplitTarget>,
+        amount_split_target: &SplitTarget,
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<PreSwap, Error> {
@@ -733,13 +741,14 @@ impl Wallet {
                     self.xpriv,
                     change_amount,
                     false,
+                    amount_split_target,
                 )?;
 
                 (
                     PreMintSecrets::with_conditions(
                         active_keyset_id,
                         desired_amount,
-                        amount_split_target.unwrap_or_default(),
+                        amount_split_target,
                         conditions,
                     )?,
                     change_premint_secrets,
@@ -759,6 +768,7 @@ impl Wallet {
                     self.xpriv,
                     desired_amount,
                     false,
+                    amount_split_target,
                 )?;
 
                 count += premint_secrets.len() as u32;
@@ -769,6 +779,7 @@ impl Wallet {
                     self.xpriv,
                     change_amount,
                     false,
+                    amount_split_target,
                 )?;
 
                 (premint_secrets, change_premint_secrets)
@@ -796,7 +807,7 @@ impl Wallet {
         unit: &CurrencyUnit,
         memo: Option<String>,
         amount: Amount,
-        amount_split_target: Option<SplitTarget>,
+        amount_split_target: &SplitTarget,
         conditions: Option<SpendingConditions>,
     ) -> Result<String, Error> {
         let input_proofs = self.select_proofs(mint_url.clone(), unit, amount).await?;
@@ -955,7 +966,12 @@ impl Wallet {
 
     /// Melt
     #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
-    pub async fn melt(&mut self, mint_url: &UncheckedUrl, quote_id: &str) -> Result<Melted, Error> {
+    pub async fn melt(
+        &mut self,
+        mint_url: &UncheckedUrl,
+        quote_id: &str,
+        amount_split_target: SplitTarget,
+    ) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
@@ -983,8 +999,14 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
-        let premint_secrets =
-            PreMintSecrets::from_xpriv(active_keyset_id, count, self.xpriv, proofs_amount, true)?;
+        let premint_secrets = PreMintSecrets::from_xpriv(
+            active_keyset_id,
+            count,
+            self.xpriv,
+            proofs_amount,
+            true,
+            &amount_split_target,
+        )?;
 
         let melt_response = self
             .client
@@ -1045,7 +1067,7 @@ impl Wallet {
     pub async fn receive(
         &self,
         encoded_token: &str,
-        amount_split_target: Option<SplitTarget>,
+        amount_split_target: &SplitTarget,
         signing_keys: Option<Vec<SecretKey>>,
         preimages: Option<Vec<String>>,
     ) -> Result<Amount, Error> {
@@ -1198,7 +1220,7 @@ impl Wallet {
     pub async fn nostr_receive(
         &self,
         nostr_signing_key: SecretKey,
-        amount_split_target: Option<SplitTarget>,
+        amount_split_target: SplitTarget,
     ) -> Result<Amount, Error> {
         use nostr_sdk::{Keys, Kind};
 
@@ -1247,7 +1269,7 @@ impl Wallet {
             match self
                 .receive(
                     token,
-                    amount_split_target,
+                    &amount_split_target,
                     Some(vec![nostr_signing_key.clone()]),
                     None,
                 )
