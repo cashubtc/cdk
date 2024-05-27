@@ -934,22 +934,27 @@ impl Wallet {
 
         let send_proofs = match conditions {
             Some(_) => {
-                let needed_amount = amount
-                    - condition_input_proofs
-                        .iter()
-                        .map(|p| p.amount)
-                        .sum::<Amount>();
+                let condition_input_proof_total = condition_input_proofs
+                    .iter()
+                    .map(|p| p.amount)
+                    .sum::<Amount>();
+                assert!(condition_input_proof_total.le(&amount));
+                let needed_amount = amount - condition_input_proof_total;
 
-                let top_up_proofs = self
-                    .swap(
-                        mint_url,
-                        &unit,
-                        Some(needed_amount),
-                        amount_split_target,
-                        input_proofs,
-                        conditions,
-                    )
-                    .await?;
+                let top_up_proofs = match needed_amount > Amount::ZERO {
+                    true => {
+                        self.swap(
+                            mint_url,
+                            &unit,
+                            Some(needed_amount),
+                            amount_split_target,
+                            input_proofs,
+                            conditions,
+                        )
+                        .await?
+                    }
+                    false => Some(vec![]),
+                };
 
                 Some(
                     [
@@ -1099,25 +1104,30 @@ impl Wallet {
                 .into_iter()
                 .partition(|p| active.contains(&p.keyset_id));
 
-        condition_active_proofs.reverse();
-        condition_inactive_proofs.reverse();
+        condition_active_proofs.sort_by(|a, b| b.cmp(a));
+        condition_inactive_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
 
         let condition_proofs = [condition_inactive_proofs, condition_active_proofs].concat();
 
         let mut condition_selected_proofs: Proofs = Vec::new();
 
         for proof in condition_proofs {
-            if condition_selected_proofs
+            let mut condition_selected_proof_total = condition_selected_proofs
                 .iter()
                 .map(|p| p.amount)
-                .sum::<Amount>()
-                < amount
-            {
+                .sum::<Amount>();
+
+            if condition_selected_proof_total + proof.amount <= amount {
+                condition_selected_proof_total += proof.amount;
                 condition_selected_proofs.push(proof);
-            } else {
+            }
+
+            if condition_selected_proof_total == amount {
                 return Ok((condition_selected_proofs, vec![]));
             }
         }
+
+        condition_selected_proofs.sort();
 
         let condition_proof_total = condition_selected_proofs.iter().map(|p| p.amount).sum();
 
@@ -1146,14 +1156,14 @@ impl Wallet {
             }
         }
 
-        active_proofs.reverse();
-        inactive_proofs.reverse();
+        active_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
+        inactive_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
 
         let mut selected_proofs: Proofs = Vec::new();
 
         for proof in [inactive_proofs, active_proofs].concat() {
             if selected_proofs.iter().map(|p| p.amount).sum::<Amount>() + condition_proof_total
-                < amount
+                <= amount
             {
                 selected_proofs.push(proof);
             } else {
@@ -1165,6 +1175,8 @@ impl Wallet {
         {
             return Err(Error::InsufficientFunds);
         }
+
+        selected_proofs.sort();
 
         Ok((condition_selected_proofs, selected_proofs))
     }
