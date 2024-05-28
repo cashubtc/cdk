@@ -417,8 +417,8 @@ impl Wallet {
                 .get_proofs(
                     Some(mint.clone()),
                     None,
-                    Some(vec![State::Unspent, State::Pending]),
-                    Some(vec![]),
+                    Some(vec![State::Unspent, State::Pending, State::Reserved]),
+                    None,
                 )
                 .await?
             {
