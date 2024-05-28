@@ -763,14 +763,15 @@ impl Mint {
         if keysets.contains_key(id) {
             return Ok(());
         }
+        drop(keysets);
 
-        let mut keysets = self.keysets.write().await;
         let keyset_info = self
             .localstore
             .get_keyset_info(id)
             .await?
             .ok_or(Error::UnknownKeySet)?;
         let id = keyset_info.id;
+        let mut keysets = self.keysets.write().await;
         keysets.insert(id, self.generate_keyset(keyset_info));
         Ok(())
     }
