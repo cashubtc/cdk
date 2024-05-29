@@ -3,6 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/13.md>
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
+use tracing::instrument;
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
 use super::nut01::SecretKey;
@@ -43,6 +44,7 @@ impl SecretKey {
 impl PreMintSecrets {
     /// Generate blinded messages from predetermined secrets and blindings
     /// factor
+    #[instrument(skip(xpriv))]
     pub fn from_xpriv(
         keyset_id: Id,
         counter: u32,
@@ -50,11 +52,11 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
     ) -> Result<Self, Error> {
-        let mut pre_mint_secrets = PreMintSecrets::default();
+        let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
         let mut counter = counter;
 
-        for amount in amount.split_targeted(amount_split_target) {
+        for amount in amount.split_targeted(amount_split_target)? {
             let secret = Secret::from_xpriv(xpriv, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_xpriv(xpriv, keyset_id, counter)?;
 
@@ -84,10 +86,10 @@ impl PreMintSecrets {
         amount: Amount,
     ) -> Result<Self, Error> {
         if amount <= Amount::ZERO {
-            return Ok(PreMintSecrets::default());
+            return Ok(PreMintSecrets::new(keyset_id));
         }
         let count = ((u64::from(amount) as f64).log2().ceil() as u64).max(1);
-        let mut pre_mint_secrets = PreMintSecrets::default();
+        let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
         let mut counter = counter;
 
@@ -115,15 +117,14 @@ impl PreMintSecrets {
         Ok(pre_mint_secrets)
     }
 
-    /// Generate blinded messages from predetermined secrets and blindings
-    /// factor
+    /// Generate blinded messages from predetermined secrets and blindings factor
     pub fn restore_batch(
         keyset_id: Id,
         xpriv: ExtendedPrivKey,
         start_count: u32,
         end_count: u32,
     ) -> Result<Self, Error> {
-        let mut pre_mint_secrets = PreMintSecrets::default();
+        let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
         for i in start_count..=end_count {
             let secret = Secret::from_xpriv(xpriv, keyset_id, i)?;

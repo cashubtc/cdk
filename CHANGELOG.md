@@ -27,7 +27,7 @@
 
 ### Changed
 cdk(wallet): `wallet:receive` will not claim `proofs` from a mint other then the wallet's mint ([thesimplekid]).
-cdk(NUT00): `Token` is changed from a struct to enum of either `TokenV4` or `Tokenv3` ([thesimplekid]).
+cdk(NUT00): `Token` is changed from a `struct` to `enum` of either `TokenV4` or `Tokenv3` ([thesimplekid]).
 cdk(NUT00): Rename `MintProofs` to `TokenV3Token` ([thesimplekid]).
 
 
@@ -40,6 +40,8 @@ cdk-mintd: Mint binary ([thesimplekid]).
 cdk-cln: cln backend for mint ([thesimplekid]).
 cdk-axum: Mint axum server ([thesimplekid]).
 cdk: NUT06 `MintInfo` and `NUTs` builder ([thesimplekid]).
+cdk: NUT00 `PreMintSecret` added Keyset id ([thesimplekid])
+cdk: NUT02 Support fees ([thesimplekid])
 
 ### Fixed
 cdk: NUT06 deseralize `MintInfo` ([thesimplekid]).

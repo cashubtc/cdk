@@ -6,6 +6,7 @@ use std::str::FromStr;
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::nuts::{Conditions, PublicKey, SpendingConditions, Token};
+use cdk::wallet::types::SendKind;
 use cdk::wallet::Wallet;
 use cdk::{Amount, UncheckedUrl};
 use clap::Args;
@@ -35,6 +36,15 @@ pub struct SendSubCommand {
     /// Token as V3 token
     #[arg(short, long)]
     v3: bool,
+    /// Should the send be offline only
+    #[arg(short, long)]
+    offline: bool,
+    /// Include fee to redeam in token
+    #[arg(short, long)]
+    include_fee: bool,
+    /// Amount willing to overpay to avoid a swap
+    #[arg(short, long)]
+    tolerance: Option<u64>,
 }
 
 pub async fn send(
@@ -146,12 +156,21 @@ pub async fn send(
 
     let wallet = mints_amounts[mint_number].0.clone();
 
+    let send_kind = match (sub_command_args.offline, sub_command_args.tolerance) {
+        (true, Some(amount)) => SendKind::OfflineTolerance(Amount::from(amount)),
+        (true, None) => SendKind::OfflineExact,
+        (false, Some(amount)) => SendKind::OnlineTolerance(Amount::from(amount)),
+        (false, None) => SendKind::OnlineExact,
+    };
+
     let token = wallet
         .send(
             token_amount,
             sub_command_args.memo.clone(),
             conditions,
             &SplitTarget::default(),
+            &send_kind,
+            sub_command_args.include_fee,
         )
         .await?;
 

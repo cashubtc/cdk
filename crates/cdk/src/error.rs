@@ -54,6 +54,9 @@ pub enum Error {
     /// No valid point on curve
     #[error("No valid point found")]
     NoValidPoint,
+    /// Split Values must be less then or equal to amount
+    #[error("Split Values must be less then or equal to amount")]
+    SplitValuesGreater,
     /// Secp256k1 error
     #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),

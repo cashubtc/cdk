@@ -8,6 +8,7 @@ use bitcoin::secp256k1::{self, Secp256k1};
 use error::Error;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tracing::instrument;
 
 use self::nut05::QuoteState;
 use crate::cdk_database::{self, MintDatabase};
@@ -47,6 +48,7 @@ impl Mint {
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
+        input_fee_ppk: u64,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv =
@@ -58,6 +60,9 @@ impl Mint {
         match keysets_infos.is_empty() {
             false => {
                 for keyset_info in keysets_infos {
+                    let mut keyset_info = keyset_info;
+                    keyset_info.input_fee_ppk = input_fee_ppk;
+                    localstore.add_keyset_info(keyset_info.clone()).await?;
                     if keyset_info.active {
                         let id = keyset_info.id;
                         let keyset = MintKeySet::generate_from_xpriv(&secp_ctx, xpriv, keyset_info);
@@ -69,8 +74,14 @@ impl Mint {
                 let derivation_path = DerivationPath::from(vec![
                     ChildNumber::from_hardened_idx(0).expect("0 is a valid index")
                 ]);
-                let (keyset, keyset_info) =
-                    create_new_keyset(&secp_ctx, xpriv, derivation_path, CurrencyUnit::Sat, 64);
+                let (keyset, keyset_info) = create_new_keyset(
+                    &secp_ctx,
+                    xpriv,
+                    derivation_path,
+                    CurrencyUnit::Sat,
+                    64,
+                    input_fee_ppk,
+                );
                 let id = keyset_info.id;
                 localstore.add_keyset_info(keyset_info).await?;
                 localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
@@ -95,26 +106,31 @@ impl Mint {
     }
 
     /// Set Mint Url
+    #[instrument(skip_all)]
     pub fn set_mint_url(&mut self, mint_url: UncheckedUrl) {
         self.mint_url = mint_url;
     }
 
     /// Get Mint Url
+    #[instrument(skip_all)]
     pub fn get_mint_url(&self) -> &UncheckedUrl {
         &self.mint_url
     }
 
     /// Set Mint Info
+    #[instrument(skip_all)]
     pub fn set_mint_info(&mut self, mint_info: MintInfo) {
         self.mint_info = mint_info;
     }
 
     /// Get Mint Info
+    #[instrument(skip_all)]
     pub fn mint_info(&self) -> &MintInfo {
         &self.mint_info
     }
 
     /// New mint quote
+    #[instrument(skip_all)]
     pub async fn new_mint_quote(
         &self,
         mint_url: UncheckedUrl,
@@ -139,6 +155,7 @@ impl Mint {
     }
 
     /// Check mint quote
+    #[instrument(skip(self))]
     pub async fn check_mint_quote(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
         let quote = self
             .localstore
@@ -165,18 +182,21 @@ impl Mint {
     }
 
     /// Update mint quote
+    #[instrument(skip_all)]
     pub async fn update_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
         self.localstore.add_mint_quote(quote).await?;
         Ok(())
     }
 
     /// Get mint quotes
+    #[instrument(skip_all)]
     pub async fn mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let quotes = self.localstore.get_mint_quotes().await?;
         Ok(quotes)
     }
 
     /// Get pending mint quotes
+    #[instrument(skip_all)]
     pub async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let mint_quotes = self.localstore.get_mint_quotes().await?;
 
@@ -187,6 +207,7 @@ impl Mint {
     }
 
     /// Remove mint quote
+    #[instrument(skip_all)]
     pub async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
         self.localstore.remove_mint_quote(quote_id).await?;
 
@@ -194,6 +215,7 @@ impl Mint {
     }
 
     /// New melt quote
+    #[instrument(skip_all)]
     pub async fn new_melt_quote(
         &self,
         request: String,
@@ -217,7 +239,28 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Fee required for proof set
+    #[instrument(skip_all)]
+    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+        let mut sum_fee = 0;
+
+        for proof in proofs {
+            let input_fee_ppk = self
+                .localstore
+                .get_keyset_info(&proof.keyset_id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+
+            sum_fee += input_fee_ppk.input_fee_ppk;
+        }
+
+        let fee = (sum_fee + 999) / 1000;
+
+        Ok(Amount::from(fee))
+    }
+
     /// Check melt quote status
+    #[instrument(skip(self))]
     pub async fn check_melt_quote(&self, quote_id: &str) -> Result<MeltQuoteBolt11Response, Error> {
         let quote = self
             .localstore
@@ -238,26 +281,29 @@ impl Mint {
     }
 
     /// Update melt quote
+    #[instrument(skip_all)]
     pub async fn update_melt_quote(&self, quote: MeltQuote) -> Result<(), Error> {
         self.localstore.add_melt_quote(quote).await?;
         Ok(())
     }
 
     /// Get melt quotes
+    #[instrument(skip_all)]
     pub async fn melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
         let quotes = self.localstore.get_melt_quotes().await?;
         Ok(quotes)
     }
 
     /// Remove melt quote
+    #[instrument(skip(self))]
     pub async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
         self.localstore.remove_melt_quote(quote_id).await?;
 
         Ok(())
     }
 
-    /// Retrieve the public keys of the active keyset for distribution to
-    /// wallet clients
+    /// Retrieve the public keys of the active keyset for distribution to wallet clients
+    #[instrument(skip(self))]
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         self.ensure_keyset_loaded(keyset_id).await?;
         let keysets = self.keysets.read().await;
@@ -267,8 +313,8 @@ impl Mint {
         })
     }
 
-    /// Retrieve the public keys of the active keyset for distribution to
-    /// wallet clients
+    /// Retrieve the public keys of the active keyset for distribution to wallet clients
+    #[instrument(skip_all)]
     pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
         let keyset_infos = self.localstore.get_keyset_infos().await?;
         for keyset_info in keyset_infos {
@@ -281,6 +327,7 @@ impl Mint {
     }
 
     /// Return a list of all supported keysets
+    #[instrument(skip_all)]
     pub async fn keysets(&self) -> Result<KeysetResponse, Error> {
         let keysets = self.localstore.get_keyset_infos().await?;
         let active_keysets: HashSet<Id> = self
@@ -297,6 +344,7 @@ impl Mint {
                 id: k.id,
                 unit: k.unit,
                 active: active_keysets.contains(&k.id),
+                input_fee_ppk: k.input_fee_ppk,
             })
             .collect();
 
@@ -304,6 +352,7 @@ impl Mint {
     }
 
     /// Get keysets
+    #[instrument(skip(self))]
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
         self.ensure_keyset_loaded(id).await?;
         let keysets = self.keysets.read().await;
@@ -313,14 +362,22 @@ impl Mint {
 
     /// Add current keyset to inactive keysets
     /// Generate new keyset
+    #[instrument(skip(self))]
     pub async fn rotate_keyset(
         &self,
         unit: CurrencyUnit,
         derivation_path: DerivationPath,
         max_order: u8,
+        input_fee_ppk: u64,
     ) -> Result<(), Error> {
-        let (keyset, keyset_info) =
-            create_new_keyset(&self.secp_ctx, self.xpriv, derivation_path, unit, max_order);
+        let (keyset, keyset_info) = create_new_keyset(
+            &self.secp_ctx,
+            self.xpriv,
+            derivation_path,
+            unit,
+            max_order,
+            input_fee_ppk,
+        );
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info).await?;
         self.localstore.add_active_keyset(unit, id).await?;
@@ -332,6 +389,7 @@ impl Mint {
     }
 
     /// Process mint request
+    #[instrument(skip_all)]
     pub async fn process_mint_request(
         &self,
         mint_request: nut04::MintBolt11Request,
@@ -397,6 +455,7 @@ impl Mint {
     }
 
     /// Blind Sign
+    #[instrument(skip_all)]
     pub async fn blind_sign(
         &self,
         blinded_message: &BlindedMessage,
@@ -447,6 +506,7 @@ impl Mint {
     }
 
     /// Process Swap
+    #[instrument(skip_all)]
     pub async fn process_swap_request(
         &self,
         swap_request: SwapRequest,
@@ -470,8 +530,20 @@ impl Mint {
 
         let output_total = swap_request.output_amount();
 
-        if proofs_total != output_total {
-            return Err(Error::Amount);
+        let fee = self.get_proofs_fee(&swap_request.inputs).await?;
+
+        if proofs_total < output_total + fee {
+            tracing::info!(
+                "Swap request without enough inputs: {}, outputs {}, fee {}",
+                proofs_total,
+                output_total,
+                fee
+            );
+            return Err(Error::InsufficientInputs(
+                proofs_total.into(),
+                output_total.into(),
+                fee.into(),
+            ));
         }
 
         let proof_count = swap_request.inputs.len();
@@ -554,6 +626,7 @@ impl Mint {
     }
 
     /// Verify [`Proof`] meets conditions and is signed
+    #[instrument(skip_all)]
     pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
@@ -597,6 +670,7 @@ impl Mint {
     }
 
     /// Check state
+    #[instrument(skip_all)]
     pub async fn check_state(
         &self,
         check_state: &CheckStateRequest,
@@ -622,6 +696,7 @@ impl Mint {
     }
 
     /// Verify melt request is valid
+    #[instrument(skip_all)]
     pub async fn verify_melt_request(
         &self,
         melt_request: &MeltBolt11Request,
@@ -653,15 +728,23 @@ impl Mint {
 
         let proofs_total = melt_request.proofs_amount();
 
-        let required_total = quote.amount + quote.fee_reserve;
+        let fee = self.get_proofs_fee(&melt_request.inputs).await?;
+
+        let required_total = quote.amount + quote.fee_reserve + fee;
 
         if proofs_total < required_total {
-            tracing::debug!(
-                "Insufficient Proofs: Got: {}, Required: {}",
+            tracing::info!(
+                "Swap request without enough inputs: {}, quote amount {}, fee_reserve: {} fee {}",
                 proofs_total,
-                required_total
+                quote.amount,
+                quote.fee_reserve,
+                fee
             );
-            return Err(Error::Amount);
+            return Err(Error::InsufficientInputs(
+                proofs_total.into(),
+                (quote.amount + quote.fee_reserve).into(),
+                fee.into(),
+            ));
         }
 
         let input_keyset_ids: HashSet<Id> =
@@ -740,6 +823,7 @@ impl Mint {
     /// Process unpaid melt request
     /// In the event that a melt request fails and the lighthing payment is not made
     /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
+    #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
         self.localstore
             .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
@@ -754,6 +838,7 @@ impl Mint {
 
     /// Process melt request marking [`Proofs`] as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`] before calling [`Self::process_melt_request`]
+    #[instrument(skip_all)]
     pub async fn process_melt_request(
         &self,
         melt_request: &MeltBolt11Request,
@@ -851,6 +936,7 @@ impl Mint {
     }
 
     /// Restore
+    #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let output_len = request.outputs.len();
 
@@ -883,6 +969,7 @@ impl Mint {
     }
 
     /// Ensure Keyset is loaded in mint
+    #[instrument(skip(self))]
     pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
         let keysets = self.keysets.read().await;
         if keysets.contains_key(id) {
@@ -902,6 +989,7 @@ impl Mint {
     }
 
     /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
+    #[instrument(skip_all)]
     pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
         MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
     }
@@ -935,6 +1023,13 @@ pub struct MintKeySetInfo {
     pub derivation_path: DerivationPath,
     /// Max order of keyset
     pub max_order: u8,
+    /// Input Fee ppk
+    #[serde(default = "default_fee")]
+    pub input_fee_ppk: u64,
+}
+
+fn default_fee() -> u64 {
+    0
 }
 
 impl From<MintKeySetInfo> for KeySetInfo {
@@ -943,17 +1038,20 @@ impl From<MintKeySetInfo> for KeySetInfo {
             id: keyset_info.id,
             unit: keyset_info.unit,
             active: keyset_info.active,
+            input_fee_ppk: keyset_info.input_fee_ppk,
         }
     }
 }
 
 /// Generate new [`MintKeySetInfo`] from path
+#[instrument(skip_all)]
 fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
     xpriv: ExtendedPrivKey,
     derivation_path: DerivationPath,
     unit: CurrencyUnit,
     max_order: u8,
+    input_fee_ppk: u64,
 ) -> (MintKeySet, MintKeySetInfo) {
     let keyset = MintKeySet::generate(
         secp,
@@ -971,6 +1069,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
         valid_to: None,
         derivation_path,
         max_order,
+        input_fee_ppk,
     };
     (keyset, keyset_info)
 }

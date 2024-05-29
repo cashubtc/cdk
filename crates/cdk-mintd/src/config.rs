@@ -13,6 +13,7 @@ pub struct Info {
     pub listen_port: u16,
     pub mnemonic: String,
     pub seconds_quote_is_valid_for: Option<u64>,
+    pub input_fee_ppk: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
