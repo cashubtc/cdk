@@ -1336,7 +1336,7 @@ impl Wallet {
             let pubkey_secret_key = match &signing_keys {
                 Some(signing_keys) => signing_keys
                     .iter()
-                    .map(|s| (s.public_key().to_string(), s))
+                    .map(|s| (s.public_key().x_only_public_key(), s))
                     .collect(),
                 None => HashMap::new(),
             };
@@ -1385,7 +1385,9 @@ impl Wallet {
                             }
                         }
                         for pubkey in pubkeys {
-                            if let Some(signing) = pubkey_secret_key.get(&pubkey.to_string()) {
+                            if let Some(signing) =
+                                pubkey_secret_key.get(&pubkey.x_only_public_key())
+                            {
                                 proof.sign_p2pk(signing.to_owned().clone())?;
                             }
                         }
