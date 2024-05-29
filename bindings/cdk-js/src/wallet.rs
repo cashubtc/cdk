@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use cdk::amount::SplitTarget;
 use cdk::nuts::{Proofs, SecretKey};
-use cdk::wallet::Wallet;
+use cdk::wallet::{SendKind, Wallet};
 use cdk::Amount;
 use cdk_rexie::WalletRexieDatabase;
 use wasm_bindgen::prelude::*;
@@ -44,7 +44,7 @@ impl JsWallet {
     pub async fn new(mints_url: String, unit: JsCurrencyUnit, seed: Vec<u8>) -> Self {
         let db = WalletRexieDatabase::new().await.unwrap();
 
-        Wallet::new(&mints_url, unit.into(), Arc::new(db), &seed).into()
+        Wallet::new(&mints_url, unit.into(), Arc::new(db), &seed, None).into()
     }
 
     #[wasm_bindgen(js_name = totalBalance)]
@@ -79,12 +79,6 @@ impl JsWallet {
             .await
             .map_err(into_err)?
             .map(|i| i.into()))
-    }
-
-    #[wasm_bindgen(js_name = refreshMint)]
-    pub async fn refresh_mint_keys(&self) -> Result<()> {
-        self.inner.refresh_mint_keys().await.map_err(into_err)?;
-        Ok(())
     }
 
     #[wasm_bindgen(js_name = mintQuote)]
@@ -200,7 +194,7 @@ impl JsWallet {
             .inner
             .receive(
                 &encoded_token,
-                &SplitTarget::default(),
+                SplitTarget::default(),
                 &signing_keys,
                 &preimages,
             )
@@ -234,7 +228,14 @@ impl JsWallet {
             .map(|a| SplitTarget::Value(*a.deref()))
             .unwrap_or_default();
         self.inner
-            .send(Amount::from(amount), memo, conditions, &target)
+            .send(
+                Amount::from(amount),
+                memo,
+                conditions,
+                &target,
+                &SendKind::default(),
+                false,
+            )
             .await
             .map_err(into_err)
     }
@@ -267,7 +268,13 @@ impl JsWallet {
             .unwrap_or_default();
         let post_swap_proofs = self
             .inner
-            .swap(Some(Amount::from(amount)), &target, proofs, conditions)
+            .swap(
+                Some(Amount::from(amount)),
+                target,
+                proofs,
+                conditions,
+                false,
+            )
             .await
             .map_err(into_err)?;
 

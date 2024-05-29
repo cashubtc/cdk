@@ -136,11 +136,12 @@ async fn receive_token(
             CurrencyUnit::Sat,
             Arc::clone(localstore),
             seed,
+            None,
         ),
     };
 
     let amount = wallet
-        .receive(token_str, &SplitTarget::default(), signing_keys, preimage)
+        .receive(token_str, SplitTarget::default(), signing_keys, preimage)
         .await?;
     Ok(amount)
 }

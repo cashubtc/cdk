@@ -230,15 +230,6 @@ pub struct KeysetResponse {
     pub keysets: Vec<KeySetInfo>,
 }
 
-impl KeysetResponse {
-    /// Create new [`KeysetResponse`]
-    pub fn new(keysets: Vec<KeySet>) -> Self {
-        Self {
-            keysets: keysets.into_iter().map(|keyset| keyset.into()).collect(),
-        }
-    }
-}
-
 /// Keyset
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySet {
@@ -271,16 +262,13 @@ pub struct KeySetInfo {
     /// Keyset state
     /// Mint will only sign from an active keyset
     pub active: bool,
+    /// Input Fee PPK
+    #[serde(default = "default_input_fee_ppk")]
+    pub input_fee_ppk: u64,
 }
 
-impl From<KeySet> for KeySetInfo {
-    fn from(keyset: KeySet) -> KeySetInfo {
-        Self {
-            id: keyset.id,
-            unit: keyset.unit,
-            active: false,
-        }
-    }
+fn default_input_fee_ppk() -> u64 {
+    0
 }
 
 /// MintKeyset
@@ -504,7 +492,7 @@ mod test {
 
     #[test]
     fn test_deserialization_of_keyset_response() {
-        let h = r#"{"keysets":[{"id":"009a1f293253e41e","unit":"sat","active":true},{"id":"eGnEWtdJ0PIM","unit":"sat","active":true},{"id":"003dfdf4e5e35487","unit":"sat","active":true},{"id":"0066ad1a4b6fc57c","unit":"sat","active":true},{"id":"00f7ca24d44c3e5e","unit":"sat","active":true},{"id":"001fcea2931f2d85","unit":"sat","active":true},{"id":"00d095959d940edb","unit":"sat","active":true},{"id":"000d7f730d657125","unit":"sat","active":true},{"id":"0007208d861d7295","unit":"sat","active":true},{"id":"00bfdf8889b719dd","unit":"sat","active":true},{"id":"00ca9b17da045f21","unit":"sat","active":true}]}"#;
+        let h = r#"{"keysets":[{"id":"009a1f293253e41e","unit":"sat","active":true, "input_fee_ppk": 100},{"id":"eGnEWtdJ0PIM","unit":"sat","active":true},{"id":"003dfdf4e5e35487","unit":"sat","active":true},{"id":"0066ad1a4b6fc57c","unit":"sat","active":true},{"id":"00f7ca24d44c3e5e","unit":"sat","active":true},{"id":"001fcea2931f2d85","unit":"sat","active":true},{"id":"00d095959d940edb","unit":"sat","active":true},{"id":"000d7f730d657125","unit":"sat","active":true},{"id":"0007208d861d7295","unit":"sat","active":true},{"id":"00bfdf8889b719dd","unit":"sat","active":true},{"id":"00ca9b17da045f21","unit":"sat","active":true}]}"#;
 
         let _keyset_response: KeysetResponse = serde_json::from_str(h).unwrap();
     }

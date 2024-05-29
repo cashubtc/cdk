@@ -5,6 +5,7 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::wallet::types::SendKind;
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use rand::Rng;
@@ -19,7 +20,7 @@ async fn main() -> Result<(), Error> {
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
 
     let quote = wallet.mint_quote(amount).await.unwrap();
 
@@ -45,7 +46,14 @@ async fn main() -> Result<(), Error> {
     println!("Received {receive_amount} from mint {mint_url}");
 
     let token = wallet
-        .send(amount, None, None, &SplitTarget::default())
+        .send(
+            amount,
+            None,
+            None,
+            &SplitTarget::default(),
+            &SendKind::OnlineExact,
+            false,
+        )
         .await
         .unwrap();
 

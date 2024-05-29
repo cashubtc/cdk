@@ -407,9 +407,9 @@ WHERE id=?
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT INTO keyset
-(id, unit, active, valid_from, valid_to, derivation_path, max_order)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO keyset
+(id, unit, active, valid_from, valid_to, derivation_path, max_order, input_fee_ppk)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(keyset.id.to_string())
@@ -419,6 +419,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(keyset.valid_to.map(|v| v as i64))
         .bind(keyset.derivation_path.to_string())
         .bind(keyset.max_order)
+        .bind(keyset.input_fee_ppk as i64)
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -714,6 +715,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
     let row_valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
     let row_derivation_path: String = row.try_get("derivation_path").map_err(Error::from)?;
     let row_max_order: u8 = row.try_get("max_order").map_err(Error::from)?;
+    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
 
     Ok(MintKeySetInfo {
         id: Id::from_str(&row_id).map_err(Error::from)?,
@@ -723,6 +725,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
         valid_to: row_valid_to.map(|v| v as u64),
         derivation_path: DerivationPath::from_str(&row_derivation_path).map_err(Error::from)?,
         max_order: row_max_order,
+        input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
     })
 }
 

@@ -288,12 +288,22 @@ impl WalletDatabase for WalletRedbDatabase {
             let mut table = write_txn
                 .open_multimap_table(MINT_KEYSETS_TABLE)
                 .map_err(Error::from)?;
+            let mut keysets_table = write_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
 
             for keyset in keysets {
                 table
                     .insert(
                         mint_url.to_string().as_str(),
                         keyset.id.to_bytes().as_slice(),
+                    )
+                    .map_err(Error::from)?;
+
+                keysets_table
+                    .insert(
+                        keyset.id.to_bytes().as_slice(),
+                        serde_json::to_string(&keyset)
+                            .map_err(Error::from)?
+                            .as_str(),
                     )
                     .map_err(Error::from)?;
             }

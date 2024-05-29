@@ -44,3 +44,17 @@ pub struct MeltQuote {
     /// Payment preimage
     pub payment_preimage: Option<String>,
 }
+
+/// Send Kind
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SendKind {
+    #[default]
+    /// Allow online swap before send if wallet does not have exact amount
+    OnlineExact,
+    /// Prefer offline send if difference is less then tolerance
+    OnlineTolerance(Amount),
+    /// Wallet cannot do an online swap and selectedp proof must be exactly send amount
+    OfflineExact,
+    /// Wallet must remain offline but can over pay if below tolerance
+    OfflineTolerance(Amount),
+}

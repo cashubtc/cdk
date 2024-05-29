@@ -2,9 +2,12 @@
 //!
 //! Is any unit and will be treated as the unit of the wallet
 
+use std::cmp::Ordering;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::Error;
 
 /// Amount can be any unit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -28,12 +31,12 @@ impl Amount {
     }
 
     /// Split into parts that are powers of two by target
-    pub fn split_targeted(&self, target: &SplitTarget) -> Vec<Self> {
-        let mut parts = match *target {
+    pub fn split_targeted(&self, target: &SplitTarget) -> Result<Vec<Self>, Error> {
+        let mut parts = match target {
             SplitTarget::None => self.split(),
             SplitTarget::Value(amount) => {
-                if self.le(&amount) {
-                    return self.split();
+                if self.le(amount) {
+                    return Ok(self.split());
                 }
 
                 let mut parts_total = Amount::ZERO;
@@ -61,10 +64,28 @@ impl Amount {
 
                 parts
             }
+            SplitTarget::Values(values) => {
+                let values_total: Amount = values.clone().into_iter().sum();
+
+                match self.cmp(&values_total) {
+                    Ordering::Equal => values.clone(),
+                    Ordering::Less => {
+                        return Err(Error::SplitValuesGreater);
+                    }
+                    Ordering::Greater => {
+                        let extra = *self - values_total;
+                        let mut extra_amount = extra.split();
+                        let mut values = values.clone();
+
+                        values.append(&mut extra_amount);
+                        values
+                    }
+                }
+            }
         };
 
         parts.sort();
-        parts
+        Ok(parts)
     }
 }
 
@@ -162,15 +183,15 @@ impl core::iter::Sum for Amount {
 }
 
 /// Kinds of targeting that are supported
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub enum SplitTarget {
     /// Default target; least amount of proofs
     #[default]
     None,
     /// Target amount for wallet to have most proofs that add up to value
     Value(Amount),
+    /// Specific amounts to split into **must** equal amount being split
+    Values(Vec<Amount>),
 }
 
 #[cfg(test)]
@@ -198,12 +219,16 @@ mod tests {
     fn test_split_target_amount() {
         let amount = Amount(65);
 
-        let split = amount.split_targeted(&SplitTarget::Value(Amount(32)));
+        let split = amount
+            .split_targeted(&SplitTarget::Value(Amount(32)))
+            .unwrap();
         assert_eq!(vec![Amount(1), Amount(32), Amount(32)], split);
 
         let amount = Amount(150);
 
-        let split = amount.split_targeted(&SplitTarget::Value(Amount::from(50)));
+        let split = amount
+            .split_targeted(&SplitTarget::Value(Amount::from(50)))
+            .unwrap();
         assert_eq!(
             vec![
                 Amount(2),
@@ -221,7 +246,9 @@ mod tests {
 
         let amount = Amount::from(63);
 
-        let split = amount.split_targeted(&SplitTarget::Value(Amount::from(32)));
+        let split = amount
+            .split_targeted(&SplitTarget::Value(Amount::from(32)))
+            .unwrap();
         assert_eq!(
             vec![
                 Amount(1),
@@ -233,5 +260,32 @@ mod tests {
             ],
             split
         );
+    }
+
+    #[test]
+    fn test_split_values() {
+        let amount = Amount(10);
+
+        let target = vec![Amount(2), Amount(4), Amount(4)];
+
+        let split_target = SplitTarget::Values(target.clone());
+
+        let values = amount.split_targeted(&split_target).unwrap();
+
+        assert_eq!(target, values);
+
+        let target = vec![Amount(2), Amount(4), Amount(4)];
+
+        let split_target = SplitTarget::Values(vec![Amount(2), Amount(4)]);
+
+        let values = amount.split_targeted(&split_target).unwrap();
+
+        assert_eq!(target, values);
+
+        let split_target = SplitTarget::Values(vec![Amount(2), Amount(10)]);
+
+        let values = amount.split_targeted(&split_target);
+
+        assert!(values.is_err())
     }
 }

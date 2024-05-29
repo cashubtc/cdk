@@ -3,6 +3,7 @@ url = "https://mint.thesimplekid.dev/"
 listen_host = "127.0.0.1"
 listen_port = 8085
 mnemonic = ""
+# input_fee_ppk = 0
 
 
 
