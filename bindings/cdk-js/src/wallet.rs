@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk::amount::SplitTarget;
-use cdk::nuts::{Proofs, SecretKey};
+use cdk::nuts::Proofs;
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
 use cdk::Amount;
@@ -11,6 +11,7 @@ use cdk_rexie::RexieWalletDatabase;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
+use crate::nuts::nut01::JsSecretKey;
 use crate::nuts::nut04::JsMintQuoteBolt11Response;
 use crate::nuts::nut05::JsMeltQuoteBolt11Response;
 use crate::nuts::nut11::JsP2PKSpendingConditions;
@@ -40,10 +41,18 @@ impl From<Wallet> for JsWallet {
 #[wasm_bindgen(js_class = Wallet)]
 impl JsWallet {
     #[wasm_bindgen(constructor)]
-    pub async fn new(seed: Vec<u8>) -> Self {
+    pub async fn new(seed: Vec<u8>, p2pk_signing_keys: Vec<JsSecretKey>) -> Self {
         let db = RexieWalletDatabase::new().await.unwrap();
 
-        Wallet::new(Arc::new(db), &seed).into()
+        Wallet::new(
+            Arc::new(db),
+            &seed,
+            p2pk_signing_keys
+                .into_iter()
+                .map(|s| s.deref().clone())
+                .collect(),
+        )
+        .into()
     }
 
     #[wasm_bindgen(js_name = unitBalance)]
@@ -253,23 +262,12 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = receive)]
-    pub async fn receive(
-        &mut self,
-        encoded_token: String,
-        signing_keys: JsValue,
-        preimages: JsValue,
-    ) -> Result<JsAmount> {
-        let signing_keys: Option<Vec<SecretKey>> = serde_wasm_bindgen::from_value(signing_keys)?;
+    pub async fn receive(&mut self, encoded_token: String, preimages: JsValue) -> Result<JsAmount> {
         let preimages: Option<Vec<String>> = serde_wasm_bindgen::from_value(preimages)?;
 
         Ok(self
             .inner
-            .receive(
-                &encoded_token,
-                &SplitTarget::default(),
-                signing_keys,
-                preimages,
-            )
+            .receive(&encoded_token, &SplitTarget::default(), preimages)
             .await
             .map_err(into_err)?
             .into())
