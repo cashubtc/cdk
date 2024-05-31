@@ -2,18 +2,21 @@
 
 use std::collections::{HashMap, HashSet};
 use std::num::ParseIntError;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use bitcoin::bip32::ExtendedPrivKey;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::Network;
 #[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip04;
 #[cfg(feature = "nostr")]
 use nostr_sdk::{Filter, Timestamp};
 use thiserror::Error;
+use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -107,6 +110,7 @@ pub struct Wallet {
     pub client: HttpClient,
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     xpriv: ExtendedPrivKey,
+    p2pk_signing_keys: Arc<RwLock<HashMap<XOnlyPublicKey, SecretKey>>>,
     #[cfg(feature = "nostr")]
     nostr_client: nostr_sdk::Client,
 }
@@ -115,6 +119,7 @@ impl Wallet {
     pub fn new(
         localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
+        p2pk_signing_keys: Vec<SecretKey>,
     ) -> Self {
         let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, seed)
             .expect("Could not create master key");
@@ -123,9 +128,36 @@ impl Wallet {
             client: HttpClient::new(),
             localstore,
             xpriv,
+            p2pk_signing_keys: Arc::new(RwLock::new(
+                p2pk_signing_keys
+                    .into_iter()
+                    .map(|s| (s.public_key().x_only_public_key(), s))
+                    .collect(),
+            )),
             #[cfg(feature = "nostr")]
             nostr_client: nostr_sdk::Client::default(),
         }
+    }
+
+    /// Add P2PK signing key to wallet
+    #[instrument(skip_all)]
+    pub async fn add_p2pk_signing_key(&self, signing_key: SecretKey) {
+        self.p2pk_signing_keys
+            .write()
+            .await
+            .insert(signing_key.public_key().x_only_public_key(), signing_key);
+    }
+
+    /// Remove P2PK signing key from wallet
+    #[instrument(skip_all)]
+    pub async fn remove_p2pk_signing_key(&self, x_only_pubkey: &XOnlyPublicKey) {
+        self.p2pk_signing_keys.write().await.remove(x_only_pubkey);
+    }
+
+    /// P2PK keys available in wallet
+    #[instrument(skip(self))]
+    pub async fn available_p2pk_signing_keys(&self) -> HashMap<XOnlyPublicKey, SecretKey> {
+        self.p2pk_signing_keys.read().await.deref().clone()
     }
 
     /// Add nostr relays to client
@@ -1299,7 +1331,6 @@ impl Wallet {
         &self,
         encoded_token: &str,
         amount_split_target: &SplitTarget,
-        signing_keys: Option<Vec<SecretKey>>,
         preimages: Option<Vec<String>>,
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
@@ -1333,14 +1364,6 @@ impl Wallet {
 
             let mut sig_flag = SigFlag::SigInputs;
 
-            let pubkey_secret_key = match &signing_keys {
-                Some(signing_keys) => signing_keys
-                    .iter()
-                    .map(|s| (s.public_key().x_only_public_key(), s))
-                    .collect(),
-                None => HashMap::new(),
-            };
-
             // Map hash of preimage to preimage
             let hashed_to_preimage = match preimages {
                 Some(ref preimages) => preimages
@@ -1352,6 +1375,8 @@ impl Wallet {
                     .collect(),
                 None => HashMap::new(),
             };
+
+            let p2pk_signing_keys = self.p2pk_signing_keys.read().await;
 
             for proof in &mut proofs {
                 // Verify that proof DLEQ is valid
@@ -1386,7 +1411,7 @@ impl Wallet {
                         }
                         for pubkey in pubkeys {
                             if let Some(signing) =
-                                pubkey_secret_key.get(&pubkey.x_only_public_key())
+                                p2pk_signing_keys.get(&pubkey.x_only_public_key())
                             {
                                 proof.sign_p2pk(signing.to_owned().clone())?;
                             }
@@ -1412,7 +1437,7 @@ impl Wallet {
 
             if sig_flag.eq(&SigFlag::SigAll) {
                 for blinded_message in &mut pre_swap.swap_request.outputs {
-                    for signing_key in pubkey_secret_key.values() {
+                    for signing_key in p2pk_signing_keys.values() {
                         blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                     }
                 }
@@ -1463,8 +1488,12 @@ impl Wallet {
 
         let verifying_key = nostr_signing_key.public_key();
 
-        let nostr_pubkey =
-            nostr_sdk::PublicKey::from_hex(verifying_key.x_only_public_key().to_string())?;
+        let x_only_pubkey = verifying_key.x_only_public_key();
+
+        let nostr_pubkey = nostr_sdk::PublicKey::from_hex(x_only_pubkey.to_string())?;
+
+        let keys = Keys::from_str(&(nostr_signing_key).to_secret_hex())?;
+        self.add_p2pk_signing_key(nostr_signing_key).await;
 
         let filter = match self
             .localstore
@@ -1484,7 +1513,6 @@ impl Wallet {
 
         let events = self.nostr_client.get_events_of(vec![filter], None).await?;
 
-        let keys = Keys::from_str(&nostr_signing_key.to_secret_hex()).unwrap();
         let mut tokens: HashSet<String> = HashSet::new();
 
         for event in events {
@@ -1503,15 +1531,7 @@ impl Wallet {
 
         let mut total_received = Amount::ZERO;
         for token in tokens.iter() {
-            match self
-                .receive(
-                    token,
-                    &amount_split_target,
-                    Some(vec![nostr_signing_key.clone()]),
-                    None,
-                )
-                .await
-            {
+            match self.receive(token, &amount_split_target, None).await {
                 Ok(amount) => total_received += amount,
                 Err(err) => {
                     tracing::error!("Could not receive token: {}", err);
