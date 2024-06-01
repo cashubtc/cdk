@@ -1,7 +1,6 @@
 //! Cashu Wallet
 
 use std::collections::{HashMap, HashSet};
-use std::num::ParseIntError;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -11,17 +10,16 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::Network;
+use error::Error;
 #[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip04;
 #[cfg(feature = "nostr")]
 use nostr_sdk::{Filter, Timestamp};
-use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
-use crate::client::HttpClient;
 use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::{
     nut10, nut12, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind,
@@ -32,78 +30,10 @@ use crate::nuts::{
 use crate::types::{MeltQuote, Melted, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 use crate::util::{hex, unix_time};
-use crate::{Amount, Bolt11Invoice};
+use crate::{Amount, Bolt11Invoice, HttpClient};
 
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Insufficient Funds
-    #[error("Insufficient Funds")]
-    InsufficientFunds,
-    #[error("Quote Expired")]
-    QuoteExpired,
-    #[error("Quote Unknown")]
-    QuoteUnknown,
-    #[error("No active keyset")]
-    NoActiveKeyset,
-    #[error(transparent)]
-    Cashu(#[from] crate::error::Error),
-    #[error("Could not verify Dleq")]
-    CouldNotVerifyDleq,
-    #[error("P2PK Condition Not met `{0}`")]
-    P2PKConditionsNotMet(String),
-    #[error("Invalid Spending Conditions: `{0}`")]
-    InvalidSpendConditions(String),
-    #[error("Preimage not provided")]
-    PreimageNotProvided,
-    #[error("Unknown Key")]
-    UnknownKey,
-    /// Spending Locktime not provided
-    #[error("Spending condition locktime not provided")]
-    LocktimeNotProvided,
-    /// Cashu Url Error
-    #[error(transparent)]
-    CashuUrl(#[from] crate::url::Error),
-    /// NUT11 Error
-    #[error(transparent)]
-    Client(#[from] crate::client::Error),
-    /// Database Error
-    #[error(transparent)]
-    Database(#[from] crate::cdk_database::Error),
-    /// NUT00 Error
-    #[error(transparent)]
-    NUT00(#[from] crate::nuts::nut00::Error),
-    /// NUT01 Error
-    #[error(transparent)]
-    NUT01(#[from] crate::nuts::nut01::Error),
-    /// NUT11 Error
-    #[error(transparent)]
-    NUT11(#[from] crate::nuts::nut11::Error),
-    /// NUT12 Error
-    #[error(transparent)]
-    NUT12(#[from] crate::nuts::nut12::Error),
-    /// Parse int
-    #[error(transparent)]
-    ParseInt(#[from] ParseIntError),
-    /// Parse invoice error
-    #[error(transparent)]
-    Invoice(#[from] lightning_invoice::ParseOrSemanticError),
-    #[error(transparent)]
-    Serde(#[from] serde_json::Error),
-    #[cfg(feature = "nostr")]
-    #[error(transparent)]
-    NostrClient(#[from] nostr_sdk::client::Error),
-    #[cfg(feature = "nostr")]
-    #[error(transparent)]
-    NostrKey(#[from] nostr_sdk::key::Error),
-    #[error("`{0}`")]
-    Custom(String),
-}
-
-impl From<Error> for cdk_database::Error {
-    fn from(e: Error) -> Self {
-        Self::Database(Box::new(e))
-    }
-}
+pub mod client;
+pub mod error;
 
 #[derive(Clone)]
 pub struct Wallet {

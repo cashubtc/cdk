@@ -3,7 +3,7 @@
 use std::fmt;
 use std::string::FromUtf8Error;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -79,7 +79,7 @@ pub enum Error {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorResponse {
-    pub code: u32,
+    pub code: ErrorCode,
     pub error: Option<String>,
     pub detail: Option<String>,
 }
@@ -98,24 +98,73 @@ impl fmt::Display for ErrorResponse {
 
 impl ErrorResponse {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        match serde_json::from_str::<ErrorResponse>(json) {
-            Ok(res) => Ok(res),
-            Err(_) => Ok(Self {
-                code: 999,
-                error: Some(json.to_string()),
-                detail: None,
-            }),
-        }
+        let value: Value = serde_json::from_str(json)?;
+
+        Self::from_value(value)
     }
 
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         match serde_json::from_value::<ErrorResponse>(value.clone()) {
             Ok(res) => Ok(res),
             Err(_) => Ok(Self {
-                code: 999,
+                code: ErrorCode::Unknown(999),
                 error: Some(value.to_string()),
                 detail: None,
             }),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum ErrorCode {
+    TokenAlreadySpent,
+    QuoteNotPaid,
+    KeysetNotFound,
+    Unknown(u16),
+}
+
+impl Serialize for ErrorCode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let code = match self {
+            ErrorCode::TokenAlreadySpent => 11001,
+            ErrorCode::QuoteNotPaid => 20001,
+            ErrorCode::KeysetNotFound => 12001,
+            ErrorCode::Unknown(code) => *code,
+        };
+
+        serializer.serialize_u16(code)
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let code = u16::deserialize(deserializer)?;
+
+        let error_code = match code {
+            11001 => ErrorCode::TokenAlreadySpent,
+            20001 => ErrorCode::QuoteNotPaid,
+            12001 => ErrorCode::KeysetNotFound,
+            c => ErrorCode::Unknown(c),
+        };
+
+        Ok(error_code)
+    }
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let code = match self {
+            Self::TokenAlreadySpent => 11001,
+            Self::QuoteNotPaid => 20001,
+            Self::KeysetNotFound => 12001,
+            Self::Unknown(code) => *code,
+        };
+        write!(f, "{}", code)
     }
 }
