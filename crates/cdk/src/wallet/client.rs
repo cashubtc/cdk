@@ -2,10 +2,10 @@
 
 use reqwest::Client;
 use serde_json::Value;
-use thiserror::Error;
 use tracing::instrument;
 use url::Url;
 
+use super::Error;
 use crate::error::ErrorResponse;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
@@ -15,28 +15,6 @@ use crate::nuts::{
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::{Amount, Bolt11Invoice};
-
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Unknown Keyset
-    #[error("Url Path segments could not be joined")]
-    UrlPathSegments,
-    /// Serde Json error
-    #[error(transparent)]
-    SerdeJsonError(#[from] serde_json::Error),
-    /// From hex error
-    #[error(transparent)]
-    ReqwestError(#[from] reqwest::Error),
-    ///  Unknown error response
-    #[error("Unknown Error response: `{0}`")]
-    UnknownErrorResponse(String),
-}
-
-impl From<ErrorResponse> for Error {
-    fn from(err: ErrorResponse) -> Error {
-        Self::UnknownErrorResponse(err.to_string())
-    }
-}
 
 fn join_url(url: Url, paths: &[&str]) -> Result<Url, Error> {
     let mut url = url;

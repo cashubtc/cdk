@@ -3,90 +3,21 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use bitcoin::secp256k1::{self, Secp256k1};
-use http::StatusCode;
+use error::Error;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
-use self::nut11::enforce_sig_flag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
-use crate::error::ErrorResponse;
+use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
 use crate::types::{MeltQuote, MintQuote};
 use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::Amount;
 
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Unknown Keyset
-    #[error("Unknown Keyset")]
-    UnknownKeySet,
-    /// Inactive Keyset
-    #[error("Inactive Keyset")]
-    InactiveKeyset,
-    #[error("No key for amount")]
-    AmountKey,
-    #[error("Amount")]
-    Amount,
-    #[error("Duplicate proofs")]
-    DuplicateProofs,
-    #[error("Token Spent")]
-    TokenSpent,
-    #[error("Token Pending")]
-    TokenPending,
-    #[error("Quote not paid")]
-    UnpaidQuote,
-    #[error("`{0}`")]
-    Custom(String),
-    #[error(transparent)]
-    Cashu(#[from] crate::error::Error),
-    #[error(transparent)]
-    Secret(#[from] crate::secret::Error),
-    #[error(transparent)]
-    NUT00(#[from] crate::nuts::nut00::Error),
-    #[error(transparent)]
-    NUT11(#[from] crate::nuts::nut11::Error),
-    #[error(transparent)]
-    Nut12(#[from] crate::nuts::nut12::Error),
-    #[error(transparent)]
-    Nut14(#[from] crate::nuts::nut14::Error),
-    /// Database Error
-    #[error(transparent)]
-    Database(#[from] crate::cdk_database::Error),
-    #[error("Unknown quote")]
-    UnknownQuote,
-    #[error("Unknown secret kind")]
-    UnknownSecretKind,
-    #[error("Cannot have multiple units")]
-    MultipleUnits,
-    #[error("Blinded Message is already signed")]
-    BlindedMessageAlreadySigned,
-}
-
-impl From<Error> for cdk_database::Error {
-    fn from(e: Error) -> Self {
-        Self::Database(Box::new(e))
-    }
-}
-
-impl From<Error> for ErrorResponse {
-    fn from(err: Error) -> ErrorResponse {
-        ErrorResponse {
-            code: 9999,
-            error: Some(err.to_string()),
-            detail: None,
-        }
-    }
-}
-
-impl From<Error> for (StatusCode, ErrorResponse) {
-    fn from(err: Error) -> (StatusCode, ErrorResponse) {
-        (StatusCode::NOT_FOUND, err.into())
-    }
-}
+pub mod error;
 
 #[derive(Clone)]
 pub struct Mint {
@@ -493,7 +424,7 @@ impl Mint {
         let y: PublicKey = hash_to_curve(&proof.secret.to_bytes())?;
 
         if self.localstore.get_spent_proof_by_y(&y).await?.is_some() {
-            return Err(Error::TokenSpent);
+            return Err(Error::TokenAlreadySpent);
         }
 
         if self.localstore.get_pending_proof_by_y(&y).await?.is_some() {

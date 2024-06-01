@@ -8,8 +8,6 @@ pub use lightning_invoice::{self, Bolt11Invoice};
 
 pub mod amount;
 pub mod cdk_database;
-#[cfg(feature = "wallet")]
-pub mod client;
 pub mod dhke;
 pub mod error;
 #[cfg(feature = "mint")]
@@ -23,8 +21,8 @@ pub mod util;
 pub mod wallet;
 
 pub use self::amount::Amount;
-#[cfg(feature = "wallet")]
-pub use self::client::HttpClient;
 pub use self::util::SECP256K1;
+#[cfg(feature = "wallet")]
+pub use self::wallet::client::HttpClient;
 
 pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
