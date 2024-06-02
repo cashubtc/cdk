@@ -694,14 +694,13 @@ impl Wallet {
             .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
             .await?;
 
+        let active_keys = self.active_keys(mint_url, unit).await?.unwrap();
+
         let mut post_swap_proofs = construct_proofs(
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
-            &self
-                .active_keys(mint_url, unit)
-                .await?
-                .ok_or(Error::UnknownKey)?,
+            &active_keys,
         )?;
 
         let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
@@ -793,7 +792,7 @@ impl Wallet {
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<PreSwap, Error> {
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await.unwrap();
 
         // Desired amount is either amount passwed or value of all proof
         let proofs_total = proofs.iter().map(|p| p.amount).sum();
@@ -1047,11 +1046,10 @@ impl Wallet {
                 .collect();
         }
 
-        let mint_keysets = self
-            .localstore
-            .get_mint_keysets(mint_url.clone())
-            .await?
-            .ok_or(Error::UnknownKey)?;
+        let mint_keysets = match self.localstore.get_mint_keysets(mint_url.clone()).await? {
+            Some(keysets) => keysets,
+            None => self.get_mint_keysets(&mint_url).await?,
+        };
 
         let (active, inactive): (HashSet<KeySetInfo>, HashSet<KeySetInfo>) = mint_keysets
             .into_iter()

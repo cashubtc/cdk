@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::result::Result;
 
@@ -15,7 +15,8 @@ use tokio::sync::Mutex;
 
 // Tables
 const MINTS: &str = "mints";
-const MINT_KEYSETS: &str = "mint_keysets";
+const MINT_KEYSETS: &str = "keysets_by_mint";
+const KEYSETS: &str = "keysets";
 const MINT_KEYS: &str = "mint_keys";
 const MINT_QUOTES: &str = "mint_quotes";
 const MELT_QUOTES: &str = "melt_quotes";
@@ -23,7 +24,7 @@ const PROOFS: &str = "proofs";
 const CONFIG: &str = "config";
 const KEYSET_COUNTER: &str = "keyset_counter";
 
-const DATABASE_VERSION: u32 = 1;
+const DATABASE_VERSION: u32 = 2;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -61,15 +62,20 @@ unsafe impl Sync for RexieWalletDatabase {}
 impl RexieWalletDatabase {
     pub async fn new() -> Result<Self, Error> {
         let rexie = Rexie::builder("cdk")
-            // Set the version of the database to 1.0
             .version(DATABASE_VERSION)
-            // Add an object store named `employees`
-            .add_object_store(ObjectStore::new(PROOFS).add_index(Index::new("y", "y").unique(true)))
+            .add_object_store(
+                ObjectStore::new(PROOFS)
+                    .add_index(Index::new("y", "y").unique(true))
+                    .add_index(Index::new("mint_url", "mint_url"))
+                    .add_index(Index::new("state", "state"))
+                    .add_index(Index::new("unit", "unit")),
+            )
             .add_object_store(
                 ObjectStore::new(MINTS).add_index(Index::new("mint_url", "mint_url").unique(true)),
             )
+            .add_object_store(ObjectStore::new(MINT_KEYSETS))
             .add_object_store(
-                ObjectStore::new(MINT_KEYSETS)
+                ObjectStore::new(KEYSETS)
                     .add_index(Index::new("keyset_id", "keyset_id").unique(true)),
             )
             .add_object_store(
@@ -175,18 +181,45 @@ impl WalletDatabase for RexieWalletDatabase {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
-            .transaction(&[MINT_KEYSETS], TransactionMode::ReadWrite)
+            .transaction(&[MINT_KEYSETS, KEYSETS], TransactionMode::ReadWrite)
             .map_err(Error::from)?;
 
-        let keysets_store = transaction.store(MINT_KEYSETS).map_err(Error::from)?;
+        let mint_keysets_store = transaction.store(MINT_KEYSETS).map_err(Error::from)?;
+        let keysets_store = transaction.store(KEYSETS).map_err(Error::from)?;
 
         let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
-        let keysets = serde_wasm_bindgen::to_value(&keysets).map_err(Error::from)?;
 
-        keysets_store
-            .put(&keysets, Some(&mint_url))
+        let mint_keysets = mint_keysets_store
+            .get(&mint_url)
             .await
             .map_err(Error::from)?;
+
+        let mut mint_keysets: Option<HashSet<Id>> =
+            serde_wasm_bindgen::from_value(mint_keysets).map_err(Error::from)?;
+
+        let new_keyset_ids: Vec<Id> = keysets.iter().map(|k| k.id).collect();
+
+        mint_keysets
+            .as_mut()
+            .unwrap_or(&mut HashSet::new())
+            .extend(new_keyset_ids);
+
+        let mint_keysets = serde_wasm_bindgen::to_value(&mint_keysets).map_err(Error::from)?;
+
+        mint_keysets_store
+            .put(&mint_keysets, Some(&mint_url))
+            .await
+            .map_err(Error::from)?;
+
+        for keyset in keysets {
+            let id = serde_wasm_bindgen::to_value(&keyset.id).map_err(Error::from)?;
+            let keyset = serde_wasm_bindgen::to_value(&keyset).map_err(Error::from)?;
+
+            keysets_store
+                .put(&keyset, Some(&id))
+                .await
+                .map_err(Error::from)?;
+        }
 
         transaction.done().await.map_err(Error::from)?;
 
@@ -200,18 +233,56 @@ impl WalletDatabase for RexieWalletDatabase {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
-            .transaction(&[MINT_KEYSETS], TransactionMode::ReadOnly)
+            .transaction(&[MINT_KEYSETS, KEYSETS], TransactionMode::ReadOnly)
             .map_err(Error::from)?;
 
         let mints_store = transaction.store(MINT_KEYSETS).map_err(Error::from)?;
 
         let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
-        let keysets = mints_store.get(&mint_url).await.map_err(Error::from)?;
+        let mint_keysets = mints_store.get(&mint_url).await.map_err(Error::from)?;
 
-        let keysets: Option<Vec<KeySetInfo>> =
-            serde_wasm_bindgen::from_value(keysets).map_err(Error::from)?;
+        let mint_keysets: Option<HashSet<Id>> =
+            serde_wasm_bindgen::from_value(mint_keysets).map_err(Error::from)?;
+
+        let keysets_store = transaction.store(KEYSETS).map_err(Error::from)?;
+
+        let keysets = match mint_keysets {
+            Some(mint_keysets) => {
+                let mut keysets = vec![];
+
+                for mint_keyset in mint_keysets {
+                    let id = serde_wasm_bindgen::to_value(&mint_keyset).map_err(Error::from)?;
+
+                    let keyset = keysets_store.get(&id).await.map_err(Error::from)?;
+
+                    let keyset = serde_wasm_bindgen::from_value(keyset).map_err(Error::from)?;
+
+                    keysets.push(keyset);
+                }
+
+                Some(keysets)
+            }
+            None => None,
+        };
+
+        transaction.done().await.map_err(Error::from)?;
 
         Ok(keysets)
+    }
+
+    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+        let rexie = self.db.lock().await;
+
+        let transaction = rexie
+            .transaction(&[KEYSETS], TransactionMode::ReadOnly)
+            .map_err(Error::from)?;
+        let keysets_store = transaction.store(KEYSETS).map_err(Error::from)?;
+
+        let keyset_id = serde_wasm_bindgen::to_value(keyset_id).map_err(Error::from)?;
+
+        let keyset = keysets_store.get(&keyset_id).await.map_err(Error::from)?;
+
+        Ok(serde_wasm_bindgen::from_value(keyset).map_err(Error::from)?)
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
