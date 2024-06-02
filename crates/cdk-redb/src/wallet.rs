@@ -17,12 +17,15 @@ use tracing::instrument;
 use super::error::Error;
 
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
-const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &str> =
+// <Mint_Url, Keyset_id>
+const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &[u8]> =
     MultimapTableDefinition::new("mint_keysets");
+// <Keyset_id, KeysetInfo>
+const KEYSETS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("keysets");
 const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
 const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
 const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_keys");
-// <Y, (Proof, Status, Mint url)>
+// <Y, Proof Info>
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
@@ -62,6 +65,7 @@ impl RedbWalletDatabase {
                     // Open all tables to init a new db
                     let _ = write_txn.open_table(MINTS_TABLE)?;
                     let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+                    let _ = write_txn.open_table(KEYSETS_TABLE)?;
                     let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
                     let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
                     let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
@@ -166,9 +170,7 @@ impl WalletDatabase for RedbWalletDatabase {
                 table
                     .insert(
                         mint_url.to_string().as_str(),
-                        serde_json::to_string(&keyset)
-                            .map_err(Error::from)?
-                            .as_str(),
+                        keyset.id.to_bytes().as_slice(),
                     )
                     .map_err(Error::from)?;
             }
@@ -189,14 +191,52 @@ impl WalletDatabase for RedbWalletDatabase {
             .open_multimap_table(MINT_KEYSETS_TABLE)
             .map_err(Error::from)?;
 
-        let keysets = table
+        let keyset_ids: Vec<Id> = table
             .get(mint_url.to_string().as_str())
             .map_err(Error::from)?
             .flatten()
-            .flat_map(|k| serde_json::from_str(k.value()))
+            .flat_map(|k| Id::from_bytes(k.value()))
             .collect();
 
-        Ok(keysets)
+        let mut keysets = vec![];
+
+        let keysets_t = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
+
+        for keyset_id in keyset_ids {
+            if let Some(keyset) = keysets_t
+                .get(keyset_id.to_bytes().as_slice())
+                .map_err(Error::from)?
+            {
+                let keyset = serde_json::from_str(keyset.value()).map_err(Error::from)?;
+
+                keysets.push(keyset);
+            }
+        }
+
+        match keysets.is_empty() {
+            true => Ok(None),
+            false => Ok(Some(keysets)),
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
+        let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
+
+        match table
+            .get(keyset_id.to_bytes().as_slice())
+            .map_err(Error::from)?
+        {
+            Some(keyset) => {
+                let keyset: KeySetInfo =
+                    serde_json::from_str(keyset.value()).map_err(Error::from)?;
+
+                Ok(Some(keyset))
+            }
+            None => Ok(None),
+        }
     }
 
     #[instrument(skip_all)]
