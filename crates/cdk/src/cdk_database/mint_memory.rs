@@ -7,13 +7,12 @@ use tokio::sync::RwLock;
 use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
 use crate::mint::MintKeySetInfo;
-use crate::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, Proofs, PublicKey};
+use crate::nuts::{BlindSignature, CurrencyUnit, Id, Proof, Proofs, PublicKey};
 use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
 
 #[derive(Debug, Clone)]
 pub struct MintMemoryDatabase {
-    mint_info: Arc<RwLock<MintInfo>>,
     active_keysets: Arc<RwLock<HashMap<CurrencyUnit, Id>>>,
     keysets: Arc<RwLock<HashMap<Id, MintKeySetInfo>>>,
     mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
@@ -26,7 +25,6 @@ pub struct MintMemoryDatabase {
 impl MintMemoryDatabase {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        mint_info: MintInfo,
         active_keysets: HashMap<CurrencyUnit, Id>,
         keysets: Vec<MintKeySetInfo>,
         mint_quotes: Vec<MintQuote>,
@@ -36,7 +34,6 @@ impl MintMemoryDatabase {
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
     ) -> Result<Self, Error> {
         Ok(Self {
-            mint_info: Arc::new(RwLock::new(mint_info)),
             active_keysets: Arc::new(RwLock::new(active_keysets)),
             keysets: Arc::new(RwLock::new(
                 keysets.into_iter().map(|k| (k.id, k)).collect(),
@@ -68,14 +65,6 @@ impl MintMemoryDatabase {
 impl MintDatabase for MintMemoryDatabase {
     type Err = Error;
 
-    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Self::Err> {
-        let mut mi = self.mint_info.write().await;
-        *mi = mint_info.clone();
-        Ok(())
-    }
-    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
-        Ok(self.mint_info.read().await.clone())
-    }
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         self.active_keysets.write().await.insert(unit, id);
         Ok(())
