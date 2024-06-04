@@ -48,8 +48,8 @@ impl Mint {
             let (keyset, keyset_info) =
                 create_new_keyset(&secp_ctx, xpriv, derivation_path, CurrencyUnit::Sat, 64);
             let id = keyset_info.id;
-            localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
             localstore.add_keyset_info(keyset_info).await?;
+            localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
             keysets.insert(id, keyset);
         }
 
