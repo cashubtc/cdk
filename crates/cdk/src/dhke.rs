@@ -153,7 +153,7 @@ pub fn verify_message(
         return Ok(());
     }
 
-    Err(Error::TokenNotVerifed)
+    Err(Error::TokenNotVerified)
 }
 
 #[cfg(test)]

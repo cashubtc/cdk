@@ -22,7 +22,7 @@ pub enum Error {
     TokenSpent,
     /// Token could not be validated
     #[error("Token not verified")]
-    TokenNotVerifed,
+    TokenNotVerified,
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
