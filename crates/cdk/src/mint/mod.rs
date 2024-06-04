@@ -21,6 +21,7 @@ pub mod error;
 
 #[derive(Clone)]
 pub struct Mint {
+    mint_info: MintInfo,
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: ExtendedPrivKey,
@@ -31,6 +32,7 @@ pub struct Mint {
 impl Mint {
     pub async fn new(
         seed: &[u8],
+        mint_info: MintInfo,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
         min_fee_reserve: Amount,
         percent_fee_reserve: f32,
@@ -62,6 +64,7 @@ impl Mint {
                 min_fee_reserve,
                 percent_fee_reserve,
             },
+            mint_info,
         })
     }
 
@@ -654,10 +657,17 @@ impl Mint {
         })
     }
 
-    pub async fn mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.localstore.get_mint_info().await?)
+    /// Set Mint Info
+    pub fn set_mint_info(&mut self, mint_info: MintInfo) {
+        self.mint_info = mint_info;
     }
 
+    /// Get Mint Info
+    pub fn mint_info(&self) -> Result<MintInfo, Error> {
+        Ok(self.mint_info.clone())
+    }
+
+    /// Restore
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let output_len = request.outputs.len();
 

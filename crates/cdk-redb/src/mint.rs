@@ -7,7 +7,7 @@ use cdk::cdk_database;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
 use cdk::mint::MintKeySetInfo;
-use cdk::nuts::{BlindSignature, CurrencyUnit, Id, MintInfo, Proof, PublicKey};
+use cdk::nuts::{BlindSignature, CurrencyUnit, Id, Proof, PublicKey};
 use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -81,40 +81,6 @@ impl MintRedbDatabase {
 #[async_trait]
 impl MintDatabase for MintRedbDatabase {
     type Err = cdk_database::Error;
-
-    async fn set_mint_info(&self, mint_info: &MintInfo) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
-            table
-                .insert(
-                    "mint_info",
-                    serde_json::to_string(mint_info)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
-
-        let mint_info = table
-            .get("mint_info")
-            .map_err(Error::from)?
-            .ok_or(Error::UnknownMintInfo)?;
-
-        Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?)
-    }
 
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
