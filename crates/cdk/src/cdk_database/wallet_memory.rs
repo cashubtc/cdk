@@ -14,7 +14,6 @@ use crate::nuts::{
 use crate::types::{MeltQuote, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 
-// TODO: Change these all to RwLocks
 #[derive(Default, Debug, Clone)]
 pub struct WalletMemoryDatabase {
     mints: Arc<RwLock<HashMap<UncheckedUrl, Option<MintInfo>>>>,
