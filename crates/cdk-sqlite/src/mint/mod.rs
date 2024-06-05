@@ -1,4 +1,4 @@
-//! SQLite
+//! SQLite Mint
 
 use std::collections::HashMap;
 use std::str::FromStr;

@@ -5,3 +5,5 @@ pub mod wallet;
 
 #[cfg(feature = "mint")]
 pub use mint::MintSqliteDatabase;
+#[cfg(feature = "wallet")]
+pub use wallet::WalletSQLiteDatabase;
