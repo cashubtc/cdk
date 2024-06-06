@@ -39,6 +39,7 @@ bitcoin = { version = "0.30", features = [
     "rand",
     "rand-std",
 ] } # lightning-invoice uses v0.30
+anyhow = "1"
 
 [profile]
 

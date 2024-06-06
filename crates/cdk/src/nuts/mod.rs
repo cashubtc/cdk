@@ -20,8 +20,8 @@ pub mod nut14;
 pub mod nut15;
 
 pub use nut00::{
-    BlindSignature, BlindedMessage, CurrencyUnit, MintProofs, PaymentMethod, PreMint,
-    PreMintSecrets, Proof, Proofs, Token, Witness,
+    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, PreMint, PreMintSecrets, Proof,
+    Proofs, Token, TokenV3, TokenV4, Witness,
 };
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 #[cfg(feature = "mint")]

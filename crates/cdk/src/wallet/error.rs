@@ -61,6 +61,13 @@ pub enum Error {
     /// Keyset Not Found
     #[error("Keyset Not Found")]
     KeysetNotFound,
+    /// Receive can only be used with tokens from single mint
+    #[error("Multiple mint tokens not supported by receive. Please deconstruct the token and use receive with_proof")]
+    MultiMintTokenNotSupported,
+    /// Incorrect Mint
+    /// Token does not match wallet mint
+    #[error("Token does not match wallet mint")]
+    IncorrectMint,
     /// From hex error
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),

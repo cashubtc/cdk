@@ -127,7 +127,7 @@ async fn receive_token(
     preimage: &[String],
 ) -> Result<Amount> {
     let token = Token::from_str(token_str)?;
-    let mint_url = token.token.first().unwrap().mint.clone();
+    let mint_url = token.proofs().iter().next().unwrap().0.clone();
 
     let wallet = match wallets.get(&mint_url) {
         Some(wallet) => wallet.clone(),

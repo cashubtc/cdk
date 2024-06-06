@@ -1,9 +1,5 @@
 //! Wallet Utility Functions
 
-use super::Error;
-use crate::nuts::{CurrencyUnit, Proofs, Token};
-use crate::UncheckedUrl;
-
 /// Extract token from text
 pub fn token_from_text(text: &str) -> Option<&str> {
     let text = text.trim();
@@ -15,16 +11,6 @@ pub fn token_from_text(text: &str) -> Option<&str> {
     }
 
     None
-}
-
-/// Convert proofs to token
-pub fn proof_to_token(
-    mint_url: UncheckedUrl,
-    proofs: Proofs,
-    memo: Option<String>,
-    unit: Option<CurrencyUnit>,
-) -> Result<Token, Error> {
-    Ok(Token::new(mint_url, proofs, memo, unit)?)
 }
 
 #[cfg(test)]
