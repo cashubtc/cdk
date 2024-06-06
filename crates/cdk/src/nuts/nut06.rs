@@ -5,7 +5,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-use super::{nut04, nut05};
+use super::{nut04, nut05, nut15};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -102,6 +102,9 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "14")]
     pub nut14: SupportedSettings,
+    #[serde(default)]
+    #[serde(rename = "15")]
+    pub nut15: nut15::MppMethodSettings,
 }
 
 /// Check state Settings

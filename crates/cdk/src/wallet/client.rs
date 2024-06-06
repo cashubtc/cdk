@@ -7,6 +7,7 @@ use url::Url;
 
 use super::Error;
 use crate::error::ErrorResponse;
+use crate::nuts::nut15::Mpp;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
     KeysetResponse, MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request,
@@ -169,10 +170,17 @@ impl HttpClient {
         mint_url: Url,
         unit: CurrencyUnit,
         request: Bolt11Invoice,
+        mpp_amount: Option<Amount>,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "melt", "quote", "bolt11"])?;
 
-        let request = MeltQuoteBolt11Request { request, unit };
+        let options = mpp_amount.map(|amount| Mpp { amount });
+
+        let request = MeltQuoteBolt11Request {
+            request,
+            unit,
+            options,
+        };
 
         let res = self
             .inner

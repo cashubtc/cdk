@@ -218,11 +218,17 @@ impl JsWallet {
         mint_url: String,
         unit: JsCurrencyUnit,
         request: String,
+        mpp_amount: Option<JsAmount>,
     ) -> Result<JsMeltQuote> {
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let melt_quote = self
             .inner
-            .melt_quote(mint_url, unit.into(), request)
+            .melt_quote(
+                mint_url,
+                unit.into(),
+                request,
+                mpp_amount.map(|a| *a.deref()),
+            )
             .await
             .map_err(into_err)?;
 

@@ -5,16 +5,19 @@
 use serde::{Deserialize, Serialize};
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
+use super::nut15::Mpp;
 use crate::types::MeltQuote;
 use crate::{Amount, Bolt11Invoice};
 
 /// Melt quote request [NUT-05]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuoteBolt11Request {
     /// Bolt11 invoice to be paid
     pub request: Bolt11Invoice,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
+    /// Payment Options
+    pub options: Option<Mpp>,
 }
 
 /// Melt quote response [NUT-05]
