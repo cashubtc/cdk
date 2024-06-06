@@ -26,6 +26,7 @@ CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wall
 - :heavy_check_mark: [NUT-12](https://github.com/cashubtc/nuts/blob/main/12.md)
 - :heavy_check_mark: [NUT-13](https://github.com/cashubtc/nuts/blob/main/13.md)
 - :heavy_check_mark: [NUT-14](https://github.com/cashubtc/nuts/blob/main/14.md)
+- :heavy_check_mark: [NUT-15](https://github.com/cashubtc/nuts/blob/main/15.md)
 
 ## Bindings
 
