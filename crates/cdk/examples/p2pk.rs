@@ -5,7 +5,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{Conditions, CurrencyUnit, SecretKey, SpendingConditions};
 use cdk::wallet::Wallet;
 use cdk::{Amount, UncheckedUrl};
 use rand::Rng;
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Error> {
         .await
         .unwrap();
 
-    println!("Quote: {:#?}", quote);
+    println!("Minting nuts ...");
 
     loop {
         let status = wallet
@@ -44,20 +44,39 @@ async fn main() -> Result<(), Error> {
         sleep(Duration::from_secs(5)).await;
     }
 
-    let receive_amount = wallet
+    let _receive_amount = wallet
         .mint(mint_url.clone(), &quote.id, SplitTarget::default(), None)
         .await
         .unwrap();
 
-    println!("Received {receive_amount} from mint {mint_url}");
+    let secret = SecretKey::generate();
+
+    let spending_conditions =
+        SpendingConditions::new_p2pk(secret.public_key(), Conditions::default());
 
     let token = wallet
-        .send(&mint_url, unit, None, amount, &SplitTarget::None, None)
+        .send(
+            &mint_url,
+            unit,
+            None,
+            amount,
+            &SplitTarget::None,
+            Some(spending_conditions),
+        )
         .await
         .unwrap();
 
-    println!("Token:");
+    println!("Created token locked to pubkey: {}", secret.public_key());
     println!("{}", token);
+
+    wallet.add_p2pk_signing_key(secret).await;
+
+    let amount = wallet
+        .receive(&token, &SplitTarget::default(), None)
+        .await
+        .unwrap();
+
+    println!("Redeamed locked token worth: {}", u64::from(amount));
 
     Ok(())
 }
