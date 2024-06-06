@@ -1,7 +1,6 @@
 pub mod blind_signature;
 pub mod blinded_message;
 pub mod currency_unit;
-pub mod mint_proofs;
 pub mod premint;
 pub mod proof;
 pub mod token;

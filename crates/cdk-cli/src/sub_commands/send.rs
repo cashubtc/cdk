@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
-use cdk::nuts::{Conditions, PublicKey, SpendingConditions};
+use cdk::nuts::{Conditions, PublicKey, SpendingConditions, Token};
 use cdk::wallet::Wallet;
 use cdk::{Amount, UncheckedUrl};
 use clap::Args;
@@ -32,6 +32,9 @@ pub struct SendSubCommand {
     /// Refund keys that can be used after locktime
     #[arg(long, action = clap::ArgAction::Append)]
     refund_keys: Vec<String>,
+    /// Token as V3 token
+    #[arg(short, long)]
+    v3: bool,
 }
 
 pub async fn send(
@@ -152,7 +155,16 @@ pub async fn send(
         )
         .await?;
 
-    println!("{}", token);
+    match sub_command_args.v3 {
+        true => {
+            let token = Token::from_str(&token)?;
+
+            println!("{}", token.to_v3_string());
+        }
+        false => {
+            println!("{}", token);
+        }
+    }
 
     Ok(())
 }
