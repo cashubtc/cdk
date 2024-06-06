@@ -57,6 +57,7 @@ pub async fn melt(wallet: Wallet, _sub_command_args: &MeltSubCommand) -> Result<
             mint_url.clone(),
             cdk::nuts::CurrencyUnit::Sat,
             bolt11.to_string(),
+            None,
         )
         .await?;
 

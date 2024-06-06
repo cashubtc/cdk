@@ -965,6 +965,7 @@ impl Wallet {
         mint_url: UncheckedUrl,
         unit: CurrencyUnit,
         request: String,
+        mpp: Option<Amount>,
     ) -> Result<MeltQuote, Error> {
         let quote_res = self
             .client
@@ -972,6 +973,7 @@ impl Wallet {
                 mint_url.clone().try_into()?,
                 unit.clone(),
                 Bolt11Invoice::from_str(&request.clone())?,
+                mpp,
             )
             .await?;
 
@@ -1018,7 +1020,7 @@ impl Wallet {
     }
 
     /// Melt
-    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn melt(
         &self,
         mint_url: &UncheckedUrl,

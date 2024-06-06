@@ -13,6 +13,7 @@ pub mod nut11;
 pub mod nut12;
 pub mod nut13;
 pub mod nut14;
+pub mod nut15;
 
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, MintProofs, PaymentMethod, PreMint,
@@ -40,3 +41,4 @@ pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
 pub use nut11::{Conditions, P2PKWitness, SigFlag, SpendingConditions};
 pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
+pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
