@@ -32,6 +32,7 @@ jobs:
             -p cdk --no-default-features --features mint,
             -p cdk --no-default-features --features wallet --features nostr,
             -p cdk-redb
+            --examples
           ]
     steps:
     - name: Checkout
