@@ -21,6 +21,7 @@ pub mod util;
 pub mod wallet;
 
 pub use self::amount::Amount;
+pub use self::url::UncheckedUrl;
 pub use self::util::SECP256K1;
 #[cfg(feature = "wallet")]
 pub use self::wallet::client::HttpClient;

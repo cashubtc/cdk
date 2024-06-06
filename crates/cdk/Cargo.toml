@@ -15,6 +15,7 @@ mint = []
 wallet = ["dep:reqwest"]
 nostr = ["dep:nostr-sdk"]
 
+
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22" # bitcoin uses v0.13 (optional dep)
@@ -59,3 +60,10 @@ tokio = { workspace = true, features = [
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
 instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
+
+[[example]]
+name = "mint-token"
+required-features = ["wallet"]
+
+[dev-dependencies]
+rand = "0.8.5"

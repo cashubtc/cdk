@@ -31,6 +31,9 @@ pub mod mint_memory;
 #[cfg(feature = "wallet")]
 pub mod wallet_memory;
 
+#[cfg(feature = "wallet")]
+pub use wallet_memory::WalletMemoryDatabase;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
