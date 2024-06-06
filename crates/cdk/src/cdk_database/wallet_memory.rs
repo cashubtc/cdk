@@ -234,7 +234,8 @@ impl WalletDatabase for WalletMemoryDatabase {
     async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
         let mint_proofs = self.proofs.read().await;
 
-        let mint_proof = mint_proofs.get(&y);
+        let mint_proof = mint_proofs.get(&y).cloned();
+        drop(mint_proofs);
 
         let mut mint_proofs = self.proofs.write().await;
 
@@ -250,7 +251,9 @@ impl WalletDatabase for WalletMemoryDatabase {
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error> {
         let keyset_counter = self.keyset_counter.read().await;
-        let current_counter = keyset_counter.get(keyset_id).unwrap_or(&0);
+        let current_counter = keyset_counter.get(keyset_id).cloned().unwrap_or(0);
+        drop(keyset_counter);
+
         self.keyset_counter
             .write()
             .await
