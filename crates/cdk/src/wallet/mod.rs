@@ -420,7 +420,7 @@ impl Wallet {
     /// Mint Quote
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn mint_quote(
-        &mut self,
+        &self,
         mint_url: UncheckedUrl,
         amount: Amount,
         unit: CurrencyUnit,
@@ -532,7 +532,7 @@ impl Wallet {
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     async fn active_keys(
-        &mut self,
+        &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
     ) -> Result<Option<Keys>, Error> {
@@ -670,7 +670,7 @@ impl Wallet {
     /// Swap
     #[instrument(skip(self, input_proofs), fields(mint_url = %mint_url))]
     pub async fn swap(
-        &mut self,
+        &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
         amount: Option<Amount>,
@@ -876,7 +876,7 @@ impl Wallet {
     /// Send
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn send(
-        &mut self,
+        &self,
         mint_url: &UncheckedUrl,
         unit: CurrencyUnit,
         memo: Option<String>,
@@ -963,7 +963,7 @@ impl Wallet {
     /// Melt Quote
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn melt_quote(
-        &mut self,
+        &self,
         mint_url: UncheckedUrl,
         unit: CurrencyUnit,
         request: String,
@@ -1144,7 +1144,7 @@ impl Wallet {
     /// Melt
     #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
     pub async fn melt(
-        &mut self,
+        &self,
         mint_url: &UncheckedUrl,
         quote_id: &str,
         amount_split_target: SplitTarget,
@@ -1499,7 +1499,7 @@ impl Wallet {
     }
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn restore(&mut self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
+    pub async fn restore(&self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
             self.add_mint(mint_url.clone()).await?;
