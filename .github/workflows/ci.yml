@@ -31,7 +31,9 @@ jobs:
             -p cdk --no-default-features --features wallet,
             -p cdk --no-default-features --features mint,
             -p cdk --no-default-features --features wallet --features nostr,
-            -p cdk-redb
+            -p cdk-redb,
+            -p cdk-sqlite,
+            --bin cdk-cli,
             --examples
           ]
     steps:
