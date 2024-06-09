@@ -44,6 +44,8 @@ enum Commands {
     Balance,
     /// Pay bolt11 invoice
     Melt(sub_commands::melt::MeltSubCommand),
+    /// Claim pending mints
+    PendingMint,
     /// Receive token
     Receive(sub_commands::receive::ReceiveSubCommand),
     /// Send
@@ -115,6 +117,7 @@ async fn main() -> Result<()> {
         Commands::Mint(sub_command_args) => {
             sub_commands::mint::mint(wallet, sub_command_args).await
         }
+        Commands::PendingMint => sub_commands::pending_mints::pending_mints(wallet).await,
         Commands::Burn(sub_command_args) => {
             sub_commands::burn::burn(wallet, sub_command_args).await
         }
