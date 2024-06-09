@@ -3,3 +3,5 @@
 .direnv
 .vscode/
 .idea/
+*.redb
+*.sqlite*

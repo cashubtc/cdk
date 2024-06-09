@@ -1,3 +1,4 @@
+pub mod balance;
 pub mod check_spent;
 pub mod decode_token;
 pub mod melt;

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Write;
 use std::str::FromStr;
 use std::{io, println};
@@ -6,10 +5,11 @@ use std::{io, println};
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
-use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use clap::Args;
+
+use crate::sub_commands::balance::mint_balances;
 
 #[derive(Args)]
 pub struct SendSubCommand {
@@ -34,12 +34,7 @@ pub struct SendSubCommand {
 }
 
 pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<()> {
-    let mints_amounts: Vec<(UncheckedUrl, HashMap<_, _>)> =
-        wallet.mint_balances().await?.into_iter().collect();
-
-    for (i, (mint, amount)) in mints_amounts.iter().enumerate() {
-        println!("{}: {}, {:?} sats", i, mint, amount);
-    }
+    let mints_amounts = mint_balances(&wallet).await?;
 
     println!("Enter mint number to create token");
 
