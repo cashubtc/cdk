@@ -34,7 +34,7 @@ struct Cli {
 }
 
 const DEFAULT_REDB_DB_PATH: &str = "./cashu_tool.redb";
-const DEFAULT_SQLITE_DB_PATH: &str = "./cashu_tool.redb";
+const DEFAULT_SQLITE_DB_PATH: &str = "./cashu_tool.sqlite";
 
 #[derive(Subcommand)]
 enum Commands {
@@ -44,8 +44,8 @@ enum Commands {
     Melt(sub_commands::melt::MeltSubCommand),
     /// Receive token
     Receive(sub_commands::receive::ReceiveSubCommand),
-    /// Create token from wallet balance
-    CreateToken(sub_commands::create_token::CreateTokenSubCommand),
+    /// Send
+    Send(sub_commands::send::SendSubCommand),
     /// Check if wallet balance is spendable
     CheckSpendable,
     /// View mint info
@@ -100,8 +100,8 @@ async fn main() -> Result<()> {
         Commands::Receive(sub_command_args) => {
             sub_commands::receive::receive(wallet, sub_command_args).await
         }
-        Commands::CreateToken(sub_command_args) => {
-            sub_commands::create_token::create_token(wallet, sub_command_args).await
+        Commands::Send(sub_command_args) => {
+            sub_commands::send::send(wallet, sub_command_args).await
         }
         Commands::CheckSpendable => sub_commands::check_spent::check_spent(wallet).await,
         Commands::MintInfo(sub_command_args) => {

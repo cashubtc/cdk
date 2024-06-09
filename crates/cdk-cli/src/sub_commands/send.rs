@@ -12,7 +12,7 @@ use cdk::Amount;
 use clap::Args;
 
 #[derive(Args)]
-pub struct CreateTokenSubCommand {
+pub struct SendSubCommand {
     /// Token Memo
     #[arg(short, long)]
     memo: Option<String>,
@@ -33,7 +33,7 @@ pub struct CreateTokenSubCommand {
     refund_keys: Vec<String>,
 }
 
-pub async fn create_token(wallet: Wallet, sub_command_args: &CreateTokenSubCommand) -> Result<()> {
+pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<()> {
     let mints_amounts: Vec<(UncheckedUrl, HashMap<_, _>)> =
         wallet.mint_balances().await?.into_iter().collect();
 
