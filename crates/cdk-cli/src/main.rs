@@ -54,6 +54,8 @@ enum Commands {
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
     Mint(sub_commands::mint::MintSubCommand),
+    /// Burn Spent tokens
+    Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
     Restore(sub_commands::restore::RestoreSubCommand),
 }
@@ -112,6 +114,9 @@ async fn main() -> Result<()> {
         }
         Commands::Mint(sub_command_args) => {
             sub_commands::mint::mint(wallet, sub_command_args).await
+        }
+        Commands::Burn(sub_command_args) => {
+            sub_commands::burn::burn(wallet, sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
             sub_commands::restore::restore(wallet, sub_command_args).await
