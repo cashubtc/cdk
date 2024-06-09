@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Write;
 use std::str::FromStr;
 use std::{io, println};
@@ -6,21 +5,17 @@ use std::{io, println};
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::nuts::CurrencyUnit;
-use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
 use cdk::Bolt11Invoice;
 use clap::Args;
+
+use crate::sub_commands::balance::mint_balances;
 
 #[derive(Args)]
 pub struct MeltSubCommand {}
 
 pub async fn melt(wallet: Wallet, _sub_command_args: &MeltSubCommand) -> Result<()> {
-    let mints_amounts: Vec<(UncheckedUrl, HashMap<_, _>)> =
-        wallet.mint_balances().await?.into_iter().collect();
-
-    for (i, (mint, amount)) in mints_amounts.iter().enumerate() {
-        println!("{}: {}, {:?} sats", i, mint, amount);
-    }
+    let mints_amounts = mint_balances(&wallet).await?;
 
     println!("Enter mint number to create token");
 

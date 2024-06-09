@@ -40,6 +40,8 @@ const DEFAULT_SQLITE_DB_PATH: &str = "./cashu_tool.sqlite";
 enum Commands {
     /// Decode a token
     DecodeToken(sub_commands::decode_token::DecodeTokenSubCommand),
+    /// Balance
+    Balance,
     /// Pay bolt11 invoice
     Melt(sub_commands::melt::MeltSubCommand),
     /// Receive token
@@ -94,6 +96,7 @@ async fn main() -> Result<()> {
         Commands::DecodeToken(sub_command_args) => {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
+        Commands::Balance => sub_commands::balance::balance(wallet).await,
         Commands::Melt(sub_command_args) => {
             sub_commands::melt::melt(wallet, sub_command_args).await
         }
