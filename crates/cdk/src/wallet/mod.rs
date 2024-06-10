@@ -1410,6 +1410,7 @@ impl Wallet {
     pub async fn nostr_receive(
         &self,
         nostr_signing_key: SecretKey,
+        since: Option<u64>,
         amount_split_target: SplitTarget,
     ) -> Result<Amount, Error> {
         use nostr_sdk::{Keys, Kind};
@@ -1423,15 +1424,20 @@ impl Wallet {
         let keys = Keys::from_str(&(nostr_signing_key).to_secret_hex())?;
         self.add_p2pk_signing_key(nostr_signing_key).await;
 
-        let filter = match self
-            .localstore
-            .get_nostr_last_checked(&verifying_key)
-            .await?
-        {
+        let since = match since {
+            Some(since) => Some(Timestamp::from(since)),
+            None => self
+                .localstore
+                .get_nostr_last_checked(&verifying_key)
+                .await?
+                .map(|s| Timestamp::from(s as u64)),
+        };
+
+        let filter = match since {
             Some(since) => Filter::new()
                 .pubkey(nostr_pubkey)
                 .kind(Kind::EncryptedDirectMessage)
-                .since(Timestamp::from(since as u64)),
+                .since(since),
             None => Filter::new()
                 .pubkey(nostr_pubkey)
                 .kind(Kind::EncryptedDirectMessage),
