@@ -19,6 +19,13 @@ pub struct MintVersion {
     pub version: String,
 }
 
+impl MintVersion {
+    /// Create new [`MintVersion`]
+    pub fn new(name: String, version: String) -> Self {
+        Self { name, version }
+    }
+}
+
 impl Serialize for MintVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -46,7 +53,7 @@ impl<'de> Deserialize<'de> for MintVersion {
     }
 }
 
-/// Mint Info [NIP-09]
+/// Mint Info [NIP-06]
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
@@ -73,6 +80,32 @@ pub struct MintInfo {
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
+}
+
+impl MintInfo {
+    #![allow(clippy::too_many_arguments)]
+    /// Create new [`MintInfo`]
+    pub fn new(
+        name: Option<String>,
+        pubkey: Option<PublicKey>,
+        version: Option<MintVersion>,
+        description: Option<String>,
+        description_long: Option<String>,
+        contact: Option<Vec<ContactInfo>>,
+        nuts: Nuts,
+        motd: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            pubkey,
+            version,
+            description,
+            description_long,
+            contact,
+            nuts,
+            motd,
+        }
+    }
 }
 
 /// Supported nuts and settings
@@ -143,6 +176,13 @@ pub struct ContactInfo {
     pub method: String,
     /// Contact info i.e. npub...
     pub info: String,
+}
+
+impl ContactInfo {
+    /// Create new [`ContactInfo`]
+    pub fn new(method: String, info: String) -> Self {
+        Self { method, info }
+    }
 }
 
 fn deserialize_contact_info<'de, D>(deserializer: D) -> Result<Option<Vec<ContactInfo>>, D::Error>

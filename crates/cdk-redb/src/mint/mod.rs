@@ -7,20 +7,22 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
-use cdk::mint::MintKeySetInfo;
+use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, PublicKey,
 };
 use cdk::secret::Secret;
-use cdk::types::{MeltQuote, MintQuote};
+use cdk::{cdk_database, mint};
+use migrations::migrate_01_to_02;
 use redb::{Database, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
+
+mod migrations;
 
 const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("active_keysets");
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");
@@ -34,7 +36,7 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
 
-const DATABASE_VERSION: u32 = 1;
+const DATABASE_VERSION: u32 = 2;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
@@ -70,6 +72,10 @@ impl MintRedbDatabase {
                             );
                             if current_file_version == 0 {
                                 current_file_version = migrate_00_to_01(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 1 {
+                                current_file_version = migrate_01_to_02(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
@@ -169,7 +175,7 @@ impl MintDatabase for MintRedbDatabase {
         let mut active_keysets = HashMap::new();
 
         for (unit, id) in (table.iter().map_err(Error::from)?).flatten() {
-            let unit = CurrencyUnit::from(unit.value());
+            let unit = CurrencyUnit::from_str(unit.value())?;
             let id = Id::from_str(id.value()).map_err(Error::from)?;
 
             active_keysets.insert(unit, id);
@@ -309,6 +315,21 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(current_state)
     }
+    async fn get_mint_quote_by_request(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let quotes = self.get_mint_quotes().await?;
+
+        let quote = quotes
+            .into_iter()
+            .filter(|q| q.request.eq(request))
+            .collect::<Vec<MintQuote>>()
+            .first()
+            .cloned();
+
+        Ok(quote)
+    }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let db = self.db.lock().await;
@@ -344,7 +365,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
+    async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -365,7 +386,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<mint::MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn
@@ -383,7 +404,7 @@ impl MintDatabase for MintRedbDatabase {
         state: MeltQuoteState,
     ) -> Result<MeltQuoteState, Self::Err> {
         let db = self.db.lock().await;
-        let mut melt_quote: MeltQuote;
+        let mut melt_quote: mint::MeltQuote;
         {
             let read_txn = db.begin_read().map_err(Error::from)?;
             let table = read_txn
@@ -423,7 +444,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(current_state)
     }
 
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
+    async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn

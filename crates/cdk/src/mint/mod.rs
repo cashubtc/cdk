@@ -14,12 +14,14 @@ use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
-use crate::types::{MeltQuote, MintQuote};
 use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::Amount;
 
 pub mod error;
+pub mod types;
+
+pub use types::{MeltQuote, MintQuote};
 
 /// Cashu Mint
 #[derive(Clone)]
@@ -120,8 +122,9 @@ impl Mint {
         unit: CurrencyUnit,
         amount: Amount,
         expiry: u64,
+        ln_lookup: String,
     ) -> Result<MintQuote, Error> {
-        let quote = MintQuote::new(mint_url, request, unit, amount, expiry);
+        let quote = MintQuote::new(mint_url, request, unit, amount, expiry, ln_lookup);
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
@@ -159,6 +162,16 @@ impl Mint {
         Ok(quotes)
     }
 
+    /// Get pending mint quotes
+    pub async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let mint_quotes = self.localstore.get_mint_quotes().await?;
+
+        Ok(mint_quotes
+            .into_iter()
+            .filter(|p| p.state == MintQuoteState::Pending)
+            .collect())
+    }
+
     /// Remove mint quote
     pub async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
         self.localstore.remove_mint_quote(quote_id).await?;
@@ -174,8 +187,16 @@ impl Mint {
         amount: Amount,
         fee_reserve: Amount,
         expiry: u64,
+        request_lookup_id: String,
     ) -> Result<MeltQuote, Error> {
-        let quote = MeltQuote::new(request, unit, amount, fee_reserve, expiry);
+        let quote = MeltQuote::new(
+            request,
+            unit,
+            amount,
+            fee_reserve,
+            expiry,
+            request_lookup_id,
+        );
 
         self.localstore.add_melt_quote(quote.clone()).await?;
 
@@ -699,12 +720,27 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Process unpaid melt request
+    /// In the event that a melt request fails and the lighthing payment is not made
+    /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
+    pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
+        self.localstore
+            .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
+            .await?;
+
+        self.localstore
+            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Unpaid)
+            .await?;
+
+        Ok(())
+    }
+
     /// Process melt request marking [`Proofs`] as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`] before calling [`Self::process_melt_request`]
     pub async fn process_melt_request(
         &self,
         melt_request: &MeltBolt11Request,
-        preimage: &str,
+        payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         tracing::debug!("Processing melt quote: {}", melt_request.quote);
@@ -788,7 +824,7 @@ impl Mint {
         Ok(MeltQuoteBolt11Response {
             amount: quote.amount,
             paid: Some(true),
-            payment_preimage: Some(preimage.to_string()),
+            payment_preimage,
             change,
             quote: quote.id,
             fee_reserve: quote.fee_reserve,
