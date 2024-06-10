@@ -186,7 +186,7 @@ impl Mint {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     pub async fn rotate_keyset(
-        &mut self,
+        &self,
         unit: CurrencyUnit,
         derivation_path: DerivationPath,
         max_order: u8,
@@ -209,7 +209,7 @@ impl Mint {
     }
 
     pub async fn process_mint_request(
-        &mut self,
+        &self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
         for blinded_message in &mint_request.outputs {
@@ -299,7 +299,7 @@ impl Mint {
     }
 
     pub async fn process_swap_request(
-        &mut self,
+        &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
         for blinded_message in &swap_request.outputs {
@@ -471,7 +471,7 @@ impl Mint {
     }
 
     pub async fn verify_melt_request(
-        &mut self,
+        &self,
         melt_request: &MeltBolt11Request,
     ) -> Result<MeltQuote, Error> {
         let quote = self
@@ -564,7 +564,7 @@ impl Mint {
     }
 
     pub async fn process_melt_request(
-        &mut self,
+        &self,
         melt_request: &MeltBolt11Request,
         preimage: &str,
         total_spent: Amount,
