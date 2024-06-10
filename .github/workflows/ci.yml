@@ -32,6 +32,7 @@ jobs:
             -p cdk --no-default-features --features mint,
             -p cdk-redb,
             -p cdk-sqlite,
+            -p cdk-axum,
             --bin cdk-cli,
             --examples
           ]
