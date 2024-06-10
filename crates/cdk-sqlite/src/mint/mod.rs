@@ -7,15 +7,15 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::mint::MintKeySetInfo;
+use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::nuts::nut05::QuoteState;
 use cdk::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
 };
 use cdk::secret::Secret;
-use cdk::types::{MeltQuote, MintQuote};
-use cdk::Amount;
+use cdk::{mint, Amount};
 use error::Error;
+use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
 
@@ -116,7 +116,10 @@ WHERE active = 1
         let keysets = recs
             .iter()
             .filter_map(|r| match Id::from_str(r.get("id")) {
-                Ok(id) => Some((CurrencyUnit::from(r.get::<'_, &str, &str>("unit")), id)),
+                Ok(id) => Some((
+                    CurrencyUnit::from_str(r.get::<'_, &str, &str>("unit")).unwrap(),
+                    id,
+                )),
                 Err(_) => None,
             })
             .collect();
@@ -128,8 +131,8 @@ WHERE active = 1
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(id, mint_url, amount, unit, request, state, expiry, request_lookup_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -139,6 +142,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(quote.request)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
+        .bind(quote.request_lookup_id)
         .execute(&self.pool)
         .await
         // TODO: should check if error is not found and return none
@@ -169,6 +173,31 @@ WHERE id=?;
         Ok(Some(sqlite_row_to_mint_quote(rec)?))
     }
 
+    async fn get_mint_quote_by_request(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM mint_quote
+WHERE request=?;
+        "#,
+        )
+        .bind(request)
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(Some(sqlite_row_to_mint_quote(rec)?))
+    }
     async fn update_mint_quote_state(
         &self,
         quote_id: &str,
@@ -236,12 +265,12 @@ WHERE id=?
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
+    async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -252,13 +281,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .bind(quote.payment_preimage)
+        .bind(quote.request_lookup_id)
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
 
         Ok(())
     }
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<mint::MeltQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -280,7 +310,7 @@ WHERE id=?;
 
         Ok(Some(sqlite_row_to_melt_quote(rec)?))
     }
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
+    async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -661,7 +691,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
 
     Ok(MintKeySetInfo {
         id: Id::from_str(&row_id).map_err(Error::from)?,
-        unit: CurrencyUnit::from(&row_unit),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         active: row_active,
         valid_from: row_valid_from as u64,
         valid_to: row_valid_to.map(|v| v as u64),
@@ -678,19 +708,30 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_request: String = row.try_get("request").map_err(Error::from)?;
     let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+    let row_request_lookup_id: Option<String> =
+        row.try_get("request_lookup_id").map_err(Error::from)?;
+
+    let request_lookup_id = match row_request_lookup_id {
+        Some(id) => id,
+        None => match Bolt11Invoice::from_str(&row_request) {
+            Ok(invoice) => invoice.payment_hash().to_string(),
+            Err(_) => row_request.clone(),
+        },
+    };
 
     Ok(MintQuote {
         id: row_id,
         mint_url: row_mint_url.into(),
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
         state: MintQuoteState::from_str(&row_state).map_err(Error::from)?,
         expiry: row_expiry as u64,
+        request_lookup_id,
     })
 }
 
-fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<MeltQuote, Error> {
+fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
     let row_id: String = row.try_get("id").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
@@ -699,16 +740,21 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<MeltQuote, Error> {
     let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
     let row_preimage: Option<String> = row.try_get("payment_preimage").map_err(Error::from)?;
+    let row_request_lookup: Option<String> =
+        row.try_get("request_lookup_id").map_err(Error::from)?;
 
-    Ok(MeltQuote {
+    let request_lookup_id = row_request_lookup.unwrap_or(row_request.clone());
+
+    Ok(mint::MeltQuote {
         id: row_id,
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
         state: QuoteState::from_str(&row_state)?,
         expiry: row_expiry as u64,
         payment_preimage: row_preimage,
+        request_lookup_id,
     })
 }
 

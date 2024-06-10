@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use cdk::types::MintQuote;
+use cdk::wallet::MintQuote;
 use wasm_bindgen::prelude::*;
 
 use crate::nuts::JsCurrencyUnit;

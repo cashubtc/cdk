@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::str::FromStr;
 
 use cdk::nuts::{CurrencyUnit, KeySet, KeysResponse, KeysetResponse};
 use wasm_bindgen::prelude::*;
@@ -33,7 +34,7 @@ impl JsKeySet {
         Self {
             inner: KeySet {
                 id: *id.deref(),
-                unit: CurrencyUnit::from(&unit),
+                unit: CurrencyUnit::from_str(&unit).unwrap(),
                 keys: keys.deref().clone(),
             },
         }

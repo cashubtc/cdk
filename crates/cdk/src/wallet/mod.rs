@@ -25,7 +25,7 @@ use crate::nuts::{
     PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SecretKey,
     SigFlag, SpendingConditions, State, SwapRequest,
 };
-use crate::types::{MeltQuote, Melted, MintQuote, ProofInfo};
+use crate::types::{Melted, ProofInfo};
 use crate::url::UncheckedUrl;
 use crate::util::{hex, unix_time};
 use crate::{Amount, Bolt11Invoice, HttpClient, SECP256K1};
@@ -33,7 +33,10 @@ use crate::{Amount, Bolt11Invoice, HttpClient, SECP256K1};
 pub mod client;
 pub mod error;
 pub mod multi_mint_wallet;
+pub mod types;
 pub mod util;
+
+pub use types::{MeltQuote, MintQuote};
 
 /// CDK Wallet
 #[derive(Debug, Clone)]

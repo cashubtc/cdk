@@ -9,9 +9,10 @@ use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
 };
-use cdk::types::{MeltQuote, MintQuote, ProofInfo};
+use cdk::types::ProofInfo;
 use cdk::url::UncheckedUrl;
 use cdk::util::unix_time;
+use cdk::wallet::{MeltQuote, MintQuote};
 use rexie::*;
 use thiserror::Error;
 use tokio::sync::Mutex;

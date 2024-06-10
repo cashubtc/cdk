@@ -7,14 +7,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
 };
-use cdk::types::{MeltQuote, MintQuote, ProofInfo};
+use cdk::types::ProofInfo;
 use cdk::url::UncheckedUrl;
 use cdk::util::unix_time;
+use cdk::wallet::MintQuote;
+use cdk::{cdk_database, wallet};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -432,7 +433,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
 
@@ -454,7 +455,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn

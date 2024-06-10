@@ -14,7 +14,8 @@ use tracing::instrument;
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::nuts::{CurrencyUnit, SecretKey, SpendingConditions, Token};
-use crate::types::{Melted, MintQuote};
+use crate::types::Melted;
+use crate::wallet::types::MintQuote;
 use crate::{Amount, UncheckedUrl, Wallet};
 
 /// Multi Mint Wallet

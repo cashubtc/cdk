@@ -5,6 +5,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::str::FromStr;
 use std::string::FromUtf8Error;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -37,6 +38,9 @@ pub enum Error {
     /// Unsupported token
     #[error("Unsupported token")]
     UnsupportedToken,
+    /// Unsupported token
+    #[error("Unsupported unit")]
+    UnsupportedUnit,
     /// Invalid Url
     #[error("Invalid Url")]
     InvalidUrl,
@@ -317,20 +321,19 @@ pub enum CurrencyUnit {
     Msat,
     /// Usd
     Usd,
-    /// Custom unit
-    Custom(String),
+    /// Euro
+    Eur,
 }
 
-impl<S> From<S> for CurrencyUnit
-where
-    S: AsRef<str>,
-{
-    fn from(currency: S) -> Self {
-        match currency.as_ref() {
-            "sat" => Self::Sat,
-            "usd" => Self::Usd,
-            "msat" => Self::Msat,
-            o => Self::Custom(o.to_string()),
+impl FromStr for CurrencyUnit {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "sat" => Ok(Self::Sat),
+            "msat" => Ok(Self::Msat),
+            "usd" => Ok(Self::Usd),
+            "eur" => Ok(Self::Eur),
+            _ => Err(Error::UnsupportedUnit),
         }
     }
 }
@@ -341,7 +344,7 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Sat => write!(f, "sat"),
             CurrencyUnit::Msat => write!(f, "msat"),
             CurrencyUnit::Usd => write!(f, "usd"),
-            CurrencyUnit::Custom(unit) => write!(f, "{unit}"),
+            CurrencyUnit::Eur => write!(f, "eur"),
         }
     }
 }
@@ -361,7 +364,7 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
         D: Deserializer<'de>,
     {
         let currency: String = String::deserialize(deserializer)?;
-        Ok(Self::from(currency))
+        Self::from_str(&currency).map_err(|_| serde::de::Error::custom("Unsupported unit"))
     }
 }
 

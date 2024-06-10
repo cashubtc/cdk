@@ -11,9 +11,11 @@ use crate::cdk_database::Error;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
 };
-use crate::types::{MeltQuote, MintQuote, ProofInfo};
+use crate::types::ProofInfo;
 use crate::url::UncheckedUrl;
 use crate::util::unix_time;
+use crate::wallet;
+use crate::wallet::types::MintQuote;
 
 /// Wallet in Memory Database
 #[derive(Default, Debug, Clone)]
@@ -22,7 +24,7 @@ pub struct WalletMemoryDatabase {
     mint_keysets: Arc<RwLock<HashMap<UncheckedUrl, HashSet<Id>>>>,
     keysets: Arc<RwLock<HashMap<Id, KeySetInfo>>>,
     mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
-    melt_quotes: Arc<RwLock<HashMap<String, MeltQuote>>>,
+    melt_quotes: Arc<RwLock<HashMap<String, wallet::MeltQuote>>>,
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
@@ -33,7 +35,7 @@ impl WalletMemoryDatabase {
     /// Create new [`WalletMemoryDatabase`]
     pub fn new(
         mint_quotes: Vec<MintQuote>,
-        melt_quotes: Vec<MeltQuote>,
+        melt_quotes: Vec<wallet::MeltQuote>,
         mint_keys: Vec<Keys>,
         keyset_counter: HashMap<Id, u32>,
         nostr_last_checked: HashMap<PublicKey, u32>,
@@ -207,7 +209,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Error> {
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Error> {
         self.melt_quotes
             .write()
             .await
@@ -215,7 +217,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Error> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error> {
         Ok(self.melt_quotes.read().await.get(quote_id).cloned())
     }
 

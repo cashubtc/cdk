@@ -14,6 +14,9 @@ pub enum Error {
     /// Wallet Error
     #[error(transparent)]
     CDKWallet(#[from] cdk::wallet::error::Error),
+    /// NUT00 Error
+    #[error(transparent)]
+    CDKNUT00(#[from] cdk::nuts::nut00::Error),
     /// NUT01 Error
     #[error(transparent)]
     CDKNUT01(#[from] cdk::nuts::nut01::Error),

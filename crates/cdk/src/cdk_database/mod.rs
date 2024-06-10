@@ -9,7 +9,11 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 #[cfg(feature = "mint")]
+use crate::mint;
+#[cfg(feature = "mint")]
 use crate::mint::MintKeySetInfo;
+#[cfg(feature = "mint")]
+use crate::mint::MintQuote as MintMintQuote;
 #[cfg(feature = "wallet")]
 use crate::nuts::State;
 #[cfg(feature = "mint")]
@@ -22,10 +26,12 @@ use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
 use crate::secret::Secret;
 #[cfg(feature = "wallet")]
 use crate::types::ProofInfo;
-#[cfg(any(feature = "wallet", feature = "mint"))]
-use crate::types::{MeltQuote, MintQuote};
 #[cfg(feature = "wallet")]
 use crate::url::UncheckedUrl;
+#[cfg(feature = "wallet")]
+use crate::wallet;
+#[cfg(feature = "wallet")]
+use crate::wallet::MintQuote as WalletMintQuote;
 
 #[cfg(feature = "mint")]
 pub mod mint_memory;
@@ -94,18 +100,18 @@ pub trait WalletDatabase: Debug {
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
 
     /// Add mint quote to storage
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err>;
+    async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Self::Err>;
     /// Get mint quote from storage
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err>;
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Self::Err>;
     /// Get mint quotes from storage
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err>;
+    async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
     /// Add melt quote to storage
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err>;
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err>;
     /// Get melt quote from storage
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err>;
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err>;
     /// Remove melt quote from storage
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
@@ -164,34 +170,39 @@ pub trait MintDatabase {
     /// Get all Active Keyset
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err>;
 
-    /// Add [`MintQuote`]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err>;
-    /// Get [`MintQuote`]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err>;
-    /// Update state of [`MintQuote`]
+    /// Add [`MintMintQuote`]
+    async fn add_mint_quote(&self, quote: MintMintQuote) -> Result<(), Self::Err>;
+    /// Get [`MintMintQuote`]
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintMintQuote>, Self::Err>;
+    /// Update state of [`MintMintQuote`]
     async fn update_mint_quote_state(
         &self,
         quote_id: &str,
         state: MintQuoteState,
     ) -> Result<MintQuoteState, Self::Err>;
-    /// Get all [`MintQuote`]s
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err>;
-    /// Remove [`MintQuote`]
+    /// Get all [`MintMintQuote`]s
+    async fn get_mint_quote_by_request(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintMintQuote>, Self::Err>;
+    /// Get Mint Quotes
+    async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+    /// Remove [`MintMintQuote`]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
-    /// Add [`MeltQuote`]
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err>;
-    /// Get [`MeltQuote`]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err>;
-    /// Update [`MeltQuote`] state
+    /// Add [`mint::MeltQuote`]
+    async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
+    /// Get [`mint::MeltQuote`]
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<mint::MeltQuote>, Self::Err>;
+    /// Update [`mint::MeltQuote`] state
     async fn update_melt_quote_state(
         &self,
         quote_id: &str,
         state: MeltQuoteState,
     ) -> Result<MeltQuoteState, Self::Err>;
-    /// Get all [`MeltQuote`]s
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err>;
-    /// Remove [`MeltQuote`]
+    /// Get all [`mint::MeltQuote`]s
+    async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+    /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
     /// Add [`MintKeySetInfo`]

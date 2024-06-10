@@ -8,6 +8,7 @@ pub enum JsCurrencyUnit {
     Sat,
     Msat,
     Usd,
+    Eur,
 }
 
 impl From<CurrencyUnit> for JsCurrencyUnit {
@@ -16,7 +17,7 @@ impl From<CurrencyUnit> for JsCurrencyUnit {
             CurrencyUnit::Sat => JsCurrencyUnit::Sat,
             CurrencyUnit::Msat => JsCurrencyUnit::Msat,
             CurrencyUnit::Usd => JsCurrencyUnit::Usd,
-            CurrencyUnit::Custom(_) => todo!(),
+            CurrencyUnit::Eur => JsCurrencyUnit::Eur,
         }
     }
 }
@@ -27,6 +28,7 @@ impl From<JsCurrencyUnit> for CurrencyUnit {
             JsCurrencyUnit::Sat => CurrencyUnit::Sat,
             JsCurrencyUnit::Msat => CurrencyUnit::Msat,
             JsCurrencyUnit::Usd => CurrencyUnit::Usd,
+            JsCurrencyUnit::Eur => CurrencyUnit::Eur,
         }
     }
 }

@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use cdk::types::MeltQuote;
+use cdk::wallet::types::MeltQuote;
 use wasm_bindgen::prelude::*;
 
 use crate::nuts::JsCurrencyUnit;

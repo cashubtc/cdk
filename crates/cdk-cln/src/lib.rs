@@ -7,10 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk::cdk_lightning::{self, MintLightning, PayInvoiceResponse};
-use cdk::nuts::{MeltQuoteState, MintQuoteState};
+use cdk::cdk_lightning::{
+    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+};
+use cdk::mint::FeeReserve;
+use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::{hex, unix_time};
-use cdk::Bolt11Invoice;
+use cdk::{mint, Bolt11Invoice};
 use cln_rpc::model::requests::{
     InvoiceRequest, ListinvoicesRequest, PayRequest, WaitanyinvoiceRequest,
 };
@@ -28,15 +31,17 @@ pub mod error;
 pub struct Cln {
     rpc_socket: PathBuf,
     cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
+    fee_reserve: FeeReserve,
 }
 
 impl Cln {
-    pub async fn new(rpc_socket: PathBuf) -> Result<Self, Error> {
+    pub async fn new(rpc_socket: PathBuf, fee_reserve: FeeReserve) -> Result<Self, Error> {
         let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
 
         Ok(Self {
             rpc_socket,
             cln_client: Arc::new(Mutex::new(cln_client)),
+            fee_reserve,
         })
     }
 }
@@ -44,6 +49,10 @@ impl Cln {
 #[async_trait]
 impl MintLightning for Cln {
     type Err = cdk_lightning::Error;
+
+    fn get_base_unit(&self) -> CurrencyUnit {
+        CurrencyUnit::Msat
+    }
 
     async fn wait_any_invoice(
         &self,
@@ -88,16 +97,47 @@ impl MintLightning for Cln {
         .boxed())
     }
 
+    async fn get_payment_quote(
+        &self,
+        melt_quote_request: &MeltQuoteBolt11Request,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        let invoice_amount_msat = melt_quote_request
+            .request
+            .amount_milli_satoshis()
+            .ok_or(Error::UnknownInvoiceAmount)?;
+
+        let amount = to_unit(
+            invoice_amount_msat,
+            &CurrencyUnit::Msat,
+            &melt_quote_request.unit,
+        )?;
+
+        let relative_fee_reserve = (self.fee_reserve.percent_fee_reserve * amount as f32) as u64;
+
+        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+
+        let fee = match relative_fee_reserve > absolute_fee_reserve {
+            true => relative_fee_reserve,
+            false => absolute_fee_reserve,
+        };
+
+        Ok(PaymentQuoteResponse {
+            request_lookup_id: melt_quote_request.request.to_string(),
+            amount,
+            fee,
+        })
+    }
+
     async fn pay_invoice(
         &self,
-        bolt11: Bolt11Invoice,
+        melt_quote: mint::MeltQuote,
         partial_msats: Option<u64>,
         max_fee_msats: Option<u64>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client
             .call(Request::Pay(PayRequest {
-                bolt11: bolt11.to_string(),
+                bolt11: melt_quote.request.to_string(),
                 amount_msat: None,
                 label: None,
                 riskfactor: None,
@@ -142,12 +182,13 @@ impl MintLightning for Cln {
         amount_msats: u64,
         description: String,
         unix_expiry: u64,
-    ) -> Result<Bolt11Invoice, Self::Err> {
+    ) -> Result<CreateInvoiceResponse, Self::Err> {
         let time_now = unix_time();
         assert!(unix_expiry > time_now);
 
         let mut cln_client = self.cln_client.lock().await;
 
+        let label = Uuid::new_v4().to_string();
         let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount_msats));
         let cln_response = cln_client
             .call(cln_rpc::Request::Invoice(InvoiceRequest {
@@ -164,26 +205,28 @@ impl MintLightning for Cln {
             .await
             .map_err(Error::from)?;
 
-        let invoice = match cln_response {
-            cln_rpc::Response::Invoice(invoice_res) => {
-                Bolt11Invoice::from_str(&invoice_res.bolt11)?
-            }
+        match cln_response {
+            cln_rpc::Response::Invoice(invoice_res) => Ok(CreateInvoiceResponse {
+                request_lookup_id: label,
+                request: Bolt11Invoice::from_str(&invoice_res.bolt11)?,
+            }),
             _ => {
                 tracing::warn!("CLN returned wrong response kind");
-                return Err(Error::WrongClnResponse.into());
+                Err(Error::WrongClnResponse.into())
             }
-        };
-
-        Ok(invoice)
+        }
     }
 
-    async fn check_invoice_status(&self, payment_hash: &str) -> Result<MintQuoteState, Self::Err> {
+    async fn check_invoice_status(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
         let cln_response = cln_client
             .call(Request::ListInvoices(ListinvoicesRequest {
-                payment_hash: Some(payment_hash.to_string()),
-                label: None,
+                payment_hash: None,
+                label: Some(request_lookup_id.to_string()),
                 invstring: None,
                 offer_id: None,
                 index: None,
@@ -201,8 +244,8 @@ impl MintLightning for Cln {
                     }
                     None => {
                         tracing::info!(
-                            "Check invoice called on unknown payment_hash: {}",
-                            payment_hash
+                            "Check invoice called on unknown look up id: {}",
+                            request_lookup_id
                         );
                         return Err(Error::WrongClnResponse.into());
                     }

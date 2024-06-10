@@ -15,6 +15,21 @@ pub enum Error {
     /// Mint does not have a key for amount
     #[error("No Key for Amount")]
     AmountKey,
+    /// Not enough input proofs provided
+    #[error("Not enough input proofs spent")]
+    InsufficientInputProofs,
+    /// Database update failed
+    #[error("Database error")]
+    DatabaseError,
+    /// Unsupported unit
+    #[error("Unit unsupported")]
+    UnsupportedUnit,
+    /// Payment failed
+    #[error("Payment failed")]
+    PaymentFailed,
+    /// Melt Request is not valid
+    #[error("Melt request is not valid")]
+    MeltRequestInvalid,
     /// Amount is not what expected
     #[error("Amount miss match")]
     Amount,
@@ -24,6 +39,9 @@ pub enum Error {
     /// Token could not be validated
     #[error("Token not verified")]
     TokenNotVerified,
+    /// Invalid payment request
+    #[error("Invalid payment request")]
+    InvalidPaymentRequest,
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
@@ -104,6 +122,15 @@ impl fmt::Display for ErrorResponse {
 }
 
 impl ErrorResponse {
+    /// Create new [`ErrorResponse`]
+    pub fn new(code: ErrorCode, error: Option<String>, detail: Option<String>) -> Self {
+        Self {
+            code,
+            error,
+            detail,
+        }
+    }
+
     /// Error response from json
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let value: Value = serde_json::from_str(json)?;
@@ -120,6 +147,23 @@ impl ErrorResponse {
                 error: Some(value.to_string()),
                 detail: None,
             }),
+        }
+    }
+}
+
+impl From<Error> for ErrorResponse {
+    fn from(err: Error) -> ErrorResponse {
+        match err {
+            Error::TokenSpent => ErrorResponse {
+                code: ErrorCode::TokenAlreadySpent,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            _ => ErrorResponse {
+                code: ErrorCode::Unknown(9999),
+                error: Some(err.to_string()),
+                detail: None,
+            },
         }
     }
 }

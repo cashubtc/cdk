@@ -5,15 +5,17 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
+use cdk::amount::Amount;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, Proofs,
     PublicKey, SpendingConditions, State,
 };
 use cdk::secret::Secret;
-use cdk::types::{MeltQuote, MintQuote, ProofInfo};
+use cdk::types::ProofInfo;
 use cdk::url::UncheckedUrl;
-use cdk::Amount;
+use cdk::wallet;
+use cdk::wallet::MintQuote;
 use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
@@ -350,7 +352,7 @@ WHERE id=?
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
@@ -371,7 +373,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 
         Ok(())
     }
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -709,7 +711,7 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
 
     Ok(KeySetInfo {
         id: Id::from_str(&row_id)?,
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         active,
     })
 }
@@ -729,14 +731,14 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         id: row_id,
         mint_url: row_mint_url.into(),
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
         state,
         expiry: row_expiry as u64,
     })
 }
 
-fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<MeltQuote, Error> {
+fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<wallet::MeltQuote, Error> {
     let row_id: String = row.try_get("id").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
@@ -747,10 +749,10 @@ fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<MeltQuote, Error> {
     let row_preimage: Option<String> = row.try_get("payment_preimage").map_err(Error::from)?;
 
     let state = MeltQuoteState::from_str(&row_state)?;
-    Ok(MeltQuote {
+    Ok(wallet::MeltQuote {
         id: row_id,
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
         state,
@@ -788,6 +790,6 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         mint_url: row_mint_url.into(),
         state: State::from_str(&row_state)?,
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
     })
 }
