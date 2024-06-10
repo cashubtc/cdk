@@ -121,6 +121,10 @@ pub trait MintDatabase {
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err>;
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err>;
+    async fn get_mint_quote_by_request(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err>;
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err>;
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 

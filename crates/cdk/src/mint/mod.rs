@@ -622,7 +622,7 @@ impl Mint {
     pub async fn process_melt_request(
         &self,
         melt_request: &MeltBolt11Request,
-        preimage: &str,
+        payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltBolt11Response, Error> {
         self.verify_melt_request(melt_request).await?;
@@ -696,7 +696,7 @@ impl Mint {
 
         Ok(MeltBolt11Response {
             paid: true,
-            payment_preimage: Some(preimage.to_string()),
+            payment_preimage,
             change,
         })
     }

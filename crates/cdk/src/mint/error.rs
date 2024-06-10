@@ -1,6 +1,5 @@
 //! Mint Errors
 
-use http::StatusCode;
 use thiserror::Error;
 
 use crate::cdk_database;
@@ -32,6 +31,8 @@ pub enum Error {
     UnknownSecretKind,
     #[error("Cannot have multiple units")]
     MultipleUnits,
+    #[error("Unit not supported")]
+    UnsupportedUnit,
     #[error("Blinded Message is already signed")]
     BlindedMessageAlreadySigned,
     #[error(transparent)]
@@ -73,12 +74,6 @@ impl From<Error> for ErrorResponse {
                 detail: None,
             },
         }
-    }
-}
-
-impl From<Error> for (StatusCode, ErrorResponse) {
-    fn from(err: Error) -> (StatusCode, ErrorResponse) {
-        (StatusCode::NOT_FOUND, err.into())
     }
 }
 
