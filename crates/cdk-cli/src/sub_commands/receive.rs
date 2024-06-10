@@ -10,15 +10,18 @@ use clap::Args;
 pub struct ReceiveSubCommand {
     /// Cashu Token
     token: Option<String>,
-    /// Nostr key
-    #[arg(short, long)]
-    nostr_key: Option<String>,
     /// Signing Key
     #[arg(short, long, action = clap::ArgAction::Append)]
     signing_key: Vec<String>,
+    /// Nostr key
+    #[arg(short, long)]
+    nostr_key: Option<String>,
     /// Nostr relay
     #[arg(short, long, action = clap::ArgAction::Append)]
     relay: Vec<String>,
+    /// Unix time to to query nostr from
+    #[arg(short, long)]
+    since: Option<u64>,
     /// Preimage
     #[arg(short, long,  action = clap::ArgAction::Append)]
     preimage: Vec<String>,
@@ -58,7 +61,7 @@ pub async fn receive(wallet: Wallet, sub_command_args: &ReceiveSubCommand) -> Re
                 .add_nostr_relays(sub_command_args.relay.clone())
                 .await?;
             wallet
-                .nostr_receive(nostr_key, SplitTarget::default())
+                .nostr_receive(nostr_key, sub_command_args.since, SplitTarget::default())
                 .await?
         }
         None => {
