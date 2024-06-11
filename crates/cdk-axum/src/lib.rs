@@ -1,4 +1,3 @@
-use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -83,12 +82,10 @@ pub async fn start_server(
         ]))
         .with_state(state);
 
-    let ip = Ipv4Addr::from_str(listen_addr)?;
+    let listener =
+        tokio::net::TcpListener::bind(format!("{}:{}", listen_addr, listen_port)).await?;
 
-    let listen_addr = SocketAddr::new(std::net::IpAddr::V4(ip), listen_port);
-    axum::Server::bind(&listen_addr)
-        .serve(mint_service.into_make_service())
-        .await?;
+    axum::serve(listener, mint_service).await?;
 
     Ok(())
 }
