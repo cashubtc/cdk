@@ -10,11 +10,10 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1.0.75"
 async-trait.workspace = true
-axum = "0.6.18"
-axum-macros = "0.3.7"
+axum = "0.7.5"
+axum-macros = "0.4.1"
 cdk = { workspace = true, default-features = false, features = ["mint"] }
-ln-rs = { git = "https://github.com/thesimplekid/ln-rs", rev = "cbcc2a7", default-features = false, features = ["cln"] }
 tokio.workspace = true
-tower-http = { version = "0.4.1", features = ["cors"] }
+tower-http = { version = "0.5.2", features = ["cors"] }
 tracing.workspace = true
 futures = "0.3.28"
