@@ -247,6 +247,10 @@ impl Mint {
             blind_signatures.push(blinded_signature);
         }
 
+        self.localstore
+            .remove_mint_quote(&mint_request.quote)
+            .await?;
+
         Ok(nut04::MintBolt11Response {
             signatures: blind_signatures,
         })
