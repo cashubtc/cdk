@@ -1,3 +1,5 @@
+//! CDK Amount
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -60,6 +62,16 @@ impl Amount {
 
         parts.sort();
         parts
+    }
+
+    // TODO: Need to make sure it is a unit that can be converted to sats
+    pub fn from_msat(msat: u64) -> Self {
+        Self(msat / 1000)
+    }
+
+    // TODO: Need to make sure it is a unit that can be converted to sats
+    pub fn to_msat(&self) -> u64 {
+        self.0 * 1000
     }
 }
 
