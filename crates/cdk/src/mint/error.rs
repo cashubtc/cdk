@@ -32,6 +32,8 @@ pub enum Error {
     UnknownSecretKind,
     #[error("Cannot have multiple units")]
     MultipleUnits,
+    #[error("Unit not supported")]
+    UnsupportedUnit,
     #[error("Blinded Message is already signed")]
     BlindedMessageAlreadySigned,
     #[error(transparent)]

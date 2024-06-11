@@ -11,19 +11,19 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use cdk::cdk_lightning::{self, Amount as CDKLightningAmount, MintLightning};
 use cdk::error::ErrorResponse;
 use cdk::mint::Mint;
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
-    MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeysResponse, KeysetResponse,
+    MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::MintQuote;
 use cdk::util::unix_time;
-use cdk::Amount;
+use cdk::{Amount, Bolt11Invoice};
 use futures::StreamExt;
-use ln_rs::{Bolt11Invoice, Ln};
 use tower_http::cors::CorsLayer;
 
 pub async fn start_server(
@@ -31,13 +31,13 @@ pub async fn start_server(
     listen_addr: &str,
     listen_port: u16,
     mint: Mint,
-    ln: Ln,
+    ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
 ) -> Result<()> {
     let mint_clone = Arc::new(mint.clone());
     let ln_clone = ln.clone();
     tokio::spawn(async move {
         loop {
-            let mut stream = ln_clone.ln_processor.wait_invoice().await.unwrap();
+            let mut stream = ln_clone.wait_invoice().await.unwrap();
 
             while let Some((invoice, _pay_index)) = stream.next().await {
                 if let Err(err) =
@@ -116,7 +116,7 @@ async fn handle_paid_invoice(mint: Arc<Mint>, request: &str) -> Result<()> {
 }
 #[derive(Clone)]
 struct MintState {
-    ln: Ln,
+    ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     mint: Mint,
     mint_url: String,
 }
@@ -150,14 +150,13 @@ async fn get_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response>, Response> {
-    let invoice = state
-        .ln
-        .ln_processor
-        .create_invoice(
-            ln_rs::Amount::from_sat(u64::from(payload.amount)),
-            "".to_string(),
-        )
-        .await;
+    let amount = match payload.unit {
+        CurrencyUnit::Sat => CDKLightningAmount::from_sat(payload.amount.into()),
+        CurrencyUnit::Msat => CDKLightningAmount::from_msat(payload.amount.into()),
+        _ => return Err(into_response(cdk::mint::error::Error::UnsupportedUnit)),
+    };
+
+    let invoice = state.ln.create_invoice(amount, "".to_string()).await;
 
     let invoice = invoice.unwrap();
 
@@ -206,8 +205,13 @@ async fn get_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
-    let amount = payload.request.amount_milli_satoshis().unwrap() / 1000;
-    assert!(amount > 0);
+    let amount = match payload.unit {
+        CurrencyUnit::Sat | CurrencyUnit::Msat => {
+            payload.request.amount_milli_satoshis().unwrap() / 1000
+        }
+        _ => return Err(into_response(cdk::mint::error::Error::UnsupportedUnit)),
+    };
+
     let quote = state
         .mint
         .new_melt_quote(
@@ -244,7 +248,6 @@ async fn post_melt_bolt11(
 
     let pre = state
         .ln
-        .ln_processor
         .pay_invoice(Bolt11Invoice::from_str(&quote.request).unwrap(), None, None)
         .await
         .unwrap();
