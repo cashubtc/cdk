@@ -37,6 +37,7 @@ buildargs=(
     "-p cdk-cln"
     "-p cdk-axum"
     "--bin cdk-cli"
+    "--bin cdk-mintd"
     "--examples"
 )
 

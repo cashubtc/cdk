@@ -29,6 +29,7 @@ cdk-rexie = { path = "./crates/cdk-rexie", default-features = false }
 cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = false }
 cdk-redb = { path = "./crates/cdk-redb", default-features = false }
 cdk-cln = { path = "./crates/cdk-cln", default-features = false }
+cdk-axum = { path = "./crates/cdk-axum", default-features = false }
 tokio = { version = "1.32", default-features = false }
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
