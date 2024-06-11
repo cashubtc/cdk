@@ -22,28 +22,20 @@ keywords = ["bitcoin", "e-cash", "cashu"]
 
 [workspace.dependencies]
 async-trait = "0.1.74"
+anyhow = "1"
+bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
 cdk = { path = "./crates/cdk", default-features = false }
 cdk-rexie = { path = "./crates/cdk-rexie", default-features = false }
 cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = false }
 cdk-redb = { path = "./crates/cdk-redb", default-features = false }
+cdk-cln = { path = "./crates/cdk-cln", default-features = false }
 tokio = { version = "1.32", default-features = false }
 thiserror = "1"
-tracing = { version = "0.1", default-features = false, features = ["attributes"] }
+tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
+futures = { version = "0.3.28", default-feature = false }
 serde-wasm-bindgen = { version = "0.6.5", default-features = false }
 web-sys =  { version = "0.3.68", default-features = false, features = ["console"] }
 uniffi = { version = "0.27.1", default-features = false }
-bitcoin = { version = "0.30", features = [
-    "serde",
-    "rand",
-    "rand-std",
-] } # lightning-invoice uses v0.30
-
-[profile]
-
-[profile.ci]
-inherits = "dev"
-incremental = false
-debug = "line-tables-only"
-lto = "off"
+uuid = { version = "1", features = ["v4"] }
