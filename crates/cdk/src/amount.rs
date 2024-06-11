@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Number of satoshis
+/// Amount can be any unit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Amount(u64);
@@ -63,28 +63,6 @@ impl Amount {
         parts.sort();
         parts
     }
-
-    // TODO: Need to make sure it is a unit that can be converted to sats
-    pub fn from_msat(msat: u64) -> Self {
-        Self(msat / 1000)
-    }
-
-    // TODO: Need to make sure it is a unit that can be converted to sats
-    pub fn to_msat(&self) -> u64 {
-        self.0 * 1000
-    }
-}
-
-/// Kinds of targeting that are supported
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
-)]
-pub enum SplitTarget {
-    /// Default target; least amount of proofs
-    #[default]
-    None,
-    /// Target amount for wallet to have most proofs that add up to value
-    Value(Amount),
 }
 
 impl Default for Amount {
@@ -144,6 +122,18 @@ impl core::iter::Sum for Amount {
         let sats: u64 = iter.map(|amt| amt.0).sum();
         Amount::from(sats)
     }
+}
+
+/// Kinds of targeting that are supported
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
+pub enum SplitTarget {
+    /// Default target; least amount of proofs
+    #[default]
+    None,
+    /// Target amount for wallet to have most proofs that add up to value
+    Value(Amount),
 }
 
 #[cfg(test)]

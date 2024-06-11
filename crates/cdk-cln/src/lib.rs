@@ -7,10 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk::cdk_lightning::{self, BalanceResponse, InvoiceInfo, MintLightning, PayInvoiceResponse};
+use cdk::cdk_lightning::{
+    self, Amount, BalanceResponse, InvoiceInfo, MintLightning, PayInvoiceResponse,
+};
 use cdk::types::InvoiceStatus;
 use cdk::util::hex;
-use cdk::{Amount, Bolt11Invoice, Sha256};
+use cdk::{Bolt11Invoice, Sha256};
 use cln_rpc::model::requests::{
     InvoiceRequest, ListfundsRequest, ListinvoicesRequest, PayRequest, WaitanyinvoiceRequest,
 };
@@ -59,7 +61,7 @@ impl MintLightning for Cln {
 
         let cln_response = cln_client
             .call(cln_rpc::Request::Invoice(InvoiceRequest {
-                amount_msat: AmountOrAny::Amount(CLN_Amount::from_sat(amount.into())),
+                amount_msat: AmountOrAny::Amount(CLN_Amount::from_sat(amount.to_sat())),
                 description: description.to_string(),
                 label: Uuid::new_v4().to_string(),
                 expiry: None,
@@ -311,9 +313,9 @@ impl MintLightning for Cln {
 }
 
 pub fn fee_reserve(invoice_amount: Amount) -> Amount {
-    let fee_reserse = (u64::from(invoice_amount) as f64 * 0.01) as u64;
+    let fee_reserse = (invoice_amount.to_sat() as f64 * 0.01) as u64;
 
-    Amount::from(fee_reserse)
+    Amount::from_sat(fee_reserse)
 }
 
 pub fn cln_invoice_status_to_status(status: ListinvoicesInvoicesStatus) -> InvoiceStatus {
