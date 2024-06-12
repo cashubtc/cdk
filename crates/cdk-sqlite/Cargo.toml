@@ -17,7 +17,7 @@ nostr = ["cdk/nostr"]
 [dependencies]
 bitcoin.workspace = true
 const_format = "0.2.32"
-sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "chrono", "sqlite"] }
+sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "chrono", "sqlite", "macros", "migrate"] }
 cdk = { workspace = true, default-features = false }
 thiserror.workspace = true
 tokio = { workspace = true, features = [

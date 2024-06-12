@@ -1,23 +1,3 @@
-//! SQLite Mint Migration
-
-use const_format::formatcp;
-use sqlx::{Executor, Pool, Sqlite};
-
-use super::error::Error;
-
-/// Latest database version
-pub const DB_VERSION: usize = 0;
-
-/// Schema definition
-const INIT_SQL: &str = formatcp!(
-    r#"
--- Database settings
-PRAGMA encoding = "UTF-8";
-PRAGMA journal_mode = WAL;
-PRAGMA auto_vacuum = FULL;
-PRAGMA main.synchronous=NORMAL;
-PRAGMA foreign_keys = ON;
-PRAGMA user_version = {};
 
 -- Proof Table
 CREATE TABLE IF NOT EXISTS proof (
@@ -84,25 +64,3 @@ CREATE TABLE IF NOT EXISTS blind_signature (
 );
 
 CREATE INDEX IF NOT EXISTS keyset_id_index ON blind_signature(keyset_id);
-
-    "#,
-    DB_VERSION
-);
-
-pub(crate) async fn init_migration(pool: &Pool<Sqlite>) -> Result<usize, Error> {
-    let mut conn = pool.acquire().await?;
-
-    match conn.execute(INIT_SQL).await {
-        Ok(_) => {
-            tracing::info!(
-                "database pragma/schema initialized to v{}, and ready",
-                DB_VERSION
-            );
-        }
-        Err(err) => {
-            tracing::error!("update (init) failed: {}", err);
-            return Err(Error::CouldNotInitialize);
-        }
-    }
-    Ok(DB_VERSION)
-}

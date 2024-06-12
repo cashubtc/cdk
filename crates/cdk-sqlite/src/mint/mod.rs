@@ -12,12 +12,10 @@ use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote};
 use cdk::Amount;
 use error::Error;
-use migration::init_migration;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
 
 pub mod error;
-mod migration;
 
 #[derive(Debug, Clone)]
 pub struct MintSqliteDatabase {
@@ -36,9 +34,14 @@ impl MintSqliteDatabase {
 
         let pool = SqlitePool::connect(path).await?;
 
-        init_migration(&pool).await?;
-
         Ok(Self { pool })
+    }
+
+    pub async fn migrate(&self) {
+        sqlx::migrate!("./src/mint/migrations")
+            .run(&self.pool)
+            .await
+            .expect("Could not run migrations");
     }
 }
 
