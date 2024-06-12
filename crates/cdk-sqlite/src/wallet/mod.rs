@@ -17,10 +17,7 @@ use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
 
-use self::migration::init_migration;
-
 pub mod error;
-mod migration;
 
 #[derive(Debug, Clone)]
 pub struct WalletSQLiteDatabase {
@@ -39,9 +36,14 @@ impl WalletSQLiteDatabase {
 
         let pool = SqlitePool::connect(path).await?;
 
-        init_migration(&pool).await?;
-
         Ok(Self { pool })
+    }
+
+    pub async fn migrate(&self) {
+        sqlx::migrate!("./src/wallet/migrations")
+            .run(&self.pool)
+            .await
+            .expect("Could not run migrations");
     }
 }
 
