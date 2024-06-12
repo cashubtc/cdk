@@ -365,6 +365,7 @@ impl Wallet {
     pub async fn check_all_pending_proofs(
         &self,
         mint_url: Option<UncheckedUrl>,
+        unit: Option<CurrencyUnit>,
     ) -> Result<Amount, Error> {
         let mints = match mint_url {
             Some(mint_url) => HashMap::from_iter(vec![(mint_url, None)]),
@@ -378,7 +379,7 @@ impl Wallet {
                 .localstore
                 .get_proofs(
                     Some(mint.clone()),
-                    None,
+                    unit.clone(),
                     Some(vec![State::Pending, State::Reserved]),
                     None,
                 )

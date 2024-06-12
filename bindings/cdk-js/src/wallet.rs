@@ -1,3 +1,5 @@
+//! Wallet Js Bindings
+
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -90,7 +92,11 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = checkAllPendingProofs)]
-    pub async fn check_all_pending_proofs(&self, mint_url: Option<String>) -> Result<JsAmount> {
+    pub async fn check_all_pending_proofs(
+        &self,
+        mint_url: Option<String>,
+        unit: Option<JsCurrencyUnit>,
+    ) -> Result<JsAmount> {
         let mint_url = match mint_url {
             Some(url) => Some(UncheckedUrl::from_str(&url).map_err(into_err)?),
             None => None,
@@ -98,7 +104,7 @@ impl JsWallet {
 
         Ok(self
             .inner
-            .check_all_pending_proofs(mint_url)
+            .check_all_pending_proofs(mint_url, unit.map(|u| u.into()))
             .await
             .map_err(into_err)?
             .into())
