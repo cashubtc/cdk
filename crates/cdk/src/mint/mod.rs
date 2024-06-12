@@ -1,3 +1,5 @@
+//! Cashu Mint
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -6,7 +8,6 @@ use bitcoin::secp256k1::{self, Secp256k1};
 use error::Error;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
 
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
@@ -68,6 +69,7 @@ impl Mint {
         })
     }
 
+    /// New mint quote
     pub async fn new_mint_quote(
         &self,
         mint_url: UncheckedUrl,
@@ -83,6 +85,7 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Check mint quote
     pub async fn check_mint_quote(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
         let quote = self
             .localstore
@@ -98,22 +101,26 @@ impl Mint {
         })
     }
 
+    /// Update mint quote
     pub async fn update_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
         self.localstore.add_mint_quote(quote).await?;
         Ok(())
     }
 
+    /// Get mint quotes
     pub async fn mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let quotes = self.localstore.get_mint_quotes().await?;
         Ok(quotes)
     }
 
+    /// Remove mint quote
     pub async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
         self.localstore.remove_mint_quote(quote_id).await?;
 
         Ok(())
     }
 
+    /// New melt quote
     pub async fn new_melt_quote(
         &self,
         request: String,
@@ -176,6 +183,7 @@ impl Mint {
         Ok(KeysetResponse { keysets })
     }
 
+    /// Get keysets
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
         self.ensure_keyset_loaded(id).await?;
         let keysets = self.keysets.read().await;
@@ -208,6 +216,7 @@ impl Mint {
         Ok(())
     }
 
+    /// Process mint request
     pub async fn process_mint_request(
         &self,
         mint_request: nut04::MintBolt11Request,
@@ -219,7 +228,7 @@ impl Mint {
                 .await?
                 .is_some()
             {
-                error!(
+                tracing::error!(
                     "Output has already been signed: {}",
                     blinded_message.blinded_secret
                 );
@@ -256,6 +265,7 @@ impl Mint {
         })
     }
 
+    /// Blind Sign
     async fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindSignature, Error> {
         let BlindedMessage {
             amount,
@@ -302,6 +312,7 @@ impl Mint {
         Ok(blinded_signature)
     }
 
+    /// Process Swap
     pub async fn process_swap_request(
         &self,
         swap_request: SwapRequest,
@@ -313,7 +324,7 @@ impl Mint {
                 .await?
                 .is_some()
             {
-                error!(
+                tracing::error!(
                     "Output has already been signed: {}",
                     blinded_message.blinded_secret
                 );
@@ -378,7 +389,7 @@ impl Mint {
         // in the future it maybe possible to support multiple units but unsupported for
         // now
         if keyset_units.len().gt(&1) {
-            error!("Only one unit is allowed in request: {:?}", keyset_units);
+            tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
             return Err(Error::MultipleUnits);
         }
 
@@ -408,6 +419,7 @@ impl Mint {
         Ok(SwapResponse::new(promises))
     }
 
+    /// Verify [`Proof`] meets conditions and is signed
     async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
@@ -450,6 +462,7 @@ impl Mint {
         Ok(())
     }
 
+    /// Check state
     pub async fn check_state(
         &self,
         check_state: &CheckStateRequest,
@@ -474,6 +487,7 @@ impl Mint {
         Ok(CheckStateResponse { states })
     }
 
+    /// Verify melt request is valid
     pub async fn verify_melt_request(
         &self,
         melt_request: &MeltBolt11Request,
@@ -489,9 +503,10 @@ impl Mint {
         let required_total = quote.amount + quote.fee_reserve;
 
         if proofs_total < required_total {
-            debug!(
+            tracing::debug!(
                 "Insufficient Proofs: Got: {}, Required: {}",
-                proofs_total, required_total
+                proofs_total,
+                required_total
             );
             return Err(Error::Amount);
         }
@@ -567,6 +582,7 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Process melt request marking [`Proofs`] as spent
     pub async fn process_melt_request(
         &self,
         melt_request: &MeltBolt11Request,
@@ -583,7 +599,7 @@ impl Mint {
                     .await?
                     .is_some()
                 {
-                    error!(
+                    tracing::error!(
                         "Output has already been signed: {}",
                         blinded_message.blinded_secret
                     );
@@ -596,6 +612,10 @@ impl Mint {
             self.localstore.add_spent_proof(input.clone()).await?;
         }
 
+        self.localstore
+            .remove_melt_quote(&melt_request.quote)
+            .await?;
+
         let mut change = None;
 
         if let Some(outputs) = melt_request.outputs.clone() {
@@ -604,7 +624,7 @@ impl Mint {
             let mut change_sigs = Vec::with_capacity(amounts.len());
 
             if outputs.len().lt(&amounts.len()) {
-                debug!(
+                tracing::debug!(
                     "Providing change requires {} blinded messages, but only {} provided",
                     amounts.len(),
                     outputs.len()
@@ -632,7 +652,7 @@ impl Mint {
 
             change = Some(change_sigs);
         } else {
-            info!(
+            tracing::info!(
                 "No change outputs provided. Burnt: {:?} sats",
                 (melt_request.proofs_amount() - total_spent)
             );
@@ -645,6 +665,7 @@ impl Mint {
         })
     }
 
+    /// Check melt quote status
     pub async fn check_melt_quote(&self, quote_id: &str) -> Result<MeltQuoteBolt11Response, Error> {
         let quote = self
             .localstore
@@ -703,6 +724,7 @@ impl Mint {
         })
     }
 
+    /// Ensure Keyset is loaded in mint
     async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
         let keysets = self.keysets.read().await;
         if keysets.contains_key(id) {
@@ -721,18 +743,21 @@ impl Mint {
         Ok(())
     }
 
+    /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
     fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
         MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
     }
 }
 
+/// Mint Fee Reserve
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeeReserve {
     pub min_fee_reserve: Amount,
     pub percent_fee_reserve: f32,
 }
 
-#[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Mint Keyset Info
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeySetInfo {
     pub id: Id,
     pub unit: CurrencyUnit,
@@ -753,6 +778,7 @@ impl From<MintKeySetInfo> for KeySetInfo {
     }
 }
 
+/// Generate new [`MintKeySetInfo`] from path
 fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
     xpriv: ExtendedPrivKey,
