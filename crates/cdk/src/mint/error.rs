@@ -1,3 +1,5 @@
+//! Mint Errors
+
 use http::StatusCode;
 use thiserror::Error;
 
