@@ -73,8 +73,8 @@ async fn main() -> Result<()> {
 
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
-            "sqlite" => Arc::new(RedbWalletDatabase::new(DEFAULT_REDB_DB_PATH)?),
-            "redb" => Arc::new(WalletSQLiteDatabase::new(DEFAULT_SQLITE_DB_PATH).await?),
+            "sqlite" => Arc::new(WalletSQLiteDatabase::new(DEFAULT_SQLITE_DB_PATH).await?),
+            "redb" => Arc::new(RedbWalletDatabase::new(DEFAULT_REDB_DB_PATH)?),
             _ => bail!("Unknown DB engine"),
         };
 
