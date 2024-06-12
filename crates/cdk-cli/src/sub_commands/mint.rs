@@ -28,8 +28,8 @@ pub async fn mint(wallet: Wallet, sub_command_args: &MintSubCommand) -> Result<(
     let quote = wallet
         .mint_quote(
             mint_url.clone(),
-            Amount::from(sub_command_args.amount),
             CurrencyUnit::from(&sub_command_args.unit),
+            Amount::from(sub_command_args.amount),
         )
         .await?;
 
