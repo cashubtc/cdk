@@ -11,10 +11,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::Network;
 use error::Error;
-#[cfg(feature = "nostr")]
-use nostr_sdk::nips::nip04;
-#[cfg(feature = "nostr")]
-use nostr_sdk::{Filter, Timestamp};
 use tokio::sync::RwLock;
 use tracing::instrument;
 
@@ -34,6 +30,9 @@ use crate::{Amount, Bolt11Invoice, HttpClient};
 
 pub mod client;
 pub mod error;
+#[cfg(feature = "nostr")]
+pub mod nostr;
+pub mod util;
 
 #[derive(Clone)]
 pub struct Wallet {
@@ -88,14 +87,6 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn available_p2pk_signing_keys(&self) -> HashMap<XOnlyPublicKey, SecretKey> {
         self.p2pk_signing_keys.read().await.deref().clone()
-    }
-
-    /// Add nostr relays to client
-    #[cfg(feature = "nostr")]
-    #[instrument(skip(self))]
-    pub async fn add_nostr_relays(&self, relays: Vec<String>) -> Result<(), Error> {
-        self.nostr_client.add_relays(relays).await?;
-        Ok(())
     }
 
     /// Total Balance of wallet for given unit
@@ -180,6 +171,7 @@ impl Wallet {
         Ok(balances)
     }
 
+    /// Total balance by mint
     #[instrument(skip(self))]
     pub async fn mint_balances(
         &self,
@@ -212,6 +204,7 @@ impl Wallet {
         Ok(mint_balances)
     }
 
+    /// Get unspent proofs for mint
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
         Ok(self
@@ -221,6 +214,7 @@ impl Wallet {
             .map(|p| p.into_iter().map(|p| p.proof).collect()))
     }
 
+    /// Add mint to wallet
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn add_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Error> {
         let mint_info = match self
@@ -242,6 +236,7 @@ impl Wallet {
         Ok(mint_info)
     }
 
+    /// Get keys for mint keyset
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_keyset_keys(
         &self,
@@ -264,6 +259,7 @@ impl Wallet {
         Ok(keys)
     }
 
+    /// Get keysets for mint
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keysets(
         &self,
@@ -336,6 +332,62 @@ impl Wallet {
             .await?;
 
         Ok(())
+    }
+
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    async fn active_mint_keyset(
+        &self,
+        mint_url: &UncheckedUrl,
+        unit: &CurrencyUnit,
+    ) -> Result<Id, Error> {
+        if let Some(keysets) = self.localstore.get_mint_keysets(mint_url.clone()).await? {
+            for keyset in keysets {
+                if keyset.unit.eq(unit) && keyset.active {
+                    return Ok(keyset.id);
+                }
+            }
+        }
+
+        let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+
+        self.localstore
+            .add_mint_keysets(
+                mint_url.clone(),
+                keysets.keysets.clone().into_iter().collect(),
+            )
+            .await?;
+        for keyset in &keysets.keysets {
+            if keyset.unit.eq(unit) && keyset.active {
+                return Ok(keyset.id);
+            }
+        }
+
+        Err(Error::NoActiveKeyset)
+    }
+
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    async fn active_keys(
+        &self,
+        mint_url: &UncheckedUrl,
+        unit: &CurrencyUnit,
+    ) -> Result<Option<Keys>, Error> {
+        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
+
+        let keys;
+
+        if let Some(k) = self.localstore.get_keys(&active_keyset_id).await? {
+            keys = Some(k.clone())
+        } else {
+            let keyset = self
+                .client
+                .get_mint_keyset(mint_url.try_into()?, active_keyset_id)
+                .await?;
+
+            self.localstore.add_keys(keyset.keys.clone()).await?;
+            keys = Some(keyset.keys);
+        }
+
+        Ok(keys)
     }
 
     /// Check if a proof is spent
@@ -423,8 +475,8 @@ impl Wallet {
     pub async fn mint_quote(
         &self,
         mint_url: UncheckedUrl,
-        amount: Amount,
         unit: CurrencyUnit,
+        amount: Amount,
     ) -> Result<MintQuote, Error> {
         let quote_res = self
             .client
@@ -498,62 +550,6 @@ impl Wallet {
             }
         }
         Ok(total_amount)
-    }
-
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn active_mint_keyset(
-        &self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
-    ) -> Result<Id, Error> {
-        if let Some(keysets) = self.localstore.get_mint_keysets(mint_url.clone()).await? {
-            for keyset in keysets {
-                if keyset.unit.eq(unit) && keyset.active {
-                    return Ok(keyset.id);
-                }
-            }
-        }
-
-        let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
-
-        self.localstore
-            .add_mint_keysets(
-                mint_url.clone(),
-                keysets.keysets.clone().into_iter().collect(),
-            )
-            .await?;
-        for keyset in &keysets.keysets {
-            if keyset.unit.eq(unit) && keyset.active {
-                return Ok(keyset.id);
-            }
-        }
-
-        Err(Error::NoActiveKeyset)
-    }
-
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn active_keys(
-        &self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
-    ) -> Result<Option<Keys>, Error> {
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
-
-        let keys;
-
-        if let Some(k) = self.localstore.get_keys(&active_keyset_id).await? {
-            keys = Some(k.clone())
-        } else {
-            let keyset = self
-                .client
-                .get_mint_keyset(mint_url.try_into()?, active_keyset_id)
-                .await?;
-
-            self.localstore.add_keys(keyset.keys.clone()).await?;
-            keys = Some(keyset.keys);
-        }
-
-        Ok(keys)
     }
 
     /// Mint
@@ -880,10 +876,10 @@ impl Wallet {
         &self,
         mint_url: &UncheckedUrl,
         unit: CurrencyUnit,
-        memo: Option<String>,
         amount: Amount,
-        amount_split_target: &SplitTarget,
+        memo: Option<String>,
         conditions: Option<SpendingConditions>,
+        amount_split_target: &SplitTarget,
     ) -> Result<String, Error> {
         let (condition_input_proofs, input_proofs) = self
             .select_proofs(
@@ -956,9 +952,10 @@ impl Wallet {
                 .await?;
         }
 
-        Ok(self
-            .proof_to_token(mint_url.clone(), send_proofs, memo, Some(unit.clone()))?
-            .to_string())
+        Ok(
+            util::proof_to_token(mint_url.clone(), send_proofs, memo, Some(unit.clone()))?
+                .to_string(),
+        )
     }
 
     /// Melt Quote
@@ -1018,6 +1015,118 @@ impl Wallet {
         }
 
         Ok(response)
+    }
+
+    /// Melt
+    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
+    pub async fn melt(
+        &self,
+        mint_url: &UncheckedUrl,
+        quote_id: &str,
+        amount_split_target: SplitTarget,
+    ) -> Result<Melted, Error> {
+        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+
+        let quote_info = if let Some(quote) = quote_info {
+            if quote.expiry.le(&unix_time()) {
+                return Err(Error::QuoteExpired);
+            }
+
+            quote.clone()
+        } else {
+            return Err(Error::QuoteUnknown);
+        };
+
+        let proofs = self
+            .select_proofs(
+                mint_url.clone(),
+                quote_info.unit.clone(),
+                quote_info.amount,
+                None,
+            )
+            .await?
+            .1;
+
+        let proofs_amount = proofs.iter().map(|p| p.amount).sum();
+
+        let active_keyset_id = self.active_mint_keyset(mint_url, &quote_info.unit).await?;
+
+        let count = self
+            .localstore
+            .get_keyset_counter(&active_keyset_id)
+            .await?;
+
+        let count = count.map_or(0, |c| c + 1);
+
+        let premint_secrets = PreMintSecrets::from_xpriv(
+            active_keyset_id,
+            count,
+            self.xpriv,
+            proofs_amount,
+            true,
+            &amount_split_target,
+        )?;
+
+        let melt_response = self
+            .client
+            .post_melt(
+                mint_url.clone().try_into()?,
+                quote_id.to_string(),
+                proofs.clone(),
+                Some(premint_secrets.blinded_messages()),
+            )
+            .await?;
+
+        let change_proofs = match melt_response.change {
+            Some(change) => Some(construct_proofs(
+                change,
+                premint_secrets.rs(),
+                premint_secrets.secrets(),
+                &self
+                    .active_keys(mint_url, &quote_info.unit)
+                    .await?
+                    .ok_or(Error::UnknownKey)?,
+            )?),
+            None => None,
+        };
+
+        let melted = Melted {
+            paid: true,
+            preimage: melt_response.payment_preimage,
+            change: change_proofs.clone(),
+        };
+
+        if let Some(change_proofs) = change_proofs {
+            tracing::debug!(
+                "Change amount returned from melt: {}",
+                change_proofs.iter().map(|p| p.amount).sum::<Amount>()
+            );
+
+            // Update counter for keyset
+            self.localstore
+                .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
+                .await?;
+
+            let change_proofs_info = change_proofs
+                .into_iter()
+                .flat_map(|proof| {
+                    ProofInfo::new(
+                        proof,
+                        mint_url.clone(),
+                        State::Unspent,
+                        quote_info.unit.clone(),
+                    )
+                })
+                .collect();
+
+            self.localstore.add_proofs(change_proofs_info).await?;
+        }
+
+        self.localstore.remove_melt_quote(&quote_info.id).await?;
+
+        self.localstore.remove_proofs(&proofs).await?;
+
+        Ok(melted)
     }
 
     // Select proofs
@@ -1140,118 +1249,6 @@ impl Wallet {
         selected_proofs.sort();
 
         Ok((condition_selected_proofs, selected_proofs))
-    }
-
-    /// Melt
-    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
-    pub async fn melt(
-        &self,
-        mint_url: &UncheckedUrl,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-    ) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
-
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) {
-                return Err(Error::QuoteExpired);
-            }
-
-            quote.clone()
-        } else {
-            return Err(Error::QuoteUnknown);
-        };
-
-        let proofs = self
-            .select_proofs(
-                mint_url.clone(),
-                quote_info.unit.clone(),
-                quote_info.amount,
-                None,
-            )
-            .await?
-            .1;
-
-        let proofs_amount = proofs.iter().map(|p| p.amount).sum();
-
-        let active_keyset_id = self.active_mint_keyset(mint_url, &quote_info.unit).await?;
-
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
-
-        let count = count.map_or(0, |c| c + 1);
-
-        let premint_secrets = PreMintSecrets::from_xpriv(
-            active_keyset_id,
-            count,
-            self.xpriv,
-            proofs_amount,
-            true,
-            &amount_split_target,
-        )?;
-
-        let melt_response = self
-            .client
-            .post_melt(
-                mint_url.clone().try_into()?,
-                quote_id.to_string(),
-                proofs.clone(),
-                Some(premint_secrets.blinded_messages()),
-            )
-            .await?;
-
-        let change_proofs = match melt_response.change {
-            Some(change) => Some(construct_proofs(
-                change,
-                premint_secrets.rs(),
-                premint_secrets.secrets(),
-                &self
-                    .active_keys(mint_url, &quote_info.unit)
-                    .await?
-                    .ok_or(Error::UnknownKey)?,
-            )?),
-            None => None,
-        };
-
-        let melted = Melted {
-            paid: true,
-            preimage: melt_response.payment_preimage,
-            change: change_proofs.clone(),
-        };
-
-        if let Some(change_proofs) = change_proofs {
-            tracing::debug!(
-                "Change amount returned from melt: {}",
-                change_proofs.iter().map(|p| p.amount).sum::<Amount>()
-            );
-
-            // Update counter for keyset
-            self.localstore
-                .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
-                .await?;
-
-            let change_proofs_info = change_proofs
-                .into_iter()
-                .flat_map(|proof| {
-                    ProofInfo::new(
-                        proof,
-                        mint_url.clone(),
-                        State::Unspent,
-                        quote_info.unit.clone(),
-                    )
-                })
-                .collect();
-
-            self.localstore.add_proofs(change_proofs_info).await?;
-        }
-
-        self.localstore.remove_melt_quote(&quote_info.id).await?;
-
-        self.localstore.remove_proofs(&proofs).await?;
-
-        Ok(melted)
     }
 
     /// Receive
@@ -1404,105 +1401,6 @@ impl Wallet {
         }
 
         Ok(total_amount)
-    }
-
-    #[cfg(feature = "nostr")]
-    #[instrument(skip_all)]
-    pub async fn nostr_receive(
-        &self,
-        nostr_signing_key: SecretKey,
-        since: Option<u64>,
-        amount_split_target: SplitTarget,
-    ) -> Result<Amount, Error> {
-        use nostr_sdk::{Keys, Kind};
-
-        let verifying_key = nostr_signing_key.public_key();
-
-        let x_only_pubkey = verifying_key.x_only_public_key();
-
-        let nostr_pubkey = nostr_sdk::PublicKey::from_hex(x_only_pubkey.to_string())?;
-
-        let keys = Keys::from_str(&(nostr_signing_key).to_secret_hex())?;
-        self.add_p2pk_signing_key(nostr_signing_key).await;
-
-        let since = match since {
-            Some(since) => Some(Timestamp::from(since)),
-            None => self
-                .localstore
-                .get_nostr_last_checked(&verifying_key)
-                .await?
-                .map(|s| Timestamp::from(s as u64)),
-        };
-
-        let filter = match since {
-            Some(since) => Filter::new()
-                .pubkey(nostr_pubkey)
-                .kind(Kind::EncryptedDirectMessage)
-                .since(since),
-            None => Filter::new()
-                .pubkey(nostr_pubkey)
-                .kind(Kind::EncryptedDirectMessage),
-        };
-
-        self.nostr_client.connect().await;
-
-        let events = self.nostr_client.get_events_of(vec![filter], None).await?;
-
-        let mut tokens: HashSet<String> = HashSet::new();
-
-        for event in events {
-            if event.kind() == Kind::EncryptedDirectMessage {
-                if let Ok(msg) =
-                    nip04::decrypt(keys.secret_key()?, event.author_ref(), event.content())
-                {
-                    if let Some(token) = Self::token_from_text(&msg) {
-                        tokens.insert(token.to_string());
-                    }
-                } else {
-                    tracing::error!("Impossible to decrypt direct message");
-                }
-            }
-        }
-
-        let mut total_received = Amount::ZERO;
-        for token in tokens.iter() {
-            match self.receive(token, &amount_split_target, None).await {
-                Ok(amount) => total_received += amount,
-                Err(err) => {
-                    tracing::error!("Could not receive token: {}", err);
-                }
-            }
-        }
-
-        self.localstore
-            .add_nostr_last_checked(verifying_key, unix_time() as u32)
-            .await?;
-
-        Ok(total_received)
-    }
-
-    #[cfg(feature = "nostr")]
-    fn token_from_text(text: &str) -> Option<&str> {
-        let text = text.trim();
-        if let Some(start) = text.find("cashu") {
-            match text[start..].find(' ') {
-                Some(end) => return Some(&text[start..(end + start)]),
-                None => return Some(&text[start..]),
-            }
-        }
-
-        None
-    }
-
-    #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
-    pub fn proof_to_token(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: Proofs,
-        memo: Option<String>,
-        unit: Option<CurrencyUnit>,
-    ) -> Result<String, Error> {
-        Ok(Token::new(mint_url, proofs, memo, unit)?.to_string())
     }
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
@@ -1759,23 +1657,5 @@ impl Wallet {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(feature = "nostr")]
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[test]
-    fn test_token_from_text() {
-        let text = " Here is some ecash: cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjIsInNlY3JldCI6ImI2Zjk1ODIxYmZlNjUyYjYwZGQ2ZjYwMDU4N2UyZjNhOTk4MzVhMGMyNWI4MTQzODNlYWIwY2QzOWFiNDFjNzUiLCJDIjoiMDI1YWU4ZGEyOTY2Y2E5OGVmYjA5ZDcwOGMxM2FiZmEwZDkxNGUwYTk3OTE4MmFjMzQ4MDllMjYxODY5YTBhNDJlIiwicmVzZXJ2ZWQiOmZhbHNlLCJpZCI6IjAwOWExZjI5MzI1M2U0MWUifSx7ImFtb3VudCI6Miwic2VjcmV0IjoiZjU0Y2JjNmNhZWZmYTY5MTUyOTgyM2M1MjU1MDkwYjRhMDZjNGQ3ZDRjNzNhNDFlZTFkNDBlM2ExY2EzZGZhNyIsIkMiOiIwMjMyMTIzN2JlYjcyMWU3NGI1NzcwNWE5MjJjNjUxMGQwOTYyYzAzNzlhZDM0OTJhMDYwMDliZTAyNjA5ZjA3NTAiLCJyZXNlcnZlZCI6ZmFsc2UsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSJ9LHsiYW1vdW50IjoxLCJzZWNyZXQiOiJhNzdhM2NjODY4YWM4ZGU3YmNiOWMxMzJmZWI3YzEzMDY4Nzg3ODk5Yzk3YTk2NWE2ZThkZTFiMzliMmQ2NmQ3IiwiQyI6IjAzMTY0YTMxNWVhNjM0NGE5NWI2NzM1NzBkYzg0YmZlMTQ2NDhmMTQwM2EwMDJiZmJlMDhlNWFhMWE0NDQ0YWE0MCIsInJlc2VydmVkIjpmYWxzZSwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0= fdfdfg
-        sdfs";
-        let token = Wallet::token_from_text(text).unwrap();
-
-        let token_str = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjIsInNlY3JldCI6ImI2Zjk1ODIxYmZlNjUyYjYwZGQ2ZjYwMDU4N2UyZjNhOTk4MzVhMGMyNWI4MTQzODNlYWIwY2QzOWFiNDFjNzUiLCJDIjoiMDI1YWU4ZGEyOTY2Y2E5OGVmYjA5ZDcwOGMxM2FiZmEwZDkxNGUwYTk3OTE4MmFjMzQ4MDllMjYxODY5YTBhNDJlIiwicmVzZXJ2ZWQiOmZhbHNlLCJpZCI6IjAwOWExZjI5MzI1M2U0MWUifSx7ImFtb3VudCI6Miwic2VjcmV0IjoiZjU0Y2JjNmNhZWZmYTY5MTUyOTgyM2M1MjU1MDkwYjRhMDZjNGQ3ZDRjNzNhNDFlZTFkNDBlM2ExY2EzZGZhNyIsIkMiOiIwMjMyMTIzN2JlYjcyMWU3NGI1NzcwNWE5MjJjNjUxMGQwOTYyYzAzNzlhZDM0OTJhMDYwMDliZTAyNjA5ZjA3NTAiLCJyZXNlcnZlZCI6ZmFsc2UsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSJ9LHsiYW1vdW50IjoxLCJzZWNyZXQiOiJhNzdhM2NjODY4YWM4ZGU3YmNiOWMxMzJmZWI3YzEzMDY4Nzg3ODk5Yzk3YTk2NWE2ZThkZTFiMzliMmQ2NmQ3IiwiQyI6IjAzMTY0YTMxNWVhNjM0NGE5NWI2NzM1NzBkYzg0YmZlMTQ2NDhmMTQwM2EwMDJiZmJlMDhlNWFhMWE0NDQ0YWE0MCIsInJlc2VydmVkIjpmYWxzZSwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
-
-        assert_eq!(token, token_str)
     }
 }

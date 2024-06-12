@@ -146,10 +146,10 @@ pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<(
         .send(
             &mint_url,
             CurrencyUnit::Sat,
-            sub_command_args.memo.clone(),
             token_amount,
-            &SplitTarget::default(),
+            sub_command_args.memo.clone(),
             conditions,
+            &SplitTarget::default(),
         )
         .await?;
 

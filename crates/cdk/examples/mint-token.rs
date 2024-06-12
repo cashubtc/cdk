@@ -23,7 +23,7 @@ async fn main() -> Result<(), Error> {
     let wallet = Wallet::new(Arc::new(localstore), &seed, vec![]);
 
     let quote = wallet
-        .mint_quote(mint_url.clone(), amount, unit.clone())
+        .mint_quote(mint_url.clone(), unit.clone(), amount)
         .await
         .unwrap();
 
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Error> {
     println!("Received {receive_amount} from mint {mint_url}");
 
     let token = wallet
-        .send(&mint_url, unit, None, amount, &SplitTarget::None, None)
+        .send(&mint_url, unit, amount, None, None, &SplitTarget::default())
         .await
         .unwrap();
 

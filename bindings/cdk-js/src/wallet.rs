@@ -149,7 +149,7 @@ impl JsWallet {
         let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let quote = self
             .inner
-            .mint_quote(mint_url, amount.into(), unit.into())
+            .mint_quote(mint_url, unit.into(), amount.into())
             .await
             .map_err(into_err)?;
 
@@ -311,10 +311,10 @@ impl JsWallet {
             .send(
                 &mint_url,
                 unit.into(),
-                memo,
                 Amount::from(amount),
-                &target,
+                memo,
                 conditions,
+                &target,
             )
             .await
             .map_err(into_err)
