@@ -210,7 +210,7 @@ async fn get_melt_bolt11_quote(
                 .request
                 .amount_milli_satoshis()
                 .ok_or(Error::InvoiceAmountUndefined)
-                .map_err(|e| into_response(e))?,
+                .map_err(into_response)?,
         ),
         _ => return Err(into_response(cdk::mint::error::Error::UnsupportedUnit)),
     };
@@ -220,7 +220,7 @@ async fn get_melt_bolt11_quote(
         .new_melt_quote(
             payload.request.to_string(),
             payload.unit,
-            Amount::from(amount),
+            amount,
             Amount::ZERO,
             unix_time() + 1800,
         )
