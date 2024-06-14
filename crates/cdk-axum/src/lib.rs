@@ -215,13 +215,17 @@ async fn get_melt_bolt11_quote(
         _ => return Err(into_response(cdk::mint::error::Error::UnsupportedUnit)),
     };
 
+    let fee_reserve = Amount::from(
+        (state.mint.fee_reserve.percent_fee_reserve as f64 * u64::from(amount) as f64) as u64,
+    );
+
     let quote = state
         .mint
         .new_melt_quote(
             payload.request.to_string(),
             payload.unit,
             amount,
-            Amount::ZERO,
+            fee_reserve,
             unix_time() + 1800,
         )
         .await
@@ -253,9 +257,12 @@ async fn post_melt_bolt11(
         .await
         .map_err(into_response)?;
 
+    let invoice = Bolt11Invoice::from_str(&quote.request)
+        .map_err(|_| into_response(Error::InvalidPaymentRequest))?;
+
     let pre = state
         .ln
-        .pay_invoice(Bolt11Invoice::from_str(&quote.request).unwrap(), None, None)
+        .pay_invoice(invoice, None, None)
         .await
         .map_err(|_| {
             into_response(ErrorResponse::new(
