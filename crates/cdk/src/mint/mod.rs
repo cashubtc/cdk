@@ -136,6 +136,42 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Check melt quote status
+    pub async fn check_melt_quote(&self, quote_id: &str) -> Result<MeltQuoteBolt11Response, Error> {
+        let quote = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(MeltQuoteBolt11Response {
+            quote: quote.id,
+            paid: quote.paid,
+            expiry: quote.expiry,
+            amount: quote.amount,
+            fee_reserve: quote.fee_reserve,
+        })
+    }
+
+    /// Update melt quote
+    pub async fn update_melt_quote(&self, quote: MeltQuote) -> Result<(), Error> {
+        self.localstore.add_melt_quote(quote).await?;
+        Ok(())
+    }
+
+    /// Get melt quotes
+    pub async fn melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
+        let quotes = self.localstore.get_melt_quotes().await?;
+        Ok(quotes)
+    }
+
+    /// Remove melt quote
+    pub async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+        self.localstore.remove_melt_quote(quote_id).await?;
+
+        Ok(())
+    }
+
     /// Retrieve the public keys of the active keyset for distribution to
     /// wallet clients
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
@@ -662,23 +698,6 @@ impl Mint {
             paid: true,
             payment_preimage: Some(preimage.to_string()),
             change,
-        })
-    }
-
-    /// Check melt quote status
-    pub async fn check_melt_quote(&self, quote_id: &str) -> Result<MeltQuoteBolt11Response, Error> {
-        let quote = self
-            .localstore
-            .get_melt_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        Ok(MeltQuoteBolt11Response {
-            quote: quote.id,
-            paid: quote.paid,
-            expiry: quote.expiry,
-            amount: quote.amount,
-            fee_reserve: quote.fee_reserve,
         })
     }
 
