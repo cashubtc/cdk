@@ -23,6 +23,9 @@ pub enum Error {
     /// Token could not be validated
     #[error("Token not verified")]
     TokenNotVerified,
+    /// Invalid payment request
+    #[error("Invalid payment request")]
+    InvalidPaymentRequest,
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
@@ -97,6 +100,13 @@ impl fmt::Display for ErrorResponse {
 }
 
 impl ErrorResponse {
+    pub fn new(code: ErrorCode, error: Option<String>, detail: Option<String>) -> Self {
+        Self {
+            code,
+            error,
+            detail,
+        }
+    }
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let value: Value = serde_json::from_str(json)?;
 
@@ -111,6 +121,18 @@ impl ErrorResponse {
                 error: Some(value.to_string()),
                 detail: None,
             }),
+        }
+    }
+}
+
+impl From<Error> for ErrorResponse {
+    fn from(err: Error) -> ErrorResponse {
+        match err {
+            _ => ErrorResponse {
+                code: ErrorCode::Unknown(9999),
+                error: Some(err.to_string()),
+                detail: None,
+            },
         }
     }
 }

@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use cdk::cdk_lightning::{self, Amount as CDKLightningAmount, MintLightning};
-use cdk::error::ErrorResponse;
+use cdk::error::{Error, ErrorResponse};
 use cdk::mint::Mint;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeysResponse, KeysetResponse,
@@ -153,9 +153,11 @@ async fn get_mint_bolt11_quote(
         _ => return Err(into_response(cdk::mint::error::Error::UnsupportedUnit)),
     };
 
-    let invoice = state.ln.create_invoice(amount, "".to_string()).await;
-
-    let invoice = invoice.unwrap();
+    let invoice = state
+        .ln
+        .create_invoice(amount, "".to_string())
+        .await
+        .map_err(|_| into_response(Error::InvalidPaymentRequest))?;
 
     let quote = state
         .mint
@@ -203,9 +205,13 @@ async fn get_melt_bolt11_quote(
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
     let amount = match payload.unit {
-        CurrencyUnit::Sat | CurrencyUnit::Msat => {
-            payload.request.amount_milli_satoshis().unwrap() / 1000
-        }
+        CurrencyUnit::Sat | CurrencyUnit::Msat => Amount::from(
+            payload
+                .request
+                .amount_milli_satoshis()
+                .ok_or(Error::InvoiceAmountUndefined)
+                .map_err(|e| into_response(e))?,
+        ),
         _ => return Err(into_response(cdk::mint::error::Error::UnsupportedUnit)),
     };
 
@@ -227,8 +233,12 @@ async fn get_melt_bolt11_quote(
 async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<String>,
-) -> Result<Json<MeltQuoteBolt11Response>, StatusCode> {
-    let quote = state.mint.check_melt_quote(&quote_id).await.unwrap();
+) -> Result<Json<MeltQuoteBolt11Response>, Response> {
+    let quote = state
+        .mint
+        .check_melt_quote(&quote_id)
+        .await
+        .map_err(into_response)?;
 
     Ok(Json(quote))
 }
@@ -236,18 +246,24 @@ async fn get_check_melt_bolt11_quote(
 async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request>,
-) -> Result<Json<MeltBolt11Response>, StatusCode> {
+) -> Result<Json<MeltBolt11Response>, Response> {
     let quote = state
         .mint
         .verify_melt_request(&payload)
         .await
-        .map_err(|_| StatusCode::NOT_ACCEPTABLE)?;
+        .map_err(into_response)?;
 
     let pre = state
         .ln
         .pay_invoice(Bolt11Invoice::from_str(&quote.request).unwrap(), None, None)
         .await
-        .unwrap();
+        .map_err(|_| {
+            into_response(ErrorResponse::new(
+                cdk::error::ErrorCode::Unknown(999),
+                Some("Could not pay ln invoice".to_string()),
+                None,
+            ))
+        })?;
 
     let preimage = pre.payment_preimage;
     let res = state
@@ -258,7 +274,7 @@ async fn post_melt_bolt11(
             Amount::from(pre.total_spent.to_sat()),
         )
         .await
-        .unwrap();
+        .map_err(into_response)?;
 
     Ok(Json(res))
 }
@@ -301,7 +317,10 @@ async fn post_restore(
     Ok(Json(restore_response))
 }
 
-pub fn into_response(error: cdk::mint::error::Error) -> Response {
+pub fn into_response<T>(error: T) -> Response
+where
+    T: Into<ErrorResponse>,
+{
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json::<ErrorResponse>(error.into()),
