@@ -218,6 +218,22 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
+    async fn get_mint_quote_by_request(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let quotes = self.get_mint_quotes().await?;
+
+        let quote = quotes
+            .into_iter()
+            .filter(|q| q.request.eq(request))
+            .collect::<Vec<MintQuote>>()
+            .first()
+            .cloned();
+
+        Ok(quote)
+    }
+
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;

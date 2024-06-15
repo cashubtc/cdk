@@ -260,26 +260,44 @@ async fn post_melt_bolt11(
     let invoice = Bolt11Invoice::from_str(&quote.request)
         .map_err(|_| into_response(Error::InvalidPaymentRequest))?;
 
-    let pre = state
-        .ln
-        .pay_invoice(invoice, None, None)
+    let (preimage, amount_spent) = match state
+        .mint
+        .localstore
+        .get_mint_quote_by_request(&quote.request)
         .await
-        .map_err(|_| {
-            into_response(ErrorResponse::new(
-                cdk::error::ErrorCode::Unknown(999),
-                Some("Could not pay ln invoice".to_string()),
-                None,
-            ))
-        })?;
+        .unwrap()
+    {
+        Some(melt_quote) => {
+            let mut melt_quote = melt_quote;
+            melt_quote.paid = true;
 
-    let preimage = pre.payment_preimage;
+            let amount = quote.amount;
+
+            state.mint.update_mint_quote(melt_quote).await.unwrap();
+
+            (None, amount)
+        }
+        None => {
+            let pre = state
+                .ln
+                .pay_invoice(invoice, None, None)
+                .await
+                .map_err(|_| {
+                    into_response(ErrorResponse::new(
+                        cdk::error::ErrorCode::Unknown(999),
+                        Some("Could not pay ln invoice".to_string()),
+                        None,
+                    ))
+                })?;
+            let amount = Amount::from(pre.total_spent.to_sat());
+
+            (pre.payment_preimage, amount)
+        }
+    };
+
     let res = state
         .mint
-        .process_melt_request(
-            &payload,
-            &preimage.unwrap(),
-            Amount::from(pre.total_spent.to_sat()),
-        )
+        .process_melt_request(&payload, preimage, amount_spent)
         .await
         .map_err(into_response)?;
 
