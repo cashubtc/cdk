@@ -11,7 +11,7 @@ use cdk::cdk_lightning::{
     self, Amount, BalanceResponse, InvoiceInfo, MintLightning, PayInvoiceResponse,
 };
 use cdk::types::InvoiceStatus;
-use cdk::util::hex;
+use cdk::util::{hex, unix_time};
 use cdk::{Bolt11Invoice, Sha256};
 use cln_rpc::model::requests::{
     InvoiceRequest, ListfundsRequest, ListinvoicesRequest, PayRequest, WaitanyinvoiceRequest,
@@ -279,7 +279,11 @@ impl MintLightning for Cln {
         &self,
         amount: Amount,
         description: String,
+        unix_expiry: u64,
     ) -> Result<Bolt11Invoice, Self::Err> {
+        let time_now = unix_time();
+        assert!(unix_expiry > time_now);
+
         let mut cln_client = self.cln_client.lock().await;
 
         let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.to_msat()));
@@ -288,7 +292,7 @@ impl MintLightning for Cln {
                 amount_msat,
                 description,
                 label: Uuid::new_v4().to_string(),
-                expiry: Some(3600),
+                expiry: Some(unix_expiry - time_now),
                 fallbacks: None,
                 preimage: None,
                 cltv: None,

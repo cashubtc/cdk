@@ -120,6 +120,7 @@ pub trait MintLightning {
         &self,
         amount: Amount,
         description: String,
+        unix_expiry: u64,
     ) -> Result<Bolt11Invoice, Self::Err>;
 
     /// Pay bolt11 invoice
