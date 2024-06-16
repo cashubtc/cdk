@@ -153,9 +153,11 @@ async fn get_mint_bolt11_quote(
         _ => return Err(into_response(cdk::mint::error::Error::UnsupportedUnit)),
     };
 
+    let expiry_time = unix_time() + 1800;
+
     let invoice = state
         .ln
-        .create_invoice(amount, "".to_string())
+        .create_invoice(amount, "".to_string(), expiry_time)
         .await
         .map_err(|_| into_response(Error::InvalidPaymentRequest))?;
 
@@ -166,7 +168,7 @@ async fn get_mint_bolt11_quote(
             invoice.to_string(),
             payload.unit,
             payload.amount,
-            unix_time() + 120,
+            expiry_time,
         )
         .await
         .map_err(into_response)?;
