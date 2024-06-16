@@ -963,19 +963,30 @@ impl Wallet {
         request: String,
         mpp: Option<Amount>,
     ) -> Result<MeltQuote, Error> {
+        let invoice = Bolt11Invoice::from_str(&request)?;
+
+        let request_amount = invoice
+            .amount_milli_satoshis()
+            .ok_or(Error::InvoiceAmountUndefined)?;
+
+        let amount = match unit {
+            CurrencyUnit::Sat => Amount::from(request_amount / 1000),
+            CurrencyUnit::Msat => Amount::from(request_amount),
+            _ => return Err(Error::UnitNotSupported),
+        };
+
         let quote_res = self
             .client
-            .post_melt_quote(
-                mint_url.clone().try_into()?,
-                unit.clone(),
-                Bolt11Invoice::from_str(&request.clone())?,
-                mpp,
-            )
+            .post_melt_quote(mint_url.clone().try_into()?, unit.clone(), invoice, mpp)
             .await?;
+
+        if quote_res.amount != amount {
+            return Err(Error::IncorrectQuoteAmount);
+        }
 
         let quote = MeltQuote {
             id: quote_res.quote,
-            amount: quote_res.amount,
+            amount,
             request,
             unit,
             fee_reserve: quote_res.fee_reserve,
