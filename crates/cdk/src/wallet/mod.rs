@@ -599,7 +599,6 @@ impl Wallet {
                 count,
                 self.xpriv,
                 quote_info.amount,
-                false,
                 &amount_split_target,
             )?,
         };
@@ -811,7 +810,6 @@ impl Wallet {
                     count,
                     self.xpriv,
                     change_amount,
-                    false,
                     amount_split_target,
                 )?;
 
@@ -838,7 +836,6 @@ impl Wallet {
                     count,
                     self.xpriv,
                     desired_amount,
-                    false,
                     amount_split_target,
                 )?;
 
@@ -849,7 +846,6 @@ impl Wallet {
                     count,
                     self.xpriv,
                     change_amount,
-                    false,
                     amount_split_target,
                 )?;
 
@@ -1039,17 +1035,37 @@ impl Wallet {
             return Err(Error::QuoteUnknown);
         };
 
+        let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
+
         let proofs = self
             .select_proofs(
                 mint_url.clone(),
                 quote_info.unit.clone(),
-                quote_info.amount,
+                inputs_needed_amount,
                 None,
             )
             .await?
             .1;
 
-        let proofs_amount = proofs.iter().map(|p| p.amount).sum();
+        let proofs_amount = proofs.iter().map(|p| p.amount).sum::<Amount>();
+
+        let input_proofs = match proofs_amount > inputs_needed_amount {
+            true => {
+                let proofs = self
+                    .swap(
+                        mint_url,
+                        &quote_info.unit,
+                        Some(inputs_needed_amount),
+                        &amount_split_target,
+                        proofs,
+                        None,
+                    )
+                    .await?;
+
+                proofs.ok_or(Error::InsufficientFunds)?
+            }
+            false => proofs,
+        };
 
         let active_keyset_id = self.active_mint_keyset(mint_url, &quote_info.unit).await?;
 
@@ -1060,13 +1076,11 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
-        let premint_secrets = PreMintSecrets::from_xpriv(
+        let premint_secrets = PreMintSecrets::from_xpriv_blank(
             active_keyset_id,
             count,
             self.xpriv,
-            proofs_amount,
-            true,
-            &amount_split_target,
+            quote_info.fee_reserve,
         )?;
 
         let melt_response = self
@@ -1074,7 +1088,7 @@ impl Wallet {
             .post_melt(
                 mint_url.clone().try_into()?,
                 quote_id.to_string(),
-                proofs.clone(),
+                input_proofs.clone(),
                 Some(premint_secrets.blinded_messages()),
             )
             .await?;
@@ -1126,7 +1140,7 @@ impl Wallet {
 
         self.localstore.remove_melt_quote(&quote_info.id).await?;
 
-        self.localstore.remove_proofs(&proofs).await?;
+        self.localstore.remove_proofs(&input_proofs).await?;
 
         Ok(melted)
     }
