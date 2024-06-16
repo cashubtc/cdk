@@ -46,7 +46,6 @@ impl PreMintSecrets {
         counter: u32,
         xpriv: ExtendedPrivKey,
         amount: Amount,
-        zero_amount: bool,
         amount_split_target: &SplitTarget,
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::default();
@@ -59,7 +58,43 @@ impl PreMintSecrets {
 
             let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
-            let amount = if zero_amount { Amount::ZERO } else { amount };
+            let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
+
+            let pre_mint = PreMint {
+                blinded_message,
+                secret: secret.clone(),
+                r,
+                amount,
+            };
+
+            pre_mint_secrets.secrets.push(pre_mint);
+            counter += 1;
+        }
+
+        Ok(pre_mint_secrets)
+    }
+
+    pub fn from_xpriv_blank(
+        keyset_id: Id,
+        counter: u32,
+        xpriv: ExtendedPrivKey,
+        amount: Amount,
+    ) -> Result<Self, Error> {
+        if amount <= Amount::ZERO {
+            return Ok(PreMintSecrets::default());
+        }
+        let count = ((u64::from(amount) as f64).log2().ceil() as u64).max(1);
+        let mut pre_mint_secrets = PreMintSecrets::default();
+
+        let mut counter = counter;
+
+        for _ in 0..count {
+            let secret = Secret::from_xpriv(xpriv, keyset_id, counter)?;
+            let blinding_factor = SecretKey::from_xpriv(xpriv, keyset_id, counter)?;
+
+            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+
+            let amount = Amount::ZERO;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
