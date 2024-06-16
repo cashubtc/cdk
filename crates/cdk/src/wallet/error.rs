@@ -45,6 +45,15 @@ pub enum Error {
     /// Token Already spent error
     #[error("Token Already Spent Error")]
     TokenAlreadySpent,
+    /// Unit Not supported
+    #[error("Unit not supported for method")]
+    UnitNotSupported,
+    /// Bolt11 invoice does not have amount
+    #[error("Invoice Amount undefined")]
+    InvoiceAmountUndefined,
+    /// Incorrect quote amount
+    #[error("Incorrect quote amount")]
+    IncorrectQuoteAmount,
     /// Keyset Not Found
     #[error("Keyset Not Found")]
     KeysetNotFound,
