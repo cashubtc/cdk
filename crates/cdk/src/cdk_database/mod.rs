@@ -2,6 +2,7 @@
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use std::collections::HashMap;
+use std::fmt::Debug;
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use async_trait::async_trait;
@@ -47,7 +48,7 @@ pub enum Error {
 #[cfg(feature = "wallet")]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait WalletDatabase {
+pub trait WalletDatabase: Debug {
     type Err: Into<Error> + From<Error>;
 
     async fn add_mint(

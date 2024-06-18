@@ -34,7 +34,7 @@ pub mod error;
 pub mod nostr;
 pub mod util;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Wallet {
     pub client: HttpClient,
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
