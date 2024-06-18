@@ -22,6 +22,7 @@ keywords = ["bitcoin", "e-cash", "cashu"]
 
 [workspace.dependencies]
 async-trait = "0.1.74"
+bip39 = "2.0"
 cdk = { path = "./crates/cdk", default-features = false }
 cdk-rexie = { path = "./crates/cdk-rexie", default-features = false }
 cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = false }

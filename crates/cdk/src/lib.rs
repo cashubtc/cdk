@@ -1,7 +1,5 @@
 extern crate core;
 
-#[cfg(any(feature = "mint", feature = "wallet"))]
-pub use bip39::Mnemonic;
 pub use bitcoin::hashes::sha256::Hash as Sha256;
 pub use bitcoin::secp256k1;
 pub use lightning_invoice::{self, Bolt11Invoice};
@@ -19,6 +17,11 @@ pub mod url;
 pub mod util;
 #[cfg(feature = "wallet")]
 pub mod wallet;
+
+#[cfg(feature = "mint")]
+pub use mint::Mint;
+#[cfg(feature = "wallet")]
+pub use wallet::Wallet;
 
 pub use self::amount::Amount;
 pub use self::url::UncheckedUrl;
