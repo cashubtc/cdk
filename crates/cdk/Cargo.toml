@@ -19,7 +19,6 @@ nostr = ["dep:nostr-sdk"]
 [dependencies]
 async-trait.workspace = true
 base64 = "0.22" # bitcoin uses v0.13 (optional dep)
-bip39 = "2.0"
 http = "1.0"
 bitcoin = { workspace = true, features = [
     "serde",
@@ -71,3 +70,4 @@ required-features = ["wallet"]
 
 [dev-dependencies]
 rand = "0.8.5"
+bip39.workspace = true

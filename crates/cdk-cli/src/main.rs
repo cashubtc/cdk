@@ -3,9 +3,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use bip39::Mnemonic;
+use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::Wallet;
-use cdk::{cdk_database, Mnemonic};
 use cdk_redb::RedbWalletDatabase;
 use cdk_sqlite::WalletSQLiteDatabase;
 use clap::{Parser, Subcommand};
