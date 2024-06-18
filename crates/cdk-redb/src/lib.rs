@@ -1,4 +1,5 @@
 pub mod error;
+mod migrations;
 
 #[cfg(feature = "mint")]
 pub mod mint;

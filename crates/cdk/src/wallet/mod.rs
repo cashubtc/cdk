@@ -20,9 +20,9 @@ use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::{
     nut10, nut12, Conditions, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, Kind,
-    MeltQuoteBolt11Response, MintInfo, MintQuoteBolt11Response, PreMintSecrets, PreSwap, Proof,
-    ProofState, Proofs, PublicKey, RestoreRequest, SecretKey, SigFlag, SpendingConditions, State,
-    SwapRequest, Token,
+    MeltQuoteBolt11Response, MeltQuoteState, MintInfo, MintQuoteBolt11Response, MintQuoteState,
+    PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SecretKey,
+    SigFlag, SpendingConditions, State, SwapRequest, Token,
 };
 use crate::types::{MeltQuote, Melted, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
@@ -380,7 +380,7 @@ impl Wallet {
             amount,
             unit: unit.clone(),
             request: quote_res.request,
-            paid: quote_res.paid,
+            state: quote_res.state,
             expiry: quote_res.expiry.unwrap_or(0),
         };
 
@@ -391,10 +391,7 @@ impl Wallet {
 
     /// Mint quote status
     #[instrument(skip(self, quote_id))]
-    pub async fn mint_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response, Error> {
+    pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
         let response = self
             .client
             .get_mint_quote_status(self.mint_url.clone().try_into()?, quote_id)
@@ -404,7 +401,7 @@ impl Wallet {
             Some(quote) => {
                 let mut quote = quote;
 
-                quote.paid = response.paid;
+                quote.state = response.state;
                 self.localstore.add_mint_quote(quote).await?;
             }
             None => {
@@ -422,9 +419,9 @@ impl Wallet {
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
-            let mint_quote_response = self.mint_quote_status(&mint_quote.id).await?;
+            let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
 
-            if mint_quote_response.paid {
+            if mint_quote_response.state == MintQuoteState::Paid {
                 let amount = self
                     .mint(&mint_quote.id, SplitTarget::default(), None)
                     .await?;
@@ -864,8 +861,9 @@ impl Wallet {
             request,
             unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
-            paid: quote_res.paid,
+            state: quote_res.state,
             expiry: quote_res.expiry,
+            payment_preimage: quote_res.payment_preimage,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -888,7 +886,7 @@ impl Wallet {
             Some(quote) => {
                 let mut quote = quote;
 
-                quote.paid = response.paid;
+                quote.state = response.state;
                 self.localstore.add_melt_quote(quote).await?;
             }
             None => {
@@ -976,8 +974,13 @@ impl Wallet {
             None => None,
         };
 
+        let state = match melt_response.paid {
+            true => MeltQuoteState::Paid,
+            false => MeltQuoteState::Unpaid,
+        };
+
         let melted = Melted {
-            paid: true,
+            state,
             preimage: melt_response.payment_preimage,
             change: change_proofs.clone(),
         };

@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
 use cdk::Amount;
@@ -43,9 +43,9 @@ pub async fn mint(
     println!("Please pay: {}", quote.request);
 
     loop {
-        let status = wallet.mint_quote_status(&quote.id).await?;
+        let status = wallet.mint_quote_state(&quote.id).await?;
 
-        if status.paid {
+        if status.state == MintQuoteState::Paid {
             break;
         }
 

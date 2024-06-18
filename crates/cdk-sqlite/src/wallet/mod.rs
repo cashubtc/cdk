@@ -7,8 +7,8 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, Proofs, PublicKey, SpendingConditions,
-    State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, Proofs,
+    PublicKey, SpendingConditions, State,
 };
 use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote, ProofInfo};
@@ -278,7 +278,7 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, paid, expiry)
+(id, mint_url, amount, unit, request, state, expiry)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
         )
@@ -287,7 +287,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(u64::from(quote.amount) as i64)
         .bind(quote.unit.to_string())
         .bind(quote.request)
-        .bind(quote.paid)
+        .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .execute(&self.pool)
         .await
@@ -351,7 +351,7 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
-(id, unit, amount, request, fee_reserve, paid, expiry)
+(id, unit, amount, request, fee_reserve, state, expiry)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
         )
@@ -360,7 +360,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(u64::from(quote.amount) as i64)
         .bind(quote.request)
         .bind(u64::from(quote.fee_reserve) as i64)
-        .bind(quote.paid)
+        .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .execute(&self.pool)
         .await
@@ -502,8 +502,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
-        tracing::debug!("{:?}", mint_url);
-        tracing::debug!("{:?}", unit);
         let recs = sqlx::query(
             r#"
 SELECT *
@@ -719,8 +717,10 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
-    let row_paid: bool = row.try_get("paid").map_err(Error::from)?;
+    let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+
+    let state = MintQuoteState::from_str(&row_state)?;
 
     Ok(MintQuote {
         id: row_id,
@@ -728,7 +728,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from(row_unit),
         request: row_request,
-        paid: row_paid,
+        state,
         expiry: row_expiry as u64,
     })
 }
@@ -739,17 +739,20 @@ fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<MeltQuote, Error> {
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
     let row_fee_reserve: i64 = row.try_get("fee_reserve").map_err(Error::from)?;
-    let row_paid: bool = row.try_get("paid").map_err(Error::from)?;
+    let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+    let row_preimage: Option<String> = row.try_get("payment_preimage").map_err(Error::from)?;
 
+    let state = MeltQuoteState::from_str(&row_state)?;
     Ok(MeltQuote {
         id: row_id,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from(row_unit),
         request: row_request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
-        paid: row_paid,
+        state,
         expiry: row_expiry as u64,
+        payment_preimage: row_preimage,
     })
 }
 

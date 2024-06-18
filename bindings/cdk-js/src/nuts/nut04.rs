@@ -46,8 +46,8 @@ impl From<MintQuoteBolt11Response> for JsMintQuoteBolt11Response {
 #[wasm_bindgen(js_class = MintQuoteBolt11Response)]
 impl JsMintQuoteBolt11Response {
     #[wasm_bindgen(getter)]
-    pub fn paid(&self) -> bool {
-        self.inner.paid
+    pub fn state(&self) -> String {
+        self.inner.state.to_string()
     }
 
     #[wasm_bindgen(getter)]

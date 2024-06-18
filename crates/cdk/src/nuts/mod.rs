@@ -28,11 +28,11 @@ pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, Settings as NUT04Settings,
+    MintQuoteBolt11Response, QuoteState as MintQuoteState, Settings as NUT04Settings,
 };
 pub use nut05::{
-    MeltBolt11Request, MeltBolt11Response, MeltMethodSettings, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, Settings as NUT05Settings,
+    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
 pub use nut06::{MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};

@@ -26,8 +26,14 @@ pub enum Error {
     TokenPending,
     #[error("Quote not paid")]
     UnpaidQuote,
+    #[error("Quote is already paid")]
+    PaidQuote,
     #[error("Unknown quote")]
     UnknownQuote,
+    #[error("Quote pending")]
+    PendingQuote,
+    #[error("Quote already issued")]
+    IssuedQuote,
     #[error("Unknown secret kind")]
     UnknownSecretKind,
     #[error("Cannot have multiple units")]
