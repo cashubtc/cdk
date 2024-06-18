@@ -26,8 +26,8 @@ impl From<Melted> for JsMelted {
 #[wasm_bindgen(js_class = Melted)]
 impl JsMelted {
     #[wasm_bindgen(getter)]
-    pub fn paid(&self) -> bool {
-        self.inner.paid
+    pub fn paid(&self) -> String {
+        self.inner.state.to_string()
     }
 
     #[wasm_bindgen(getter)]

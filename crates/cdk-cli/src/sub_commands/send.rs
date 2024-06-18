@@ -133,8 +133,6 @@ pub async fn send(
                 )
                 .unwrap();
 
-                tracing::debug!("{}", data_pubkey.to_string());
-
                 Some(SpendingConditions::P2PKConditions {
                     data: data_pubkey,
                     conditions: Some(conditions),

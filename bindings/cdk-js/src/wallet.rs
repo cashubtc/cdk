@@ -102,7 +102,7 @@ impl JsWallet {
     pub async fn mint_quote_status(&self, quote_id: String) -> Result<JsMintQuoteBolt11Response> {
         let quote = self
             .inner
-            .mint_quote_status(&quote_id)
+            .mint_quote_state(&quote_id)
             .await
             .map_err(into_err)?;
 

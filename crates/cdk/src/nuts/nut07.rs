@@ -30,10 +30,10 @@ pub enum State {
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            State::Spent => "SPENT",
-            State::Unspent => "UNSPENT",
-            State::Pending => "PENDING",
-            State::Reserved => "RESERVED",
+            Self::Spent => "SPENT",
+            Self::Unspent => "UNSPENT",
+            Self::Pending => "PENDING",
+            Self::Reserved => "RESERVED",
         };
 
         write!(f, "{}", s)

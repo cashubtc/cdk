@@ -52,12 +52,14 @@ pub async fn melt(
     }
     let quote = wallet.melt_quote(bolt11.to_string(), None).await?;
 
+    println!("{:?}", quote);
+
     let melt = wallet
         .melt(&quote.id, SplitTarget::default())
         .await
         .unwrap();
 
-    println!("Paid invoice: {}", melt.paid);
+    println!("Paid invoice: {}", melt.state);
     if let Some(preimage) = melt.preimage {
         println!("Payment preimage: {}", preimage);
     }

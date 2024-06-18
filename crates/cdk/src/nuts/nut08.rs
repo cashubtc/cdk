@@ -2,7 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/08.md>
 
-use super::nut05::{MeltBolt11Request, MeltBolt11Response};
+use super::nut05::{MeltBolt11Request, MeltQuoteBolt11Response};
 use crate::Amount;
 
 impl MeltBolt11Request {
@@ -13,7 +13,7 @@ impl MeltBolt11Request {
     }
 }
 
-impl MeltBolt11Response {
+impl MeltQuoteBolt11Response {
     pub fn change_amount(&self) -> Option<Amount> {
         self.change
             .as_ref()

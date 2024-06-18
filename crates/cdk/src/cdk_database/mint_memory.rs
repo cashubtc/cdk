@@ -7,7 +7,9 @@ use tokio::sync::RwLock;
 use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
 use crate::mint::MintKeySetInfo;
-use crate::nuts::{BlindSignature, CurrencyUnit, Id, Proof, Proofs, PublicKey};
+use crate::nuts::{
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
+};
 use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
 
@@ -103,6 +105,27 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.mint_quotes.read().await.get(quote_id).cloned())
     }
 
+    async fn update_mint_quote_state(
+        &self,
+        quote_id: &str,
+        state: MintQuoteState,
+    ) -> Result<MintQuoteState, Self::Err> {
+        let mut mint_quotes = self.mint_quotes.write().await;
+
+        let mut quote = mint_quotes
+            .get(quote_id)
+            .cloned()
+            .ok_or(Error::UnknownQuote)?;
+
+        let current_state = quote.state;
+
+        quote.state = state;
+
+        mint_quotes.insert(quote_id.to_string(), quote.clone());
+
+        Ok(current_state)
+    }
+
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         Ok(self.mint_quotes.read().await.values().cloned().collect())
     }
@@ -123,6 +146,27 @@ impl MintDatabase for MintMemoryDatabase {
 
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
         Ok(self.melt_quotes.read().await.get(quote_id).cloned())
+    }
+
+    async fn update_melt_quote_state(
+        &self,
+        quote_id: &str,
+        state: MeltQuoteState,
+    ) -> Result<MeltQuoteState, Self::Err> {
+        let mut melt_quotes = self.melt_quotes.write().await;
+
+        let mut quote = melt_quotes
+            .get(quote_id)
+            .cloned()
+            .ok_or(Error::UnknownQuote)?;
+
+        let current_state = quote.state;
+
+        quote.state = state;
+
+        melt_quotes.insert(quote_id.to_string(), quote.clone());
+
+        Ok(current_state)
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {

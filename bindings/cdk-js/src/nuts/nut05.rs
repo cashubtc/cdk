@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
 use cdk::nuts::{
-    MeltBolt11Request, MeltBolt11Response, MeltMethodSettings, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, NUT05Settings,
+    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    NUT05Settings,
 };
 use wasm_bindgen::prelude::*;
 
@@ -57,24 +57,6 @@ impl Deref for JsMeltBolt11Request {
 impl From<MeltBolt11Request> for JsMeltBolt11Request {
     fn from(inner: MeltBolt11Request) -> JsMeltBolt11Request {
         JsMeltBolt11Request { inner }
-    }
-}
-
-#[wasm_bindgen(js_name = PostMeltResponse)]
-pub struct JsMeltBolt11Response {
-    inner: MeltBolt11Response,
-}
-
-impl Deref for JsMeltBolt11Response {
-    type Target = MeltBolt11Response;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl From<MeltBolt11Response> for JsMeltBolt11Response {
-    fn from(inner: MeltBolt11Response) -> JsMeltBolt11Response {
-        JsMeltBolt11Response { inner }
     }
 }
 

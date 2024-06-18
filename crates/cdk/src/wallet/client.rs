@@ -7,13 +7,14 @@ use url::Url;
 
 use super::Error;
 use crate::error::ErrorResponse;
+use crate::nuts::nut05::MeltBolt11Response;
 use crate::nuts::nut15::Mpp;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
-    KeysetResponse, MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo,
-    MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    KeysetResponse, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey, RestoreRequest, RestoreResponse,
+    SwapRequest, SwapResponse,
 };
 use crate::{Amount, Bolt11Invoice};
 
@@ -112,7 +113,10 @@ impl HttpClient {
 
         match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
             Ok(mint_quote_response) => Ok(mint_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+            Err(err) => {
+                tracing::warn!("{}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
         }
     }
 
@@ -129,7 +133,10 @@ impl HttpClient {
 
         match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
             Ok(mint_quote_response) => Ok(mint_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+            Err(err) => {
+                tracing::warn!("{}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
         }
     }
 
@@ -241,9 +248,14 @@ impl HttpClient {
             .json::<Value>()
             .await?;
 
-        match serde_json::from_value::<MeltBolt11Response>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response.into()),
+            Err(_) => {
+                if let Ok(res) = serde_json::from_value::<MeltBolt11Response>(res.clone()) {
+                    return Ok(res);
+                }
+                Err(ErrorResponse::from_value(res)?.into())
+            }
         }
     }
 

@@ -13,7 +13,7 @@ use crate::mint::MintKeySetInfo;
 #[cfg(feature = "wallet")]
 use crate::nuts::State;
 #[cfg(feature = "mint")]
-use crate::nuts::{BlindSignature, Proof};
+use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::nuts::{CurrencyUnit, Id, PublicKey};
 #[cfg(feature = "wallet")]
@@ -43,6 +43,8 @@ pub enum Error {
     Cdk(#[from] crate::error::Error),
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut00::Error),
+    #[error("Unknown Quote")]
+    UnknownQuote,
 }
 
 #[cfg(feature = "wallet")]
@@ -126,11 +128,21 @@ pub trait MintDatabase {
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err>;
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err>;
+    async fn update_mint_quote_state(
+        &self,
+        quote_id: &str,
+        state: MintQuoteState,
+    ) -> Result<MintQuoteState, Self::Err>;
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err>;
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err>;
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err>;
+    async fn update_melt_quote_state(
+        &self,
+        quote_id: &str,
+        state: MeltQuoteState,
+    ) -> Result<MeltQuoteState, Self::Err>;
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err>;
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 

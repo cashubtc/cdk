@@ -4,7 +4,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, SecretKey, SpendingConditions};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, SecretKey, SpendingConditions};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use rand::Rng;
@@ -26,11 +26,11 @@ async fn main() -> Result<(), Error> {
     println!("Minting nuts ...");
 
     loop {
-        let status = wallet.mint_quote_status(&quote.id).await.unwrap();
+        let status = wallet.mint_quote_state(&quote.id).await.unwrap();
 
-        println!("Quote status: {}", status.paid);
+        println!("Quote status: {}", status.state);
 
-        if status.paid {
+        if status.state == MintQuoteState::Paid {
             break;
         }
 
