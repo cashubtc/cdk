@@ -61,6 +61,8 @@ pub async fn melt(wallet: Wallet, _sub_command_args: &MeltSubCommand) -> Result<
         )
         .await?;
 
+    println!("{:?}", quote);
+
     let melt = wallet
         .melt(&mint_url, &quote.id, SplitTarget::default())
         .await

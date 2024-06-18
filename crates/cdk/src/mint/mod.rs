@@ -9,6 +9,7 @@ use error::Error;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use self::nut05::QuoteState;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::nuts::nut11::enforce_sig_flag;
@@ -183,10 +184,13 @@ impl Mint {
 
         Ok(MeltQuoteBolt11Response {
             quote: quote.id,
-            paid: quote.paid,
+            paid: quote.state == QuoteState::Paid,
+            state: quote.state,
             expiry: quote.expiry,
             amount: quote.amount,
             fee_reserve: quote.fee_reserve,
+            payment_preimage: quote.payment_preimage,
+            change: None,
         })
     }
 
@@ -664,8 +668,8 @@ impl Mint {
         melt_request: &MeltBolt11Request,
         preimage: &str,
         total_spent: Amount,
-    ) -> Result<MeltBolt11Response, Error> {
-        self.verify_melt_request(melt_request).await?;
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let quote = self.verify_melt_request(melt_request).await?;
 
         if let Some(outputs) = &melt_request.outputs {
             for blinded_message in outputs {
@@ -734,10 +738,15 @@ impl Mint {
             );
         }
 
-        Ok(MeltBolt11Response {
+        Ok(MeltQuoteBolt11Response {
+            amount: quote.amount,
             paid: true,
             payment_preimage: Some(preimage.to_string()),
             change,
+            quote: quote.id,
+            fee_reserve: quote.fee_reserve,
+            state: QuoteState::Paid,
+            expiry: quote.expiry,
         })
     }
 

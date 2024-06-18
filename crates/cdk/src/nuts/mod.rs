@@ -31,8 +31,8 @@ pub use nut04::{
     MintQuoteBolt11Response, Settings as NUT04Settings,
 };
 pub use nut05::{
-    MeltBolt11Request, MeltBolt11Response, MeltMethodSettings, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, Settings as NUT05Settings,
+    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    QuoteState, Settings as NUT05Settings,
 };
 pub use nut06::{MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};

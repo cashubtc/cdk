@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::Error;
+use crate::nuts::nut05::QuoteState;
 use crate::nuts::{CurrencyUnit, Proof, Proofs, PublicKey, SpendingConditions, State};
 use crate::url::UncheckedUrl;
 use crate::Amount;
@@ -14,15 +15,6 @@ pub struct Melted {
     pub paid: bool,
     pub preimage: Option<String>,
     pub change: Option<Proofs>,
-}
-
-/// Possible states of an invoice
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InvoiceStatus {
-    Unpaid,
-    Paid,
-    Expired,
-    InFlight,
 }
 
 /// Mint Quote Info
@@ -67,10 +59,12 @@ pub struct MeltQuote {
     pub amount: Amount,
     pub request: String,
     pub fee_reserve: Amount,
-    pub paid: bool,
+    pub state: QuoteState,
     pub expiry: u64,
+    pub payment_preimage: Option<String>,
 }
 
+#[cfg(feature = "mint")]
 impl MeltQuote {
     pub fn new(
         request: String,
@@ -87,8 +81,9 @@ impl MeltQuote {
             unit,
             request,
             fee_reserve,
-            paid: false,
+            state: QuoteState::Unpaid,
             expiry,
+            payment_preimage: None,
         }
     }
 }

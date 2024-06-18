@@ -1009,8 +1009,9 @@ impl Wallet {
             request,
             unit,
             fee_reserve: quote_res.fee_reserve,
-            paid: quote_res.paid,
+            state: quote_res.state,
             expiry: quote_res.expiry,
+            payment_preimage: quote_res.payment_preimage,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -1034,7 +1035,7 @@ impl Wallet {
             Some(quote) => {
                 let mut quote = quote;
 
-                quote.paid = response.paid;
+                quote.state = response.state;
                 self.localstore.add_melt_quote(quote).await?;
             }
             None => {
