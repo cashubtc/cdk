@@ -26,12 +26,12 @@ impl FeeEstimator for BitcoinClient {
     fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
         let blocks = match confirmation_target {
             ConfirmationTarget::OnChainSweep => 6,
-            ConfirmationTarget::MinAllowedAnchorChannelRemoteFee => todo!(),
-            ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => todo!(),
-            ConfirmationTarget::AnchorChannelFee => todo!(),
-            ConfirmationTarget::NonAnchorChannelFee => todo!(),
-            ConfirmationTarget::ChannelCloseMinimum => todo!(),
-            ConfirmationTarget::OutputSpendingFee => todo!(),
+            ConfirmationTarget::MinAllowedAnchorChannelRemoteFee => 6,
+            ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => 6,
+            ConfirmationTarget::AnchorChannelFee => 6,
+            ConfirmationTarget::NonAnchorChannelFee => 6,
+            ConfirmationTarget::ChannelCloseMinimum => 6,
+            ConfirmationTarget::OutputSpendingFee => 6,
         };
         // LDK will wrap this to the minimum fee rate
         match self
