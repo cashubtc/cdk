@@ -43,7 +43,7 @@ use lightning::{
             ProbabilisticScoringFeeParameters,
         },
     },
-    sign::{EntropySource, InMemorySigner, KeysManager},
+    sign::{EntropySource, InMemorySigner, KeysManager, NodeSigner, Recipient},
     util::{
         config::UserConfig,
         logger::{Level, Logger, Record},
@@ -162,7 +162,7 @@ impl Node {
     ) -> Result<Self, Error> {
         // Create utils
         let bitcoin_client = Arc::new(rpc_client);
-        fs::create_dir_all(&data_dir.join(NETWORK_DIR))?;
+        fs::create_dir_all(data_dir.join(NETWORK_DIR))?;
         let db = NodeDatabase::open(data_dir.join(DB_FILE))?;
         let logger = Arc::new(NodeLogger);
         let persister = Arc::new(FilesystemStore::new(data_dir.join(NETWORK_DIR)));
@@ -174,6 +174,10 @@ impl Node {
             starting_time.as_secs(),
             starting_time.subsec_nanos(),
         ));
+        tracing::info!(
+            "Starting node {}",
+            keys_manager.get_node_id(Recipient::Node).unwrap()
+        );
 
         // Setup chain monitor
         let chain_monitor = Arc::new(ChainMonitor::new(
@@ -184,6 +188,7 @@ impl Node {
             persister.clone(),
         ));
         let polled_chain_tip = validate_best_block_header(bitcoin_client.clone()).await?;
+        tracing::info!("Polled chain tip: {:?}", polled_chain_tip);
 
         // Configure router
         let network_graph_bytes = persister.read(
@@ -192,8 +197,10 @@ impl Node {
             NETWORK_GRAPH_PERSISTENCE_KEY,
         )?;
         let network_graph = Arc::new(if network_graph_bytes.is_empty() {
+            tracing::info!("Creating new network graph");
             NetworkGraph::new(network, logger.clone())
         } else {
+            tracing::info!("Loading network graph");
             NetworkGraph::read(&mut &network_graph_bytes[..], logger.clone())?
         });
         let scorer_bytes = persister.read(
@@ -202,12 +209,14 @@ impl Node {
             SCORER_PERSISTENCE_KEY,
         )?;
         let scorer = if scorer_bytes.is_empty() {
+            tracing::info!("Creating new scorer");
             Arc::new(std::sync::RwLock::new(ProbabilisticScorer::new(
                 ProbabilisticScoringDecayParameters::default(),
                 network_graph.clone(),
                 logger.clone(),
             )))
         } else {
+            tracing::info!("Loading scorer");
             Arc::new(std::sync::RwLock::new(ProbabilisticScorer::read(
                 &mut &scorer_bytes[..],
                 (
@@ -238,6 +247,7 @@ impl Node {
                 CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
                 CHANNEL_MANAGER_PERSISTENCE_KEY,
             ) {
+                tracing::info!("Restarting node");
                 let mut channel_monitor_mut_references = Vec::new();
                 for (_, channel_monitor) in channel_monitors.iter_mut() {
                     channel_monitor_mut_references.push(channel_monitor);
@@ -256,6 +266,7 @@ impl Node {
                 );
                 <(BlockHash, NodeChannelManager)>::read(&mut &data[..], read_args)?
             } else {
+                tracing::info!("Starting fresh node");
                 // We're starting a fresh node.
                 restarting_node = false;
 
@@ -281,6 +292,7 @@ impl Node {
                 (polled_best_block_hash, fresh_channel_manager)
             }
         };
+        tracing::info!("Channel manager blockhash: {}", channel_manager_blockhash);
 
         // Sync ChannelMonitors and ChannelManager to chain tip
         let mut chain_listener_channel_monitors = Vec::new();
@@ -317,6 +329,7 @@ impl Node {
         } else {
             polled_chain_tip
         };
+        tracing::info!("Chain tip: {:?}", chain_tip);
 
         for item in chain_listener_channel_monitors.drain(..) {
             let channel_monitor = item.1 .0;
@@ -399,6 +412,7 @@ impl Node {
     }
 
     fn start_background_processor(&self) {
+        tracing::info!("Starting background processor");
         let cancel_token = self.cancel_token.clone();
         let sleeper = move |d| {
             let cancel_token = cancel_token.clone();
