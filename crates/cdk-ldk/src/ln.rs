@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     fs,
+    net::SocketAddr,
     path::PathBuf,
     pin::Pin,
     str::FromStr,
@@ -159,6 +160,7 @@ impl Node {
         network: Network,
         rpc_client: BitcoinClient,
         seed: [u8; 32],
+        p2p_addr: Option<SocketAddr>,
     ) -> Result<Self, Error> {
         // Create utils
         let bitcoin_client = Arc::new(rpc_client);
@@ -365,7 +367,7 @@ impl Node {
             let mut spv_client =
                 SpvClient::new(chain_tip, chain_poller, &mut cache, &chain_listener);
             loop {
-                tracing::debug!("Polling best tip");
+                tracing::trace!("Polling best tip");
                 if let Err(e) = spv_client.poll_best_tip().await {
                     tracing::error!("Error polling best tip: {:?}", e);
                 };
@@ -402,6 +404,28 @@ impl Node {
             logger.clone(),
             keys_manager.clone(),
         ));
+
+        // Listen for incoming connections
+        if let Some(p2p_addr) = p2p_addr {
+            tracing::info!("Listening for incoming connections on {}", p2p_addr);
+            let listener = tokio::net::TcpListener::bind(p2p_addr).await?;
+            let peer_manager_listener = peer_manager.clone();
+            tokio::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((tcp_stream, peer_addr)) => {
+                            tracing::info!("Accepted connection from {}", peer_addr);
+                            lightning_net_tokio::setup_inbound(
+                                peer_manager_listener.clone(),
+                                tcp_stream.into_std().unwrap(),
+                            )
+                            .await;
+                        }
+                        Err(e) => tracing::error!("Error accepting connection: {:?}", e),
+                    }
+                }
+            });
+        }
 
         let (paid_invoices, _) = broadcast::channel(100);
         let node = Self {
