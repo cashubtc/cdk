@@ -74,7 +74,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{BitcoinClient, Error};
 
 const BLOCK_TIMER: u64 = 10;
-const DB_DIR: &str = "db";
+const DB_FILE: &str = "db";
 const NETWORK_DIR: &str = "network";
 
 type NodeChainMonitor = ChainMonitor<
@@ -162,10 +162,9 @@ impl Node {
     ) -> Result<Self, Error> {
         // Create utils
         let bitcoin_client = Arc::new(rpc_client);
-        fs::create_dir_all(&data_dir.join(DB_DIR))?;
-        let db = NodeDatabase::open(data_dir.join(DB_DIR))?;
-        let logger = Arc::new(NodeLogger);
         fs::create_dir_all(&data_dir.join(NETWORK_DIR))?;
+        let db = NodeDatabase::open(data_dir.join(DB_FILE))?;
+        let logger = Arc::new(NodeLogger);
         let persister = Arc::new(FilesystemStore::new(data_dir.join(NETWORK_DIR)));
 
         // Derive keys manager
