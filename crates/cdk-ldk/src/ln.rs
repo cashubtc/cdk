@@ -25,6 +25,7 @@ use cdk::{
     util::{hex, unix_time},
     Bolt11Invoice, Sha256,
 };
+use chrono::{DateTime, Utc};
 use futures::Stream;
 use lightning::{
     chain::{chainmonitor::ChainMonitor, ChannelMonitorUpdateStatus, Filter, Listen, Watch},
@@ -699,13 +700,13 @@ impl Node {
 
     pub async fn get_events(
         &self,
-        start: Option<u128>,
-        end: Option<u128>,
-    ) -> Result<Vec<(u128, Event)>, Error> {
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+    ) -> Result<Vec<(DateTime<Utc>, Event)>, Error> {
         self.db.get_events(start, end).await
     }
 
-    pub async fn stop(&self) {
+    pub fn stop(&self) {
         self.cancel_token.cancel();
     }
 }
@@ -972,21 +973,31 @@ impl NodeDatabase {
         Ok(())
     }
 
-    // TODO use DateTime
     async fn get_events(
         &self,
-        start: Option<u128>,
-        end: Option<u128>,
-    ) -> Result<Vec<(u128, Event)>, Error> {
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+    ) -> Result<Vec<(DateTime<Utc>, Event)>, Error> {
+        let start = start
+            .map(|s| s.timestamp_nanos_opt().map(|s| s as u128))
+            .flatten()
+            .unwrap_or(0);
+        let end = end
+            .map(|e| e.timestamp_nanos_opt().map(|e| e as u128))
+            .flatten()
+            .unwrap_or(u128::MAX);
         let mut events = Vec::new();
         let db = self.db.read().await;
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(EVENTS_TABLE)?;
-        let entries = table.range(start.unwrap_or(0)..end.unwrap_or(u128::MAX))?;
+        let entries = table.range(start..end)?;
         for entry in entries {
             let (timestamp, data) = entry?;
             if let Some(event) = Event::read(&mut &data.value()[..])? {
-                events.push((timestamp.value(), event));
+                events.push((
+                    DateTime::from_timestamp_nanos(timestamp.value() as i64),
+                    event,
+                ));
             }
         }
         Ok(events)
