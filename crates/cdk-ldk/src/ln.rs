@@ -2,6 +2,7 @@ use std::{
     any::type_name,
     collections::HashMap,
     fmt::Debug,
+    fs,
     path::PathBuf,
     pin::Pin,
     str::FromStr,
@@ -73,6 +74,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{BitcoinClient, Error};
 
 const BLOCK_TIMER: u64 = 10;
+const DB_DIR: &str = "db";
+const NETWORK_DIR: &str = "network";
 
 type NodeChainMonitor = ChainMonitor<
     InMemorySigner,
@@ -159,9 +162,11 @@ impl Node {
     ) -> Result<Self, Error> {
         // Create utils
         let bitcoin_client = Arc::new(rpc_client);
-        let db = NodeDatabase::open(data_dir.join("node"))?;
+        fs::create_dir_all(&data_dir.join(DB_DIR))?;
+        let db = NodeDatabase::open(data_dir.join(DB_DIR))?;
         let logger = Arc::new(NodeLogger);
-        let persister = Arc::new(FilesystemStore::new(data_dir.join("data")));
+        fs::create_dir_all(&data_dir.join(NETWORK_DIR))?;
+        let persister = Arc::new(FilesystemStore::new(data_dir.join(NETWORK_DIR)));
 
         // Derive keys manager
         let starting_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
