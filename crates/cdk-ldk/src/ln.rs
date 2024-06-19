@@ -191,11 +191,17 @@ impl Node {
         tracing::info!("Polled chain tip: {:?}", polled_chain_tip);
 
         // Configure router
-        let network_graph_bytes = persister.read(
+        let network_graph_bytes = match persister.read(
             NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
             NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
             NETWORK_GRAPH_PERSISTENCE_KEY,
-        )?;
+        ) {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::warn!("Error reading network graph: {:?}", e);
+                Vec::new()
+            }
+        };
         let network_graph = Arc::new(if network_graph_bytes.is_empty() {
             tracing::info!("Creating new network graph");
             NetworkGraph::new(network, logger.clone())
@@ -203,11 +209,17 @@ impl Node {
             tracing::info!("Loading network graph");
             NetworkGraph::read(&mut &network_graph_bytes[..], logger.clone())?
         });
-        let scorer_bytes = persister.read(
+        let scorer_bytes = match persister.read(
             SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
             SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
             SCORER_PERSISTENCE_KEY,
-        )?;
+        ) {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::warn!("Error reading scorer: {:?}", e);
+                Vec::new()
+            }
+        };
         let scorer = if scorer_bytes.is_empty() {
             tracing::info!("Creating new scorer");
             Arc::new(std::sync::RwLock::new(ProbabilisticScorer::new(
