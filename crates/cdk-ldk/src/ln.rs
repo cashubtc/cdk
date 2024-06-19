@@ -1,6 +1,7 @@
 use std::{
-    collections::HashSet,
-    fmt::format,
+    any::type_name,
+    collections::HashMap,
+    fmt::Debug,
     path::PathBuf,
     pin::Pin,
     str::FromStr,
@@ -18,18 +19,19 @@ use cdk::{
         payment::payment_parameters_from_invoice, utils::create_invoice_from_channelmanager,
     },
     types::InvoiceStatus,
-    util::unix_time,
+    util::{hex, unix_time},
     Bolt11Invoice, Sha256,
 };
 use futures::Stream;
 use lightning::{
     chain::{chainmonitor::ChainMonitor, ChannelMonitorUpdateStatus, Filter, Listen, Watch},
-    events::Event,
+    events::{Event, PaymentPurpose},
     ln::{
         channelmanager::{
             ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, Retry,
         },
         peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager},
+        PaymentHash, PaymentPreimage,
     },
     onion_message::messenger::OnionMessenger,
     routing::{
@@ -49,7 +51,8 @@ use lightning::{
             CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
             CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
             NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-            NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+            NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
+            SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
         },
         ser::{MaybeReadable, ReadableArgs, Writeable},
     },
@@ -62,8 +65,9 @@ use lightning_block_sync::{
     SpvClient, UnboundedCache,
 };
 use lightning_persister::fs_store::FilesystemStore;
-use redb::{Database, ReadableTable, TableDefinition};
-use tokio::sync::RwLock;
+use redb::{Database, ReadableTable, TableDefinition, TypeName, Value};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, oneshot, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::{BitcoinClient, Error};
@@ -142,7 +146,8 @@ pub struct Node {
     persister: Arc<FilesystemStore>,
     scorer: Arc<std::sync::RwLock<NodeScorer>>,
 
-    inflight_payments: Arc<RwLock<HashSet<Sha256>>>,
+    inflight_payments: Arc<RwLock<HashMap<PaymentHash, oneshot::Sender<Payment>>>>,
+    paid_invoices: broadcast::Sender<PaymentHash>,
 }
 
 impl Node {
@@ -187,12 +192,27 @@ impl Node {
         } else {
             NetworkGraph::read(&mut &network_graph_bytes[..], logger.clone())?
         });
-
-        let scorer = Arc::new(std::sync::RwLock::new(ProbabilisticScorer::new(
-            ProbabilisticScoringDecayParameters::default(),
-            network_graph.clone(),
-            logger.clone(),
-        )));
+        let scorer_bytes = persister.read(
+            SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+            SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+            SCORER_PERSISTENCE_KEY,
+        )?;
+        let scorer = if scorer_bytes.is_empty() {
+            Arc::new(std::sync::RwLock::new(ProbabilisticScorer::new(
+                ProbabilisticScoringDecayParameters::default(),
+                network_graph.clone(),
+                logger.clone(),
+            )))
+        } else {
+            Arc::new(std::sync::RwLock::new(ProbabilisticScorer::read(
+                &mut &scorer_bytes[..],
+                (
+                    ProbabilisticScoringDecayParameters::default(),
+                    network_graph.clone(),
+                    logger.clone(),
+                ),
+            )?))
+        };
         let router = Arc::new(DefaultRouter::new(
             network_graph.clone(),
             logger.clone(),
@@ -353,6 +373,7 @@ impl Node {
             keys_manager.clone(),
         ));
 
+        let (paid_invoices, _) = broadcast::channel(100);
         let node = Self {
             cancel_token,
             chain_monitor,
@@ -366,7 +387,8 @@ impl Node {
             persister,
             scorer,
 
-            inflight_payments: Arc::new(RwLock::new(HashSet::new())),
+            inflight_payments: Arc::new(RwLock::new(HashMap::new())),
+            paid_invoices,
         };
         node.start_background_processor();
         Ok(node)
@@ -422,12 +444,95 @@ impl Node {
             tracing::warn!("Error saving event: {:?}", e);
         }
         match event {
-            Event::PaymentSent { payment_hash, .. } => {
-                let payment_hash = Sha256::from_byte_array(payment_hash.0);
+            Event::PaymentClaimable { purpose, .. } => {
+                let payment_preimage = match purpose {
+                    PaymentPurpose::Bolt11InvoicePayment {
+                        payment_preimage, ..
+                    } => payment_preimage,
+                    PaymentPurpose::Bolt12OfferPayment {
+                        payment_preimage, ..
+                    } => payment_preimage,
+                    PaymentPurpose::Bolt12RefundPayment {
+                        payment_preimage, ..
+                    } => payment_preimage,
+                    PaymentPurpose::SpontaneousPayment(preimage) => Some(preimage),
+                };
+                if let Some(payment_preimage) = payment_preimage {
+                    self.channel_manager.claim_funds(payment_preimage);
+                }
+            }
+            Event::PaymentClaimed {
+                payment_hash,
+                amount_msat,
+                ..
+            } => {
+                tracing::info!("Payment claimed: {:?} {} msat", payment_hash, amount_msat);
                 if let Err(e) = self.db.update_paid_invoice(payment_hash).await {
                     tracing::warn!("Error updating invoice: {:?}", e);
                 }
-                self.inflight_payments.write().await.remove(&payment_hash);
+                let _ = self.paid_invoices.send(payment_hash);
+            }
+            Event::PaymentSent {
+                payment_hash,
+                payment_preimage,
+                fee_paid_msat,
+                ..
+            } => {
+                let payment = match self
+                    .db
+                    .update_payment(
+                        payment_hash,
+                        payment_preimage,
+                        fee_paid_msat.unwrap_or_default(),
+                    )
+                    .await
+                {
+                    Ok(payment) => payment,
+                    Err(e) => {
+                        tracing::error!("Error updating payment: {:?}", e);
+                        None
+                    }
+                };
+                if let Some(payment) = payment {
+                    let _ = self
+                        .inflight_payments
+                        .write()
+                        .await
+                        .remove(&PaymentHash(payment_hash.0))
+                        .map(|tx| {
+                            let _ = tx.send(payment);
+                        });
+                } else {
+                    tracing::warn!("Payment not found: {}", payment_hash);
+                }
+            }
+            Event::PaymentFailed {
+                payment_hash,
+                reason,
+                ..
+            } => {
+                tracing::warn!("Payment failed: {:?} {:?}", payment_hash, reason);
+                match self.db.get_payment(PaymentHash(payment_hash.0)).await {
+                    Ok(payment) => {
+                        if let Some(payment) = payment {
+                            let _ = self
+                                .inflight_payments
+                                .write()
+                                .await
+                                .remove(&PaymentHash(payment_hash.0))
+                                .map(|tx| {
+                                    let _ = tx.send(payment);
+                                });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Error getting payment: {:?}", e);
+                    }
+                };
+            }
+            Event::PendingHTLCsForwardable { time_forwardable } => {
+                tokio::time::sleep(time_forwardable).await;
+                self.channel_manager.process_pending_htlc_forwards();
             }
             _ => tracing::warn!("Unhandled event: {:?}", event),
         }
@@ -456,25 +561,20 @@ impl MintLightning for Node {
         hash: &str,
         description: &str,
     ) -> Result<InvoiceInfo, Self::Err> {
-        let expiry = 3600;
-        let unix_expiry = unix_time() + expiry;
         let invoice = create_invoice_from_channelmanager(
             &self.channel_manager,
             self.keys_manager.clone(),
             self.logger.clone(),
             self.network.into(),
-            Some(amount.to_sat() * 1000),
+            Some(amount.to_msat()),
             description.to_string(),
-            expiry as u32,
+            3600,
             None,
         )
         .map_err(map_err)?;
         let payment_hash =
             Sha256::from_str(&invoice.payment_hash().to_string()).map_err(map_err)?;
-        self.db
-            .insert_invoice(payment_hash, unix_expiry)
-            .await
-            .map_err(map_err)?;
+        self.db.insert_invoice(&invoice).await.map_err(map_err)?;
         Ok(InvoiceInfo {
             payment_hash: payment_hash.to_string(),
             hash: hash.to_string(),
@@ -489,34 +589,36 @@ impl MintLightning for Node {
     async fn wait_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = (Bolt11Invoice, Option<u64>)> + Send>>, Self::Err> {
-        todo!()
+        let mut rx = self.paid_invoices.subscribe();
+        let db = self.db.clone();
+        Ok(Box::pin(async_stream::stream! {
+            while let Ok(payment_hash) = rx.recv().await {
+                if let Ok(Some(invoice)) = db.get_invoice(payment_hash).await {
+                    if let Ok(invoice) = Bolt11Invoice::from_str(&invoice.bolt_11) {
+                        yield (invoice, None);
+                    }
+                }
+            }
+        }))
     }
 
     async fn check_invoice_status(
         &self,
         payment_hash: &cdk::Sha256,
     ) -> Result<InvoiceStatus, Self::Err> {
-        if let Some((paid, expiry)) = self.db.get_invoice(*payment_hash).await.map_err(map_err)? {
-            if paid {
-                Ok(InvoiceStatus::Paid)
-            } else {
-                let time_now = unix_time();
-                if expiry < time_now {
-                    Ok(InvoiceStatus::Expired)
-                } else {
-                    let inflight_invoices = self.inflight_payments.read().await;
-                    if inflight_invoices.contains(payment_hash) {
-                        Ok(InvoiceStatus::InFlight)
-                    } else {
-                        Ok(InvoiceStatus::Unpaid)
-                    }
-                }
-            }
-        } else {
-            Err(cdk_lightning::Error::Lightning(Box::new(Error::Ldk(
-                "Invoice not found".to_string(),
-            ))))
+        let payment_hash = PaymentHash(payment_hash.to_byte_array());
+        let inflight_payments = self.inflight_payments.read().await;
+        if inflight_payments.contains_key(&payment_hash) {
+            return Ok(InvoiceStatus::InFlight);
         }
+        let payment = self.db.get_payment(payment_hash).await.map_err(map_err)?;
+        Ok(payment.map_or(InvoiceStatus::Unpaid, |payment| {
+            if payment.paid {
+                InvoiceStatus::Paid
+            } else {
+                InvoiceStatus::Unpaid
+            }
+        }))
     }
 
     async fn pay_invoice(
@@ -525,18 +627,23 @@ impl MintLightning for Node {
         partial_msat: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let mut inflight_payments = self.inflight_payments.write().await;
-        let payment_hash = bolt11.payment_hash();
-        inflight_payments.insert(*payment_hash);
-        drop(inflight_payments);
-
-        let (payment_hash, recipient_onion, mut route_params) =
-            payment_parameters_from_invoice(&bolt11)
-                .map_err(|_| map_err("Error extracting payment parameters"))?;
-        route_params.final_value_msat = partial_msat
+        let amount_msat = partial_msat
             .map(|f| f.to_msat())
             .or(bolt11.amount_milli_satoshis())
             .ok_or(map_err("No amount"))?;
+        let (payment_hash, recipient_onion, mut route_params) =
+            payment_parameters_from_invoice(&bolt11)
+                .map_err(|_| map_err("Error extracting payment parameters"))?;
+        self.db
+            .insert_payment(&bolt11, amount_msat)
+            .await
+            .map_err(map_err)?;
+        let (tx, rx) = oneshot::channel();
+        let mut inflight_payments = self.inflight_payments.write().await;
+        inflight_payments.insert(payment_hash, tx);
+        drop(inflight_payments);
+
+        route_params.final_value_msat = amount_msat;
         route_params.max_total_routing_fee_msat = max_fee.map(|f| f.to_msat());
         self.channel_manager
             .send_payment(
@@ -548,7 +655,17 @@ impl MintLightning for Node {
             )
             .map_err(|e| map_err(format!("{:?}", e)))?;
 
-        todo!()
+        let payment = rx.await.map_err(map_err)?;
+        Ok(PayInvoiceResponse {
+            payment_hash: Sha256::from_byte_array(payment_hash.0),
+            payment_preimage: payment.pre_image.map(|p| hex::encode(p)),
+            status: if payment.pre_image.is_some() {
+                InvoiceStatus::Paid
+            } else {
+                InvoiceStatus::Unpaid
+            },
+            total_spent: Amount::from_msat(payment.spent_msat),
+        })
     }
 
     async fn get_balance(&self) -> Result<BalanceResponse, Self::Err> {
@@ -579,16 +696,13 @@ impl MintLightning for Node {
             self.keys_manager.clone(),
             self.logger.clone(),
             self.network.into(),
-            Some(amount.to_sat() * 1000),
+            Some(amount.to_msat()),
             description,
             (unix_expiry - time_now) as u32,
             None,
         )
         .map_err(map_err)?;
-        self.db
-            .insert_invoice(*invoice.payment_hash(), unix_expiry)
-            .await
-            .map_err(map_err)?;
+        self.db.insert_invoice(&invoice).await.map_err(map_err)?;
         Ok(invoice)
     }
 }
@@ -597,9 +711,28 @@ fn map_err<E: ToString>(e: E) -> cdk_lightning::Error {
     cdk_lightning::Error::Lightning(Box::new(Error::Ldk(e.to_string())))
 }
 
-const EVENTS_TABLE: TableDefinition<u128, Vec<u8>> = TableDefinition::new("events");
-const INVOICES_TABLE: TableDefinition<[u8; 32], (bool, u64)> = TableDefinition::new("invoices");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
+const EVENTS_TABLE: TableDefinition<u128, Vec<u8>> = TableDefinition::new("events");
+const INVOICES_TABLE: TableDefinition<[u8; 32], Bincode<Invoice>> =
+    TableDefinition::new("invoices");
+const PAYMENTS_TABLE: TableDefinition<[u8; 32], Bincode<Payment>> =
+    TableDefinition::new("payments");
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Invoice {
+    bolt_11: String,
+    expiry: u64,
+    paid: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Payment {
+    bolt_11: String,
+    amount_msat: u64,
+    paid: bool,
+    spent_msat: u64,
+    pre_image: Option<[u8; 32]>,
+}
 
 const DATABASE_VERSION: u64 = 0;
 
@@ -631,7 +764,9 @@ impl NodeDatabase {
                 }
                 None => {
                     // Open all tables to init a new db
+                    let _ = write_txn.open_table(EVENTS_TABLE)?;
                     let _ = write_txn.open_table(INVOICES_TABLE)?;
+                    let _ = write_txn.open_table(PAYMENTS_TABLE)?;
 
                     table.insert("db_version", "0")?;
                 }
@@ -642,41 +777,6 @@ impl NodeDatabase {
         Ok(Self {
             db: Arc::new(RwLock::new(db)),
         })
-    }
-
-    async fn insert_invoice(&self, payment_hash: Sha256, unix_expiry: u64) -> Result<(), Error> {
-        let db = self.db.read().await;
-        let write_txn = db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(INVOICES_TABLE)?;
-            table.insert(payment_hash.as_ref(), (false, unix_expiry))?;
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    async fn update_paid_invoice(&self, payment_hash: Sha256) -> Result<(), Error> {
-        let db = self.db.read().await;
-        let write_txn = db.begin_write()?;
-        let expiry = {
-            let table = write_txn.open_table(INVOICES_TABLE)?;
-            let entry = table.get(payment_hash.as_ref())?;
-            entry.map(|e| e.value().1)
-        };
-        if let Some(expiry) = expiry {
-            let mut table = write_txn.open_table(INVOICES_TABLE)?;
-            table.insert(payment_hash.as_ref(), (true, expiry))?;
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    async fn get_invoice(&self, payment_hash: Sha256) -> Result<Option<(bool, u64)>, Error> {
-        let db = self.db.read().await;
-        let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(INVOICES_TABLE)?;
-        let entry = table.get(payment_hash.as_ref())?;
-        Ok(entry.map(|e| e.value()))
     }
 
     async fn save_event(&self, event: Event) -> Result<(), Error> {
@@ -696,6 +796,7 @@ impl NodeDatabase {
         Ok(())
     }
 
+    // TODO use DateTime
     async fn get_events(
         &self,
         start: Option<u128>,
@@ -713,6 +814,146 @@ impl NodeDatabase {
             }
         }
         Ok(events)
+    }
+
+    async fn insert_invoice(&self, invoice: &Bolt11Invoice) -> Result<(), Error> {
+        let payment_hash = invoice.payment_hash();
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(INVOICES_TABLE)?;
+            table.insert(
+                payment_hash.as_ref(),
+                &Invoice {
+                    bolt_11: invoice.to_string(),
+                    expiry: invoice.expires_at().unwrap_or_default().as_secs(),
+                    paid: false,
+                },
+            )?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn update_paid_invoice(
+        &self,
+        payment_hash: PaymentHash,
+    ) -> Result<Option<Invoice>, Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        let mut invoice = {
+            let table = write_txn.open_table(INVOICES_TABLE)?;
+            let entry = table.get(payment_hash.0)?;
+            entry.map(|e| e.value())
+        };
+        if let Some(invoice) = invoice.as_mut() {
+            let mut table = write_txn.open_table(INVOICES_TABLE)?;
+            invoice.paid = true;
+            table.insert(payment_hash.0, invoice)?;
+        }
+        write_txn.commit()?;
+        Ok(invoice)
+    }
+
+    async fn get_invoice(&self, payment_hash: PaymentHash) -> Result<Option<Invoice>, Error> {
+        let db = self.db.read().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(INVOICES_TABLE)?;
+        let entry = table.get(payment_hash.0)?;
+        Ok(entry.map(|e| e.value()))
+    }
+
+    async fn insert_payment(&self, invoice: &Bolt11Invoice, amount_msat: u64) -> Result<(), Error> {
+        let payment_hash = invoice.payment_hash();
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(PAYMENTS_TABLE)?;
+            table.insert(
+                payment_hash.as_ref(),
+                Payment {
+                    bolt_11: invoice.to_string(),
+                    amount_msat,
+                    paid: false,
+                    spent_msat: 0,
+                    pre_image: None,
+                },
+            )?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn update_payment(
+        &self,
+        payment_hash: PaymentHash,
+        pre_image: PaymentPreimage,
+        fee_paid_msat: u64,
+    ) -> Result<Option<Payment>, Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        let mut payment = {
+            let table = write_txn.open_table(PAYMENTS_TABLE)?;
+            let entry = table.get(payment_hash.0)?;
+            entry.map(|e| e.value())
+        };
+        if let Some(payment) = payment.as_mut() {
+            let mut table = write_txn.open_table(PAYMENTS_TABLE)?;
+            payment.paid = true;
+            payment.spent_msat = payment.amount_msat + fee_paid_msat;
+            payment.pre_image = Some(pre_image.0);
+            table.insert(payment_hash.0, payment)?;
+        }
+        write_txn.commit()?;
+        Ok(payment)
+    }
+
+    async fn get_payment(&self, payment_hash: PaymentHash) -> Result<Option<Payment>, Error> {
+        let db = self.db.read().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(PAYMENTS_TABLE)?;
+        let entry = table.get(payment_hash.0)?;
+        Ok(entry.map(|e| e.value()))
+    }
+}
+
+// https://github.com/cberner/redb/blob/master/examples/bincode_keys.rs
+#[derive(Debug)]
+struct Bincode<T>(pub T);
+
+impl<T> Value for Bincode<T>
+where
+    T: Debug + Serialize + for<'a> Deserialize<'a>,
+{
+    type SelfType<'a> = T
+    where
+        Self: 'a;
+
+    type AsBytes<'a> = Vec<u8>
+    where
+        Self: 'a;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        bincode::deserialize(data).unwrap()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        bincode::serialize(value).unwrap()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new(&format!("Bincode<{}>", type_name::<T>()))
     }
 }
 

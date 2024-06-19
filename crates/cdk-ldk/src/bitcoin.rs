@@ -1,8 +1,9 @@
-use bitcoin::{BlockHash, Transaction};
+use bitcoin::{block::Header, string::FromHexStr, BlockHash, CompactTarget, Transaction, Work};
 use bitcoincore_rpc::{json::EstimateMode, RpcApi};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning_block_sync::{
     gossip::UtxoSource, AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource,
+    BlockSourceError,
 };
 
 use crate::Error;
@@ -66,20 +67,56 @@ impl BlockSource for BitcoinClient {
     fn get_header<'a>(
         &'a self,
         header_hash: &'a BlockHash,
-        height_hint: Option<u32>,
+        _height_hint: Option<u32>,
     ) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
-        todo!()
+        Box::pin(async move {
+            let res = self
+                .client
+                .get_block_header_info(header_hash)
+                .map_err(|e| BlockSourceError::persistent(e))?;
+            Ok(BlockHeaderData {
+                header: Header {
+                    version: res.version,
+                    prev_blockhash: res
+                        .previous_block_hash
+                        .ok_or(BlockSourceError::persistent("no previous block hash"))?,
+                    merkle_root: res.merkle_root,
+                    time: res.time as u32,
+                    bits: CompactTarget::from_hex_str_no_prefix(&res.bits)
+                        .map_err(|e| BlockSourceError::persistent(e))?,
+                    nonce: res.nonce,
+                },
+                height: res.height as u32,
+                chainwork: Work::from_be_bytes(
+                    res.chainwork
+                        .try_into()
+                        .map_err(|_| BlockSourceError::persistent("invalid work"))?,
+                ),
+            })
+        })
     }
 
     fn get_block<'a>(
         &'a self,
         header_hash: &'a BlockHash,
     ) -> AsyncBlockSourceResult<'a, BlockData> {
-        todo!()
+        Box::pin(async move {
+            let res = self
+                .client
+                .get_block(header_hash)
+                .map_err(|e| BlockSourceError::persistent(e))?;
+            Ok(BlockData::FullBlock(res))
+        })
     }
 
     fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)> {
-        todo!()
+        Box::pin(async move {
+            let block_hash = self
+                .client
+                .get_best_block_hash()
+                .map_err(|e| BlockSourceError::persistent(e))?;
+            Ok((block_hash, None))
+        })
     }
 }
 
@@ -88,13 +125,25 @@ impl UtxoSource for BitcoinClient {
         &'a self,
         block_height: u32,
     ) -> AsyncBlockSourceResult<'a, BlockHash> {
-        todo!()
+        Box::pin(async move {
+            let block_hash = self
+                .client
+                .get_block_hash(block_height as u64)
+                .map_err(|e| BlockSourceError::persistent(e))?;
+            Ok(block_hash)
+        })
     }
 
     fn is_output_unspent<'a>(
         &'a self,
         outpoint: bitcoin::OutPoint,
     ) -> AsyncBlockSourceResult<'a, bool> {
-        todo!()
+        Box::pin(async move {
+            let res = self
+                .client
+                .get_tx_out(&outpoint.txid, outpoint.vout as u32, None)
+                .map_err(|e| BlockSourceError::persistent(e))?;
+            Ok(res.is_some())
+        })
     }
 }
