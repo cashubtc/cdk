@@ -4,6 +4,10 @@ pub enum Error {
     Bip32(#[from] bitcoin::bip32::Error),
     #[error("Block source error")]
     BlockSource(lightning_block_sync::BlockSourceError),
+    #[error("Channel already claimed")]
+    ChannelAlreadyClaimed,
+    #[error("Channel not ready")]
+    ChannelNotReady,
     #[error(transparent)]
     Commit(#[from] redb::CommitError),
     #[error(transparent)]

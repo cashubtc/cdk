@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bitcoin::{hashes::Hash, BlockHash, Network};
+use bitcoin::{hashes::Hash, secp256k1::PublicKey, BlockHash, Network, ScriptBuf, Transaction};
 use cdk::{
     cdk_lightning::{
         self, Amount, BalanceResponse, InvoiceInfo, MintLightning, PayInvoiceResponse,
@@ -20,6 +20,7 @@ use cdk::{
     lightning_invoice::{
         payment::payment_parameters_from_invoice, utils::create_invoice_from_channelmanager,
     },
+    secp256k1::rand::random,
     types::InvoiceStatus,
     util::{hex, unix_time},
     Bolt11Invoice, Sha256,
@@ -33,7 +34,7 @@ use lightning::{
             ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, Retry,
         },
         peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager},
-        PaymentHash, PaymentPreimage,
+        ChannelId, PaymentHash, PaymentPreimage,
     },
     onion_message::messenger::OnionMessenger,
     routing::{
@@ -69,7 +70,7 @@ use lightning_block_sync::{
 use lightning_persister::fs_store::FilesystemStore;
 use redb::{Database, ReadableTable, TableDefinition, TypeName, Value};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, oneshot, RwLock};
+use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::{BitcoinClient, Error};
@@ -151,7 +152,9 @@ pub struct Node {
     scorer: Arc<std::sync::RwLock<NodeScorer>>,
 
     inflight_payments: Arc<RwLock<HashMap<PaymentHash, oneshot::Sender<Payment>>>>,
+    opened_channel_ids: Arc<Mutex<HashMap<ChannelId, oneshot::Sender<ChannelId>>>>,
     paid_invoices: broadcast::Sender<PaymentHash>,
+    pending_channel_scripts: Arc<Mutex<HashMap<ChannelId, oneshot::Sender<ScriptBuf>>>>,
 }
 
 impl Node {
@@ -442,7 +445,9 @@ impl Node {
             scorer,
 
             inflight_payments: Arc::new(RwLock::new(HashMap::new())),
+            opened_channel_ids: Arc::new(Mutex::new(HashMap::new())),
             paid_invoices,
+            pending_channel_scripts: Arc::new(Mutex::new(HashMap::new())),
         };
         node.start_background_processor();
         Ok(node)
@@ -499,6 +504,16 @@ impl Node {
             tracing::warn!("Error saving event: {:?}", e);
         }
         match event {
+            Event::FundingGenerationReady {
+                temporary_channel_id,
+                output_script,
+                ..
+            } => {
+                let mut pending_channel_scripts = self.pending_channel_scripts.lock().await;
+                if let Some(tx) = pending_channel_scripts.remove(&temporary_channel_id) {
+                    let _ = tx.send(output_script);
+                }
+            }
             Event::PaymentClaimable { purpose, .. } => {
                 let payment_preimage = match purpose {
                     PaymentPurpose::Bolt11InvoicePayment {
@@ -538,7 +553,7 @@ impl Node {
                     .update_payment(
                         payment_hash,
                         payment_preimage,
-                        fee_paid_msat.unwrap_or_default(),
+                        Amount::from_msat(fee_paid_msat.unwrap_or_default()),
                     )
                     .await
                 {
@@ -593,6 +608,95 @@ impl Node {
         }
     }
 
+    pub async fn connect_peer(&self, node_id: PublicKey, addr: SocketAddr) -> Result<(), Error> {
+        match lightning_net_tokio::connect_outbound(self.peer_manager.clone(), node_id, addr).await
+        {
+            Some(_) => Ok(()),
+            None => Err(Error::Ldk("Failed to connect peer".to_string())),
+        }
+    }
+
+    pub async fn open_channel(
+        &self,
+        node_id: PublicKey,
+        amount: Amount,
+    ) -> Result<PendingChannel, Error> {
+        let mut pending_channel_scripts = self.pending_channel_scripts.lock().await;
+        let (tx, rx) = oneshot::channel();
+        let channel_id = self
+            .channel_manager
+            .create_channel(node_id, amount.to_sat(), 0, random(), None, None)
+            .map_err(|e| Error::Ldk(format!("{:?}", e)))?;
+        pending_channel_scripts.insert(channel_id, tx);
+        drop(pending_channel_scripts);
+
+        self.db
+            .insert_temp_channel(
+                channel_id,
+                Channel {
+                    node_id,
+                    amount,
+                    is_claimed: false,
+                },
+            )
+            .await?;
+
+        let funding_script = rx
+            .await
+            .map_err(|_| Error::Ldk("Channel open timed out".to_string()))?;
+        Ok(PendingChannel {
+            channel_id,
+            node_id,
+            amount,
+            funding_script,
+        })
+    }
+
+    pub async fn fund_channel(
+        &self,
+        channel_id: ChannelId,
+        node_id: PublicKey,
+        funding_tx: Transaction,
+    ) -> Result<ChannelId, Error> {
+        let (tx, rx) = oneshot::channel();
+        let mut opened_channel_ids = self.opened_channel_ids.lock().await;
+        opened_channel_ids.insert(channel_id, tx);
+        drop(opened_channel_ids);
+
+        self.channel_manager
+            .funding_transaction_generated(&channel_id, &node_id, funding_tx)
+            .map_err(|e| Error::Ldk(format!("{:?}", e)))?;
+
+        let new_channel_id = rx
+            .await
+            .map_err(|_| Error::Ldk("Channel funding timed out".to_string()))?;
+        self.db
+            .update_channel_id(channel_id, new_channel_id)
+            .await?;
+        Ok(new_channel_id)
+    }
+
+    pub async fn claim_channel(&self, channel_id: ChannelId) -> Result<(), Error> {
+        if !self.is_channel_ready(channel_id) {
+            return Err(Error::ChannelNotReady);
+        }
+        self.db.update_channel_claimed(channel_id).await?;
+        Ok(())
+    }
+
+    pub fn is_channel_ready(&self, channel_id: ChannelId) -> bool {
+        self.channel_manager
+            .list_channels()
+            .iter()
+            .find(|c| c.channel_id == channel_id)
+            .map_or(false, |c| c.is_channel_ready)
+    }
+
+    pub async fn is_channel_claimed(&self, channel_id: ChannelId) -> Result<bool, Error> {
+        let channel = self.db.get_channel(channel_id).await?;
+        Ok(channel.map_or(false, |c| c.is_claimed))
+    }
+
     pub async fn get_events(
         &self,
         start: Option<u128>,
@@ -604,6 +708,13 @@ impl Node {
     pub async fn stop(&self) {
         self.cancel_token.cancel();
     }
+}
+
+pub struct PendingChannel {
+    pub channel_id: ChannelId,
+    pub node_id: PublicKey,
+    pub amount: Amount,
+    pub funding_script: ScriptBuf,
 }
 
 #[async_trait]
@@ -690,7 +801,7 @@ impl MintLightning for Node {
             payment_parameters_from_invoice(&bolt11)
                 .map_err(|_| map_err("Error extracting payment parameters"))?;
         self.db
-            .insert_payment(&bolt11, amount_msat)
+            .insert_payment(&bolt11, Amount::from_msat(amount_msat))
             .await
             .map_err(map_err)?;
         let (tx, rx) = oneshot::channel();
@@ -719,7 +830,7 @@ impl MintLightning for Node {
             } else {
                 InvoiceStatus::Unpaid
             },
-            total_spent: Amount::from_msat(payment.spent_msat),
+            total_spent: payment.spent_msat,
         })
     }
 
@@ -767,11 +878,20 @@ fn map_err<E: ToString>(e: E) -> cdk_lightning::Error {
 }
 
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
+const CHANNELS_TABLE: TableDefinition<[u8; 32], Bincode<Channel>> =
+    TableDefinition::new("channels");
 const EVENTS_TABLE: TableDefinition<u128, Vec<u8>> = TableDefinition::new("events");
 const INVOICES_TABLE: TableDefinition<[u8; 32], Bincode<Invoice>> =
     TableDefinition::new("invoices");
 const PAYMENTS_TABLE: TableDefinition<[u8; 32], Bincode<Payment>> =
     TableDefinition::new("payments");
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Channel {
+    node_id: PublicKey,
+    amount: Amount,
+    is_claimed: bool,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Invoice {
@@ -783,9 +903,9 @@ struct Invoice {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Payment {
     bolt_11: String,
-    amount_msat: u64,
+    amount: Amount,
     paid: bool,
-    spent_msat: u64,
+    spent_msat: Amount,
     pre_image: Option<[u8; 32]>,
 }
 
@@ -819,6 +939,7 @@ impl NodeDatabase {
                 }
                 None => {
                     // Open all tables to init a new db
+                    let _ = write_txn.open_table(CHANNELS_TABLE)?;
                     let _ = write_txn.open_table(EVENTS_TABLE)?;
                     let _ = write_txn.open_table(INVOICES_TABLE)?;
                     let _ = write_txn.open_table(PAYMENTS_TABLE)?;
@@ -871,6 +992,73 @@ impl NodeDatabase {
         Ok(events)
     }
 
+    async fn insert_temp_channel(
+        &self,
+        channel_id: ChannelId,
+        channel: Channel,
+    ) -> Result<(), Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(CHANNELS_TABLE)?;
+            table.insert(channel_id.0, &channel)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn update_channel_id(
+        &self,
+        temp_channel_id: ChannelId,
+        channel_id: ChannelId,
+    ) -> Result<Option<Channel>, Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        let mut channel = {
+            let table = write_txn.open_table(CHANNELS_TABLE)?;
+            let entry = table.get(temp_channel_id.0)?;
+            entry.map(|e| e.value())
+        };
+        if let Some(channel) = channel.as_mut() {
+            let mut table = write_txn.open_table(CHANNELS_TABLE)?;
+            table.insert(channel_id.0, channel)?;
+            table.remove(temp_channel_id.0)?;
+        }
+        write_txn.commit()?;
+        Ok(channel)
+    }
+
+    async fn update_channel_claimed(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<Option<Channel>, Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        let mut channel = {
+            let table = write_txn.open_table(CHANNELS_TABLE)?;
+            let entry = table.get(channel_id.0)?;
+            entry.map(|e| e.value())
+        };
+        if let Some(channel) = channel.as_mut() {
+            if channel.is_claimed {
+                return Err(Error::ChannelAlreadyClaimed);
+            }
+            let mut table = write_txn.open_table(CHANNELS_TABLE)?;
+            channel.is_claimed = true;
+            table.insert(channel_id.0, channel)?;
+        }
+        write_txn.commit()?;
+        Ok(channel)
+    }
+
+    async fn get_channel(&self, channel_id: ChannelId) -> Result<Option<Channel>, Error> {
+        let db = self.db.read().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(CHANNELS_TABLE)?;
+        let entry = table.get(channel_id.0)?;
+        Ok(entry.map(|e| e.value()))
+    }
+
     async fn insert_invoice(&self, invoice: &Bolt11Invoice) -> Result<(), Error> {
         let payment_hash = invoice.payment_hash();
         let db = self.db.read().await;
@@ -918,7 +1106,7 @@ impl NodeDatabase {
         Ok(entry.map(|e| e.value()))
     }
 
-    async fn insert_payment(&self, invoice: &Bolt11Invoice, amount_msat: u64) -> Result<(), Error> {
+    async fn insert_payment(&self, invoice: &Bolt11Invoice, amount: Amount) -> Result<(), Error> {
         let payment_hash = invoice.payment_hash();
         let db = self.db.read().await;
         let write_txn = db.begin_write()?;
@@ -928,9 +1116,9 @@ impl NodeDatabase {
                 payment_hash.as_ref(),
                 Payment {
                     bolt_11: invoice.to_string(),
-                    amount_msat,
+                    amount,
                     paid: false,
-                    spent_msat: 0,
+                    spent_msat: Amount::ZERO,
                     pre_image: None,
                 },
             )?;
@@ -943,7 +1131,7 @@ impl NodeDatabase {
         &self,
         payment_hash: PaymentHash,
         pre_image: PaymentPreimage,
-        fee_paid_msat: u64,
+        fee_paid: Amount,
     ) -> Result<Option<Payment>, Error> {
         let db = self.db.read().await;
         let write_txn = db.begin_write()?;
@@ -955,7 +1143,7 @@ impl NodeDatabase {
         if let Some(payment) = payment.as_mut() {
             let mut table = write_txn.open_table(PAYMENTS_TABLE)?;
             payment.paid = true;
-            payment.spent_msat = payment.amount_msat + fee_paid_msat;
+            payment.spent_msat = Amount::from_msat(payment.amount.to_msat() + fee_paid.to_msat());
             payment.pre_image = Some(pre_image.0);
             table.insert(payment_hash.0, payment)?;
         }
