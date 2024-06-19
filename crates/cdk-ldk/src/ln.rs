@@ -365,6 +365,7 @@ impl Node {
             let mut spv_client =
                 SpvClient::new(chain_tip, chain_poller, &mut cache, &chain_listener);
             loop {
+                tracing::debug!("Polling best tip");
                 if let Err(e) = spv_client.poll_best_tip().await {
                     tracing::error!("Error polling best tip: {:?}", e);
                 };
