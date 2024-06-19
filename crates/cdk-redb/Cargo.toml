@@ -17,7 +17,7 @@ nostr = ["cdk/nostr"]
 [dependencies]
 async-trait.workspace = true
 cdk = { workspace = true, default-features = false }
-redb = "2.1.0"
+redb.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

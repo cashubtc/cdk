@@ -1,0 +1,27 @@
+[package]
+name = "cdk-ldk"
+version = "0.1.0"
+edition = "2021"
+authors = ["CDK Developers"]
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true # MSRV
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bitcoin.workspace = true
+bitcoincore-rpc = "0.17.0"
+cdk = { workspace = true, default-features = false, features = ["mint"] }
+futures.workspace = true
+lightning = { version = "0.0.123" }
+lightning-block-sync = { version = "0.0.123", features = ["tokio"] }
+lightning-net-tokio = { version = "0.0.123" }
+lightning-persister = { version = "0.0.123" }
+lightning-background-processor = { version = "0.0.123", features = ["futures"] }
+redb.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.11", default-features = false }
+tracing.workspace = true
+thiserror.workspace = true
+# uuid.workspace = true
