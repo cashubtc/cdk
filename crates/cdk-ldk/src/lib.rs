@@ -1,4 +1,4 @@
-extern crate lightning;
+pub extern crate lightning;
 
 pub mod bitcoin;
 pub mod error;
