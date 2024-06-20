@@ -609,6 +609,19 @@ impl Node {
         }
     }
 
+    pub async fn get_info(&self) -> Result<NodeInfo, Error> {
+        let balance_msat: u64 = self
+            .channel_manager
+            .list_channels()
+            .iter()
+            .map(|c| c.balance_msat)
+            .sum();
+        Ok(NodeInfo {
+            node_id: self.keys_manager.get_node_id(Recipient::Node).unwrap(),
+            balance: Amount::from_msat(balance_msat),
+        })
+    }
+
     pub async fn connect_peer(&self, node_id: PublicKey, addr: SocketAddr) -> Result<(), Error> {
         match lightning_net_tokio::connect_outbound(self.peer_manager.clone(), node_id, addr).await
         {
@@ -647,8 +660,6 @@ impl Node {
             .map_err(|_| Error::Ldk("Channel open timed out".to_string()))?;
         Ok(PendingChannel {
             channel_id,
-            node_id,
-            amount,
             funding_script,
         })
     }
@@ -711,10 +722,13 @@ impl Node {
     }
 }
 
+pub struct NodeInfo {
+    pub node_id: PublicKey,
+    pub balance: Amount,
+}
+
 pub struct PendingChannel {
     pub channel_id: ChannelId,
-    pub node_id: PublicKey,
-    pub amount: Amount,
     pub funding_script: ScriptBuf,
 }
 
