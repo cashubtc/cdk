@@ -667,15 +667,15 @@ impl Node {
     }
 
     pub async fn get_info(&self) -> Result<NodeInfo, Error> {
-        let balance_msat: u64 = self
-            .channel_manager
-            .list_channels()
-            .iter()
-            .map(|c| c.balance_msat)
-            .sum();
+        let channels = self.channel_manager.list_channels();
+        let balance_msat: u64 = channels.iter().map(|c| c.balance_msat).sum();
+        let num_channels = channels.len();
+        let num_peers = self.peer_manager.list_peers().len();
         Ok(NodeInfo {
             node_id: self.keys_manager.get_node_id(Recipient::Node).unwrap(),
             balance: Amount::from_msat(balance_msat),
+            num_channels,
+            num_peers,
         })
     }
 
@@ -707,14 +707,7 @@ impl Node {
         drop(pending_channel_scripts);
 
         self.db
-            .insert_temp_channel(
-                channel_id,
-                Channel {
-                    node_id,
-                    amount,
-                    is_claimed: false,
-                },
-            )
+            .insert_temp_channel(channel_id, Channel { node_id, amount })
             .await?;
 
         let funding_script = rx
@@ -728,10 +721,16 @@ impl Node {
 
     pub async fn fund_channel(
         &self,
-        node_id: PublicKey,
         channel_id: ChannelId,
         funding_tx: Transaction,
     ) -> Result<ChannelId, Error> {
+        let node_id = self
+            .db
+            .get_channel(channel_id)
+            .await?
+            .ok_or(Error::ChannelNotFound)?
+            .node_id;
+
         let (tx, rx) = oneshot::channel();
         let mut opened_channel_ids = self.opened_channel_ids.lock().await;
         opened_channel_ids.insert(channel_id, tx);
@@ -747,25 +746,12 @@ impl Node {
         Ok(new_channel_id)
     }
 
-    pub async fn claim_channel(&self, channel_id: ChannelId) -> Result<(), Error> {
-        if !self.is_channel_ready(channel_id) {
-            return Err(Error::ChannelNotReady);
-        }
-        self.db.update_channel_claimed(channel_id).await?;
-        Ok(())
-    }
-
     pub fn is_channel_ready(&self, channel_id: ChannelId) -> bool {
         self.channel_manager
             .list_channels()
             .iter()
             .find(|c| c.channel_id == channel_id)
             .map_or(false, |c| c.is_channel_ready)
-    }
-
-    pub async fn is_channel_claimed(&self, channel_id: ChannelId) -> Result<bool, Error> {
-        let channel = self.db.get_channel(channel_id).await?;
-        Ok(channel.map_or(false, |c| c.is_claimed))
     }
 
     pub async fn get_events(
@@ -784,6 +770,8 @@ impl Node {
 pub struct NodeInfo {
     pub node_id: PublicKey,
     pub balance: Amount,
+    pub num_channels: usize,
+    pub num_peers: usize,
 }
 
 pub struct PendingChannel {
@@ -966,7 +954,6 @@ const PEERS_TABLE: TableDefinition<Bincode<PublicKey>, Bincode<SocketAddr>> =
 struct Channel {
     node_id: PublicKey,
     amount: Amount,
-    is_claimed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1110,29 +1097,6 @@ impl NodeDatabase {
             let mut table = write_txn.open_table(CHANNELS_TABLE)?;
             table.insert(channel_id.0, channel)?;
             table.remove(temp_channel_id.0)?;
-        }
-        write_txn.commit()?;
-        Ok(channel)
-    }
-
-    async fn update_channel_claimed(
-        &self,
-        channel_id: ChannelId,
-    ) -> Result<Option<Channel>, Error> {
-        let db = self.db.read().await;
-        let write_txn = db.begin_write()?;
-        let mut channel = {
-            let table = write_txn.open_table(CHANNELS_TABLE)?;
-            let entry = table.get(channel_id.0)?;
-            entry.map(|e| e.value())
-        };
-        if let Some(channel) = channel.as_mut() {
-            if channel.is_claimed {
-                return Err(Error::ChannelAlreadyClaimed);
-            }
-            let mut table = write_txn.open_table(CHANNELS_TABLE)?;
-            channel.is_claimed = true;
-            table.insert(channel_id.0, channel)?;
         }
         write_txn.commit()?;
         Ok(channel)
