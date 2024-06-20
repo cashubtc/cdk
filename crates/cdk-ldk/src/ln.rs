@@ -754,6 +754,15 @@ impl Node {
             .map_or(false, |c| c.is_channel_ready)
     }
 
+    pub async fn get_open_channel_value(&self, channel_id: ChannelId) -> Result<Amount, Error> {
+        let channel = self
+            .db
+            .get_channel(channel_id)
+            .await?
+            .ok_or(Error::ChannelNotFound)?;
+        Ok(channel.amount)
+    }
+
     pub async fn get_events(
         &self,
         start: Option<DateTime<Utc>>,
