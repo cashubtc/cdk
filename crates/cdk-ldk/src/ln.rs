@@ -515,6 +515,31 @@ impl Node {
                     let _ = tx.send(output_script);
                 }
             }
+            Event::ChannelPending {
+                channel_id,
+                former_temporary_channel_id,
+                ..
+            } => {
+                let mut opened_channel_ids = self.opened_channel_ids.lock().await;
+                let temp_channel_id = former_temporary_channel_id.unwrap();
+                if let Err(e) = self.db.update_channel_id(temp_channel_id, channel_id).await {
+                    tracing::warn!("Error updating channel id: {:?}", e);
+                }
+                if let Some(tx) = opened_channel_ids.remove(&former_temporary_channel_id.unwrap()) {
+                    let _ = tx.send(channel_id);
+                }
+            }
+            Event::ChannelReady {
+                channel_id,
+                counterparty_node_id,
+                ..
+            } => {
+                tracing::info!(
+                    "Channel ready with {}: {}",
+                    counterparty_node_id,
+                    channel_id
+                );
+            }
             Event::PaymentClaimable { purpose, .. } => {
                 let payment_preimage = match purpose {
                     PaymentPurpose::Bolt11InvoicePayment {
@@ -682,9 +707,6 @@ impl Node {
         let new_channel_id = rx
             .await
             .map_err(|_| Error::Ldk("Channel funding timed out".to_string()))?;
-        self.db
-            .update_channel_id(channel_id, new_channel_id)
-            .await?;
         Ok(new_channel_id)
     }
 
