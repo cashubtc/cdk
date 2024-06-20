@@ -1,6 +1,7 @@
 use std::{
     any::type_name,
-    collections::HashMap,
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     fs,
     net::SocketAddr,
@@ -69,8 +70,8 @@ use lightning_block_sync::{
     SpvClient, UnboundedCache,
 };
 use lightning_persister::fs_store::FilesystemStore;
-use redb::{Database, ReadableTable, TableDefinition, TypeName, Value};
-use serde::{Deserialize, Serialize};
+use redb::{Database, Key, ReadableTable, TableDefinition, TypeName, Value};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -451,6 +452,7 @@ impl Node {
             pending_channel_scripts: Arc::new(Mutex::new(HashMap::new())),
         };
         node.start_background_processor();
+        node.start_peer_reconnect();
         Ok(node)
     }
 
@@ -496,6 +498,36 @@ impl Node {
             {
                 tracing::error!("Error processing events: {:?}", e);
             };
+        });
+    }
+
+    fn start_peer_reconnect(&self) {
+        let self_clone = self.clone();
+        tokio::spawn(async move {
+            let cancel_token = self_clone.cancel_token.clone();
+
+            loop {
+                let counterparty_node_ids = self_clone
+                    .channel_manager
+                    .list_channels()
+                    .iter()
+                    .map(|c| c.counterparty.node_id)
+                    .collect::<HashSet<_>>();
+                for node_id in counterparty_node_ids {
+                    if self_clone.peer_manager.peer_by_node_id(&node_id).is_none() {
+                        if let Ok(Some(addr)) = self_clone.db.get_peer_address(node_id).await {
+                            tracing::info!("Reconnecting to peer: {}@{}", node_id, addr);
+                            if let Err(e) = self_clone.connect_peer(node_id, addr).await {
+                                tracing::warn!("Error reconnecting to peer: {:?}", e);
+                            }
+                        }
+                    }
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {},
+                    _ = cancel_token.cancelled() => break,
+                }
+            }
         });
     }
 
@@ -650,7 +682,12 @@ impl Node {
     pub async fn connect_peer(&self, node_id: PublicKey, addr: SocketAddr) -> Result<(), Error> {
         match lightning_net_tokio::connect_outbound(self.peer_manager.clone(), node_id, addr).await
         {
-            Some(_) => Ok(()),
+            Some(_) => {
+                if let Err(e) = self.db.insert_peer_address(node_id, addr).await {
+                    tracing::warn!("Error saving peer address: {:?}", e);
+                }
+                Ok(())
+            }
             None => Err(Error::Ldk("Failed to connect peer".to_string())),
         }
     }
@@ -922,6 +959,8 @@ const INVOICES_TABLE: TableDefinition<[u8; 32], Bincode<Invoice>> =
     TableDefinition::new("invoices");
 const PAYMENTS_TABLE: TableDefinition<[u8; 32], Bincode<Payment>> =
     TableDefinition::new("payments");
+const PEERS_TABLE: TableDefinition<Bincode<PublicKey>, Bincode<SocketAddr>> =
+    TableDefinition::new("peers");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Channel {
@@ -980,6 +1019,7 @@ impl NodeDatabase {
                     let _ = write_txn.open_table(EVENTS_TABLE)?;
                     let _ = write_txn.open_table(INVOICES_TABLE)?;
                     let _ = write_txn.open_table(PAYMENTS_TABLE)?;
+                    let _ = write_txn.open_table(PEERS_TABLE)?;
 
                     table.insert("db_version", "0")?;
                 }
@@ -1205,6 +1245,25 @@ impl NodeDatabase {
         let entry = table.get(payment_hash.0)?;
         Ok(entry.map(|e| e.value()))
     }
+
+    async fn insert_peer_address(&self, node_id: PublicKey, addr: SocketAddr) -> Result<(), Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(PEERS_TABLE)?;
+            table.insert(node_id, addr)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn get_peer_address(&self, node_id: PublicKey) -> Result<Option<SocketAddr>, Error> {
+        let db = self.db.read().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(PEERS_TABLE)?;
+        let entry = table.get(node_id)?;
+        Ok(entry.map(|e| e.value()))
+    }
 }
 
 // https://github.com/cberner/redb/blob/master/examples/bincode_keys.rs
@@ -1244,6 +1303,15 @@ where
 
     fn type_name() -> TypeName {
         TypeName::new(&format!("Bincode<{}>", type_name::<T>()))
+    }
+}
+
+impl<T> Key for Bincode<T>
+where
+    T: Debug + Serialize + DeserializeOwned + Ord,
+{
+    fn compare(data1: &[u8], data2: &[u8]) -> Ordering {
+        Self::from_bytes(data1).cmp(&Self::from_bytes(data2))
     }
 }
 
