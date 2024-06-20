@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -27,8 +28,7 @@ use tower_http::cors::CorsLayer;
 
 pub async fn start_server(
     mint_url: &str,
-    listen_addr: &str,
-    listen_port: u16,
+    listen_addr: SocketAddr,
     mint: Mint,
     ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
 ) -> Result<()> {
@@ -82,8 +82,7 @@ pub async fn start_server(
         ]))
         .with_state(state);
 
-    let listener =
-        tokio::net::TcpListener::bind(format!("{}:{}", listen_addr, listen_port)).await?;
+    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
 
     axum::serve(listener, mint_service).await?;
 

@@ -85,10 +85,16 @@ async fn main() -> anyhow::Result<()> {
         };
 
     let mint_url = settings.info.url;
-    let listen_addr = settings.info.listen_host;
+    let listen_host = settings.info.listen_host;
     let listen_port = settings.info.listen_port;
 
-    cdk_axum::start_server(&mint_url, &listen_addr, listen_port, mint, ln).await?;
+    cdk_axum::start_server(
+        &mint_url,
+        format!("{}:{}", listen_host, listen_port).parse()?,
+        mint,
+        ln,
+    )
+    .await?;
 
     Ok(())
 }

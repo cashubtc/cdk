@@ -194,7 +194,7 @@ impl Node {
             persister.clone(),
         ));
         let polled_chain_tip = validate_best_block_header(bitcoin_client.clone()).await?;
-        tracing::info!("Polled chain tip: {:?}", polled_chain_tip);
+        tracing::debug!("Polled chain tip: {:?}", polled_chain_tip);
 
         // Configure router
         let network_graph_bytes = match persister.read(
@@ -347,7 +347,7 @@ impl Node {
         } else {
             polled_chain_tip
         };
-        tracing::info!("Chain tip: {:?}", chain_tip);
+        tracing::debug!("Chain tip: {:?}", chain_tip);
 
         for item in chain_listener_channel_monitors.drain(..) {
             let channel_monitor = item.1 .0;
