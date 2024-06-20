@@ -666,8 +666,8 @@ impl Node {
 
     pub async fn fund_channel(
         &self,
-        channel_id: ChannelId,
         node_id: PublicKey,
+        channel_id: ChannelId,
         funding_tx: Transaction,
     ) -> Result<ChannelId, Error> {
         let (tx, rx) = oneshot::channel();
