@@ -1344,7 +1344,8 @@ impl Wallet {
                         proof.secret.clone(),
                     )
                 {
-                    let conditions: Result<Conditions, _> = secret.secret_data.tags.try_into();
+                    let conditions: Result<Conditions, _> =
+                        secret.secret_data.tags.unwrap_or_default().try_into();
                     if let Ok(conditions) = conditions {
                         let mut pubkeys = conditions.pubkeys.unwrap_or_default();
 
@@ -1548,21 +1549,32 @@ impl Wallet {
             SpendingConditions::P2PKConditions { data, conditions } => {
                 let mut pubkeys = vec![data];
 
-                pubkeys.extend(conditions.pubkeys.unwrap_or_default());
+                match conditions {
+                    Some(conditions) => {
+                        pubkeys.extend(conditions.pubkeys.unwrap_or_default());
 
-                (
+                        (
+                            conditions.refund_keys,
+                            Some(pubkeys),
+                            conditions.locktime,
+                            conditions.num_sigs,
+                        )
+                    }
+                    None => (None, Some(pubkeys), None, None),
+                }
+            }
+            SpendingConditions::HTLCConditions {
+                conditions,
+                data: _,
+            } => match conditions {
+                Some(conditions) => (
                     conditions.refund_keys,
-                    Some(pubkeys),
+                    conditions.pubkeys,
                     conditions.locktime,
                     conditions.num_sigs,
-                )
-            }
-            SpendingConditions::HTLCConditions { conditions, .. } => (
-                conditions.refund_keys,
-                conditions.pubkeys,
-                conditions.locktime,
-                conditions.num_sigs,
-            ),
+                ),
+                None => (None, None, None, None),
+            },
         };
 
         if refund_keys.is_some() && locktime.is_none() {
