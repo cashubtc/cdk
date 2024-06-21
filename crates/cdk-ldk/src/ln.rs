@@ -77,7 +77,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{BitcoinClient, Error};
 
-const BLOCK_TIMER: u64 = 10;
+const BLOCK_TIMER: u64 = 1;
 const DB_FILE: &str = "db";
 const NETWORK_DIR: &str = "network";
 
@@ -599,6 +599,15 @@ impl Node {
                     tracing::warn!("Error updating invoice: {:?}", e);
                 }
                 let _ = self.paid_invoices.send(payment_hash);
+            }
+            Event::PaymentPathSuccessful {
+                payment_hash, path, ..
+            } => {
+                tracing::debug!(
+                    "Payment path successful ({}): {:?}",
+                    payment_hash.unwrap(),
+                    path
+                );
             }
             Event::PaymentSent {
                 payment_hash,
