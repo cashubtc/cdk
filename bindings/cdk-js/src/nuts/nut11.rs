@@ -39,10 +39,13 @@ impl Deref for JsP2PKSpendingConditions {
 #[wasm_bindgen(js_class = P2PKSpendingConditions)]
 impl JsP2PKSpendingConditions {
     #[wasm_bindgen(constructor)]
-    pub fn new(pubkey: String, conditions: JsConditions) -> Result<JsP2PKSpendingConditions> {
+    pub fn new(
+        pubkey: String,
+        conditions: Option<JsConditions>,
+    ) -> Result<JsP2PKSpendingConditions> {
         let pubkey = PublicKey::from_str(&pubkey).map_err(into_err)?;
         Ok(Self {
-            inner: SpendingConditions::new_p2pk(pubkey, conditions.deref().clone()),
+            inner: SpendingConditions::new_p2pk(pubkey, conditions.map(|c| c.deref().clone())),
         })
     }
 }

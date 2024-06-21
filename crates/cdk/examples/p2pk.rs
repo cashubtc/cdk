@@ -5,7 +5,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
-use cdk::nuts::{Conditions, CurrencyUnit, SecretKey, SpendingConditions};
+use cdk::nuts::{CurrencyUnit, SecretKey, SpendingConditions};
 use cdk::wallet::Wallet;
 use cdk::{Amount, UncheckedUrl};
 use rand::Rng;
@@ -51,8 +51,7 @@ async fn main() -> Result<(), Error> {
 
     let secret = SecretKey::generate();
 
-    let spending_conditions =
-        SpendingConditions::new_p2pk(secret.public_key(), Conditions::default());
+    let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
 
     let token = wallet
         .send(

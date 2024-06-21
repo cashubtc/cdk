@@ -119,7 +119,8 @@ impl Proof {
     /// Verify P2PK signature on [Proof]
     pub fn verify_p2pk(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
-        let spending_conditions: Conditions = secret.secret_data.tags.try_into()?;
+        let spending_conditions: Conditions =
+            secret.secret_data.tags.unwrap_or_default().try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
         let mut valid_sigs = 0;
@@ -254,18 +255,18 @@ pub enum SpendingConditions {
     /// NUT11 Spending conditions
     P2PKConditions {
         data: PublicKey,
-        conditions: Conditions,
+        conditions: Option<Conditions>,
     },
     /// NUT14 Spending conditions
     HTLCConditions {
         data: Sha256Hash,
-        conditions: Conditions,
+        conditions: Option<Conditions>,
     },
 }
 
 impl SpendingConditions {
     /// New HTLC [SpendingConditions]
-    pub fn new_htlc(preimage: String, conditions: Conditions) -> Result<Self, Error> {
+    pub fn new_htlc(preimage: String, conditions: Option<Conditions>) -> Result<Self, Error> {
         let htlc = Sha256Hash::hash(&hex::decode(preimage)?);
 
         Ok(Self::HTLCConditions {
@@ -275,7 +276,7 @@ impl SpendingConditions {
     }
 
     /// New P2PK [SpendingConditions]
-    pub fn new_p2pk(pubkey: PublicKey, conditions: Conditions) -> Self {
+    pub fn new_p2pk(pubkey: PublicKey, conditions: Option<Conditions>) -> Self {
         Self::P2PKConditions {
             data: pubkey,
             conditions,
@@ -292,8 +293,8 @@ impl SpendingConditions {
 
     pub fn num_sigs(&self) -> Option<u64> {
         match self {
-            Self::P2PKConditions { conditions, .. } => conditions.num_sigs,
-            Self::HTLCConditions { conditions, .. } => conditions.num_sigs,
+            Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.num_sigs),
+            Self::HTLCConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.num_sigs),
         }
     }
 
@@ -301,25 +302,31 @@ impl SpendingConditions {
         match self {
             Self::P2PKConditions { data, conditions } => {
                 let mut pubkeys = vec![*data];
-                pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
+                if let Some(conditions) = conditions {
+                    pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
+                }
 
                 Some(pubkeys)
             }
-            Self::HTLCConditions { conditions, .. } => conditions.pubkeys.clone(),
+            Self::HTLCConditions { conditions, .. } => conditions.clone().and_then(|c| c.pubkeys),
         }
     }
 
     pub fn locktime(&self) -> Option<u64> {
         match self {
-            Self::P2PKConditions { conditions, .. } => conditions.locktime,
-            Self::HTLCConditions { conditions, .. } => conditions.locktime,
+            Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.locktime),
+            Self::HTLCConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.locktime),
         }
     }
 
-    pub fn refund_keys(&self) -> &Option<Vec<PublicKey>> {
+    pub fn refund_keys(&self) -> Option<Vec<PublicKey>> {
         match self {
-            Self::P2PKConditions { conditions, .. } => &conditions.refund_keys,
-            Self::HTLCConditions { conditions, .. } => &conditions.refund_keys,
+            Self::P2PKConditions { conditions, .. } => {
+                conditions.clone().and_then(|c| c.refund_keys)
+            }
+            Self::HTLCConditions { conditions, .. } => {
+                conditions.clone().and_then(|c| c.refund_keys)
+            }
         }
     }
 }
@@ -339,12 +346,12 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
         match secret.kind {
             Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
                 data: PublicKey::from_str(&secret.secret_data.data)?,
-                conditions: secret.secret_data.tags.try_into()?,
+                conditions: secret.secret_data.tags.and_then(|t| t.try_into().ok()),
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
                 data: Sha256Hash::from_str(&secret.secret_data.data)
                     .map_err(|_| Error::InvalidHash)?,
-                conditions: secret.secret_data.tags.try_into()?,
+                conditions: secret.secret_data.tags.and_then(|t| t.try_into().ok()),
             }),
         }
     }
@@ -578,13 +585,15 @@ pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<PublicKey>) {
                 }
             }
 
-            if let Ok(conditions) = Conditions::try_from(secret.secret_data.tags) {
-                if conditions.sig_flag.eq(&SigFlag::SigAll) {
-                    sig_flag = SigFlag::SigAll;
-                }
+            if let Some(tags) = secret.secret_data.tags {
+                if let Ok(conditions) = Conditions::try_from(tags) {
+                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
+                        sig_flag = SigFlag::SigAll;
+                    }
 
-                if let Some(pubs) = conditions.pubkeys {
-                    pubkeys.extend(pubs);
+                    if let Some(pubs) = conditions.pubkeys {
+                        pubkeys.extend(pubs);
+                    }
                 }
             }
         }
@@ -744,7 +753,7 @@ mod tests {
             sig_flag: SigFlag::SigAll,
         };
 
-        let secret: Nut10Secret = Nut10Secret::new(Kind::P2PK, data.to_string(), conditions);
+        let secret: Nut10Secret = Nut10Secret::new(Kind::P2PK, data.to_string(), Some(conditions));
 
         let secret_str = serde_json::to_string(&secret).unwrap();
 
@@ -778,7 +787,7 @@ mod tests {
             sig_flag: SigFlag::SigInputs,
         };
 
-        let secret: Secret = Nut10Secret::new(Kind::P2PK, v_key.to_string(), conditions)
+        let secret: Secret = Nut10Secret::new(Kind::P2PK, v_key.to_string(), Some(conditions))
             .try_into()
             .unwrap();
 

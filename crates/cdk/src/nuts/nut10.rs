@@ -25,8 +25,8 @@ pub struct SecretData {
     /// Expresses the spending condition specific to each kind
     pub data: String,
     /// Additional data committed to and can be used for feature extensions
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -38,16 +38,17 @@ pub struct Secret {
 }
 
 impl Secret {
-    pub fn new<S, V>(kind: Kind, data: S, tags: V) -> Self
+    pub fn new<S, V>(kind: Kind, data: S, tags: Option<V>) -> Self
     where
         S: Into<String>,
         V: Into<Vec<Vec<String>>>,
     {
         let nonce = crate::secret::Secret::generate().to_string();
+
         let secret_data = SecretData {
             nonce,
             data: data.into(),
-            tags: tags.into(),
+            tags: tags.map(|v| v.into()),
         };
 
         Self { kind, secret_data }
@@ -94,11 +95,11 @@ mod tests {
                 nonce: "5d11913ee0f92fefdc82a6764fd2457a".to_string(),
                 data: "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198"
                     .to_string(),
-                tags: vec![vec![
+                tags: Some(vec![vec![
                     "key".to_string(),
                     "value1".to_string(),
                     "value2".to_string(),
-                ]],
+                ]]),
             },
         };
 

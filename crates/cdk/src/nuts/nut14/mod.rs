@@ -56,27 +56,55 @@ impl Proof {
     /// Verify HTLC
     pub fn verify_htlc(&self) -> Result<(), Error> {
         let secret: Secret = self.secret.clone().try_into()?;
-        let conditions: Conditions = secret.secret_data.tags.try_into()?;
+        let conditions: Option<Conditions> =
+            secret.secret_data.tags.and_then(|c| c.try_into().ok());
 
-        // Check locktime
-        if let Some(locktime) = conditions.locktime {
-            // If locktime is in passed and no refund keys provided anyone can spend
-            if locktime.lt(&unix_time()) && conditions.refund_keys.is_none() {
-                return Ok(());
+        let htlc_witness = match &self.witness {
+            Some(Witness::HTLCWitness(witness)) => witness,
+            _ => return Err(Error::IncorrectSecretKind),
+        };
+
+        if let Some(conditions) = conditions {
+            // Check locktime
+            if let Some(locktime) = conditions.locktime {
+                // If locktime is in passed and no refund keys provided anyone can spend
+                if locktime.lt(&unix_time()) && conditions.refund_keys.is_none() {
+                    return Ok(());
+                }
+
+                // If refund keys are provided verify p2pk signatures
+                if let (Some(refund_key), Some(signatures)) =
+                    (conditions.refund_keys, &self.witness)
+                {
+                    let signatures: Vec<Signature> = signatures
+                        .signatures()
+                        .ok_or(Error::SignaturesNotProvided)?
+                        .iter()
+                        .flat_map(|s| Signature::from_str(s))
+                        .collect();
+
+                    // If secret includes refund keys check that there is a valid signature
+                    if valid_signatures(self.secret.as_bytes(), &refund_key, &signatures).ge(&1) {
+                        return Ok(());
+                    }
+                }
             }
+            // If pubkeys are present check there is a valid signature
+            if let Some(pubkey) = conditions.pubkeys {
+                let req_sigs = conditions.num_sigs.unwrap_or(1);
 
-            // If refund keys are provided verify p2pk signatures
-            if let (Some(refund_key), Some(signatures)) = (conditions.refund_keys, &self.witness) {
+                let signatures = htlc_witness
+                    .signatures
+                    .as_ref()
+                    .ok_or(Error::SignaturesNotProvided)?;
+
                 let signatures: Vec<Signature> = signatures
-                    .signatures()
-                    .ok_or(Error::SignaturesNotProvided)?
                     .iter()
                     .flat_map(|s| Signature::from_str(s))
                     .collect();
 
-                // If secret includes refund keys check that there is a valid signature
-                if valid_signatures(self.secret.as_bytes(), &refund_key, &signatures).ge(&1) {
-                    return Ok(());
+                if valid_signatures(self.secret.as_bytes(), &pubkey, &signatures).lt(&req_sigs) {
+                    return Err(Error::IncorrectSecretKind);
                 }
             }
         }
@@ -85,11 +113,6 @@ impl Proof {
             return Err(Error::IncorrectSecretKind);
         }
 
-        let htlc_witness = match &self.witness {
-            Some(Witness::HTLCWitness(witness)) => witness,
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
         let hash_lock =
             Sha256Hash::from_str(&secret.secret_data.data).map_err(|_| Error::InvalidHash)?;
 
@@ -97,24 +120,6 @@ impl Proof {
 
         if hash_lock.ne(&preimage_hash) {
             return Err(Error::Preimage);
-        }
-
-        // If pubkeys are present check there is a valid signature
-        if let Some(pubkey) = conditions.pubkeys {
-            let req_sigs = conditions.num_sigs.unwrap_or(1);
-            let signatures = htlc_witness
-                .signatures
-                .as_ref()
-                .ok_or(Error::SignaturesNotProvided)?;
-
-            let signatures: Vec<Signature> = signatures
-                .iter()
-                .flat_map(|s| Signature::from_str(s))
-                .collect();
-
-            if valid_signatures(self.secret.as_bytes(), &pubkey, &signatures).lt(&req_sigs) {
-                return Err(Error::IncorrectSecretKind);
-            }
         }
 
         Ok(())
