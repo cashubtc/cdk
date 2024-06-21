@@ -42,6 +42,7 @@ use lightning::{
         channelmanager::{
             ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, Retry,
         },
+        msgs::SocketAddress,
         peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager},
         script::ShutdownScript,
         ChannelId, PaymentHash, PaymentPreimage,
@@ -704,21 +705,54 @@ impl Node {
     }
 
     pub async fn get_info(&self) -> Result<NodeInfo, Error> {
+        let node_id = self.keys_manager.get_node_id(Recipient::Node).unwrap();
         let channels = self.channel_manager.list_channels();
-        let balance_msat: u64 = channels.iter().map(|c| c.balance_msat).sum();
-        let num_channels = channels.len();
-        let num_peers = self.peer_manager.list_peers().len();
-        let has_spendable_outputs = self
-            .db
-            .get_all_spendable_outputs()
-            .await
-            .map_or(false, |outputs| !outputs.is_empty());
+        let channel_balances = channels
+            .iter()
+            .map(|c| (c.channel_id, Amount::from_msat(c.balance_msat)))
+            .collect();
+        let peers = self
+            .peer_manager
+            .list_peers()
+            .iter()
+            .filter_map(|p| {
+                Some((
+                    p.counterparty_node_id,
+                    match p.socket_address {
+                        Some(SocketAddress::TcpIpV4 { addr, port }) => {
+                            Some(SocketAddr::new(addr.into(), port))
+                        }
+                        _ => None,
+                    }?,
+                ))
+            })
+            .collect();
+        let spendable_balance =
+            self.db
+                .get_all_spendable_outputs()
+                .await
+                .map_or(Amount::ZERO, |outputs| {
+                    Amount::from_sat(
+                        outputs
+                            .values()
+                            .flat_map(|a| a)
+                            .map(|o| match o {
+                                SpendableOutputDescriptor::StaticOutput { output, .. } => {
+                                    output.value
+                                }
+                                SpendableOutputDescriptor::DelayedPaymentOutput(o) => {
+                                    o.output.value
+                                }
+                                SpendableOutputDescriptor::StaticPaymentOutput(o) => o.output.value,
+                            })
+                            .sum(),
+                    )
+                });
         Ok(NodeInfo {
-            node_id: self.keys_manager.get_node_id(Recipient::Node).unwrap(),
-            balance: Amount::from_msat(balance_msat),
-            num_channels,
-            num_peers,
-            has_spendable_outputs,
+            node_id,
+            channel_balances,
+            peers,
+            spendable_balance,
         })
     }
 
@@ -878,10 +912,9 @@ impl Node {
 
 pub struct NodeInfo {
     pub node_id: PublicKey,
-    pub balance: Amount,
-    pub num_channels: usize,
-    pub num_peers: usize,
-    pub has_spendable_outputs: bool,
+    pub channel_balances: HashMap<ChannelId, Amount>,
+    pub peers: HashMap<PublicKey, SocketAddr>,
+    pub spendable_balance: Amount,
 }
 
 pub struct PendingChannel {
