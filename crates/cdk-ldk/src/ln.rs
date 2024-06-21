@@ -13,7 +13,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bitcoin::{hashes::Hash, secp256k1::PublicKey, BlockHash, Network, ScriptBuf, Transaction};
+use bitcoin::{
+    absolute::LockTime, hashes::Hash, key::Secp256k1, secp256k1::PublicKey, BlockHash, Network,
+    ScriptBuf, Transaction, Txid,
+};
 use cdk::{
     cdk_lightning::{
         self, Amount, BalanceResponse, InvoiceInfo, MintLightning, PayInvoiceResponse,
@@ -29,13 +32,18 @@ use cdk::{
 use chrono::{DateTime, Utc};
 use futures::Stream;
 use lightning::{
-    chain::{chainmonitor::ChainMonitor, ChannelMonitorUpdateStatus, Filter, Listen, Watch},
+    chain::{
+        chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator},
+        chainmonitor::ChainMonitor,
+        ChannelMonitorUpdateStatus, Filter, Listen, Watch,
+    },
     events::{Event, PaymentPurpose},
     ln::{
         channelmanager::{
             ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, Retry,
         },
         peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager},
+        script::ShutdownScript,
         ChannelId, PaymentHash, PaymentPreimage,
     },
     onion_message::messenger::OnionMessenger,
@@ -47,7 +55,10 @@ use lightning::{
             ProbabilisticScoringFeeParameters,
         },
     },
-    sign::{EntropySource, InMemorySigner, KeysManager, NodeSigner, Recipient},
+    sign::{
+        EntropySource, InMemorySigner, KeysManager, NodeSigner, OutputSpender, Recipient,
+        SpendableOutputDescriptor,
+    },
     util::{
         config::UserConfig,
         logger::{Level, Logger, Record},
@@ -141,6 +152,7 @@ type NodeScorer = ProbabilisticScorer<Arc<NodeNetworkGraph>, Arc<NodeLogger>>;
 
 #[derive(Clone)]
 pub struct Node {
+    bitcoin_client: Arc<BitcoinClient>,
     cancel_token: CancellationToken,
     chain_monitor: Arc<NodeChainMonitor>,
     channel_manager: Arc<NodeChannelManager>,
@@ -434,6 +446,7 @@ impl Node {
 
         let (paid_invoices, _) = broadcast::channel(100);
         let node = Self {
+            bitcoin_client,
             cancel_token,
             chain_monitor,
             channel_manager,
@@ -667,6 +680,21 @@ impl Node {
                     }
                 };
             }
+            Event::SpendableOutputs {
+                outputs,
+                channel_id,
+            } => {
+                let channel_id = channel_id.unwrap();
+                tracing::info!("Spendable outputs found for {}", channel_id);
+                if let Err(e) = self
+                    .db
+                    .insert_spendable_outputs(channel_id, outputs.clone())
+                    .await
+                {
+                    tracing::error!("Error saving spendable outputs: {:?}", e);
+                    tracing::warn!("Manual spending of outputs required: {:?}", outputs);
+                }
+            }
             Event::PendingHTLCsForwardable { time_forwardable } => {
                 tokio::time::sleep(time_forwardable).await;
                 self.channel_manager.process_pending_htlc_forwards();
@@ -680,11 +708,17 @@ impl Node {
         let balance_msat: u64 = channels.iter().map(|c| c.balance_msat).sum();
         let num_channels = channels.len();
         let num_peers = self.peer_manager.list_peers().len();
+        let has_spendable_outputs = self
+            .db
+            .get_all_spendable_outputs()
+            .await
+            .map_or(false, |outputs| !outputs.is_empty());
         Ok(NodeInfo {
             node_id: self.keys_manager.get_node_id(Recipient::Node).unwrap(),
             balance: Amount::from_msat(balance_msat),
             num_channels,
             num_peers,
+            has_spendable_outputs,
         })
     }
 
@@ -755,6 +789,29 @@ impl Node {
         Ok(new_channel_id)
     }
 
+    pub async fn close_channel(
+        &self,
+        channel_id: ChannelId,
+        shutdown_script: ShutdownScript,
+    ) -> Result<(), Error> {
+        let channel = self
+            .db
+            .get_channel(channel_id)
+            .await?
+            .ok_or(Error::ChannelNotFound)?;
+        let fee_rate = self
+            .bitcoin_client
+            .get_est_sat_per_1000_weight(ConfirmationTarget::ChannelCloseMinimum);
+        self.channel_manager
+            .close_channel_with_feerate_and_script(
+                &channel_id,
+                &channel.node_id,
+                Some(fee_rate),
+                Some(shutdown_script),
+            )
+            .map_err(|e| Error::Ldk(format!("{:?}", e)))
+    }
+
     pub fn is_channel_ready(&self, channel_id: ChannelId) -> bool {
         self.channel_manager
             .list_channels()
@@ -770,6 +827,40 @@ impl Node {
             .await?
             .ok_or(Error::ChannelNotFound)?;
         Ok(channel.amount)
+    }
+
+    pub async fn sweep_spendable_outputs(&self, script: ScriptBuf) -> Result<Txid, Error> {
+        let secp = Secp256k1::new();
+        let outputs = self.db.get_all_spendable_outputs().await?;
+        if outputs.is_empty() {
+            return Err(Error::NoSpendableOutputs);
+        }
+
+        let fee_rate = self
+            .bitcoin_client
+            .get_est_sat_per_1000_weight(ConfirmationTarget::OnChainSweep);
+        let cur_height = self.channel_manager.current_best_block().height;
+        let locktime = LockTime::from_height(cur_height).map_or(LockTime::ZERO, |l| l.into());
+        let tx = self
+            .keys_manager
+            .spend_spendable_outputs(
+                &outputs.values().flat_map(|a| a).collect::<Vec<_>>(),
+                Vec::new(),
+                script,
+                fee_rate,
+                Some(locktime),
+                &secp,
+            )
+            .map_err(|_| Error::Ldk("Error spending outputs".to_string()))?;
+        let txid = tx.txid();
+        tracing::info!("Sweeping outputs in txid {}", txid);
+        self.bitcoin_client.broadcast_transactions(&[&tx]);
+
+        self.db
+            .clear_spendable_outputs(outputs.keys().map(|k| *k).collect())
+            .await?;
+
+        Ok(txid)
     }
 
     pub async fn get_events(
@@ -790,6 +881,7 @@ pub struct NodeInfo {
     pub balance: Amount,
     pub num_channels: usize,
     pub num_peers: usize,
+    pub has_spendable_outputs: bool,
 }
 
 pub struct PendingChannel {
@@ -957,16 +1049,25 @@ fn map_err<E: ToString>(e: E) -> cdk_lightning::Error {
     cdk_lightning::Error::Lightning(Box::new(Error::Ldk(e.to_string())))
 }
 
+// propery key -> value
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
+// channeld id -> channel
 const CHANNELS_TABLE: TableDefinition<[u8; 32], Bincode<Channel>> =
     TableDefinition::new("channels");
+// timestamp -> event
 const EVENTS_TABLE: TableDefinition<u128, Vec<u8>> = TableDefinition::new("events");
+// payment hash -> invoice
 const INVOICES_TABLE: TableDefinition<[u8; 32], Bincode<Invoice>> =
     TableDefinition::new("invoices");
+// payment hash -> payment
 const PAYMENTS_TABLE: TableDefinition<[u8; 32], Bincode<Payment>> =
     TableDefinition::new("payments");
+// node id -> socket address
 const PEERS_TABLE: TableDefinition<Bincode<PublicKey>, Bincode<SocketAddr>> =
     TableDefinition::new("peers");
+// channel id -> spendable outputs
+const SPENDABLE_OUTPUTS_TABLE: TableDefinition<[u8; 32], Bincode<Vec<Vec<u8>>>> =
+    TableDefinition::new("spendable_outputs");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Channel {
@@ -1245,6 +1346,57 @@ impl NodeDatabase {
         let table = read_txn.open_table(PEERS_TABLE)?;
         let entry = table.get(node_id)?;
         Ok(entry.map(|e| e.value()))
+    }
+
+    async fn insert_spendable_outputs(
+        &self,
+        channel_id: ChannelId,
+        outputs: Vec<SpendableOutputDescriptor>,
+    ) -> Result<(), Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(SPENDABLE_OUTPUTS_TABLE)?;
+            table.insert(
+                channel_id.0,
+                &outputs.into_iter().map(|o| o.encode()).collect(),
+            )?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn get_all_spendable_outputs(
+        &self,
+    ) -> Result<HashMap<ChannelId, Vec<SpendableOutputDescriptor>>, Error> {
+        let db = self.db.read().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(SPENDABLE_OUTPUTS_TABLE)?;
+        Ok(table
+            .iter()?
+            .filter_map(|e| {
+                let (channel_id, outputs) = e.ok()?;
+                let outputs = outputs.value();
+                let outputs = outputs
+                    .into_iter()
+                    .filter_map(|o| SpendableOutputDescriptor::read(&mut &o[..]).ok().flatten())
+                    .collect();
+                Some((ChannelId(channel_id.value()), outputs))
+            })
+            .collect())
+    }
+
+    async fn clear_spendable_outputs(&self, channel_ids: Vec<ChannelId>) -> Result<(), Error> {
+        let db = self.db.read().await;
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(SPENDABLE_OUTPUTS_TABLE)?;
+            for channel_id in channel_ids {
+                table.remove(channel_id.0)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
     }
 }
 

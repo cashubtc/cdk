@@ -18,6 +18,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Ldk(String),
+    #[error("No spendable outputs")]
+    NoSpendableOutputs,
     #[error(transparent)]
     ParseInt(#[from] std::num::ParseIntError),
     #[error(transparent)]
