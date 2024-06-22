@@ -335,7 +335,7 @@ impl Wallet {
     }
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn active_mint_keyset(
+    pub async fn active_mint_keyset(
         &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
@@ -366,7 +366,7 @@ impl Wallet {
     }
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn active_keys(
+    pub async fn active_keys(
         &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
@@ -779,7 +779,7 @@ impl Wallet {
 
     /// Create Swap Payload
     #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
-    async fn create_swap(
+    pub async fn create_swap(
         &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
