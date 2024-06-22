@@ -302,7 +302,10 @@ impl Mint {
     }
 
     /// Blind Sign
-    async fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindSignature, Error> {
+    pub async fn blind_sign(
+        &self,
+        blinded_message: &BlindedMessage,
+    ) -> Result<BlindSignature, Error> {
         let BlindedMessage {
             amount,
             blinded_secret,
@@ -456,7 +459,7 @@ impl Mint {
     }
 
     /// Verify [`Proof`] meets conditions and is signed
-    async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+    pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
             <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)
@@ -744,7 +747,7 @@ impl Mint {
     }
 
     /// Ensure Keyset is loaded in mint
-    async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
+    pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
         let keysets = self.keysets.read().await;
         if keysets.contains_key(id) {
             return Ok(());
@@ -763,7 +766,7 @@ impl Mint {
     }
 
     /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
-    fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
+    pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
         MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
     }
 }
