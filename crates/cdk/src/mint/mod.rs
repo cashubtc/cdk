@@ -22,6 +22,7 @@ pub mod error;
 
 #[derive(Clone)]
 pub struct Mint {
+    pub mint_url: UncheckedUrl,
     mint_info: MintInfo,
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
@@ -32,6 +33,7 @@ pub struct Mint {
 
 impl Mint {
     pub async fn new(
+        mint_url: &str,
         seed: &[u8],
         mint_info: MintInfo,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
@@ -56,7 +58,10 @@ impl Mint {
             keysets.insert(id, keyset);
         }
 
+        let mint_url = UncheckedUrl::from(mint_url);
+
         Ok(Self {
+            mint_url,
             keysets: Arc::new(RwLock::new(keysets)),
             secp_ctx,
             xpriv,
