@@ -7,6 +7,7 @@ use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
 use super::nut01::SecretKey;
 use super::nut02::Id;
+use super::CurrencyUnit;
 use crate::amount::SplitTarget;
 use crate::dhke::blind_message;
 use crate::error::Error;
@@ -80,9 +81,10 @@ impl PreMintSecrets {
         xpriv: ExtendedPrivKey,
         amount: Amount,
     ) -> Result<Self, Error> {
-        if amount <= Amount::ZERO {
+        if amount.value <= 0 {
             return Ok(PreMintSecrets::default());
         }
+
         let count = ((u64::from(amount) as f64).log2().ceil() as u64).max(1);
         let mut pre_mint_secrets = PreMintSecrets::default();
 
@@ -94,7 +96,7 @@ impl PreMintSecrets {
 
             let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
-            let amount = Amount::ZERO;
+            let amount = Amount::new(0, amount.unit);
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -128,13 +130,14 @@ impl PreMintSecrets {
 
             let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
 
-            let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+            let blinded_message =
+                BlindedMessage::new(Amount::new(0, CurrencyUnit::default()), keyset_id, blinded);
 
             let pre_mint = PreMint {
                 blinded_message,
                 secret: secret.clone(),
                 r,
-                amount: Amount::ZERO,
+                amount: Amount::new(0, CurrencyUnit::default()),
             };
 
             pre_mint_secrets.secrets.push(pre_mint);

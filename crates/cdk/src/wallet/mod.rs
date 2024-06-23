@@ -97,8 +97,8 @@ impl Wallet {
             .get_proofs(None, Some(unit), Some(vec![State::Unspent]), None)
             .await?
         {
-            Some(proofs) => proofs.iter().map(|p| p.proof.amount).sum(),
-            None => Amount::ZERO,
+            Some(proofs) => Amount::new(proofs.iter().map(|p| p.proof.amount.value).sum(), unit),
+            None => Amount::new(0, unit),
         };
 
         Ok(balance)
@@ -117,8 +117,8 @@ impl Wallet {
             )
             .await?
         {
-            Some(proofs) => proofs.iter().map(|p| p.proof.amount).sum(),
-            None => Amount::ZERO,
+            Some(proofs) => Amount::new(proofs.iter().map(|p| p.proof.amount.value).sum(), unit),
+            None => Amount::new(0, unit),
         };
 
         Ok(balance)
@@ -137,7 +137,7 @@ impl Wallet {
             for proof in proofs {
                 balances
                     .entry(proof.unit)
-                    .and_modify(|ps| *ps += proof.proof.amount)
+                    .and_modify(|ps: &mut Amount| ps.value += proof.proof.amount.value)
                     .or_insert(proof.proof.amount);
             }
         }
@@ -163,7 +163,7 @@ impl Wallet {
             for proof in proofs {
                 balances
                     .entry(proof.unit)
-                    .and_modify(|ps| *ps += proof.proof.amount)
+                    .and_modify(|ps: &mut Amount| ps.value += proof.proof.amount.value)
                     .or_insert(proof.proof.amount);
             }
         }
@@ -191,7 +191,7 @@ impl Wallet {
                 for proof in proofs {
                     balances
                         .entry(proof.unit)
-                        .and_modify(|ps| *ps += proof.proof.amount)
+                        .and_modify(|ps: &mut Amount| ps.value += proof.proof.amount.value)
                         .or_insert(proof.proof.amount);
                 }
 
@@ -412,6 +412,7 @@ impl Wallet {
         Ok(spendable.states)
     }
 
+    // TODO: should return a vector of amount by unit
     /// Checks pending proofs for spent status
     #[instrument(skip(self))]
     pub async fn check_all_pending_proofs(
@@ -424,7 +425,7 @@ impl Wallet {
             None => self.localstore.get_mints().await?,
         };
 
-        let mut balance = Amount::ZERO;
+        let mut balance = Amount::new(0, unit.unwrap_or_default());
 
         for (mint, _) in mints {
             if let Some(proofs) = self
@@ -463,7 +464,7 @@ impl Wallet {
                     .remove_proofs(&non_pending_proofs.into_iter().map(|p| p.proof).collect())
                     .await?;
 
-                balance += amount;
+                balance = balance + amount;
             }
         }
 
@@ -525,10 +526,11 @@ impl Wallet {
         Ok(response)
     }
 
+    // TODO: should return a vector of amount by unit
     /// Check status of pending mint quotes
     pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
         let mint_quotes = self.localstore.get_mint_quotes().await?;
-        let mut total_amount = Amount::ZERO;
+        let mut total_amount = Amount::new(0, CurrencyUnit::default());
 
         for mint_quote in mint_quotes {
             let mint_quote_response = self
@@ -544,7 +546,7 @@ impl Wallet {
                         None,
                     )
                     .await?;
-                total_amount += amount;
+                total_amount = total_amount + amount;
             } else if mint_quote.expiry.le(&unix_time()) {
                 self.localstore.remove_mint_quote(&mint_quote.id).await?;
             }
@@ -895,7 +897,7 @@ impl Wallet {
                 assert!(condition_input_proof_total.le(&amount));
                 let needed_amount = amount - condition_input_proof_total;
 
-                let top_up_proofs = match needed_amount > Amount::ZERO {
+                let top_up_proofs = match needed_amount > Amount::new(0, unit) {
                     true => {
                         self.swap(
                             mint_url,
@@ -1209,13 +1211,16 @@ impl Wallet {
         let mut condition_selected_proofs: Proofs = Vec::new();
 
         for proof in condition_proofs {
-            let mut condition_selected_proof_total = condition_selected_proofs
+            let condition_selected_proof_total = condition_selected_proofs
                 .iter()
-                .map(|p| p.amount)
-                .sum::<Amount>();
+                .map(|p| p.amount.value)
+                .sum::<u64>();
+
+            let mut condition_selected_proof_total =
+                Amount::new(condition_selected_proof_total, unit);
 
             if condition_selected_proof_total + proof.amount <= amount {
-                condition_selected_proof_total += proof.amount;
+                condition_selected_proof_total.value += proof.amount.value;
                 condition_selected_proofs.push(proof);
             }
 
@@ -1226,7 +1231,13 @@ impl Wallet {
 
         condition_selected_proofs.sort();
 
-        let condition_proof_total = condition_selected_proofs.iter().map(|p| p.amount).sum();
+        let condition_proof_total = Amount::new(
+            condition_selected_proofs
+                .iter()
+                .map(|p| p.amount.value)
+                .sum(),
+            unit,
+        );
 
         let mint_proofs: Proofs = self
             .localstore
@@ -1418,9 +1429,9 @@ impl Wallet {
             mint_proofs.extend(p);
         }
 
-        let mut total_amount = Amount::ZERO;
+        let mut total_amount = Amount::new(0, unit);
         for (mint, proofs) in received_proofs {
-            total_amount += proofs.iter().map(|p| p.amount).sum();
+            total_amount = total_amount + proofs.iter().map(|p| p.amount).sum();
             let proofs = proofs
                 .into_iter()
                 .flat_map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, unit.clone()))
@@ -1431,6 +1442,7 @@ impl Wallet {
         Ok(total_amount)
     }
 
+    // TODO: should return a vector of amount by unit
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn restore(&self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
         // Check that mint is in store of mints
@@ -1440,7 +1452,7 @@ impl Wallet {
 
         let keysets = self.get_mint_keysets(&mint_url).await?;
 
-        let mut restored_value = Amount::ZERO;
+        let mut restored_value = Amount::new(0, CurrencyUnit::default());
 
         for keyset in keysets {
             let keys = self.get_keyset_keys(&mint_url, keyset.id).await?;
@@ -1518,7 +1530,7 @@ impl Wallet {
                     .cloned()
                     .collect();
 
-                restored_value += unspent_proofs.iter().map(|p| p.amount).sum();
+                restored_value = restored_value + unspent_proofs.iter().map(|p| p.amount).sum();
 
                 let unspent_proofs = unspent_proofs
                     .into_iter()

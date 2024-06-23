@@ -108,7 +108,11 @@ WHERE active = 1
         let keysets = recs
             .iter()
             .filter_map(|r| match Id::from_str(r.get("id")) {
-                Ok(id) => Some((CurrencyUnit::from(r.get::<'_, &str, &str>("unit")), id)),
+                Ok(id) => Some((
+                    CurrencyUnit::from_str(r.get::<'_, &str, &str>("unit"))
+                        .expect("Unsupported unit"),
+                    id,
+                )),
                 Err(_) => None,
             })
             .collect();
@@ -564,7 +568,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
 
     Ok(MintKeySetInfo {
         id: Id::from_str(&row_id).map_err(Error::from)?,
-        unit: CurrencyUnit::from(&row_unit),
+        unit: CurrencyUnit::from_str(&row_unit)?,
         active: row_active,
         valid_from: row_valid_from as u64,
         valid_to: row_valid_to.map(|v| v as u64),
@@ -586,7 +590,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         id: row_id,
         mint_url: row_mint_url.into(),
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit)?,
         request: row_request,
         paid: row_paid,
         expiry: row_expiry as u64,
@@ -605,7 +609,7 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<MeltQuote, Error> {
     Ok(MeltQuote {
         id: row_id,
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit)?,
         request: row_request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
         paid: row_paid,

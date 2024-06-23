@@ -666,7 +666,7 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
 
     Ok(KeySetInfo {
         id: Id::from_str(&row_id)?,
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit)?,
         active,
     })
 }
@@ -684,7 +684,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         id: row_id,
         mint_url: row_mint_url.into(),
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit)?,
         request: row_request,
         paid: row_paid,
         expiry: row_expiry as u64,
@@ -703,7 +703,7 @@ fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<MeltQuote, Error> {
     Ok(MeltQuote {
         id: row_id,
         amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit)?,
         request: row_request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
         paid: row_paid,
@@ -740,6 +740,6 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         mint_url: row_mint_url.into(),
         state: State::from_str(&row_state)?,
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
-        unit: CurrencyUnit::from(row_unit),
+        unit: CurrencyUnit::from_str(&row_unit)?,
     })
 }

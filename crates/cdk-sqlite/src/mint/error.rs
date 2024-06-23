@@ -5,12 +5,15 @@ pub enum Error {
     /// SQLX Error
     #[error(transparent)]
     SQLX(#[from] sqlx::Error),
-    /// NUT02 Error
+    /// NUT00 Error
     #[error(transparent)]
-    CDKNUT02(#[from] cdk::nuts::nut02::Error),
+    CDKNUT00(#[from] cdk::nuts::nut00::Error),
     /// NUT01 Error
     #[error(transparent)]
     CDKNUT01(#[from] cdk::nuts::nut01::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    CDKNUT02(#[from] cdk::nuts::nut02::Error),
     /// Secret Error
     #[error(transparent)]
     CDKSECRET(#[from] cdk::secret::Error),

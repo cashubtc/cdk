@@ -10,7 +10,7 @@ use tracing::instrument;
 use super::error::Error;
 use super::{util, Wallet};
 use crate::amount::{Amount, SplitTarget};
-use crate::nuts::SecretKey;
+use crate::nuts::{CurrencyUnit, SecretKey};
 
 impl Wallet {
     /// Add nostr relays to client
@@ -99,10 +99,10 @@ impl Wallet {
             }
         }
 
-        let mut total_received = Amount::ZERO;
+        let mut total_received = Amount::new(0, CurrencyUnit::default());
         for token in tokens.iter() {
             match self.receive(token, &amount_split_target, None).await {
-                Ok(amount) => total_received += amount,
+                Ok(amount) => total_received.value += amount.value,
                 Err(err) => {
                     tracing::error!("Could not receive token: {}", err);
                 }

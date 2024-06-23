@@ -16,7 +16,6 @@ impl From<CurrencyUnit> for JsCurrencyUnit {
             CurrencyUnit::Sat => JsCurrencyUnit::Sat,
             CurrencyUnit::Msat => JsCurrencyUnit::Msat,
             CurrencyUnit::Usd => JsCurrencyUnit::Usd,
-            CurrencyUnit::Custom(_) => todo!(),
         }
     }
 }

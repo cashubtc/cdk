@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -28,7 +29,7 @@ pub async fn mint(wallet: Wallet, sub_command_args: &MintSubCommand) -> Result<(
     let quote = wallet
         .mint_quote(
             mint_url.clone(),
-            CurrencyUnit::from(&sub_command_args.unit),
+            CurrencyUnit::from_str(&sub_command_args.unit)?,
             Amount::from(sub_command_args.amount),
         )
         .await?;

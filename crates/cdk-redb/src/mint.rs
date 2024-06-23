@@ -124,7 +124,7 @@ impl MintDatabase for MintRedbDatabase {
         let mut active_keysets = HashMap::new();
 
         for (unit, id) in (table.iter().map_err(Error::from)?).flatten() {
-            let unit = CurrencyUnit::from(unit.value());
+            let unit = CurrencyUnit::from_str(unit.value())?;
             let id = Id::from_str(id.value()).map_err(Error::from)?;
 
             active_keysets.insert(unit, id);

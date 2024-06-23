@@ -3,6 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/00.md>
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
@@ -38,6 +39,9 @@ pub enum Error {
     /// Unsupported token
     #[error("Unsupported token")]
     UnsupportedToken,
+    /// Multi Unit Token Unsupported
+    #[error("Multi Unit token unsupported")]
+    MultiUnitTokenUnsupported,
     /// Invalid Url
     #[error("Invalid Url")]
     InvalidUrl,
@@ -225,25 +229,23 @@ impl PartialOrd for Proof {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum CurrencyUnit {
     #[default]
     Sat,
     Msat,
     Usd,
-    Custom(String),
 }
 
-impl<S> From<S> for CurrencyUnit
-where
-    S: AsRef<str>,
-{
-    fn from(currency: S) -> Self {
-        match currency.as_ref() {
-            "sat" => Self::Sat,
-            "usd" => Self::Usd,
-            "msat" => Self::Msat,
-            o => Self::Custom(o.to_string()),
+impl FromStr for CurrencyUnit {
+    type Err = Error;
+
+    fn from_str(unit: &str) -> Result<Self, Self::Err> {
+        match unit {
+            "sat" => Ok(Self::Sat),
+            "usd" => Ok(Self::Usd),
+            "msat" => Ok(Self::Msat),
+            _ => Err(Error::UnsupportedToken),
         }
     }
 }
@@ -254,7 +256,6 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Sat => write!(f, "sat"),
             CurrencyUnit::Msat => write!(f, "msat"),
             CurrencyUnit::Usd => write!(f, "usd"),
-            CurrencyUnit::Custom(unit) => write!(f, "{unit}"),
         }
     }
 }
@@ -274,7 +275,7 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
         D: Deserializer<'de>,
     {
         let currency: String = String::deserialize(deserializer)?;
-        Ok(Self::from(currency))
+        Self::from_str(&currency).map_err(|_| serde::de::Error::custom("Unsupported Unit"))
     }
 }
 
@@ -369,13 +370,13 @@ impl PreMintSecrets {
             let secret = Secret::generate();
             let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
-            let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
+            let blinded_message = BlindedMessage::new(amount.clone(), keyset_id, blinded);
 
             output.push(PreMint {
                 secret,
                 blinded_message,
                 r,
-                amount,
+                amount: amount.clone(),
             });
         }
 
@@ -392,13 +393,13 @@ impl PreMintSecrets {
         for (secret, amount) in secrets.into_iter().zip(amounts) {
             let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
-            let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
+            let blinded_message = BlindedMessage::new(amount.clone(), keyset_id, blinded);
 
             output.push(PreMint {
                 secret,
                 blinded_message,
                 r,
-                amount,
+                amount: amount.clone(),
             });
         }
 
@@ -415,13 +416,14 @@ impl PreMintSecrets {
             let secret = Secret::generate();
             let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
 
-            let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
+            let blinded_message =
+                BlindedMessage::new(Amount::new(0, fee_reserve.unit.clone()), keyset_id, blinded);
 
             output.push(PreMint {
                 secret,
                 blinded_message,
                 r,
-                amount: Amount::ZERO,
+                amount: Amount::new(0, fee_reserve.unit),
             })
         }
 
@@ -555,16 +557,24 @@ impl Token {
         })
     }
 
-    pub fn token_info(&self) -> (Amount, String) {
-        let mut amount = Amount::ZERO;
+    pub fn token_info(&self) -> Result<(Amount, String), Error> {
+        let mut amount = 0;
+        let mut unit = HashSet::new();
 
         for proofs in &self.token {
             for proof in &proofs.proofs {
-                amount += proof.amount;
+                amount += proof.amount.value;
+                unit.insert(proof.amount.unit);
             }
         }
 
-        (amount, self.token[0].mint.to_string())
+        if unit.len().ne(&1) {
+            return Err(Error::MultiUnitTokenUnsupported);
+        }
+
+        let amount = Amount::new(amount, *unit.iter().next().expect("No unit in amount"));
+
+        Ok((amount, self.token[0].mint.to_string()))
     }
 }
 

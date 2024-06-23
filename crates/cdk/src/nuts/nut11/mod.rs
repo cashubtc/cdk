@@ -793,7 +793,7 @@ mod tests {
 
         let mut proof = Proof {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
-            amount: Amount::ZERO,
+            amount: Amount::from_sats(0),
             secret,
             c: PublicKey::from_str(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
