@@ -705,6 +705,25 @@ impl Node {
         }
     }
 
+    pub fn announce_node(
+        &self,
+        alias: &str,
+        color: [u8; 3],
+        addrs: Vec<SocketAddress>,
+    ) -> Result<(), Error> {
+        let alias = {
+            if alias.len() > 32 {
+                return Err(Error::Ldk("Alias too long".to_string()));
+            }
+            let mut bytes = [0; 32];
+            bytes[..alias.len()].copy_from_slice(alias.as_bytes());
+            bytes
+        };
+        self.peer_manager
+            .broadcast_node_announcement(color, alias, addrs);
+        Ok(())
+    }
+
     pub async fn get_info(&self) -> Result<NodeInfo, Error> {
         let node_id = self.keys_manager.get_node_id(Recipient::Node).unwrap();
         let channels = self.channel_manager.list_channels();
