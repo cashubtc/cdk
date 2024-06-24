@@ -61,7 +61,7 @@ use lightning::{
         SpendableOutputDescriptor,
     },
     util::{
-        config::{ChannelHandshakeConfig, UserConfig},
+        config::{ChannelHandshakeConfig, ChannelHandshakeLimits, UserConfig},
         logger::{Level, Logger, Record},
         persist::{
             read_channel_monitors, KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -270,6 +270,10 @@ impl Node {
         let user_config = UserConfig {
             channel_handshake_config: ChannelHandshakeConfig {
                 commit_upfront_shutdown_pubkey: false,
+                ..Default::default()
+            },
+            channel_handshake_limits: ChannelHandshakeLimits {
+                max_funding_satoshis: 100_000_000,
                 ..Default::default()
             },
             ..Default::default()
