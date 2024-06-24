@@ -45,17 +45,29 @@ impl Mint {
             ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
         let mut keysets = HashMap::new();
-        let keysets_info = localstore.get_keyset_infos().await?;
-        if keysets_info.is_empty() {
-            let derivation_path = DerivationPath::from(vec![
-                ChildNumber::from_hardened_idx(0).expect("0 is a valid index")
-            ]);
-            let (keyset, keyset_info) =
-                create_new_keyset(&secp_ctx, xpriv, derivation_path, CurrencyUnit::Sat, 64);
-            let id = keyset_info.id;
-            localstore.add_keyset_info(keyset_info).await?;
-            localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
-            keysets.insert(id, keyset);
+        let keysets_infos = localstore.get_keyset_infos().await?;
+
+        match keysets_infos.is_empty() {
+            false => {
+                for keyset_info in keysets_infos {
+                    if keyset_info.active {
+                        let id = keyset_info.id;
+                        let keyset = MintKeySet::generate_from_xpriv(&secp_ctx, xpriv, keyset_info);
+                        keysets.insert(id, keyset);
+                    }
+                }
+            }
+            true => {
+                let derivation_path = DerivationPath::from(vec![
+                    ChildNumber::from_hardened_idx(0).expect("0 is a valid index")
+                ]);
+                let (keyset, keyset_info) =
+                    create_new_keyset(&secp_ctx, xpriv, derivation_path, CurrencyUnit::Sat, 64);
+                let id = keyset_info.id;
+                localstore.add_keyset_info(keyset_info).await?;
+                localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
+                keysets.insert(id, keyset);
+            }
         }
 
         let mint_url = UncheckedUrl::from(mint_url);
