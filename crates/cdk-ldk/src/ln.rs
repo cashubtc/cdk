@@ -61,7 +61,7 @@ use lightning::{
         SpendableOutputDescriptor,
     },
     util::{
-        config::UserConfig,
+        config::{ChannelHandshakeConfig, UserConfig},
         logger::{Level, Logger, Record},
         persist::{
             read_channel_monitors, KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -267,6 +267,13 @@ impl Node {
         ));
 
         // Load channel manager
+        let user_config = UserConfig {
+            channel_handshake_config: ChannelHandshakeConfig {
+                commit_upfront_shutdown_pubkey: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let mut channel_monitors = read_channel_monitors(
             persister.clone(),
             keys_manager.clone(),
@@ -293,7 +300,7 @@ impl Node {
                     bitcoin_client.clone(),
                     router.clone(),
                     logger.clone(),
-                    UserConfig::default(),
+                    user_config,
                     channel_monitor_mut_references,
                 );
                 <(BlockHash, NodeChannelManager)>::read(&mut &data[..], read_args)?
@@ -317,7 +324,7 @@ impl Node {
                     keys_manager.clone(),
                     keys_manager.clone(),
                     keys_manager.clone(),
-                    UserConfig::default(),
+                    user_config,
                     chain_params,
                     starting_time.as_secs() as u32,
                 );
