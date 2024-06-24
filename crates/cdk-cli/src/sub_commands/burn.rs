@@ -4,8 +4,7 @@ use clap::Args;
 
 #[derive(Args)]
 pub struct BurnSubCommand {
-    /// Token Memo
-    #[arg(short, long)]
+    /// Mint Url
     mint_url: Option<String>,
 }
 

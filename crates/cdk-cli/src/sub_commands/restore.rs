@@ -6,7 +6,6 @@ use clap::Args;
 #[derive(Args)]
 pub struct RestoreSubCommand {
     /// Mint Url
-    #[arg(short, long)]
     mint_url: UncheckedUrl,
 }
 
