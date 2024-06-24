@@ -732,12 +732,14 @@ impl Node {
             })
             .collect();
         let spendable_balance = self.get_spendable_output_balance().await?;
+        let inbound_liquidity = self.get_inbound_liquidity()?;
 
         Ok(NodeInfo {
             node_id,
             channel_balances,
             peers,
             spendable_balance,
+            inbound_liquidity,
         })
     }
 
@@ -859,6 +861,16 @@ impl Node {
         Ok(Amount::from_msat(channel.balance_msat))
     }
 
+    pub fn get_inbound_liquidity(&self) -> Result<Amount, Error> {
+        let channels = self.channel_manager.list_channels();
+        let inbound_liquidity = channels
+            .iter()
+            .filter(|c| c.is_usable)
+            .map(|c| c.inbound_capacity_msat)
+            .sum::<u64>();
+        Ok(Amount::from_msat(inbound_liquidity))
+    }
+
     pub async fn get_spendable_output_balance(&self) -> Result<Amount, Error> {
         let spendable_balance =
             self.db
@@ -936,6 +948,7 @@ pub struct NodeInfo {
     pub channel_balances: HashMap<ChannelId, Amount>,
     pub peers: HashMap<PublicKey, SocketAddr>,
     pub spendable_balance: Amount,
+    pub inbound_liquidity: Amount,
 }
 
 pub struct PendingChannel {
