@@ -730,27 +730,8 @@ impl Node {
                 ))
             })
             .collect();
-        let spendable_balance =
-            self.db
-                .get_all_spendable_outputs()
-                .await
-                .map_or(Amount::ZERO, |outputs| {
-                    Amount::from_sat(
-                        outputs
-                            .values()
-                            .flat_map(|a| a)
-                            .map(|o| match o {
-                                SpendableOutputDescriptor::StaticOutput { output, .. } => {
-                                    output.value
-                                }
-                                SpendableOutputDescriptor::DelayedPaymentOutput(o) => {
-                                    o.output.value
-                                }
-                                SpendableOutputDescriptor::StaticPaymentOutput(o) => o.output.value,
-                            })
-                            .sum(),
-                    )
-                });
+        let spendable_balance = self.get_spendable_output_balance().await?;
+
         Ok(NodeInfo {
             node_id,
             channel_balances,
@@ -875,6 +856,31 @@ impl Node {
             .find(|c| c.channel_id == channel_id)
             .ok_or(Error::ChannelNotFound)?;
         Ok(Amount::from_msat(channel.balance_msat))
+    }
+
+    pub async fn get_spendable_output_balance(&self) -> Result<Amount, Error> {
+        let spendable_balance =
+            self.db
+                .get_all_spendable_outputs()
+                .await
+                .map_or(Amount::ZERO, |outputs| {
+                    Amount::from_sat(
+                        outputs
+                            .values()
+                            .flat_map(|a| a)
+                            .map(|o| match o {
+                                SpendableOutputDescriptor::StaticOutput { output, .. } => {
+                                    output.value
+                                }
+                                SpendableOutputDescriptor::DelayedPaymentOutput(o) => {
+                                    o.output.value
+                                }
+                                SpendableOutputDescriptor::StaticPaymentOutput(o) => o.output.value,
+                            })
+                            .sum(),
+                    )
+                });
+        Ok(spendable_balance)
     }
 
     pub async fn sweep_spendable_outputs(&self, script: ScriptBuf) -> Result<Txid, Error> {

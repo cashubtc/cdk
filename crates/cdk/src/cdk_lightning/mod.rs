@@ -64,6 +64,12 @@ impl fmt::Display for Amount {
     }
 }
 
+impl From<crate::Amount> for Amount {
+    fn from(value: crate::Amount) -> Self {
+        Amount::from_sat(value.into())
+    }
+}
+
 /// Invoice information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvoiceInfo {
