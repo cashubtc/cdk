@@ -6,7 +6,6 @@ use clap::Args;
 #[derive(Args)]
 pub struct MintInfoSubcommand {
     /// Cashu Token
-    #[arg(short, long)]
     mint_url: UncheckedUrl,
 }
 

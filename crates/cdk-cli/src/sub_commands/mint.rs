@@ -11,15 +11,12 @@ use tokio::time::sleep;
 
 #[derive(Args)]
 pub struct MintSubCommand {
+    /// Mint url
+    mint_url: UncheckedUrl,
     /// Amount
-    #[arg(short, long)]
     amount: u64,
     /// Currency unit e.g. sat
-    #[arg(short, long)]
     unit: String,
-    /// Mint url
-    #[arg(short, long)]
-    mint_url: UncheckedUrl,
 }
 
 pub async fn mint(wallet: Wallet, sub_command_args: &MintSubCommand) -> Result<()> {
