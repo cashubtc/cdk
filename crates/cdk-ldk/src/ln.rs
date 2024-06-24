@@ -61,7 +61,7 @@ use lightning::{
         SpendableOutputDescriptor,
     },
     util::{
-        config::{ChannelHandshakeConfig, ChannelHandshakeLimits, UserConfig},
+        config::UserConfig,
         logger::{Level, Logger, Record},
         persist::{
             read_channel_monitors, KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY,
@@ -178,6 +178,7 @@ impl Node {
         network: Network,
         rpc_client: BitcoinClient,
         seed: [u8; 32],
+        config: UserConfig,
         p2p_addr: Option<SocketAddr>,
     ) -> Result<Self, Error> {
         // Create utils
@@ -267,17 +268,6 @@ impl Node {
         ));
 
         // Load channel manager
-        let user_config = UserConfig {
-            channel_handshake_config: ChannelHandshakeConfig {
-                commit_upfront_shutdown_pubkey: false,
-                ..Default::default()
-            },
-            channel_handshake_limits: ChannelHandshakeLimits {
-                max_funding_satoshis: 100_000_000,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
         let mut channel_monitors = read_channel_monitors(
             persister.clone(),
             keys_manager.clone(),
@@ -304,7 +294,7 @@ impl Node {
                     bitcoin_client.clone(),
                     router.clone(),
                     logger.clone(),
-                    user_config,
+                    config,
                     channel_monitor_mut_references,
                 );
                 <(BlockHash, NodeChannelManager)>::read(&mut &data[..], read_args)?
@@ -328,7 +318,7 @@ impl Node {
                     keys_manager.clone(),
                     keys_manager.clone(),
                     keys_manager.clone(),
-                    user_config,
+                    config,
                     chain_params,
                     starting_time.as_secs() as u32,
                 );
