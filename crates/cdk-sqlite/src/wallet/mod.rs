@@ -1,6 +1,7 @@
 //! SQLite Wallet Database
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -25,7 +26,8 @@ pub struct WalletSQLiteDatabase {
 }
 
 impl WalletSQLiteDatabase {
-    pub async fn new(path: &str) -> Result<Self, Error> {
+    pub async fn new(path: &Path) -> Result<Self, Error> {
+        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
         let _conn = SqliteConnectOptions::from_str(path)?
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .read_only(false)
