@@ -722,6 +722,9 @@ impl Node {
                         Some(SocketAddress::TcpIpV4 { addr, port }) => {
                             Some(SocketAddr::new(addr.into(), port))
                         }
+                        Some(SocketAddress::TcpIpV6 { addr, port }) => {
+                            Some(SocketAddr::new(addr.into(), port))
+                        }
                         _ => None,
                     }?,
                 ))
@@ -826,8 +829,10 @@ impl Node {
     pub async fn close_channel(
         &self,
         channel_id: ChannelId,
-        shutdown_script: ShutdownScript,
+        script: ScriptBuf,
     ) -> Result<(), Error> {
+        let shutdown_script =
+            ShutdownScript::try_from(script).map_err(|e| Error::Ldk(format!("{:?}", e)))?;
         let channel = self
             .db
             .get_channel(channel_id)
