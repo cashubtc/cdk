@@ -868,6 +868,15 @@ impl Node {
         Ok(channel.amount)
     }
 
+    pub fn get_current_channel_balance(&self, channel_id: ChannelId) -> Result<Amount, Error> {
+        let channels = self.channel_manager.list_channels();
+        let channel = channels
+            .iter()
+            .find(|c| c.channel_id == channel_id)
+            .ok_or(Error::ChannelNotFound)?;
+        Ok(Amount::from_msat(channel.balance_msat))
+    }
+
     pub async fn sweep_spendable_outputs(&self, script: ScriptBuf) -> Result<Txid, Error> {
         let secp = Secp256k1::new();
         let outputs = self.db.get_all_spendable_outputs().await?;
