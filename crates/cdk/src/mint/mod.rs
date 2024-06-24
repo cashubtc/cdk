@@ -86,6 +86,26 @@ impl Mint {
         })
     }
 
+    /// Set Mint Url
+    pub fn set_mint_url(&mut self, mint_url: UncheckedUrl) {
+        self.mint_url = mint_url;
+    }
+
+    /// Get Mint Url
+    pub fn get_mint_url(&self) -> &UncheckedUrl {
+        &self.mint_url
+    }
+
+    /// Set Mint Info
+    pub fn set_mint_info(&mut self, mint_info: MintInfo) {
+        self.mint_info = mint_info;
+    }
+
+    /// Get Mint Info
+    pub fn mint_info(&self) -> &MintInfo {
+        &self.mint_info
+    }
+
     /// New mint quote
     pub async fn new_mint_quote(
         &self,
@@ -719,16 +739,6 @@ impl Mint {
             payment_preimage: Some(preimage.to_string()),
             change,
         })
-    }
-
-    /// Set Mint Info
-    pub fn set_mint_info(&mut self, mint_info: MintInfo) {
-        self.mint_info = mint_info;
-    }
-
-    /// Get Mint Info
-    pub fn mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.mint_info.clone())
     }
 
     /// Restore
