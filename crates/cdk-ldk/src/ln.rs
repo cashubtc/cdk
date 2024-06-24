@@ -709,7 +709,7 @@ impl Node {
         &self,
         alias: &str,
         color: [u8; 3],
-        addrs: Vec<SocketAddress>,
+        addrs: Vec<SocketAddr>,
     ) -> Result<(), Error> {
         let alias = {
             if alias.len() > 32 {
@@ -719,8 +719,11 @@ impl Node {
             bytes[..alias.len()].copy_from_slice(alias.as_bytes());
             bytes
         };
-        self.peer_manager
-            .broadcast_node_announcement(color, alias, addrs);
+        self.peer_manager.broadcast_node_announcement(
+            color,
+            alias,
+            addrs.into_iter().map(|a| a.into()).collect(),
+        );
         Ok(())
     }
 
