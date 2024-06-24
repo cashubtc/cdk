@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -40,7 +41,7 @@ pub struct RedbWalletDatabase {
 }
 
 impl RedbWalletDatabase {
-    pub fn new(path: &str) -> Result<Self, Error> {
+    pub fn new(path: &Path) -> Result<Self, Error> {
         let db = Database::create(path)?;
 
         let write_txn = db.begin_write()?;

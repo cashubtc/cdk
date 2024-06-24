@@ -20,6 +20,9 @@ pub enum Error {
     /// Could Not Initialize Db
     #[error("Could not initialize Db")]
     CouldNotInitialize,
+    /// Invalid Database Path
+    #[error("Invalid database path")]
+    InvalidDbPath,
 }
 
 impl From<Error> for cdk::cdk_database::Error {

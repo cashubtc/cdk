@@ -5,21 +5,21 @@ pub enum Error {
     /// SQLX Error
     #[error(transparent)]
     SQLX(#[from] sqlx::Error),
-    /// NUT02 Error
+    /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
-    /// NUT02 Error
+    /// Wallet Error
     #[error(transparent)]
     CDKWallet(#[from] cdk::wallet::error::Error),
-    /// NUT07 Error
-    #[error(transparent)]
-    CDKNUT07(#[from] cdk::nuts::nut07::Error),
-    /// NUT02 Error
-    #[error(transparent)]
-    CDKNUT02(#[from] cdk::nuts::nut02::Error),
     /// NUT01 Error
     #[error(transparent)]
     CDKNUT01(#[from] cdk::nuts::nut01::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    CDKNUT02(#[from] cdk::nuts::nut02::Error),
+    /// NUT07 Error
+    #[error(transparent)]
+    CDKNUT07(#[from] cdk::nuts::nut07::Error),
     /// Secret Error
     #[error(transparent)]
     CDKSECRET(#[from] cdk::secret::Error),
@@ -29,6 +29,9 @@ pub enum Error {
     /// Could Not Initialize Db
     #[error("Could not initialize Db")]
     CouldNotInitialize,
+    /// Invalid Database Path
+    #[error("Invalid database path")]
+    InvalidDbPath,
 }
 
 impl From<Error> for cdk::cdk_database::Error {
