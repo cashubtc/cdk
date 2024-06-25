@@ -230,6 +230,11 @@ impl Node {
             tracing::info!("Loading network graph");
             NetworkGraph::read(&mut &network_graph_bytes[..], logger.clone())?
         });
+        tracing::info!(
+            "Network graph stats: {} nodes, {} channels",
+            network_graph.read_only().nodes().len(),
+            network_graph.read_only().channels().len()
+        );
         let scorer_bytes = match persister.read(
             SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
             SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
