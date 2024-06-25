@@ -82,6 +82,7 @@ use lightning_block_sync::{
     SpvClient, UnboundedCache,
 };
 use lightning_persister::fs_store::FilesystemStore;
+use lightning_rapid_gossip_sync::RapidGossipSync;
 use redb::{Database, Key, ReadableTable, TableDefinition, TypeName, Value};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
@@ -230,11 +231,6 @@ impl Node {
             tracing::info!("Loading network graph");
             NetworkGraph::read(&mut &network_graph_bytes[..], logger.clone())?
         });
-        tracing::info!(
-            "Network graph stats: {} nodes, {} channels",
-            network_graph.read_only().nodes().len(),
-            network_graph.read_only().channels().len()
-        );
         let scorer_bytes = match persister.read(
             SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
             SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -271,6 +267,31 @@ impl Node {
             scorer.clone(),
             ProbabilisticScoringFeeParameters::default(),
         ));
+
+        // Sync network graph
+        if network == Network::Bitcoin {
+            tracing::info!("Syncing network graph");
+            match reqwest::get("https://rapidsync.lightningdevkit.org/snapshot/0").await {
+                Ok(res) => match res.bytes().await {
+                    Ok(data) => {
+                        if let Err(e) = RapidGossipSync::new(network_graph.clone(), logger.clone())
+                            .update_network_graph(data.as_ref())
+                        {
+                            tracing::warn!("Error updating network graph: {:?}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Error fetching network snapshot: {}", e);
+                    }
+                },
+                Err(e) => tracing::warn!("Error fetching network snapshot: {}", e),
+            }
+        }
+        tracing::info!(
+            "Network graph stats: {} nodes, {} channels",
+            network_graph.read_only().nodes().len(),
+            network_graph.read_only().channels().len()
+        );
 
         // Load channel manager
         let mut channel_monitors = read_channel_monitors(
