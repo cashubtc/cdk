@@ -13,7 +13,6 @@ license.workspace = true
 default = ["mint", "wallet"]
 mint = []
 wallet = ["dep:reqwest"]
-nostr = ["dep:nostr-sdk"]
 
 
 [dependencies]
@@ -42,10 +41,6 @@ tracing = { version = "0.1", default-features = false, features = [
 thiserror = "1"
 url = "2.3"
 uuid = { version = "1", features = ["v4"] }
-nostr-sdk = { version = "0.31.0", default-features = false, features = [
-    "nip04",
-    "nip44"
-], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [

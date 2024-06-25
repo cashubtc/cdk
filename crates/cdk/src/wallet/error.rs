@@ -63,6 +63,15 @@ pub enum Error {
     ///  Unknown error response
     #[error("Unknown Error response: `{0}`")]
     UnknownErrorResponse(String),
+    /// Unknown Wallet
+    #[error("Unknown Wallet: `{0}`")]
+    UnknownWallet(String),
+    /// Unknown Wallet
+    #[error("Unknown Wallet: `{0}`")]
+    IncorrectWallet(String),
+    /// Max Fee Ecxeded
+    #[error("Max fee exceeded")]
+    MaxFeeExceeded,
     /// CDK Error
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),

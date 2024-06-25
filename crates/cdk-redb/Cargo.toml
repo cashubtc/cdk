@@ -12,7 +12,6 @@ rust-version.workspace = true
 default = ["mint", "wallet"]
 mint = ["cdk/mint"]
 wallet = ["cdk/wallet"]
-nostr = ["cdk/nostr"]
 
 [dependencies]
 async-trait.workspace = true

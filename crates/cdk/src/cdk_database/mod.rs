@@ -104,12 +104,10 @@ pub trait WalletDatabase: Debug {
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
 
-    #[cfg(feature = "nostr")]
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
     ) -> Result<Option<u32>, Self::Err>;
-    #[cfg(feature = "nostr")]
     async fn add_nostr_last_checked(
         &self,
         verifying_key: PublicKey,

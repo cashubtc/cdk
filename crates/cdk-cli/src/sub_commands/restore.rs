@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::collections::HashMap;
+
+use anyhow::{anyhow, Result};
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
 use clap::Args;
@@ -9,10 +11,15 @@ pub struct RestoreSubCommand {
     mint_url: UncheckedUrl,
 }
 
-pub async fn restore(wallet: Wallet, sub_command_args: &RestoreSubCommand) -> Result<()> {
-    let mint_url = sub_command_args.mint_url.clone();
+pub async fn restore(
+    wallets: HashMap<UncheckedUrl, Wallet>,
+    sub_command_args: &RestoreSubCommand,
+) -> Result<()> {
+    let wallet = wallets
+        .get(&sub_command_args.mint_url)
+        .ok_or(anyhow!("Unknown mint url"))?;
 
-    let amount = wallet.restore(mint_url).await?;
+    let amount = wallet.restore().await?;
 
     println!("Restored {}", amount);
 

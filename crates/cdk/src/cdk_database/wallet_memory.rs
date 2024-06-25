@@ -25,7 +25,6 @@ pub struct WalletMemoryDatabase {
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
-    #[cfg(feature = "nostr")]
     nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
 }
 
@@ -35,7 +34,7 @@ impl WalletMemoryDatabase {
         melt_quotes: Vec<MeltQuote>,
         mint_keys: Vec<Keys>,
         keyset_counter: HashMap<Id, u32>,
-        #[cfg(feature = "nostr")] nostr_last_checked: HashMap<PublicKey, u32>,
+        nostr_last_checked: HashMap<PublicKey, u32>,
     ) -> Self {
         Self {
             mints: Arc::new(RwLock::new(HashMap::new())),
@@ -52,7 +51,6 @@ impl WalletMemoryDatabase {
             )),
             proofs: Arc::new(RwLock::new(HashMap::new())),
             keyset_counter: Arc::new(RwLock::new(keyset_counter)),
-            #[cfg(feature = "nostr")]
             nostr_last_checked: Arc::new(RwLock::new(nostr_last_checked)),
         }
     }
@@ -321,7 +319,6 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(self.keyset_counter.read().await.get(id).cloned())
     }
 
-    #[cfg(feature = "nostr")]
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
@@ -333,7 +330,6 @@ impl WalletDatabase for WalletMemoryDatabase {
             .get(verifying_key)
             .cloned())
     }
-    #[cfg(feature = "nostr")]
     async fn add_nostr_last_checked(
         &self,
         verifying_key: PublicKey,
