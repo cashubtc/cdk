@@ -761,12 +761,18 @@ impl Node {
         let spendable_balance = self.get_spendable_output_balance().await?;
         let inbound_liquidity = self.get_inbound_liquidity()?;
 
+        let read_only_graph = self.gossip_sync.network_graph().read_only();
+        let network_nodes = read_only_graph.nodes().len();
+        let network_channels = read_only_graph.channels().len();
+
         Ok(NodeInfo {
             node_id,
             channel_balances,
             peers,
             spendable_balance,
             inbound_liquidity,
+            network_nodes,
+            network_channels,
         })
     }
 
@@ -976,6 +982,8 @@ pub struct NodeInfo {
     pub peers: HashMap<PublicKey, SocketAddr>,
     pub spendable_balance: Amount,
     pub inbound_liquidity: Amount,
+    pub network_nodes: usize,
+    pub network_channels: usize,
 }
 
 pub struct PendingChannel {
