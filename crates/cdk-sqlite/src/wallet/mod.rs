@@ -627,7 +627,6 @@ WHERE id=?;
         Ok(count)
     }
 
-    #[cfg(feature = "nostr")]
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
@@ -656,7 +655,6 @@ WHERE key=?;
 
         Ok(count)
     }
-    #[cfg(feature = "nostr")]
     async fn add_nostr_last_checked(
         &self,
         verifying_key: PublicKey,

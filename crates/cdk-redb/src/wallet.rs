@@ -31,7 +31,6 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
-#[cfg(feature = "nostr")]
 const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 
 const DATABASE_VERSION: u32 = 0;
@@ -73,7 +72,6 @@ impl RedbWalletDatabase {
                     let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
                     let _ = write_txn.open_table(PROOFS_TABLE)?;
                     let _ = write_txn.open_table(KEYSET_COUNTER)?;
-                    #[cfg(feature = "nostr")]
                     let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
                     table.insert("db_version", "0")?;
                 }
@@ -655,7 +653,6 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(counter.map(|c| c.value()))
     }
 
-    #[cfg(feature = "nostr")]
     #[instrument(skip(self))]
     async fn get_nostr_last_checked(
         &self,
@@ -673,7 +670,6 @@ impl WalletDatabase for RedbWalletDatabase {
 
         Ok(last_checked.map(|c| c.value()))
     }
-    #[cfg(feature = "nostr")]
     #[instrument(skip(self))]
     async fn add_nostr_last_checked(
         &self,

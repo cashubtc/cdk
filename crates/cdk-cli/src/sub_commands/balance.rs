@@ -1,29 +1,25 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use cdk::nuts::CurrencyUnit;
 use cdk::url::UncheckedUrl;
 use cdk::wallet::Wallet;
 use cdk::Amount;
 
-pub async fn balance(wallet: Wallet) -> Result<()> {
-    let _ = mint_balances(&wallet).await;
+pub async fn balance(wallets: HashMap<UncheckedUrl, Wallet>) -> Result<()> {
+    mint_balances(wallets).await?;
     Ok(())
 }
 
 pub async fn mint_balances(
-    wallet: &Wallet,
-) -> Result<Vec<(UncheckedUrl, HashMap<CurrencyUnit, Amount>)>> {
-    let mints_amounts: Vec<(UncheckedUrl, HashMap<_, _>)> =
-        wallet.mint_balances().await?.into_iter().collect();
+    wallets: HashMap<UncheckedUrl, Wallet>,
+) -> Result<Vec<(Wallet, Amount)>> {
+    let mut wallets_vec: Vec<(Wallet, Amount)> = Vec::with_capacity(wallets.capacity());
 
-    for (i, (mint, balance)) in mints_amounts.iter().enumerate() {
-        println!("{i}: {mint}:");
-        for (unit, amount) in balance {
-            println!("- {amount} {unit}");
-        }
-        println!("---------");
+    for (i, (mint_url, wallet)) in wallets.iter().enumerate() {
+        let mint_url = mint_url.clone();
+        let amount = wallet.total_balance().await?;
+        println!("{i}: {mint_url} {amount}");
+        wallets_vec.push((wallet.clone(), amount));
     }
-
-    Ok(mints_amounts)
+    Ok(wallets_vec)
 }

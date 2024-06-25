@@ -1,18 +1,19 @@
 //! Cashu Wallet
+//!
+//! Each wallet is single mint and single unit
 
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use bitcoin::bip32::ExtendedPrivKey;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::XOnlyPublicKey;
+use bitcoin::key::XOnlyPublicKey;
 use bitcoin::Network;
 use error::Error;
-use tokio::sync::RwLock;
 use tracing::instrument;
+use url::Url;
 
 use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
@@ -26,123 +27,60 @@ use crate::nuts::{
 use crate::types::{MeltQuote, Melted, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 use crate::util::{hex, unix_time};
-use crate::{Amount, Bolt11Invoice, HttpClient};
+use crate::{Amount, Bolt11Invoice, HttpClient, SECP256K1};
 
 pub mod client;
 pub mod error;
-#[cfg(feature = "nostr")]
-pub mod nostr;
+pub mod multi_mint_wallet;
 pub mod util;
 
 #[derive(Debug, Clone)]
 pub struct Wallet {
+    pub mint_url: UncheckedUrl,
+    pub unit: CurrencyUnit,
     pub client: HttpClient,
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     xpriv: ExtendedPrivKey,
-    p2pk_signing_keys: Arc<RwLock<HashMap<XOnlyPublicKey, SecretKey>>>,
-    #[cfg(feature = "nostr")]
-    nostr_client: nostr_sdk::Client,
 }
 
 impl Wallet {
     pub fn new(
+        mint_url: &str,
+        unit: CurrencyUnit,
         localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
-        p2pk_signing_keys: Vec<SecretKey>,
     ) -> Self {
         let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, seed)
             .expect("Could not create master key");
 
         Self {
+            mint_url: UncheckedUrl::from(mint_url),
+            unit,
             client: HttpClient::new(),
             localstore,
             xpriv,
-            p2pk_signing_keys: Arc::new(RwLock::new(
-                p2pk_signing_keys
-                    .into_iter()
-                    .map(|s| (s.public_key().x_only_public_key(), s))
-                    .collect(),
-            )),
-            #[cfg(feature = "nostr")]
-            nostr_client: nostr_sdk::Client::default(),
         }
-    }
-
-    /// Add P2PK signing key to wallet
-    #[instrument(skip_all)]
-    pub async fn add_p2pk_signing_key(&self, signing_key: SecretKey) {
-        self.p2pk_signing_keys
-            .write()
-            .await
-            .insert(signing_key.public_key().x_only_public_key(), signing_key);
-    }
-
-    /// Remove P2PK signing key from wallet
-    #[instrument(skip_all)]
-    pub async fn remove_p2pk_signing_key(&self, x_only_pubkey: &XOnlyPublicKey) {
-        self.p2pk_signing_keys.write().await.remove(x_only_pubkey);
-    }
-
-    /// P2PK keys available in wallet
-    #[instrument(skip(self))]
-    pub async fn available_p2pk_signing_keys(&self) -> HashMap<XOnlyPublicKey, SecretKey> {
-        self.p2pk_signing_keys.read().await.deref().clone()
-    }
-
-    /// Total Balance of wallet for given unit
-    #[instrument(skip(self))]
-    pub async fn unit_balance(&self, unit: CurrencyUnit) -> Result<Amount, Error> {
-        let balance = match self
-            .localstore
-            .get_proofs(None, Some(unit), Some(vec![State::Unspent]), None)
-            .await?
-        {
-            Some(proofs) => proofs.iter().map(|p| p.proof.amount).sum(),
-            None => Amount::ZERO,
-        };
-
-        Ok(balance)
-    }
-
-    /// Total pending and reserved balance of wallet for given unit
-    #[instrument(skip(self))]
-    pub async fn pending_unit_balance(&self, unit: CurrencyUnit) -> Result<Amount, Error> {
-        let balance = match self
-            .localstore
-            .get_proofs(
-                None,
-                Some(unit),
-                Some(vec![State::Pending, State::Reserved]),
-                None,
-            )
-            .await?
-        {
-            Some(proofs) => proofs.iter().map(|p| p.proof.amount).sum(),
-            None => Amount::ZERO,
-        };
-
-        Ok(balance)
     }
 
     /// Total Balance of wallet
     #[instrument(skip(self))]
-    pub async fn total_balance(&self) -> Result<HashMap<CurrencyUnit, Amount>, Error> {
-        let mut balances = HashMap::new();
-
+    pub async fn total_balance(&self) -> Result<Amount, Error> {
         if let Some(proofs) = self
             .localstore
-            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::Unspent]),
+                None,
+            )
             .await?
         {
-            for proof in proofs {
-                balances
-                    .entry(proof.unit)
-                    .and_modify(|ps| *ps += proof.proof.amount)
-                    .or_insert(proof.proof.amount);
-            }
+            let balance = proofs.iter().map(|p| p.proof.amount).sum::<Amount>();
+
+            return Ok(balance);
         }
 
-        Ok(balances)
+        Ok(Amount::ZERO)
     }
 
     /// Total Balance of wallet
@@ -153,8 +91,8 @@ impl Wallet {
         if let Some(proofs) = self
             .localstore
             .get_proofs(
-                None,
-                None,
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
                 Some(vec![State::Pending, State::Reserved]),
                 None,
             )
@@ -171,74 +109,40 @@ impl Wallet {
         Ok(balances)
     }
 
-    /// Total balance by mint
-    #[instrument(skip(self))]
-    pub async fn mint_balances(
-        &self,
-    ) -> Result<HashMap<UncheckedUrl, HashMap<CurrencyUnit, Amount>>, Error> {
-        let mints = self.localstore.get_mints().await?;
-
-        let mut mint_balances = HashMap::new();
-
-        for (mint, _) in mints {
-            if let Some(proofs) = self
-                .localstore
-                .get_proofs(Some(mint.clone()), None, Some(vec![State::Unspent]), None)
-                .await?
-            {
-                let mut balances = HashMap::new();
-
-                for proof in proofs {
-                    balances
-                        .entry(proof.unit)
-                        .and_modify(|ps| *ps += proof.proof.amount)
-                        .or_insert(proof.proof.amount);
-                }
-
-                mint_balances.insert(mint, balances);
-            } else {
-                mint_balances.insert(mint, HashMap::new());
-            }
-        }
-
-        Ok(mint_balances)
-    }
-
     /// Update Mint information and related entries in the event a mint changes its URL
-    #[instrument(skip(self), fields(old_mint_url = %old_mint_url, new_mint_url = %new_mint_url))]
-    pub async fn update_mint_url(
-        &self,
-        old_mint_url: UncheckedUrl,
-        new_mint_url: UncheckedUrl,
-    ) -> Result<(), Error> {
-        // Adding the new url as a new mint will get the current keysets of the mint
-        self.add_mint(new_mint_url.clone()).await?;
-
+    #[instrument(skip(self))]
+    pub async fn update_mint_url(&mut self, new_mint_url: UncheckedUrl) -> Result<(), Error> {
+        self.mint_url = new_mint_url.clone();
         // Where the mint_url is in the database it must be updated
         self.localstore
-            .update_mint_url(old_mint_url.clone(), new_mint_url)
+            .update_mint_url(self.mint_url.clone(), new_mint_url)
             .await?;
 
-        self.localstore.remove_mint(old_mint_url).await?;
+        self.localstore.remove_mint(self.mint_url.clone()).await?;
         Ok(())
     }
 
     /// Get unspent proofs for mint
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
+    #[instrument(skip(self))]
+    pub async fn get_proofs(&self) -> Result<Option<Proofs>, Error> {
         Ok(self
             .localstore
-            .get_proofs(Some(mint_url), None, Some(vec![State::Unspent]), None)
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::Unspent]),
+                None,
+            )
             .await?
             .map(|p| p.into_iter().map(|p| p.proof).collect()))
     }
 
     /// Add mint to wallet
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn add_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Error> {
+    #[instrument(skip(self))]
+    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
         let mint_info = match self
             .client
-            .get_mint_info(mint_url.clone().try_into()?)
+            .get_mint_info(self.mint_url.clone().try_into()?)
             .await
         {
             Ok(mint_info) => Some(mint_info),
@@ -249,25 +153,21 @@ impl Wallet {
         };
 
         self.localstore
-            .add_mint(mint_url, mint_info.clone())
+            .add_mint(self.mint_url.clone(), mint_info.clone())
             .await?;
 
         Ok(mint_info)
     }
 
     /// Get keys for mint keyset
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_keyset_keys(
-        &self,
-        mint_url: &UncheckedUrl,
-        keyset_id: Id,
-    ) -> Result<Keys, Error> {
+    #[instrument(skip(self))]
+    pub async fn get_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
             keys
         } else {
             let keys = self
                 .client
-                .get_mint_keyset(mint_url.try_into()?, keyset_id)
+                .get_mint_keyset(self.mint_url.clone().try_into()?, keyset_id)
                 .await?;
 
             self.localstore.add_keys(keys.keys.clone()).await?;
@@ -279,44 +179,43 @@ impl Wallet {
     }
 
     /// Get keysets for mint
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_mint_keysets(
-        &self,
-        mint_url: &UncheckedUrl,
-    ) -> Result<Vec<KeySetInfo>, Error> {
-        let keysets = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+    #[instrument(skip(self))]
+    pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+        let keysets = self
+            .client
+            .get_mint_keysets(self.mint_url.clone().try_into()?)
+            .await?;
 
         self.localstore
-            .add_mint_keysets(mint_url.clone(), keysets.keysets.clone())
+            .add_mint_keysets(self.mint_url.clone(), keysets.keysets.clone())
             .await?;
 
         Ok(keysets.keysets)
     }
 
     /// Get active mint keyset
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_active_mint_keys(
-        &self,
-        mint_url: &UncheckedUrl,
-    ) -> Result<Vec<KeySet>, Error> {
-        let keysets = self.client.get_mint_keys(mint_url.try_into()?).await?;
+    #[instrument(skip(self))]
+    pub async fn get_active_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
+        let mint_url: Url = self.mint_url.clone().try_into()?;
+        let keysets = self.client.get_mint_keys(mint_url.clone()).await?;
 
         for keyset in keysets.clone() {
             self.localstore.add_keys(keyset.keys).await?;
         }
 
-        let k = self.client.get_mint_keysets(mint_url.try_into()?).await?;
+        let k = self.client.get_mint_keysets(mint_url).await?;
 
         self.localstore
-            .add_mint_keysets(mint_url.clone(), k.keysets)
+            .add_mint_keysets(self.mint_url.clone(), k.keysets)
             .await?;
 
         Ok(keysets)
     }
 
     /// Refresh Mint keys
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn refresh_mint_keys(&self, mint_url: &UncheckedUrl) -> Result<(), Error> {
+    #[instrument(skip(self))]
+    pub async fn refresh_mint_keys(&self) -> Result<(), Error> {
+        let mint_url = &self.mint_url.clone();
         let current_mint_keysets_info = self
             .client
             .get_mint_keysets(mint_url.try_into()?)
@@ -353,12 +252,10 @@ impl Wallet {
         Ok(())
     }
 
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn active_mint_keyset(
-        &self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
-    ) -> Result<Id, Error> {
+    #[instrument(skip(self))]
+    pub async fn active_mint_keyset(&self) -> Result<Id, Error> {
+        let mint_url = &self.mint_url;
+        let unit = &self.unit;
         if let Some(keysets) = self.localstore.get_mint_keysets(mint_url.clone()).await? {
             for keyset in keysets {
                 if keyset.unit.eq(unit) && keyset.active {
@@ -384,13 +281,9 @@ impl Wallet {
         Err(Error::NoActiveKeyset)
     }
 
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn active_keys(
-        &self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
-    ) -> Result<Option<Keys>, Error> {
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
+    #[instrument(skip(self))]
+    pub async fn active_keys(&self) -> Result<Option<Keys>, Error> {
+        let active_keyset_id = self.active_mint_keyset().await?;
 
         let keys;
 
@@ -399,7 +292,7 @@ impl Wallet {
         } else {
             let keyset = self
                 .client
-                .get_mint_keyset(mint_url.try_into()?, active_keyset_id)
+                .get_mint_keyset(self.mint_url.clone().try_into()?, active_keyset_id)
                 .await?;
 
             self.localstore.add_keys(keyset.keys.clone()).await?;
@@ -410,16 +303,12 @@ impl Wallet {
     }
 
     /// Check if a proof is spent
-    #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
-    pub async fn check_proofs_spent(
-        &self,
-        mint_url: UncheckedUrl,
-        proofs: Proofs,
-    ) -> Result<Vec<ProofState>, Error> {
+    #[instrument(skip(self, proofs))]
+    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
             .post_check_state(
-                mint_url.try_into()?,
+                self.mint_url.clone().try_into()?,
                 proofs
                     .into_iter()
                     // Find Y for the secret
@@ -433,70 +322,53 @@ impl Wallet {
 
     /// Checks pending proofs for spent status
     #[instrument(skip(self))]
-    pub async fn check_all_pending_proofs(
-        &self,
-        mint_url: Option<UncheckedUrl>,
-        unit: Option<CurrencyUnit>,
-    ) -> Result<Amount, Error> {
-        let mints = match mint_url {
-            Some(mint_url) => HashMap::from_iter(vec![(mint_url, None)]),
-            None => self.localstore.get_mints().await?,
-        };
-
+    pub async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
         let mut balance = Amount::ZERO;
 
-        for (mint, _) in mints {
-            if let Some(proofs) = self
-                .localstore
-                .get_proofs(
-                    Some(mint.clone()),
-                    unit.clone(),
-                    Some(vec![State::Pending, State::Reserved]),
-                    None,
-                )
-                .await?
-            {
-                let states = self
-                    .check_proofs_spent(
-                        mint.clone(),
-                        proofs.clone().into_iter().map(|p| p.proof).collect(),
-                    )
-                    .await?;
+        if let Some(proofs) = self
+            .localstore
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::Pending, State::Reserved]),
+                None,
+            )
+            .await?
+        {
+            let states = self
+                .check_proofs_spent(proofs.clone().into_iter().map(|p| p.proof).collect())
+                .await?;
 
-                // Both `State::Pending` and `State::Unspent` should be included in the pending table.
-                // This is because a proof that has been crated to send will be stored in the pending table
-                // in order to avoid accidentally double spending but to allow it to be explicitly reclaimed
-                let pending_states: HashSet<PublicKey> = states
-                    .into_iter()
-                    .filter(|s| s.state.ne(&State::Spent))
-                    .map(|s| s.y)
-                    .collect();
+            // Both `State::Pending` and `State::Unspent` should be included in the pending table.
+            // This is because a proof that has been crated to send will be stored in the pending table
+            // in order to avoid accidentally double spending but to allow it to be explicitly reclaimed
+            let pending_states: HashSet<PublicKey> = states
+                .into_iter()
+                .filter(|s| s.state.ne(&State::Spent))
+                .map(|s| s.y)
+                .collect();
 
-                let (pending_proofs, non_pending_proofs): (Vec<ProofInfo>, Vec<ProofInfo>) = proofs
-                    .into_iter()
-                    .partition(|p| pending_states.contains(&p.y));
+            let (pending_proofs, non_pending_proofs): (Vec<ProofInfo>, Vec<ProofInfo>) = proofs
+                .into_iter()
+                .partition(|p| pending_states.contains(&p.y));
 
-                let amount = pending_proofs.iter().map(|p| p.proof.amount).sum();
+            let amount = pending_proofs.iter().map(|p| p.proof.amount).sum();
 
-                self.localstore
-                    .remove_proofs(&non_pending_proofs.into_iter().map(|p| p.proof).collect())
-                    .await?;
+            self.localstore
+                .remove_proofs(&non_pending_proofs.into_iter().map(|p| p.proof).collect())
+                .await?;
 
-                balance += amount;
-            }
+            balance += amount;
         }
 
         Ok(balance)
     }
 
     /// Mint Quote
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn mint_quote(
-        &self,
-        mint_url: UncheckedUrl,
-        unit: CurrencyUnit,
-        amount: Amount,
-    ) -> Result<MintQuote, Error> {
+    #[instrument(skip(self))]
+    pub async fn mint_quote(&self, amount: Amount) -> Result<MintQuote, Error> {
+        let mint_url = self.mint_url.clone();
+        let unit = self.unit.clone();
         let quote_res = self
             .client
             .post_mint_quote(mint_url.clone().try_into()?, amount, unit.clone())
@@ -518,15 +390,14 @@ impl Wallet {
     }
 
     /// Mint quote status
-    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, quote_id))]
     pub async fn mint_quote_status(
         &self,
-        mint_url: UncheckedUrl,
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response, Error> {
         let response = self
             .client
-            .get_mint_quote_status(mint_url.try_into()?, quote_id)
+            .get_mint_quote_status(self.mint_url.clone().try_into()?, quote_id)
             .await?;
 
         match self.localstore.get_mint_quote(quote_id).await? {
@@ -545,23 +416,17 @@ impl Wallet {
     }
 
     /// Check status of pending mint quotes
+    #[instrument(skip(self))]
     pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
         let mint_quotes = self.localstore.get_mint_quotes().await?;
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
-            let mint_quote_response = self
-                .mint_quote_status(mint_quote.mint_url.clone(), &mint_quote.id)
-                .await?;
+            let mint_quote_response = self.mint_quote_status(&mint_quote.id).await?;
 
             if mint_quote_response.paid {
                 let amount = self
-                    .mint(
-                        mint_quote.mint_url,
-                        &mint_quote.id,
-                        SplitTarget::default(),
-                        None,
-                    )
+                    .mint(&mint_quote.id, SplitTarget::default(), None)
                     .await?;
                 total_amount += amount;
             } else if mint_quote.expiry.le(&unix_time()) {
@@ -572,17 +437,21 @@ impl Wallet {
     }
 
     /// Mint
-    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
+    #[instrument(skip(self))]
     pub async fn mint(
         &self,
-        mint_url: UncheckedUrl,
         quote_id: &str,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Amount, Error> {
         // Check that mint is in store of mints
-        if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
-            self.add_mint(mint_url.clone()).await?;
+        if self
+            .localstore
+            .get_mint(self.mint_url.clone())
+            .await?
+            .is_none()
+        {
+            self.get_mint_info().await?;
         }
 
         let quote_info = self.localstore.get_mint_quote(quote_id).await?;
@@ -597,7 +466,7 @@ impl Wallet {
             return Err(Error::QuoteUnknown);
         };
 
-        let active_keyset_id = self.active_mint_keyset(&mint_url, &quote_info.unit).await?;
+        let active_keyset_id = self.active_mint_keyset().await?;
 
         let count = self
             .localstore
@@ -625,18 +494,18 @@ impl Wallet {
         let mint_res = self
             .client
             .post_mint(
-                mint_url.clone().try_into()?,
+                self.mint_url.clone().try_into()?,
                 quote_id,
                 premint_secrets.clone(),
             )
             .await?;
 
-        let keys = self.get_keyset_keys(&mint_url, active_keyset_id).await?;
+        let keys = self.get_keyset_keys(active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.get_keyset_keys(&mint_url, sig.keyset_id).await?;
+                let keys = self.get_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::UnknownKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
@@ -669,7 +538,7 @@ impl Wallet {
             .flat_map(|proof| {
                 ProofInfo::new(
                     proof,
-                    mint_url.clone(),
+                    self.mint_url.clone(),
                     State::Unspent,
                     quote_info.unit.clone(),
                 )
@@ -683,20 +552,18 @@ impl Wallet {
     }
 
     /// Swap
-    #[instrument(skip(self, input_proofs), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, input_proofs))]
     pub async fn swap(
         &self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
         amount: Option<Amount>,
         amount_split_target: &SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Option<Proofs>, Error> {
+        let mint_url = &self.mint_url;
+        let unit = &self.unit;
         let pre_swap = self
             .create_swap(
-                mint_url,
-                unit,
                 amount,
                 amount_split_target,
                 input_proofs.clone(),
@@ -709,7 +576,7 @@ impl Wallet {
             .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
             .await?;
 
-        let active_keys = self.active_keys(mint_url, unit).await?.unwrap();
+        let active_keys = self.active_keys().await?.unwrap();
 
         let mut post_swap_proofs = construct_proofs(
             swap_response.signatures,
@@ -718,7 +585,7 @@ impl Wallet {
             &active_keys,
         )?;
 
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await?;
+        let active_keyset_id = self.active_mint_keyset().await?;
 
         // FIXME: Should not increment keyset counter for condition proofs
         self.localstore
@@ -797,17 +664,15 @@ impl Wallet {
     }
 
     /// Create Swap Payload
-    #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, proofs))]
     pub async fn create_swap(
         &self,
-        mint_url: &UncheckedUrl,
-        unit: &CurrencyUnit,
         amount: Option<Amount>,
         amount_split_target: &SplitTarget,
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<PreSwap, Error> {
-        let active_keyset_id = self.active_mint_keyset(mint_url, unit).await.unwrap();
+        let active_keyset_id = self.active_mint_keyset().await.unwrap();
 
         // Desired amount is either amount passwed or value of all proof
         let proofs_total = proofs.iter().map(|p| p.amount).sum();
@@ -886,23 +751,19 @@ impl Wallet {
     }
 
     /// Send
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self))]
     pub async fn send(
         &self,
-        mint_url: &UncheckedUrl,
-        unit: CurrencyUnit,
         amount: Amount,
         memo: Option<String>,
         conditions: Option<SpendingConditions>,
         amount_split_target: &SplitTarget,
     ) -> Result<String, Error> {
+        let mint_url = &self.mint_url;
+        let unit = &self.unit;
+
         let (condition_input_proofs, input_proofs) = self
-            .select_proofs(
-                mint_url.clone(),
-                unit.clone(),
-                amount,
-                conditions.clone().map(|p| vec![p]),
-            )
+            .select_proofs(amount, conditions.clone().map(|p| vec![p]))
             .await?;
 
         let send_proofs = match conditions {
@@ -917,8 +778,6 @@ impl Wallet {
                 let top_up_proofs = match needed_amount > Amount::ZERO {
                     true => {
                         self.swap(
-                            mint_url,
-                            &unit,
                             Some(needed_amount),
                             amount_split_target,
                             input_proofs,
@@ -946,15 +805,8 @@ impl Wallet {
                 {
                     true => Some(input_proofs),
                     false => {
-                        self.swap(
-                            mint_url,
-                            &unit,
-                            Some(amount),
-                            amount_split_target,
-                            input_proofs,
-                            conditions,
-                        )
-                        .await?
+                        self.swap(Some(amount), amount_split_target, input_proofs, conditions)
+                            .await?
                     }
                 }
             }
@@ -974,11 +826,9 @@ impl Wallet {
     }
 
     /// Melt Quote
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self))]
     pub async fn melt_quote(
         &self,
-        mint_url: UncheckedUrl,
-        unit: CurrencyUnit,
         request: String,
         mpp: Option<Amount>,
     ) -> Result<MeltQuote, Error> {
@@ -988,7 +838,7 @@ impl Wallet {
             .amount_milli_satoshis()
             .ok_or(Error::InvoiceAmountUndefined)?;
 
-        let amount = match unit {
+        let amount = match self.unit {
             CurrencyUnit::Sat => Amount::from(request_amount / 1000),
             CurrencyUnit::Msat => Amount::from(request_amount),
             _ => return Err(Error::UnitNotSupported),
@@ -996,7 +846,12 @@ impl Wallet {
 
         let quote_res = self
             .client
-            .post_melt_quote(mint_url.clone().try_into()?, unit.clone(), invoice, mpp)
+            .post_melt_quote(
+                self.mint_url.clone().try_into()?,
+                self.unit.clone(),
+                invoice,
+                mpp,
+            )
             .await?;
 
         if quote_res.amount != amount {
@@ -1007,7 +862,7 @@ impl Wallet {
             id: quote_res.quote,
             amount,
             request,
-            unit,
+            unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
             paid: quote_res.paid,
             expiry: quote_res.expiry,
@@ -1019,15 +874,14 @@ impl Wallet {
     }
 
     /// Melt quote status
-    #[instrument(skip(self, quote_id), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, quote_id))]
     pub async fn melt_quote_status(
         &self,
-        mint_url: UncheckedUrl,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let response = self
             .client
-            .get_melt_quote_status(mint_url.try_into()?, quote_id)
+            .get_melt_quote_status(self.mint_url.clone().try_into()?, quote_id)
             .await?;
 
         match self.localstore.get_melt_quote(quote_id).await? {
@@ -1046,10 +900,9 @@ impl Wallet {
     }
 
     /// Melt
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self))]
     pub async fn melt(
         &self,
-        mint_url: &UncheckedUrl,
         quote_id: &str,
         amount_split_target: SplitTarget,
     ) -> Result<Melted, Error> {
@@ -1067,15 +920,7 @@ impl Wallet {
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 
-        let proofs = self
-            .select_proofs(
-                mint_url.clone(),
-                quote_info.unit.clone(),
-                inputs_needed_amount,
-                None,
-            )
-            .await?
-            .1;
+        let proofs = self.select_proofs(inputs_needed_amount, None).await?.1;
 
         let proofs_amount = proofs.iter().map(|p| p.amount).sum::<Amount>();
 
@@ -1083,8 +928,6 @@ impl Wallet {
             true => {
                 let proofs = self
                     .swap(
-                        mint_url,
-                        &quote_info.unit,
                         Some(inputs_needed_amount),
                         &amount_split_target,
                         proofs,
@@ -1097,7 +940,7 @@ impl Wallet {
             false => proofs,
         };
 
-        let active_keyset_id = self.active_mint_keyset(mint_url, &quote_info.unit).await?;
+        let active_keyset_id = self.active_mint_keyset().await?;
 
         let count = self
             .localstore
@@ -1116,7 +959,7 @@ impl Wallet {
         let melt_response = self
             .client
             .post_melt(
-                mint_url.clone().try_into()?,
+                self.mint_url.clone().try_into()?,
                 quote_id.to_string(),
                 input_proofs.clone(),
                 Some(premint_secrets.blinded_messages()),
@@ -1128,10 +971,7 @@ impl Wallet {
                 change,
                 premint_secrets.rs(),
                 premint_secrets.secrets(),
-                &self
-                    .active_keys(mint_url, &quote_info.unit)
-                    .await?
-                    .ok_or(Error::UnknownKey)?,
+                &self.active_keys().await?.ok_or(Error::UnknownKey)?,
             )?),
             None => None,
         };
@@ -1158,7 +998,7 @@ impl Wallet {
                 .flat_map(|proof| {
                     ProofInfo::new(
                         proof,
-                        mint_url.clone(),
+                        self.mint_url.clone(),
                         State::Unspent,
                         quote_info.unit.clone(),
                     )
@@ -1176,14 +1016,13 @@ impl Wallet {
     }
 
     // Select proofs
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self))]
     pub async fn select_proofs(
         &self,
-        mint_url: UncheckedUrl,
-        unit: CurrencyUnit,
         amount: Amount,
         conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<(Proofs, Proofs), Error> {
+        let mint_url = self.mint_url.clone();
         let mut condition_mint_proofs = Vec::new();
 
         if conditions.is_some() {
@@ -1191,7 +1030,7 @@ impl Wallet {
                 .localstore
                 .get_proofs(
                     Some(mint_url.clone()),
-                    Some(unit.clone()),
+                    Some(self.unit.clone()),
                     Some(vec![State::Unspent]),
                     conditions,
                 )
@@ -1204,12 +1043,12 @@ impl Wallet {
 
         let mint_keysets = match self.localstore.get_mint_keysets(mint_url.clone()).await? {
             Some(keysets) => keysets,
-            None => self.get_mint_keysets(&mint_url).await?,
+            None => self.get_mint_keysets().await?,
         };
 
         let (active, inactive): (HashSet<KeySetInfo>, HashSet<KeySetInfo>) = mint_keysets
             .into_iter()
-            .filter(|p| p.unit.eq(&unit.clone()))
+            .filter(|p| p.unit.eq(&self.unit.clone()))
             .partition(|x| x.active);
 
         let active: HashSet<Id> = active.iter().map(|k| k.id).collect();
@@ -1251,7 +1090,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(mint_url.clone()),
-                Some(unit.clone()),
+                Some(self.unit.clone()),
                 Some(vec![State::Unspent]),
                 None,
             )
@@ -1303,8 +1142,10 @@ impl Wallet {
         &self,
         encoded_token: &str,
         amount_split_target: &SplitTarget,
-        preimages: Option<Vec<String>>,
+        p2pk_signing_keys: &[SecretKey],
+        preimages: &[String],
     ) -> Result<Amount, Error> {
+        //TODO: check token is for this mint
         let token_data = Token::from_str(encoded_token)?;
 
         let unit = token_data.unit.unwrap_or_default();
@@ -1322,12 +1163,12 @@ impl Wallet {
                 .await?
                 .is_none()
             {
-                self.add_mint(token.mint.clone()).await?;
+                self.get_mint_info().await?;
             }
 
-            let active_keyset_id = self.active_mint_keyset(&token.mint, &unit).await?;
+            let active_keyset_id = self.active_mint_keyset().await?;
 
-            let keys = self.get_keyset_keys(&token.mint, active_keyset_id).await?;
+            let keys = self.get_keyset_keys(active_keyset_id).await?;
 
             // Sum amount of all proofs
             let amount: Amount = token.proofs.iter().map(|p| p.amount).sum();
@@ -1337,23 +1178,23 @@ impl Wallet {
             let mut sig_flag = SigFlag::SigInputs;
 
             // Map hash of preimage to preimage
-            let hashed_to_preimage = match preimages {
-                Some(ref preimages) => preimages
-                    .iter()
-                    .flat_map(|p| match hex::decode(p) {
-                        Ok(hex_bytes) => Some((Sha256Hash::hash(&hex_bytes).to_string(), p)),
-                        Err(_) => None,
-                    })
-                    .collect(),
-                None => HashMap::new(),
-            };
+            let hashed_to_preimage: HashMap<String, &String> = preimages
+                .iter()
+                .flat_map(|p| match hex::decode(p) {
+                    Ok(hex_bytes) => Some((Sha256Hash::hash(&hex_bytes).to_string(), p)),
+                    Err(_) => None,
+                })
+                .collect();
 
-            let p2pk_signing_keys = self.p2pk_signing_keys.read().await;
+            let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = p2pk_signing_keys
+                .iter()
+                .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
+                .collect();
 
             for proof in &mut proofs {
                 // Verify that proof DLEQ is valid
                 if proof.dleq.is_some() {
-                    let keys = self.get_keyset_keys(&token.mint, proof.keyset_id).await?;
+                    let keys = self.get_keyset_keys(proof.keyset_id).await?;
                     let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
                     proof.verify_dleq(key)?;
                 }
@@ -1398,14 +1239,7 @@ impl Wallet {
             }
 
             let mut pre_swap = self
-                .create_swap(
-                    &token.mint,
-                    &unit,
-                    Some(amount),
-                    amount_split_target,
-                    proofs,
-                    None,
-                )
+                .create_swap(Some(amount), amount_split_target, proofs, None)
                 .await?;
 
             if sig_flag.eq(&SigFlag::SigAll) {
@@ -1450,19 +1284,24 @@ impl Wallet {
         Ok(total_amount)
     }
 
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn restore(&self, mint_url: UncheckedUrl) -> Result<Amount, Error> {
+    #[instrument(skip(self))]
+    pub async fn restore(&self) -> Result<Amount, Error> {
         // Check that mint is in store of mints
-        if self.localstore.get_mint(mint_url.clone()).await?.is_none() {
-            self.add_mint(mint_url.clone()).await?;
+        if self
+            .localstore
+            .get_mint(self.mint_url.clone())
+            .await?
+            .is_none()
+        {
+            self.get_mint_info().await?;
         }
 
-        let keysets = self.get_mint_keysets(&mint_url).await?;
+        let keysets = self.get_mint_keysets().await?;
 
         let mut restored_value = Amount::ZERO;
 
         for keyset in keysets {
-            let keys = self.get_keyset_keys(&mint_url, keyset.id).await?;
+            let keys = self.get_keyset_keys(keyset.id).await?;
             let mut empty_batch = 0;
             let mut start_counter = 0;
 
@@ -1478,7 +1317,7 @@ impl Wallet {
                     "Attempting to restore counter {}-{} for mint {} keyset {}",
                     start_counter,
                     start_counter + 100,
-                    mint_url,
+                    self.mint_url,
                     keyset.id
                 );
 
@@ -1488,7 +1327,7 @@ impl Wallet {
 
                 let response = self
                     .client
-                    .post_restore(mint_url.clone().try_into()?, restore_request)
+                    .post_restore(self.mint_url.clone().try_into()?, restore_request)
                     .await?;
 
                 if response.signatures.is_empty() {
@@ -1525,9 +1364,7 @@ impl Wallet {
                     .increment_keyset_counter(&keyset.id, proofs.len() as u32)
                     .await?;
 
-                let states = self
-                    .check_proofs_spent(mint_url.clone(), proofs.clone())
-                    .await?;
+                let states = self.check_proofs_spent(proofs.clone()).await?;
 
                 let unspent_proofs: Vec<Proof> = proofs
                     .iter()
@@ -1542,7 +1379,12 @@ impl Wallet {
                 let unspent_proofs = unspent_proofs
                     .into_iter()
                     .flat_map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Unspent, keyset.unit.clone())
+                        ProofInfo::new(
+                            proof,
+                            self.mint_url.clone(),
+                            State::Unspent,
+                            keyset.unit.clone(),
+                        )
                     })
                     .collect();
 
@@ -1606,6 +1448,12 @@ impl Wallet {
         }
 
         for mint_proof in &token.token {
+            if mint_proof.mint != self.mint_url {
+                return Err(Error::IncorrectWallet(format!(
+                    "Should be {} not {}",
+                    self.mint_url, mint_proof.mint
+                )));
+            }
             for proof in &mint_proof.proofs {
                 let secret: nut10::Secret = (&proof.secret).try_into()?;
 
@@ -1692,13 +1540,17 @@ impl Wallet {
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
 
         for mint_proof in &token.token {
+            if mint_proof.mint != self.mint_url {
+                return Err(Error::IncorrectWallet(format!(
+                    "Should be {} not {}",
+                    self.mint_url, mint_proof.mint
+                )));
+            }
             for proof in &mint_proof.proofs {
                 let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                     Some(keys) => keys.amount_key(proof.amount),
                     None => {
-                        let keys = self
-                            .get_keyset_keys(&mint_proof.mint, proof.keyset_id)
-                            .await?;
+                        let keys = self.get_keyset_keys(proof.keyset_id).await?;
 
                         let key = keys.amount_key(proof.amount);
                         keys_cache.insert(proof.keyset_id, keys);
