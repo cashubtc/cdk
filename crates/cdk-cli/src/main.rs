@@ -58,6 +58,8 @@ enum Commands {
     Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
     Restore(sub_commands::restore::RestoreSubCommand),
+    /// Update Mint Url
+    UpdateMintUrl(sub_commands::update_mint_url::UpdateMintUrlSubCommand),
 }
 
 #[tokio::main]
@@ -144,6 +146,9 @@ async fn main() -> Result<()> {
         }
         Commands::Restore(sub_command_args) => {
             sub_commands::restore::restore(wallet, sub_command_args).await
+        }
+        Commands::UpdateMintUrl(sub_command_args) => {
+            sub_commands::update_mint_url::update_mint_url(wallet, sub_command_args).await
         }
     }
 }

@@ -13,6 +13,7 @@ use crate::nuts::{
 };
 use crate::types::{MeltQuote, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
+use crate::util::unix_time;
 
 #[derive(Default, Debug, Clone)]
 pub struct WalletMemoryDatabase {
@@ -71,12 +72,68 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+        let mut mints = self.mints.write().await;
+        mints.remove(&mint_url);
+
+        Ok(())
+    }
+
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         Ok(self.mints.read().await.get(&mint_url).cloned().flatten())
     }
 
     async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Error> {
         Ok(self.mints.read().await.clone())
+    }
+
+    async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Self::Err> {
+        let proofs = self
+            .get_proofs(Some(old_mint_url), None, None, None)
+            .await
+            .map_err(Error::from)?;
+
+        if let Some(proofs) = proofs {
+            let updated_proofs: Vec<ProofInfo> = proofs
+                .clone()
+                .into_iter()
+                .map(|mut p| {
+                    p.mint_url = new_mint_url.clone();
+                    p
+                })
+                .collect();
+
+            self.add_proofs(updated_proofs).await?;
+        }
+
+        // Update mint quotes
+        {
+            let quotes = self.get_mint_quotes().await?;
+
+            let unix_time = unix_time();
+
+            let quotes: Vec<MintQuote> = quotes
+                .into_iter()
+                .filter_map(|mut q| {
+                    if q.expiry < unix_time {
+                        q.mint_url = new_mint_url.clone();
+                        Some(q)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for quote in quotes {
+                self.add_mint_quote(quote).await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn add_mint_keysets(

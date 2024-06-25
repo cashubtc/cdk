@@ -204,6 +204,25 @@ impl Wallet {
         Ok(mint_balances)
     }
 
+    /// Update Mint information and related entries in the event a mint changes its URL
+    #[instrument(skip(self), fields(old_mint_url = %old_mint_url, new_mint_url = %new_mint_url))]
+    pub async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Error> {
+        // Adding the new url as a new mint will get the current keysets of the mint
+        self.add_mint(new_mint_url.clone()).await?;
+
+        // Where the mint_url is in the database it must be updated
+        self.localstore
+            .update_mint_url(old_mint_url.clone(), new_mint_url)
+            .await?;
+
+        self.localstore.remove_mint(old_mint_url).await?;
+        Ok(())
+    }
+
     /// Get unspent proofs for mint
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
