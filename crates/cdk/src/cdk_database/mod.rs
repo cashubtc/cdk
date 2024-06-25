@@ -56,8 +56,14 @@ pub trait WalletDatabase: Debug {
         mint_url: UncheckedUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err>;
+    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err>;
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err>;
     async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err>;
+    async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Self::Err>;
 
     async fn add_mint_keysets(
         &self,

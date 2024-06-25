@@ -108,6 +108,22 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
         Ok(())
     }
+
+    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+        sqlx::query(
+            r#"
+DELETE FROM mint
+WHERE mint_url=?
+        "#,
+        )
+        .bind(mint_url.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -153,6 +169,32 @@ FROM mint
             .collect();
 
         Ok(mints)
+    }
+
+    async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Self::Err> {
+        let tables = ["mint_quote", "proof"];
+        for table in &tables {
+            let query = format!(
+                r#"
+            UPDATE {}
+            SET mint_url = ?
+            WHERE mint_url = ?;
+            "#,
+                table
+            );
+
+            sqlx::query(&query)
+                .bind(new_mint_url.to_string())
+                .bind(old_mint_url.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(Error::from)?;
+        }
+        Ok(())
     }
 
     async fn add_mint_keysets(
