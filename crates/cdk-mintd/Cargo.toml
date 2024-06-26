@@ -10,6 +10,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.75"
+bip39 = "2.0.0"
 cdk = { workspace = true, default-features = false, features = ["mint"] }
 cdk-redb = { workspace = true, default-features = false, features = ["mint"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["mint"] }

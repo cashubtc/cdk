@@ -5,11 +5,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::Mint;
 use cdk::nuts::MintInfo;
-use cdk::{cdk_lightning, Amount, Mnemonic};
+use cdk::{cdk_lightning, Amount};
 use cdk_cln::Cln;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -44,13 +45,13 @@ async fn main() -> anyhow::Result<()> {
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
         match settings.database.engine {
             DatabaseEngine::Sqlite => {
-                let sqlite_db = MintSqliteDatabase::new(db_path.to_str().unwrap()).await?;
+                let sqlite_db = MintSqliteDatabase::new(&db_path).await?;
 
                 sqlite_db.migrate().await;
 
                 Arc::new(sqlite_db)
             }
-            DatabaseEngine::Redb => Arc::new(MintRedbDatabase::new(db_path.to_str().unwrap())?),
+            DatabaseEngine::Redb => Arc::new(MintRedbDatabase::new(&db_path)?),
         };
 
     let mint_info = MintInfo::default();
@@ -58,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
     let mint = Mint::new(
+        &settings.info.url,
         &mnemonic.to_seed_normalized(""),
         mint_info,
         localstore,

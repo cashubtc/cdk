@@ -327,7 +327,7 @@ async fn post_check(
 }
 
 async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
-    Ok(Json(state.mint.mint_info().map_err(into_response)?))
+    Ok(Json(state.mint.mint_info().clone()))
 }
 
 async fn post_swap(
