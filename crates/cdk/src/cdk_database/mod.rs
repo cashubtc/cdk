@@ -2,6 +2,7 @@
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use std::collections::HashMap;
+use std::fmt::Debug;
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use async_trait::async_trait;
@@ -47,7 +48,7 @@ pub enum Error {
 #[cfg(feature = "wallet")]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait WalletDatabase {
+pub trait WalletDatabase: Debug {
     type Err: Into<Error> + From<Error>;
 
     async fn add_mint(
@@ -55,8 +56,14 @@ pub trait WalletDatabase {
         mint_url: UncheckedUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err>;
+    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err>;
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err>;
     async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err>;
+    async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Self::Err>;
 
     async fn add_mint_keysets(
         &self,

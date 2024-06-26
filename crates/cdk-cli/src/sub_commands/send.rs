@@ -100,7 +100,10 @@ pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<(
             )
             .unwrap();
 
-            Some(SpendingConditions::new_htlc(preimage.clone(), conditions)?)
+            Some(SpendingConditions::new_htlc(
+                preimage.clone(),
+                Some(conditions),
+            )?)
         }
         None => match sub_command_args.pubkey.is_empty() {
             true => None,
@@ -136,7 +139,7 @@ pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<(
 
                 Some(SpendingConditions::P2PKConditions {
                     data: data_pubkey,
-                    conditions,
+                    conditions: Some(conditions),
                 })
             }
         },

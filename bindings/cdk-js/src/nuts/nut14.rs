@@ -39,9 +39,12 @@ impl Deref for JsHTLCSpendingConditions {
 #[wasm_bindgen(js_class = HTLCSpendingConditions)]
 impl JsHTLCSpendingConditions {
     #[wasm_bindgen(constructor)]
-    pub fn new(preimage: String, conditions: JsConditions) -> Result<JsHTLCSpendingConditions> {
+    pub fn new(
+        preimage: String,
+        conditions: Option<JsConditions>,
+    ) -> Result<JsHTLCSpendingConditions> {
         Ok(Self {
-            inner: SpendingConditions::new_htlc(preimage, conditions.deref().clone())
+            inner: SpendingConditions::new_htlc(preimage, conditions.map(|c| c.deref().clone()))
                 .map_err(into_err)?,
         })
     }

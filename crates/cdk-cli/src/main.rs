@@ -1,17 +1,21 @@
 use std::fs;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use bip39::Mnemonic;
+use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::Wallet;
-use cdk::{cdk_database, Mnemonic};
 use cdk_redb::RedbWalletDatabase;
 use cdk_sqlite::WalletSQLiteDatabase;
 use clap::{Parser, Subcommand};
 use rand::Rng;
 
 mod sub_commands;
+
+const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 
 /// Simple CLI application to interact with cashu
 #[derive(Parser)]
@@ -24,17 +28,11 @@ struct Cli {
     #[arg(short, long, default_value = "sqlite")]
     engine: String,
     /// Path to Seed
-    #[arg(short, long, default_value = "./seed")]
-    seed_path: String,
-    /// File Path to save proofs
     #[arg(short, long)]
-    db_path: Option<String>,
+    work_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
-
-const DEFAULT_REDB_DB_PATH: &str = "./cashu_tool.redb";
-const DEFAULT_SQLITE_DB_PATH: &str = "./cashu_tool.sqlite";
 
 #[derive(Subcommand)]
 enum Commands {
@@ -60,6 +58,8 @@ enum Commands {
     Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
     Restore(sub_commands::restore::RestoreSubCommand),
+    /// Update Mint Url
+    UpdateMintUrl(sub_commands::update_mint_url::UpdateMintUrlSubCommand),
 }
 
 #[tokio::main]
@@ -71,22 +71,39 @@ async fn main() -> Result<()> {
     // Parse input
     let args: Cli = Cli::parse();
 
+    let work_dir = match &args.work_dir {
+        Some(work_dir) => work_dir.clone(),
+        None => {
+            let home_dir = home::home_dir().unwrap();
+            home_dir.join(DEFAULT_WORK_DIR)
+        }
+    };
+
+    fs::create_dir_all(&work_dir)?;
+
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
             "sqlite" => {
-                let sql = WalletSQLiteDatabase::new(DEFAULT_SQLITE_DB_PATH).await?;
+                let sql_path = work_dir.join("cdk-cli.sqlite");
+                let sql = WalletSQLiteDatabase::new(&sql_path).await?;
 
                 sql.migrate().await;
 
                 Arc::new(sql)
             }
-            "redb" => Arc::new(RedbWalletDatabase::new(DEFAULT_REDB_DB_PATH)?),
+            "redb" => {
+                let redb_path = work_dir.join("cdk-cli.redb");
+
+                Arc::new(RedbWalletDatabase::new(&redb_path)?)
+            }
             _ => bail!("Unknown DB engine"),
         };
 
-    let mnemonic = match fs::metadata(args.seed_path.clone()) {
+    let seed_path = work_dir.join("seed");
+
+    let mnemonic = match fs::metadata(seed_path.clone()) {
         Ok(_) => {
-            let contents = fs::read_to_string(args.seed_path.clone())?;
+            let contents = fs::read_to_string(seed_path.clone())?;
             Mnemonic::from_str(&contents)?
         }
         Err(_e) => {
@@ -129,6 +146,9 @@ async fn main() -> Result<()> {
         }
         Commands::Restore(sub_command_args) => {
             sub_commands::restore::restore(wallet, sub_command_args).await
+        }
+        Commands::UpdateMintUrl(sub_command_args) => {
+            sub_commands::update_mint_url::update_mint_url(wallet, sub_command_args).await
         }
     }
 }

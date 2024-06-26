@@ -22,6 +22,7 @@ pub mod error;
 
 #[derive(Clone)]
 pub struct Mint {
+    pub mint_url: UncheckedUrl,
     mint_info: MintInfo,
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
@@ -32,6 +33,7 @@ pub struct Mint {
 
 impl Mint {
     pub async fn new(
+        mint_url: &str,
         seed: &[u8],
         mint_info: MintInfo,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
@@ -43,20 +45,35 @@ impl Mint {
             ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
         let mut keysets = HashMap::new();
-        let keysets_info = localstore.get_keyset_infos().await?;
-        if keysets_info.is_empty() {
-            let derivation_path = DerivationPath::from(vec![
-                ChildNumber::from_hardened_idx(0).expect("0 is a valid index")
-            ]);
-            let (keyset, keyset_info) =
-                create_new_keyset(&secp_ctx, xpriv, derivation_path, CurrencyUnit::Sat, 64);
-            let id = keyset_info.id;
-            localstore.add_keyset_info(keyset_info).await?;
-            localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
-            keysets.insert(id, keyset);
+        let keysets_infos = localstore.get_keyset_infos().await?;
+
+        match keysets_infos.is_empty() {
+            false => {
+                for keyset_info in keysets_infos {
+                    if keyset_info.active {
+                        let id = keyset_info.id;
+                        let keyset = MintKeySet::generate_from_xpriv(&secp_ctx, xpriv, keyset_info);
+                        keysets.insert(id, keyset);
+                    }
+                }
+            }
+            true => {
+                let derivation_path = DerivationPath::from(vec![
+                    ChildNumber::from_hardened_idx(0).expect("0 is a valid index")
+                ]);
+                let (keyset, keyset_info) =
+                    create_new_keyset(&secp_ctx, xpriv, derivation_path, CurrencyUnit::Sat, 64);
+                let id = keyset_info.id;
+                localstore.add_keyset_info(keyset_info).await?;
+                localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
+                keysets.insert(id, keyset);
+            }
         }
 
+        let mint_url = UncheckedUrl::from(mint_url);
+
         Ok(Self {
+            mint_url,
             keysets: Arc::new(RwLock::new(keysets)),
             secp_ctx,
             xpriv,
@@ -67,6 +84,26 @@ impl Mint {
             },
             mint_info,
         })
+    }
+
+    /// Set Mint Url
+    pub fn set_mint_url(&mut self, mint_url: UncheckedUrl) {
+        self.mint_url = mint_url;
+    }
+
+    /// Get Mint Url
+    pub fn get_mint_url(&self) -> &UncheckedUrl {
+        &self.mint_url
+    }
+
+    /// Set Mint Info
+    pub fn set_mint_info(&mut self, mint_info: MintInfo) {
+        self.mint_info = mint_info;
+    }
+
+    /// Get Mint Info
+    pub fn mint_info(&self) -> &MintInfo {
+        &self.mint_info
     }
 
     /// New mint quote
@@ -302,7 +339,10 @@ impl Mint {
     }
 
     /// Blind Sign
-    async fn blind_sign(&self, blinded_message: &BlindedMessage) -> Result<BlindSignature, Error> {
+    pub async fn blind_sign(
+        &self,
+        blinded_message: &BlindedMessage,
+    ) -> Result<BlindSignature, Error> {
         let BlindedMessage {
             amount,
             blinded_secret,
@@ -456,7 +496,7 @@ impl Mint {
     }
 
     /// Verify [`Proof`] meets conditions and is signed
-    async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+    pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
             <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)
@@ -701,16 +741,6 @@ impl Mint {
         })
     }
 
-    /// Set Mint Info
-    pub fn set_mint_info(&mut self, mint_info: MintInfo) {
-        self.mint_info = mint_info;
-    }
-
-    /// Get Mint Info
-    pub fn mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.mint_info.clone())
-    }
-
     /// Restore
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let output_len = request.outputs.len();
@@ -744,7 +774,7 @@ impl Mint {
     }
 
     /// Ensure Keyset is loaded in mint
-    async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
+    pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
         let keysets = self.keysets.read().await;
         if keysets.contains_key(id) {
             return Ok(());
@@ -763,7 +793,7 @@ impl Mint {
     }
 
     /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
-    fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
+    pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
         MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
     }
 }

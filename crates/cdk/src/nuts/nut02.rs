@@ -315,7 +315,14 @@ impl MintKeySet {
             ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
         let max_order = info.max_order;
         let unit = info.unit;
-        Self::generate(secp, xpriv, unit, max_order)
+        Self::generate(
+            secp,
+            xpriv
+                .derive_priv(secp, &info.derivation_path)
+                .expect("RNG busted"),
+            unit,
+            max_order,
+        )
     }
 
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
@@ -325,7 +332,14 @@ impl MintKeySet {
     ) -> Self {
         let max_order = info.max_order;
         let unit = info.unit;
-        Self::generate(secp, xpriv, unit, max_order)
+        Self::generate(
+            secp,
+            xpriv
+                .derive_priv(secp, &info.derivation_path)
+                .expect("RNG busted"),
+            unit,
+            max_order,
+        )
     }
 }
 

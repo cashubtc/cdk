@@ -34,7 +34,7 @@ pub mod error;
 pub mod nostr;
 pub mod util;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Wallet {
     pub client: HttpClient,
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
@@ -204,6 +204,25 @@ impl Wallet {
         Ok(mint_balances)
     }
 
+    /// Update Mint information and related entries in the event a mint changes its URL
+    #[instrument(skip(self), fields(old_mint_url = %old_mint_url, new_mint_url = %new_mint_url))]
+    pub async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Error> {
+        // Adding the new url as a new mint will get the current keysets of the mint
+        self.add_mint(new_mint_url.clone()).await?;
+
+        // Where the mint_url is in the database it must be updated
+        self.localstore
+            .update_mint_url(old_mint_url.clone(), new_mint_url)
+            .await?;
+
+        self.localstore.remove_mint(old_mint_url).await?;
+        Ok(())
+    }
+
     /// Get unspent proofs for mint
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_proofs(&self, mint_url: UncheckedUrl) -> Result<Option<Proofs>, Error> {
@@ -335,7 +354,7 @@ impl Wallet {
     }
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn active_mint_keyset(
+    pub async fn active_mint_keyset(
         &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
@@ -366,7 +385,7 @@ impl Wallet {
     }
 
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn active_keys(
+    pub async fn active_keys(
         &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
@@ -779,7 +798,7 @@ impl Wallet {
 
     /// Create Swap Payload
     #[instrument(skip(self, proofs), fields(mint_url = %mint_url))]
-    async fn create_swap(
+    pub async fn create_swap(
         &self,
         mint_url: &UncheckedUrl,
         unit: &CurrencyUnit,
@@ -1344,7 +1363,8 @@ impl Wallet {
                         proof.secret.clone(),
                     )
                 {
-                    let conditions: Result<Conditions, _> = secret.secret_data.tags.try_into();
+                    let conditions: Result<Conditions, _> =
+                        secret.secret_data.tags.unwrap_or_default().try_into();
                     if let Ok(conditions) = conditions {
                         let mut pubkeys = conditions.pubkeys.unwrap_or_default();
 
@@ -1548,21 +1568,32 @@ impl Wallet {
             SpendingConditions::P2PKConditions { data, conditions } => {
                 let mut pubkeys = vec![data];
 
-                pubkeys.extend(conditions.pubkeys.unwrap_or_default());
+                match conditions {
+                    Some(conditions) => {
+                        pubkeys.extend(conditions.pubkeys.unwrap_or_default());
 
-                (
+                        (
+                            conditions.refund_keys,
+                            Some(pubkeys),
+                            conditions.locktime,
+                            conditions.num_sigs,
+                        )
+                    }
+                    None => (None, Some(pubkeys), None, None),
+                }
+            }
+            SpendingConditions::HTLCConditions {
+                conditions,
+                data: _,
+            } => match conditions {
+                Some(conditions) => (
                     conditions.refund_keys,
-                    Some(pubkeys),
+                    conditions.pubkeys,
                     conditions.locktime,
                     conditions.num_sigs,
-                )
-            }
-            SpendingConditions::HTLCConditions { conditions, .. } => (
-                conditions.refund_keys,
-                conditions.pubkeys,
-                conditions.locktime,
-                conditions.num_sigs,
-            ),
+                ),
+                None => (None, None, None, None),
+            },
         };
 
         if refund_keys.is_some() && locktime.is_none() {

@@ -12,6 +12,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.75"
+bip39.workspace = true
 cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
 cdk-redb = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
@@ -22,3 +23,4 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = "0.3.18"
 rand = "0.8.5"
+home = "0.5.9"

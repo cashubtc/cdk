@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use cdk::nuts::{
 };
 use cdk::types::{MeltQuote, MintQuote, ProofInfo};
 use cdk::url::UncheckedUrl;
+use cdk::util::unix_time;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -40,7 +42,7 @@ pub struct RedbWalletDatabase {
 }
 
 impl RedbWalletDatabase {
-    pub fn new(path: &str) -> Result<Self, Error> {
+    pub fn new(path: &Path) -> Result<Self, Error> {
         let db = Database::create(path)?;
 
         let write_txn = db.begin_write()?;
@@ -116,6 +118,23 @@ impl WalletDatabase for RedbWalletDatabase {
     }
 
     #[instrument(skip(self))]
+    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+        let db = self.db.lock().await;
+
+        let write_txn = db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            table
+                .remove(mint_url.to_string().as_str())
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
@@ -149,6 +168,62 @@ impl WalletDatabase for RedbWalletDatabase {
             .collect();
 
         Ok(mints)
+    }
+
+    #[instrument(skip(self))]
+    async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Self::Err> {
+        // Update proofs table
+        {
+            let proofs = self
+                .get_proofs(Some(old_mint_url.clone()), None, None, None)
+                .await
+                .map_err(Error::from)?;
+
+            if let Some(proofs) = proofs {
+                // Proofs with new url
+                let updated_proofs: Vec<ProofInfo> = proofs
+                    .clone()
+                    .into_iter()
+                    .map(|mut p| {
+                        p.mint_url = new_mint_url.clone();
+                        p
+                    })
+                    .collect();
+
+                println!("{:?}", updated_proofs);
+
+                self.add_proofs(updated_proofs).await?;
+            }
+        }
+
+        // Update mint quotes
+        {
+            let quotes = self.get_mint_quotes().await?;
+
+            let unix_time = unix_time();
+
+            let quotes: Vec<MintQuote> = quotes
+                .into_iter()
+                .filter_map(|mut q| {
+                    if q.expiry < unix_time {
+                        q.mint_url = new_mint_url.clone();
+                        Some(q)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for quote in quotes {
+                self.add_mint_quote(quote).await?;
+            }
+        }
+
+        Ok(())
     }
 
     #[instrument(skip(self))]

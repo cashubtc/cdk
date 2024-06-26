@@ -9,6 +9,7 @@ use cdk::nuts::{
 };
 use cdk::types::{MeltQuote, MintQuote, ProofInfo};
 use cdk::url::UncheckedUrl;
+use cdk::util::unix_time;
 use rexie::*;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -128,6 +129,24 @@ impl WalletDatabase for RexieWalletDatabase {
         Ok(())
     }
 
+    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+        let rexie = self.db.lock().await;
+
+        let transaction = rexie
+            .transaction(&[MINTS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
+
+        let mints_store = transaction.store(MINTS).map_err(Error::from)?;
+
+        let mint_url = serde_wasm_bindgen::to_value(&mint_url).map_err(Error::from)?;
+
+        mints_store.delete(&mint_url).await.map_err(Error::from)?;
+
+        transaction.done().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         let rexie = self.db.lock().await;
 
@@ -171,6 +190,55 @@ impl WalletDatabase for RexieWalletDatabase {
             .collect();
 
         Ok(mints)
+    }
+
+    async fn update_mint_url(
+        &self,
+        old_mint_url: UncheckedUrl,
+        new_mint_url: UncheckedUrl,
+    ) -> Result<(), Self::Err> {
+        let proofs = self
+            .get_proofs(Some(old_mint_url), None, None, None)
+            .await
+            .map_err(Error::from)?;
+
+        if let Some(proofs) = proofs {
+            let updated_proofs: Vec<ProofInfo> = proofs
+                .clone()
+                .into_iter()
+                .map(|mut p| {
+                    p.mint_url = new_mint_url.clone();
+                    p
+                })
+                .collect();
+
+            self.add_proofs(updated_proofs).await?;
+        }
+
+        // Update mint quotes
+        {
+            let quotes = self.get_mint_quotes().await?;
+
+            let unix_time = unix_time();
+
+            let quotes: Vec<MintQuote> = quotes
+                .into_iter()
+                .filter_map(|mut q| {
+                    if q.expiry < unix_time {
+                        q.mint_url = new_mint_url.clone();
+                        Some(q)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for quote in quotes {
+                self.add_mint_quote(quote).await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn add_mint_keysets(
