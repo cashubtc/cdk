@@ -179,12 +179,13 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
-        self.spent_proofs
-            .write()
-            .await
-            .insert(secret_point.to_bytes(), proof);
+    async fn add_spent_proofs(&self, spent_proofs: Proofs) -> Result<(), Self::Err> {
+        let mut proofs = self.spent_proofs.write().await;
+
+        for proof in spent_proofs {
+            let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
+            proofs.insert(secret_point.to_bytes(), proof);
+        }
         Ok(())
     }
 
@@ -201,11 +202,12 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.spent_proofs.read().await.get(&y.to_bytes()).cloned())
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        self.pending_proofs
-            .write()
-            .await
-            .insert(hash_to_curve(&proof.secret.to_bytes())?.to_bytes(), proof);
+    async fn add_pending_proofs(&self, pending_proofs: Proofs) -> Result<(), Self::Err> {
+        let mut proofs = self.pending_proofs.write().await;
+
+        for proof in pending_proofs {
+            proofs.insert(hash_to_curve(&proof.secret.to_bytes())?.to_bytes(), proof);
+        }
         Ok(())
     }
 
@@ -226,12 +228,14 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.pending_proofs.read().await.get(&y.to_bytes()).cloned())
     }
 
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
-        let secret_point = hash_to_curve(&secret.to_bytes())?;
-        self.pending_proofs
-            .write()
-            .await
-            .remove(&secret_point.to_bytes());
+    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
+        let mut proofs = self.pending_proofs.write().await;
+
+        for secret in secrets {
+            let secret_point = hash_to_curve(&secret.to_bytes())?;
+            proofs.remove(&secret_point.to_bytes());
+        }
+
         Ok(())
     }
 
