@@ -14,10 +14,10 @@ mint = ["cdk/mint"]
 wallet = ["cdk/wallet"]
 
 [dependencies]
-bitcoin.workspace = true
-const_format = "0.2.32"
-sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "chrono", "sqlite", "macros", "migrate"] }
+async-trait.workspace = true
 cdk = { workspace = true, default-features = false }
+bitcoin.workspace = true
+sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = [
     "time",
@@ -25,5 +25,4 @@ tokio = { workspace = true, features = [
     "sync",
 ] }
 tracing.workspace = true
-async-trait.workspace = true
 serde_json.workspace = true
