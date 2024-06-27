@@ -87,15 +87,33 @@ impl Default for &Amount {
     }
 }
 
+impl fmt::Display for Amount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl From<u64> for Amount {
     fn from(value: u64) -> Self {
         Self(value)
     }
 }
 
+impl From<&u64> for Amount {
+    fn from(value: &u64) -> Self {
+        Self(*value)
+    }
+}
+
 impl From<Amount> for u64 {
     fn from(value: Amount) -> Self {
         value.0
+    }
+}
+
+impl AsRef<u64> for Amount {
+    fn as_ref(&self) -> &u64 {
+        &self.0
     }
 }
 
@@ -121,9 +139,25 @@ impl std::ops::Sub for Amount {
     }
 }
 
-impl fmt::Display for Amount {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+impl std::ops::SubAssign for Amount {
+    fn sub_assign(&mut self, other: Self) {
+        self.0 -= other.0;
+    }
+}
+
+impl std::ops::Mul for Amount {
+    type Output = Self;
+
+    fn mul(self, other: Self) -> Self::Output {
+        Amount(self.0 * other.0)
+    }
+}
+
+impl std::ops::Div for Amount {
+    type Output = Self;
+
+    fn div(self, other: Self) -> Self::Output {
+        Amount(self.0 / other.0)
     }
 }
 
