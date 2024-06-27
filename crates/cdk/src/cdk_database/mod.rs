@@ -15,9 +15,9 @@ use crate::nuts::State;
 #[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
-use crate::nuts::{CurrencyUnit, Id, PublicKey};
+use crate::nuts::{CurrencyUnit, Id, Proofs, PublicKey};
 #[cfg(feature = "wallet")]
-use crate::nuts::{KeySetInfo, Keys, MintInfo, Proofs, SpendingConditions};
+use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
 #[cfg(feature = "mint")]
 use crate::secret::Secret;
 #[cfg(feature = "wallet")]
@@ -150,17 +150,17 @@ pub trait MintDatabase {
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err>;
+    async fn add_spent_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err>;
     async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err>;
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err>;
+    async fn add_pending_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
     async fn get_pending_proof_by_secret(
         &self,
         secret: &Secret,
     ) -> Result<Option<Proof>, Self::Err>;
     async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err>;
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err>;
+    async fn remove_pending_proofs(&self, secret: Vec<&Secret>) -> Result<(), Self::Err>;
 
     async fn add_blinded_signature(
         &self,

@@ -493,9 +493,9 @@ impl Mint {
             }
         }
 
-        for proof in swap_request.inputs {
-            self.localstore.add_spent_proof(proof).await?;
-        }
+        self.localstore
+            .add_spent_proofs(swap_request.inputs)
+            .await?;
 
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
 
@@ -583,6 +583,14 @@ impl Mint {
         &self,
         melt_request: &MeltBolt11Request,
     ) -> Result<MeltQuote, Error> {
+        for proof in &melt_request.inputs {
+            self.verify_proof(proof).await?;
+        }
+
+        self.localstore
+            .add_pending_proofs(melt_request.inputs.clone())
+            .await?;
+
         let state = self
             .localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Pending)
@@ -681,10 +689,6 @@ impl Mint {
             return Err(Error::DuplicateProofs);
         }
 
-        for proof in &melt_request.inputs {
-            self.verify_proof(proof).await?;
-        }
-
         Ok(quote)
     }
 
@@ -714,9 +718,9 @@ impl Mint {
             }
         }
 
-        for input in &melt_request.inputs {
-            self.localstore.add_spent_proof(input.clone()).await?;
-        }
+        self.localstore
+            .add_spent_proofs(melt_request.inputs.clone())
+            .await?;
 
         let mut change = None;
 
@@ -759,6 +763,10 @@ impl Mint {
                 (melt_request.proofs_amount() - total_spent)
             );
         }
+
+        self.localstore
+            .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
+            .await?;
 
         self.localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)

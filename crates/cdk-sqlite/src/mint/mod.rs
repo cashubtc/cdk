@@ -10,7 +10,7 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::mint::MintKeySetInfo;
 use cdk::nuts::nut05::QuoteState;
 use cdk::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, PublicKey,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
 };
 use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote};
@@ -405,25 +405,29 @@ FROM keyset;
             .collect())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+    async fn add_spent_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        for proof in proofs {
+            sqlx::query(
+                r#"
 INSERT OR REPLACE INTO proof
 (y, amount, keyset_id, secret, c, witness, state)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
-        )
-        .bind(proof.y()?.to_bytes().to_vec())
-        .bind(u64::from(proof.amount) as i64)
-        .bind(proof.keyset_id.to_string())
-        .bind(proof.secret.to_string())
-        .bind(proof.c.to_bytes().to_vec())
-        .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
-        .bind("SPENT")
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
+            )
+            .bind(proof.y()?.to_bytes().to_vec())
+            .bind(u64::from(proof.amount) as i64)
+            .bind(proof.keyset_id.to_string())
+            .bind(proof.secret.to_string())
+            .bind(proof.c.to_bytes().to_vec())
+            .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
+            .bind("SPENT")
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+        transaction.commit().await.map_err(Error::from)?;
         Ok(())
     }
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
@@ -473,24 +477,28 @@ AND state="SPENT";
         Ok(Some(sqlite_row_to_proof(rec)?))
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+    async fn add_pending_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for proof in proofs {
+            sqlx::query(
+                r#"
 INSERT OR REPLACE INTO proof
 (y, amount, keyset_id, secret, c, witness, spent, pending)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
-        )
-        .bind(proof.y()?.to_bytes().to_vec())
-        .bind(u64::from(proof.amount) as i64)
-        .bind(proof.keyset_id.to_string())
-        .bind(proof.secret.to_string())
-        .bind(proof.c.to_bytes().to_vec())
-        .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
-        .bind("PENDING")
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
+            )
+            .bind(proof.y()?.to_bytes().to_vec())
+            .bind(u64::from(proof.amount) as i64)
+            .bind(proof.keyset_id.to_string())
+            .bind(proof.secret.to_string())
+            .bind(proof.c.to_bytes().to_vec())
+            .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
+            .bind("PENDING")
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }
@@ -542,18 +550,22 @@ AND state="PENDING";
         };
         Ok(Some(sqlite_row_to_proof(rec)?))
     }
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for secret in secrets {
+            sqlx::query(
+                r#"
 DELETE FROM proof
 WHERE secret=?
 AND state="PENDING";
         "#,
-        )
-        .bind(secret.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
+            )
+            .bind(secret.to_string())
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }

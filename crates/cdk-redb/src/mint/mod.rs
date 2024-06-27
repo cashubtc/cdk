@@ -453,7 +453,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
+    async fn add_spent_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -462,13 +462,15 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(SPENT_PROOFS_TABLE)
                 .map_err(Error::from)?;
-            let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
-            table
-                .insert(
-                    y.to_bytes(),
-                    serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                )
-                .map_err(Error::from)?;
+            for proof in proofs {
+                let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
+                table
+                    .insert(
+                        y.to_bytes(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 
@@ -503,7 +505,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
+    async fn add_pending_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -512,12 +514,14 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(PENDING_PROOFS_TABLE)
                 .map_err(Error::from)?;
-            table
-                .insert(
-                    hash_to_curve(&proof.secret.to_bytes())?.to_bytes(),
-                    serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                )
-                .map_err(Error::from)?;
+            for proof in proofs {
+                table
+                    .insert(
+                        hash_to_curve(&proof.secret.to_bytes())?.to_bytes(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 
@@ -555,7 +559,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
+    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -564,8 +568,10 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(PENDING_PROOFS_TABLE)
                 .map_err(Error::from)?;
-            let secret_hash = hash_to_curve(&secret.to_bytes()).map_err(Error::from)?;
-            table.remove(secret_hash.to_bytes()).map_err(Error::from)?;
+            for secret in secrets {
+                let secret_hash = hash_to_curve(&secret.to_bytes()).map_err(Error::from)?;
+                table.remove(secret_hash.to_bytes()).map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 
