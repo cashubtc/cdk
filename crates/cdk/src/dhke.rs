@@ -331,32 +331,4 @@ mod tests {
             .unwrap()
         );
     }
-
-    #[ignore]
-    #[test]
-    fn test_blinded_dhke() {
-        // a
-        let bob_sec = SecretKey::generate();
-
-        // A
-        let bob_pub = bob_sec.public_key();
-
-        // let alice_sec = SecretKey::random(&mut rand::thread_rng());
-
-        let x = Secret::generate();
-
-        // Y
-        let y = hash_to_curve(&x.to_bytes()).unwrap();
-
-        // B_
-        let blinded = blind_message(&y.to_bytes(), None).unwrap();
-
-        // C_
-        let signed = sign_message(&bob_sec, &blinded.0).unwrap();
-
-        // C
-        let c = unblind_message(&signed, &blinded.1, &bob_pub).unwrap();
-
-        assert!(verify_message(&bob_sec, c, &x.to_bytes()).is_ok());
-    }
 }
