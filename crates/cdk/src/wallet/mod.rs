@@ -137,6 +137,32 @@ impl Wallet {
             .map(|p| p.into_iter().map(|p| p.proof).collect()))
     }
 
+    /// Get reserved [`Proofs`]
+    #[instrument(skip(self))]
+    pub async fn get_reserved_proofs(&self) -> Result<Proofs, Error> {
+        Ok(self
+            .localstore
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::Reserved]),
+                None,
+            )
+            .await?
+            .map(|p| p.into_iter().map(|p| p.proof).collect())
+            .unwrap_or_default())
+    }
+
+    /// Return proofs to unspent allowing them to be selected and spent
+    #[instrument(skip(self))]
+    pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
+        for y in ys {
+            self.localstore.set_proof_state(y, State::Unspent).await?;
+        }
+
+        Ok(())
+    }
+
     /// Add mint to wallet
     #[instrument(skip(self))]
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
