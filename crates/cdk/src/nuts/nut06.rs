@@ -2,6 +2,9 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
+use std::fmt;
+
+use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
@@ -61,6 +64,7 @@ pub struct MintInfo {
     pub description_long: Option<String>,
     /// Contact info
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_contact_info")]
     pub contact: Option<Vec<ContactInfo>>,
     /// shows which NUTs the mint supports
     pub nuts: Nuts,
@@ -128,6 +132,67 @@ pub struct ContactInfo {
     pub info: String,
 }
 
+fn deserialize_contact_info<'de, D>(deserializer: D) -> Result<Option<Vec<ContactInfo>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ContactInfoVisitor;
+
+    impl<'de> Visitor<'de> for ContactInfoVisitor {
+        type Value = Option<Vec<ContactInfo>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a list of ContactInfo or a list of lists of strings")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut contacts = Vec::new();
+
+            while let Some(value) = seq.next_element::<serde_json::Value>()? {
+                if value.is_object() {
+                    // Deserialize as ContactInfo
+                    let contact: ContactInfo =
+                        serde_json::from_value(value).map_err(de::Error::custom)?;
+                    contacts.push(contact);
+                } else if value.is_array() {
+                    // Deserialize as Vec<String>
+                    let vec = value
+                        .as_array()
+                        .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
+                    println!("{:?}", vec[0]);
+                    for val in vec {
+                        let vec = val
+                            .as_array()
+                            .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
+                        if vec.len() == 2 {
+                            let method = vec[0]
+                                .as_str()
+                                .ok_or_else(|| de::Error::custom("expected a string"))?
+                                .to_string();
+                            let info = vec[1]
+                                .as_str()
+                                .ok_or_else(|| de::Error::custom("expected a string"))?
+                                .to_string();
+                            contacts.push(ContactInfo { method, info });
+                        } else {
+                            return Err(de::Error::custom("expected a list of two strings"));
+                        }
+                    }
+                } else {
+                    return Err(de::Error::custom("expected an object or a list of strings"));
+                }
+            }
+
+            Ok(Some(contacts))
+        }
+    }
+
+    deserializer.deserialize_seq(ContactInfoVisitor)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -157,6 +222,10 @@ mod tests {
   "description": "The short mint description",
   "description_long": "A description that can be a long piece of text.",
   "contact": [
+    {
+        "method": "nostr",
+        "info": "xxxxx"
+    },
     {
         "method": "email",
         "info": "contact@me.com"
@@ -193,6 +262,52 @@ mod tests {
     "12": {"supported": true}
   }
 }"#;
-        let _info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
+        let info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
+        let mint_info_str = r#"{
+  "name": "Bob's Cashu mint",
+  "pubkey": "0283bf290884eed3a7ca2663fc0260de2e2064d6b355ea13f98dec004b7a7ead99",
+  "version": "Nutshell/0.15.0",
+  "description": "The short mint description",
+  "description_long": "A description that can be a long piece of text.",
+  "contact": [
+    [
+        ["nostr", "xxxxx"],
+        ["email", "contact@me.com"]
+    ]
+  ],
+  "motd": "Message to display to users.",
+  "nuts": {
+    "4": {
+      "methods": [
+        {
+        "method": "bolt11",
+        "unit": "sat",
+        "min_amount": 0,
+        "max_amount": 10000
+        }
+      ],
+      "disabled": false
+    },
+    "5": {
+      "methods": [
+        {
+        "method": "bolt11",
+        "unit": "sat",
+        "min_amount": 0,
+        "max_amount": 10000
+        }
+      ],
+      "disabled": false
+    },
+    "7": {"supported": true},
+    "8": {"supported": true},
+    "9": {"supported": true},
+    "10": {"supported": true},
+    "12": {"supported": true}
+  }
+}"#;
+        let mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
+
+        assert_eq!(info, mint_info);
     }
 }
