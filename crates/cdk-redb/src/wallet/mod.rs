@@ -68,6 +68,7 @@ impl WalletRedbDatabase {
             match db_version {
                 Some(db_version) => {
                     let mut current_file_version = u32::from_str(&db_version)?;
+                    tracing::info!("Current file version {}", current_file_version);
 
                     match current_file_version.cmp(&DATABASE_VERSION) {
                         Ordering::Less => {
