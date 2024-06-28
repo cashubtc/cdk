@@ -486,7 +486,7 @@ AND state="SPENT";
             sqlx::query(
                 r#"
 INSERT OR REPLACE INTO proof
-(y, amount, keyset_id, secret, c, witness, spent, pending)
+(y, amount, keyset_id, secret, c, witness, state)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
             )

@@ -34,7 +34,7 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
 
-const DATABASE_VERSION: u32 = 0;
+const DATABASE_VERSION: u32 = 1;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]

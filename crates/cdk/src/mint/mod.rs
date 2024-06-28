@@ -592,10 +592,6 @@ impl Mint {
             self.verify_proof(proof).await?;
         }
 
-        self.localstore
-            .add_pending_proofs(melt_request.inputs.clone())
-            .await?;
-
         let state = self
             .localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Pending)
@@ -694,17 +690,29 @@ impl Mint {
             return Err(Error::DuplicateProofs);
         }
 
+        // Add proofs to pending
+        self.localstore
+            .add_pending_proofs(melt_request.inputs.clone())
+            .await?;
+
+        tracing::debug!("Verified melt quote: {}", melt_request.quote);
         Ok(quote)
     }
 
     /// Process melt request marking [`Proofs`] as spent
+    /// The melt request must be verifyed using [`Self::verify_melt_request`] before calling [`Self::process_melt_request`]
     pub async fn process_melt_request(
         &self,
         melt_request: &MeltBolt11Request,
         preimage: &str,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response, Error> {
-        let quote = self.verify_melt_request(melt_request).await?;
+        tracing::debug!("Processing melt quote: {}", melt_request.quote);
+        let quote = self
+            .localstore
+            .get_melt_quote(&melt_request.quote)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
         if let Some(outputs) = &melt_request.outputs {
             for blinded_message in outputs {
