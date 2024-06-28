@@ -1,3 +1,5 @@
+//! Mint in memory database
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,6 +15,7 @@ use crate::nuts::{
 use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
 
+/// Mint Memory Database
 #[derive(Debug, Clone)]
 pub struct MintMemoryDatabase {
     active_keysets: Arc<RwLock<HashMap<CurrencyUnit, Id>>>,
@@ -25,6 +28,7 @@ pub struct MintMemoryDatabase {
 }
 
 impl MintMemoryDatabase {
+    /// Create new [`MintMemoryDatabase`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         active_keysets: HashMap<CurrencyUnit, Id>,

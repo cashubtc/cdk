@@ -1,3 +1,5 @@
+//! SQLite Storage for CDK
+
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
@@ -34,12 +36,14 @@ const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
 
 const DATABASE_VERSION: u32 = 0;
 
+/// Mint Redbdatabase
 #[derive(Debug, Clone)]
 pub struct MintRedbDatabase {
     db: Arc<Mutex<Database>>,
 }
 
 impl MintRedbDatabase {
+    /// Create new [`MintRedbDatabase`]
     pub fn new(path: &Path) -> Result<Self, Error> {
         {
             // Check database version

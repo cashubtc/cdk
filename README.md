@@ -6,7 +6,19 @@
 
 CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wallets and mints written in Rust.
 
-**ALPHA** This library is in early development, the api will change.
+**ALPHA** This library is in early development, the api will change and should be used with caution.
+
+
+## Project structure
+
+The project is split up into several crates in the `crates/` directory:
+
+* Libraries:
+    * [**cdk**](./crates/cdk/): Rust implementation of Cashu protocol.
+    * [**cdk-sqlite**](./crates/cdk-sqlite/): Sqlite Storage backend
+    * [**cdk-redb**](./crates/cdk-redb/): Redb Storage backend
+* Binaries:
+    * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI
 
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):

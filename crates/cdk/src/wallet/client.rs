@@ -36,6 +36,7 @@ fn join_url(url: Url, paths: &[&str]) -> Result<Url, Error> {
     Ok(url)
 }
 
+/// Http Client
 #[derive(Debug, Clone)]
 pub struct HttpClient {
     inner: Client,
@@ -48,6 +49,7 @@ impl Default for HttpClient {
 }
 
 impl HttpClient {
+    /// Create new [`HttpClient`]
     pub fn new() -> Self {
         Self {
             inner: Client::new(),
@@ -321,6 +323,7 @@ impl HttpClient {
         }
     }
 
+    /// Restore request [NUT-13]
     #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_restore(
         &self,

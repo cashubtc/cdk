@@ -1,4 +1,4 @@
-//! Memory Database
+//! Wallet in memory database
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use crate::types::{MeltQuote, MintQuote, ProofInfo};
 use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 
+/// Wallet in Memory Database
 #[derive(Default, Debug, Clone)]
 pub struct WalletMemoryDatabase {
     mints: Arc<RwLock<HashMap<UncheckedUrl, Option<MintInfo>>>>,
@@ -29,6 +30,7 @@ pub struct WalletMemoryDatabase {
 }
 
 impl WalletMemoryDatabase {
+    /// Create new [`WalletMemoryDatabase`]
     pub fn new(
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,

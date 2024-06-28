@@ -13,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::{Error, PublicKey};
 use crate::SECP256K1;
 
+/// SecretKey
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretKey {
     inner: secp256k1::SecretKey,
@@ -29,22 +30,6 @@ impl Deref for SecretKey {
 impl From<secp256k1::SecretKey> for SecretKey {
     fn from(inner: secp256k1::SecretKey) -> Self {
         Self { inner }
-    }
-}
-
-#[cfg(feature = "nostr")]
-impl TryFrom<SecretKey> for nostr_sdk::SecretKey {
-    type Error = Error;
-    fn try_from(seckey: SecretKey) -> Result<Self, Self::Error> {
-        (&seckey).try_into()
-    }
-}
-
-#[cfg(feature = "nostr")]
-impl TryFrom<&SecretKey> for nostr_sdk::SecretKey {
-    type Error = Error;
-    fn try_from(seckey: &SecretKey) -> Result<Self, Self::Error> {
-        Ok(nostr_sdk::SecretKey::from_slice(&seckey.to_secret_bytes())?)
     }
 }
 
@@ -105,11 +90,13 @@ impl SecretKey {
         self.inner.public_key(&SECP256K1).into()
     }
 
+    /// [`SecretKey`] to [`Scalar`]
     #[inline]
     pub fn to_scalar(self) -> Scalar {
         Scalar::from(self.inner)
     }
 
+    /// [`SecretKey`] as [`Scalar`]
     #[inline]
     pub fn as_scalar(&self) -> Scalar {
         Scalar::from(self.inner)

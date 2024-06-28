@@ -30,6 +30,7 @@ use crate::Amount;
 /// List of [Proof]
 pub type Proofs = Vec<Proof>;
 
+/// NUT00 Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Proofs required
@@ -141,6 +142,7 @@ pub enum Witness {
 }
 
 impl Witness {
+    /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatues: Vec<String>) {
         match self {
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
@@ -154,6 +156,7 @@ impl Witness {
         }
     }
 
+    /// Get signatures on [`Witness`]
     pub fn signatures(&self) -> Option<Vec<String>> {
         match self {
             Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
@@ -161,6 +164,7 @@ impl Witness {
         }
     }
 
+    /// Get preimage from [`Witness`]
     pub fn preimage(&self) -> Option<String> {
         match self {
             Self::P2PKWitness(_witness) => None,
@@ -191,6 +195,7 @@ pub struct Proof {
 }
 
 impl Proof {
+    /// Create new [`Proof`]
     pub fn new(amount: Amount, keyset_id: Id, secret: Secret, c: PublicKey) -> Self {
         Proof {
             amount,
@@ -202,6 +207,9 @@ impl Proof {
         }
     }
 
+    /// Get y from proof
+    ///
+    /// Where y is `hash_to_curve(secret)`
     pub fn y(&self) -> Result<PublicKey, Error> {
         Ok(hash_to_curve(self.secret.as_bytes())?)
     }
@@ -225,12 +233,17 @@ impl PartialOrd for Proof {
     }
 }
 
+/// Currency Unit
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum CurrencyUnit {
+    /// Sat
     #[default]
     Sat,
+    /// Msat
     Msat,
+    /// Usd
     Usd,
+    /// Custom unit
     Custom(String),
 }
 
@@ -278,10 +291,13 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
     }
 }
 
+/// Payment Method
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum PaymentMethod {
+    /// Bolt11 payment type
     #[default]
     Bolt11,
+    /// Custom payment type:
     Custom(String),
 }
 
@@ -325,6 +341,7 @@ impl<'de> Deserialize<'de> for PaymentMethod {
     }
 }
 
+/// PreMint
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreMint {
     /// Blinded message
@@ -349,8 +366,10 @@ impl PartialOrd for PreMint {
     }
 }
 
+/// Premint Secrets
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct PreMintSecrets {
+    /// Secrets
     pub secrets: Vec<PreMint>,
 }
 
@@ -382,6 +401,7 @@ impl PreMintSecrets {
         Ok(PreMintSecrets { secrets: output })
     }
 
+    /// Outputs from pre defined secrets
     pub fn from_secrets(
         keyset_id: Id,
         amounts: Vec<Amount>,
@@ -428,6 +448,7 @@ impl PreMintSecrets {
         Ok(PreMintSecrets { secrets: output })
     }
 
+    /// Outputs with specific spending conditions
     pub fn with_conditions(
         keyset_id: Id,
         amount: Amount,
@@ -457,18 +478,25 @@ impl PreMintSecrets {
         Ok(PreMintSecrets { secrets: output })
     }
 
+    /// Iterate over secrets
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &PreMint> {
         self.secrets.iter()
     }
 
+    /// Length of secrets
+    #[inline]
     pub fn len(&self) -> usize {
         self.secrets.len()
     }
 
+    /// If secrets is empty
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.secrets.is_empty()
     }
 
+    /// Totoal amount of secrets
     pub fn total_amount(&self) -> Amount {
         self.secrets
             .iter()
@@ -476,26 +504,38 @@ impl PreMintSecrets {
             .sum()
     }
 
+    /// [`BlindedMessage`]s from [`PreMintSecrets`]
+    #[inline]
     pub fn blinded_messages(&self) -> Vec<BlindedMessage> {
         self.iter().map(|pm| pm.blinded_message.clone()).collect()
     }
 
+    /// [`Secret`]s from [`PreMintSecrets`]
+    #[inline]
     pub fn secrets(&self) -> Vec<Secret> {
         self.iter().map(|pm| pm.secret.clone()).collect()
     }
 
+    /// Blinding factor from [`PreMintSecrets`]
+    #[inline]
     pub fn rs(&self) -> Vec<SecretKey> {
         self.iter().map(|pm| pm.r.clone()).collect()
     }
 
+    /// Amounts from [`PreMintSecrets`]
+    #[inline]
     pub fn amounts(&self) -> Vec<Amount> {
         self.iter().map(|pm| pm.amount).collect()
     }
 
+    /// Combine [`PreMintSecrets`]
+    #[inline]
     pub fn combine(&mut self, mut other: Self) {
         self.secrets.append(&mut other.secrets)
     }
 
+    /// Sort [`PreMintSecrets`] by [`Amount`]
+    #[inline]
     pub fn sort_secrets(&mut self) {
         self.secrets.sort();
     }
@@ -523,8 +563,10 @@ impl PartialOrd for PreMintSecrets {
     }
 }
 
+/// Token
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
+    /// Proofs in [`Token`] by mint
     pub token: Vec<MintProofs>,
     /// Memo for token
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -535,6 +577,7 @@ pub struct Token {
 }
 
 impl Token {
+    /// Create new [`Token`]
     pub fn new(
         mint_url: UncheckedUrl,
         proofs: Proofs,
@@ -555,6 +598,8 @@ impl Token {
         })
     }
 
+    /// Token Info
+    /// Assumes only one mint in [`Token`]
     pub fn token_info(&self) -> (Amount, String) {
         let mut amount = Amount::ZERO;
 
@@ -595,13 +640,17 @@ impl fmt::Display for Token {
     }
 }
 
+/// Mint Proofs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintProofs {
+    /// Url of mint
     pub mint: UncheckedUrl,
+    /// [`Proofs`]
     pub proofs: Proofs,
 }
 
 impl MintProofs {
+    /// Create new [`MintProofs`]
     pub fn new(mint_url: UncheckedUrl, proofs: Proofs) -> Self {
         Self {
             mint: mint_url,

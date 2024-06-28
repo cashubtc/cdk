@@ -30,30 +30,39 @@ use crate::util::hex;
 #[cfg(feature = "mint")]
 use crate::Amount;
 
+/// NUT02 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Hex Error
     #[error(transparent)]
     HexError(#[from] hex::Error),
+    /// Keyset length error
     #[error("NUT02: ID length invalid")]
     Length,
+    /// Unknown version
     #[error("NUT02: Unknown Version")]
     UnknownVersion,
+    /// Slice Error
     #[error(transparent)]
     Slice(#[from] TryFromSliceError),
 }
 
+/// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeySetVersion {
+    /// Current Version 00
     Version00,
 }
 
 impl KeySetVersion {
+    /// [`KeySetVersion`] to byte
     pub fn to_byte(&self) -> u8 {
         match self {
             Self::Version00 => 0,
         }
     }
 
+    /// [`KeySetVersion`] from byte
     pub fn from_byte(byte: &u8) -> Result<Self, Error> {
         match byte {
             0 => Ok(Self::Version00),
@@ -84,10 +93,12 @@ impl Id {
     const STRLEN: usize = 14;
     const BYTELEN: usize = 7;
 
+    /// [`Id`] to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
         [vec![self.version.to_byte()], self.id.to_vec()].concat()
     }
 
+    /// [`Id`] from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         Ok(Self {
             version: KeySetVersion::from_byte(&bytes[0])?,
@@ -220,6 +231,7 @@ pub struct KeysetResponse {
 }
 
 impl KeysetResponse {
+    /// Create new [`KeysetResponse`]
     pub fn new(keysets: Vec<KeySet>) -> Self {
         Self {
             keysets: keysets.into_iter().map(|keyset| keyset.into()).collect(),
@@ -227,10 +239,14 @@ impl KeysetResponse {
     }
 }
 
+/// Keyset
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySet {
+    /// Keyset [`Id`]
     pub id: Id,
+    /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
+    /// Keyset [`Keys`]
     pub keys: Keys,
 }
 
@@ -245,10 +261,15 @@ impl From<MintKeySet> for KeySet {
     }
 }
 
+/// KeySetInfo
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeySetInfo {
+    /// Keyset [`Id`]
     pub id: Id,
+    /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
+    /// Keyset state
+    /// Mint will only sign from an active keyset
     pub active: bool,
 }
 
@@ -262,16 +283,21 @@ impl From<KeySet> for KeySetInfo {
     }
 }
 
+/// MintKeyset
 #[cfg(feature = "mint")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeySet {
+    /// Keyset [`Id`]
     pub id: Id,
+    /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
+    /// Keyset [`MintKeys`]
     pub keys: MintKeys,
 }
 
 #[cfg(feature = "mint")]
 impl MintKeySet {
+    /// Generate new [`MintKeySet`]
     pub fn generate<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: ExtendedPrivKey,
@@ -306,6 +332,7 @@ impl MintKeySet {
         }
     }
 
+    /// Generate new [`MintKeySet`] from seed
     pub fn generate_from_seed<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         seed: &[u8],
@@ -325,6 +352,7 @@ impl MintKeySet {
         )
     }
 
+    /// Generate new [`MintKeySet`] from xpriv
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: ExtendedPrivKey,

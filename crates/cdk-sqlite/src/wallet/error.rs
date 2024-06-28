@@ -1,5 +1,8 @@
+//! SQLite Wallet Error
+
 use thiserror::Error;
 
+/// SQLite Wallet Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// SQLX Error

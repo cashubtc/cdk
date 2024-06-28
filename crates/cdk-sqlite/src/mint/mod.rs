@@ -21,12 +21,14 @@ use sqlx::{ConnectOptions, Row};
 
 pub mod error;
 
+/// Mint SQLite Database
 #[derive(Debug, Clone)]
 pub struct MintSqliteDatabase {
     pool: SqlitePool,
 }
 
 impl MintSqliteDatabase {
+    /// Create new [`MintSqliteDatabase`]
     pub async fn new(path: &Path) -> Result<Self, Error> {
         let path = path.to_str().ok_or(Error::InvalidDbPath)?;
         let _conn = SqliteConnectOptions::from_str(path)?
@@ -42,6 +44,7 @@ impl MintSqliteDatabase {
         Ok(Self { pool })
     }
 
+    /// Migrate [`MintSqliteDatabase`]
     pub async fn migrate(&self) {
         sqlx::migrate!("./src/mint/migrations")
             .run(&self.pool)

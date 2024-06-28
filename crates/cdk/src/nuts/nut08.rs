@@ -6,6 +6,7 @@ use super::nut05::{MeltBolt11Request, MeltQuoteBolt11Response};
 use crate::Amount;
 
 impl MeltBolt11Request {
+    /// Total output [`Amount`]
     pub fn output_amount(&self) -> Option<Amount> {
         self.outputs
             .as_ref()
@@ -14,6 +15,7 @@ impl MeltBolt11Request {
 }
 
 impl MeltQuoteBolt11Response {
+    /// Total change [`Amount`]
     pub fn change_amount(&self) -> Option<Amount> {
         self.change
             .as_ref()

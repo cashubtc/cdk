@@ -7,7 +7,7 @@ use cdk::amount::SplitTarget;
 use cdk::nuts::{Proofs, SecretKey};
 use cdk::wallet::Wallet;
 use cdk::Amount;
-use cdk_rexie::RexieWalletDatabase;
+use cdk_rexie::WalletRexieDatabase;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -42,7 +42,7 @@ impl From<Wallet> for JsWallet {
 impl JsWallet {
     #[wasm_bindgen(constructor)]
     pub async fn new(mints_url: String, unit: JsCurrencyUnit, seed: Vec<u8>) -> Self {
-        let db = RexieWalletDatabase::new().await.unwrap();
+        let db = WalletRexieDatabase::new().await.unwrap();
 
         Wallet::new(&mints_url, unit.into(), Arc::new(db), &seed).into()
     }

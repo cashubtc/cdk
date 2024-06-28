@@ -21,18 +21,23 @@ use crate::Amount;
 
 pub mod error;
 
+/// Cashu Mint
 #[derive(Clone)]
 pub struct Mint {
+    /// Mint Url
     pub mint_url: UncheckedUrl,
     mint_info: MintInfo,
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: ExtendedPrivKey,
+    /// Mint Expected [`FeeReserve`]
     pub fee_reserve: FeeReserve,
+    /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
 }
 
 impl Mint {
+    /// Create new [`Mint`]
     pub async fn new(
         mint_url: &str,
         seed: &[u8],
@@ -844,19 +849,30 @@ impl Mint {
 /// Mint Fee Reserve
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeeReserve {
+    /// Absolute expected min fee
     pub min_fee_reserve: Amount,
+    /// Percentage expected fee
     pub percent_fee_reserve: f32,
 }
 
 /// Mint Keyset Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeySetInfo {
+    /// Keyset [`Id`]
     pub id: Id,
+    /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
+    /// Keyset active or inactive
+    /// Mint will only issue new [`BlindSignature`] on active keysets
     pub active: bool,
+    /// Starting unix time Keyset is valid from
     pub valid_from: u64,
+    /// When the Keyset is valid to
+    /// This is not shown to the wallet and can only be used internally
     pub valid_to: Option<u64>,
+    /// [`DerivationPath`] of Keyset
     pub derivation_path: DerivationPath,
+    /// Max order of keyset
     pub max_order: u8,
 }
 

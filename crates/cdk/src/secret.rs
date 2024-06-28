@@ -1,6 +1,6 @@
 //! Secret
 
-use core::fmt;
+use std::fmt;
 use std::str::FromStr;
 
 use bitcoin::secp256k1::rand::{self, RngCore};
@@ -14,10 +14,13 @@ use crate::util::hex;
 #[serde(transparent)]
 pub struct Secret(String);
 
+/// Secret Errors
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Invalid Length
     #[error("Invalid secret length: `{0}`")]
     InvalidLength(u64),
+    /// Hex Error
     #[error(transparent)]
     Hex(#[from] hex::Error),
 }
@@ -29,6 +32,7 @@ impl Default for Secret {
 }
 
 impl Secret {
+    /// Create new [`Secret`]
     #[inline]
     pub fn new<S>(secret: S) -> Self
     where
@@ -51,16 +55,19 @@ impl Secret {
         Self(secret)
     }
 
+    /// [`Secret`] as bytes
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
     }
 
+    /// [`Secret`] to bytes
     #[inline]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.as_bytes().to_vec()
     }
 
+    /// Check if secret is P2PK secret
     pub fn is_p2pk(&self) -> bool {
         use crate::nuts::Kind;
 
