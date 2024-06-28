@@ -18,6 +18,7 @@ use crate::util::unix_time;
 
 pub mod serde_htlc_witness;
 
+/// NUT14 Errors
 #[derive(Debug, Error)]
 pub enum Error {
     /// Incorrect secret kind
@@ -42,12 +43,16 @@ pub enum Error {
     #[error(transparent)]
     NUT11(#[from] super::nut11::Error),
     #[error(transparent)]
+    /// Serde Error
     Serde(#[from] serde_json::Error),
 }
 
+/// HTLC Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HTLCWitness {
+    /// Primage
     pub preimage: String,
+    /// Signatures
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signatures: Option<Vec<String>>,
 }
@@ -125,6 +130,7 @@ impl Proof {
         Ok(())
     }
 
+    /// Add Preimage
     #[inline]
     pub fn add_preimage(&mut self, preimage: String) {
         self.witness = Some(Witness::HTLCWitness(HTLCWitness {

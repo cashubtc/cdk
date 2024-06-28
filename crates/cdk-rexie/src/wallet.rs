@@ -1,3 +1,5 @@
+//! Rexie Browser Database
+
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::result::Result;
@@ -28,6 +30,7 @@ const NOSTR_LAST_CHECKED: &str = "nostr_last_check";
 
 const DATABASE_VERSION: u32 = 3;
 
+/// Rexie Database Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// CDK Database Error
@@ -39,6 +42,7 @@ pub enum Error {
     /// Serde Wasm Error
     #[error(transparent)]
     SerdeBindgen(#[from] serde_wasm_bindgen::Error),
+    /// NUT00 Error
     #[error(transparent)]
     NUT00(cdk::nuts::nut00::Error),
 }
@@ -52,16 +56,18 @@ impl From<Error> for cdk::cdk_database::Error {
 unsafe impl Send for Error {}
 unsafe impl Sync for Error {}
 
+/// Wallet Rexie Database
 #[derive(Debug, Clone)]
-pub struct RexieWalletDatabase {
+pub struct WalletRexieDatabase {
     db: Rc<Mutex<Rexie>>,
 }
 
 // These are okay because we never actually send across threads in the browser
-unsafe impl Send for RexieWalletDatabase {}
-unsafe impl Sync for RexieWalletDatabase {}
+unsafe impl Send for WalletRexieDatabase {}
+unsafe impl Sync for WalletRexieDatabase {}
 
-impl RexieWalletDatabase {
+impl WalletRexieDatabase {
+    /// Create new [`WalletRexieDatabase`]
     pub async fn new() -> Result<Self, Error> {
         let rexie = Rexie::builder("cdk")
             .version(DATABASE_VERSION)
@@ -102,7 +108,7 @@ impl RexieWalletDatabase {
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl WalletDatabase for RexieWalletDatabase {
+impl WalletDatabase for WalletRexieDatabase {
     type Err = cdk::cdk_database::Error;
 
     async fn add_mint(

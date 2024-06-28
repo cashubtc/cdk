@@ -1,7 +1,10 @@
+//! Redb Error
+
 use std::num::ParseIntError;
 
 use thiserror::Error;
 
+/// Redb Database Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Redb Error

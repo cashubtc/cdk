@@ -15,6 +15,7 @@ use crate::util::hex;
 use crate::{Amount, SECP256K1};
 
 impl Secret {
+    /// Create new [`Secret`] from xpriv
     pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let path = derive_path_from_keyset_id(keyset_id)?
             .child(ChildNumber::from_hardened_idx(counter)?)
@@ -28,6 +29,7 @@ impl Secret {
 }
 
 impl SecretKey {
+    /// Create new [`SecretKey`] from xpriv
     pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let path = derive_path_from_keyset_id(keyset_id)?
             .child(ChildNumber::from_hardened_idx(counter)?)
@@ -74,6 +76,7 @@ impl PreMintSecrets {
         Ok(pre_mint_secrets)
     }
 
+    /// New [`PreMintSecrets`] from xpriv with a zero amount used for change
     pub fn from_xpriv_blank(
         keyset_id: Id,
         counter: u32,

@@ -27,7 +27,6 @@ pub fn proof_to_token(
     Ok(Token::new(mint_url, proofs, memo, unit)?)
 }
 
-#[cfg(feature = "nostr")]
 #[cfg(test)]
 mod tests {
 

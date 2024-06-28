@@ -18,6 +18,9 @@ use crate::SECP256K1;
 
 const DOMAIN_SEPARATOR: &[u8; 28] = b"Secp256k1_HashToCurve_Cashu_";
 
+/// Deterministically maps a message to a public key point on the secp256k1 curve, utilizing a domain separator to ensure uniqueness.
+///
+/// For definationn in NUT see [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
 pub fn hash_to_curve(message: &[u8]) -> Result<PublicKey, Error> {
     let msg_to_hash: Vec<u8> = [DOMAIN_SEPARATOR, message].concat();
 
@@ -44,6 +47,7 @@ pub fn hash_to_curve(message: &[u8]) -> Result<PublicKey, Error> {
     Err(Error::NoValidPoint)
 }
 
+/// Convert iterator of [`PublicKey`] to byte array
 pub fn hash_e<I>(public_keys: I) -> [u8; 32]
 where
     I: IntoIterator<Item = PublicKey>,
@@ -158,7 +162,7 @@ pub fn verify_message(
 
 #[cfg(test)]
 mod tests {
-    use core::str::FromStr;
+    use std::str::FromStr;
 
     use super::*;
 

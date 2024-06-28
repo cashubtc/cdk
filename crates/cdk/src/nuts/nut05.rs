@@ -14,6 +14,7 @@ use super::nut15::Mpp;
 use crate::types::MeltQuote;
 use crate::{Amount, Bolt11Invoice};
 
+/// NUT05 Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Unknown Quote State
@@ -36,9 +37,12 @@ pub struct MeltQuoteBolt11Request {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum QuoteState {
+    /// Quote has not been paid
     #[default]
     Unpaid,
+    /// Quote has been paid
     Paid,
+    /// Paying quote is in progress
     Pending,
 }
 
@@ -203,6 +207,7 @@ pub struct MeltBolt11Request {
 }
 
 impl MeltBolt11Request {
+    /// Total [`Amount`] of [`Proofs`]
     pub fn proofs_amount(&self) -> Amount {
         self.inputs.iter().map(|proof| proof.amount).sum()
     }

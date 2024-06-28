@@ -13,7 +13,9 @@ use super::{nut04, nut05, nut15};
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MintVersion {
+    /// Mint Software name
     pub name: String,
+    /// Mint Version
     pub version: String,
 }
 
@@ -76,36 +78,47 @@ pub struct MintInfo {
 /// Supported nuts and settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Nuts {
+    /// NUT04 Settings
     #[serde(default)]
     #[serde(rename = "4")]
     pub nut04: nut04::Settings,
+    /// NUT05 Settings
     #[serde(default)]
     #[serde(rename = "5")]
     pub nut05: nut05::Settings,
+    /// NUT07 Settings
     #[serde(default)]
     #[serde(rename = "7")]
     pub nut07: SupportedSettings,
+    /// NUT08 Settings
     #[serde(default)]
     #[serde(rename = "8")]
     pub nut08: SupportedSettings,
+    /// NUT09 Settings
     #[serde(default)]
     #[serde(rename = "9")]
     pub nut09: SupportedSettings,
+    /// NUT10 Settings
     #[serde(rename = "10")]
     #[serde(default)]
     pub nut10: SupportedSettings,
+    /// NUT11 Settings
     #[serde(rename = "11")]
     #[serde(default)]
     pub nut11: SupportedSettings,
+    /// NUT12 Settings
     #[serde(default)]
     #[serde(rename = "12")]
     pub nut12: SupportedSettings,
+    /// NUT13 Settings
     #[serde(default)]
     #[serde(rename = "13")]
     pub nut13: SupportedSettings,
+    /// NUT14 Settings
     #[serde(default)]
     #[serde(rename = "14")]
     pub nut14: SupportedSettings,
+    /// NUT15 Settings
     #[serde(default)]
     #[serde(rename = "15")]
     pub nut15: nut15::MppMethodSettings,

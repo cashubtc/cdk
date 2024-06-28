@@ -7,9 +7,12 @@ use serde::{Deserialize, Serialize};
 use super::nut00::{BlindSignature, BlindedMessage, PreMintSecrets, Proofs};
 use crate::Amount;
 
+/// Preswap information
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreSwap {
+    /// Preswap mint secrets
     pub pre_mint_secrets: PreMintSecrets,
+    /// Swap request
     pub swap_request: SwapRequest,
 }
 
@@ -23,16 +26,17 @@ pub struct SwapRequest {
 }
 
 impl SwapRequest {
+    /// Create new [`SwapRequest`]
     pub fn new(inputs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
         Self { inputs, outputs }
     }
 
-    /// Total value of proofs in `SplitRequest`
+    /// Total value of proofs in [`SwapRequest`]
     pub fn input_amount(&self) -> Amount {
         self.inputs.iter().map(|proof| proof.amount).sum()
     }
 
-    /// Total value of outputs in `SplitRequest`
+    /// Total value of outputs in [`SwapRequest`]
     pub fn output_amount(&self) -> Amount {
         self.outputs.iter().map(|proof| proof.amount).sum()
     }
@@ -46,12 +50,14 @@ pub struct SwapResponse {
 }
 
 impl SwapResponse {
+    /// Create new [`SwapRequest`]
     pub fn new(promises: Vec<BlindSignature>) -> SwapResponse {
         SwapResponse {
             signatures: promises,
         }
     }
 
+    /// Total [`Amount`] of promises
     pub fn promises_amount(&self) -> Amount {
         self.signatures
             .iter()

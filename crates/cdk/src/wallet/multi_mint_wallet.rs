@@ -17,11 +17,14 @@ use crate::nuts::{CurrencyUnit, SecretKey, SpendingConditions, Token};
 use crate::types::{Melted, MintQuote};
 use crate::{Amount, UncheckedUrl, Wallet};
 
+/// Multi Mint Wallet
 #[derive(Debug, Clone)]
 pub struct MultiMintWallet {
+    /// Wallets
     pub wallets: Arc<Mutex<HashMap<WalletKey, Wallet>>>,
 }
 
+/// Wallet Key
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalletKey {
     mint_url: UncheckedUrl,
@@ -35,6 +38,7 @@ impl fmt::Display for WalletKey {
 }
 
 impl WalletKey {
+    /// Create new [`WalletKey`]
     pub fn new(mint_url: UncheckedUrl, unit: CurrencyUnit) -> Self {
         Self { mint_url, unit }
     }
@@ -255,7 +259,7 @@ impl MultiMintWallet {
         wallet.melt(&quote.id, SplitTarget::default()).await
     }
 
-    // Restore
+    /// Restore
     #[instrument(skip(self))]
     pub async fn restore(&self, wallet_key: &WalletKey) -> Result<Amount, Error> {
         let wallet = self

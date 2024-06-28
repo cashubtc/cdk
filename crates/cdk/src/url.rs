@@ -36,6 +36,7 @@ impl UncheckedUrl {
         Self(String::new())
     }
 
+    /// Join onto url
     pub fn join(&self, path: &str) -> Result<Url, Error> {
         let url: Url = self.try_into()?;
         Ok(url.join(path)?)

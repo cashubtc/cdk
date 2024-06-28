@@ -1,9 +1,9 @@
 
-# Cashu Development Kit
+# Cashu Development Kit Redb Storage Backend
 
 **ALPHA** This library is in early development, the api will change and should be used with caution.
 
-CDK is the core crate implementing the cashu protocol for both the Wallet and Mint.
+cdk-sqlite is the sqlite storage backend for cdk.
 
 ## Crate Feature Flags
 
@@ -20,4 +20,4 @@ See <https://github.com/cashubtc/cdk/blob/main/README.md>
 
 ## License
 
-This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details
+This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details.

@@ -1,5 +1,8 @@
+//! SQLite Database Error
+
 use thiserror::Error;
 
+/// SQLite Database Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// SQLX Error

@@ -14,6 +14,7 @@ use super::MintQuoteState;
 use crate::types::MintQuote;
 use crate::Amount;
 
+/// NUT04 Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Unknown Quote State
@@ -34,10 +35,14 @@ pub struct MintQuoteBolt11Request {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum QuoteState {
+    /// Quote has not been paid
     #[default]
     Unpaid,
+    /// Quote has been paid and wallet can mint
     Paid,
+    /// Minting is in progress
     Pending,
+    /// ecash issued for quote
     Issued,
 }
 
@@ -171,6 +176,7 @@ pub struct MintBolt11Request {
 }
 
 impl MintBolt11Request {
+    /// Total [`Amount`] of outputs
     pub fn total_amount(&self) -> Amount {
         self.outputs
             .iter()

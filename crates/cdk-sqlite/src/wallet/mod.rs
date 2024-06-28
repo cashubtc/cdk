@@ -20,12 +20,14 @@ use sqlx::{ConnectOptions, Row};
 
 pub mod error;
 
+/// Wallet SQLite Database
 #[derive(Debug, Clone)]
-pub struct WalletSQLiteDatabase {
+pub struct WalletSqliteDatabase {
     pool: SqlitePool,
 }
 
-impl WalletSQLiteDatabase {
+impl WalletSqliteDatabase {
+    /// Create new [`WalletSqliteDatabase`]
     pub async fn new(path: &Path) -> Result<Self, Error> {
         let path = path.to_str().ok_or(Error::InvalidDbPath)?;
         let _conn = SqliteConnectOptions::from_str(path)?
@@ -41,6 +43,7 @@ impl WalletSQLiteDatabase {
         Ok(Self { pool })
     }
 
+    /// Migrate [`WalletSqliteDatabase`]
     pub async fn migrate(&self) {
         sqlx::migrate!("./src/wallet/migrations")
             .run(&self.pool)
@@ -50,7 +53,7 @@ impl WalletSQLiteDatabase {
 }
 
 #[async_trait]
-impl WalletDatabase for WalletSQLiteDatabase {
+impl WalletDatabase for WalletSqliteDatabase {
     type Err = cdk_database::Error;
 
     async fn add_mint(

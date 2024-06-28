@@ -1,3 +1,7 @@
+//! CDK Amount
+//!
+//! Is any and will be treated as the unit of the wallet
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct Amount(u64);
 
 impl Amount {
+    /// Amount zero
     pub const ZERO: Amount = Amount(0);
 
     /// Split into parts that are powers of two

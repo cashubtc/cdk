@@ -14,36 +14,55 @@ use super::nut02::Id;
 use crate::dhke::{hash_e, hash_to_curve};
 use crate::{Amount, SECP256K1};
 
+/// NUT12 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Missing Dleq Proof
     #[error("No Dleq Proof provided")]
     MissingDleqProof,
+    /// Incomplete Dleq Proof
     #[error("Incomplete DLEQ Proof")]
     IncompleteDleqProof,
+    /// Invalid Dleq Proof
     #[error("Invalid Dleq Prood")]
     InvalidDleqProof,
+    /// Cashu Error
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),
+    /// NUT01 Error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
+    /// SECP256k1 Error
     #[error(transparent)]
     Secp256k1(#[from] secp256k1::Error),
 }
 
+/// Blinded Signature on Dleq
+///
+/// Defined in [NUT12](https://github.com/cashubtc/nuts/blob/main/12.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindSignatureDleq {
+    /// e
     pub e: SecretKey,
+    /// s
     pub s: SecretKey,
 }
 
+/// Proof Dleq
+///
+/// Defined in [NUT12](https://github.com/cashubtc/nuts/blob/main/12.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofDleq {
+    /// e
     pub e: SecretKey,
+    /// s
     pub s: SecretKey,
+    /// Blinding factor
     pub r: SecretKey,
 }
 
 impl ProofDleq {
+    /// Create new [`ProofDleq`]
     pub fn new(e: SecretKey, s: SecretKey, r: SecretKey) -> Self {
         Self { e, s, r }
     }
@@ -119,6 +138,7 @@ fn calculate_dleq(
 }
 
 impl Proof {
+    /// Verify proof Dleq
     pub fn verify_dleq(&self, mint_pubkey: PublicKey) -> Result<(), Error> {
         match &self.dleq {
             Some(dleq) => {
@@ -165,6 +185,7 @@ impl BlindSignature {
         })
     }
 
+    /// Verify dleq on proof
     #[inline]
     pub fn verify_dleq(
         &self,
@@ -177,6 +198,7 @@ impl BlindSignature {
         }
     }
 
+    /// Add Dleq to proof
     /*
     r = random nonce
     R1 = r*G

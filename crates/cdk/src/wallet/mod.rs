@@ -34,16 +34,21 @@ pub mod error;
 pub mod multi_mint_wallet;
 pub mod util;
 
+/// CDK Wallet
 #[derive(Debug, Clone)]
 pub struct Wallet {
+    /// Mint Url
     pub mint_url: UncheckedUrl,
+    /// Unit
     pub unit: CurrencyUnit,
-    pub client: HttpClient,
+    client: HttpClient,
+    /// Storage backend
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     xpriv: ExtendedPrivKey,
 }
 
 impl Wallet {
+    /// Create new [`Wallet`]
     pub fn new(
         mint_url: &str,
         unit: CurrencyUnit,
@@ -278,6 +283,7 @@ impl Wallet {
         Ok(())
     }
 
+    /// Get Active mint keyset id
     #[instrument(skip(self))]
     pub async fn active_mint_keyset(&self) -> Result<Id, Error> {
         let mint_url = &self.mint_url;
@@ -307,6 +313,7 @@ impl Wallet {
         Err(Error::NoActiveKeyset)
     }
 
+    /// Get active mint keys
     #[instrument(skip(self))]
     pub async fn active_keys(&self) -> Result<Option<Keys>, Error> {
         let active_keyset_id = self.active_mint_keyset().await?;
@@ -1044,7 +1051,7 @@ impl Wallet {
         Ok(melted)
     }
 
-    // Select proofs
+    /// Select proofs
     #[instrument(skip(self))]
     pub async fn select_proofs(
         &self,
@@ -1313,6 +1320,7 @@ impl Wallet {
         Ok(total_amount)
     }
 
+    /// Restore
     #[instrument(skip(self))]
     pub async fn restore(&self) -> Result<Amount, Error> {
         // Check that mint is in store of mints

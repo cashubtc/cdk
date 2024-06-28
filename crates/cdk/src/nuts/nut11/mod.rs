@@ -23,6 +23,7 @@ use crate::util::{hex, unix_time};
 
 pub mod serde_p2pk_witness;
 
+/// Nut11 Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Incorrect secret kind
@@ -84,11 +85,13 @@ pub enum Error {
 /// P2Pk Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct P2PKWitness {
+    /// Signatures
     pub signatures: Vec<String>,
 }
 
 impl P2PKWitness {
     #[inline]
+    /// Check id Witness is empty
     pub fn is_empty(&self) -> bool {
         self.signatures.is_empty()
     }
@@ -250,16 +253,27 @@ impl BlindedMessage {
     }
 }
 
+/// Spending Conditions
+///
+/// Defined in [NUT10](https://github.com/cashubtc/nuts/blob/main/10.md)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SpendingConditions {
     /// NUT11 Spending conditions
+    ///
+    /// Defined in [NUT11](https://github.com/cashubtc/nuts/blob/main/11.md)
     P2PKConditions {
+        /// The public key of the recipient of the locked ecash
         data: PublicKey,
+        /// Additional Optional Spending [`Conditions`]
         conditions: Option<Conditions>,
     },
     /// NUT14 Spending conditions
+    ///
+    /// Dedined in [NUT14](https://github.com/cashubtc/nuts/blob/main/14.md)
     HTLCConditions {
+        /// Hash Lock of ecash
         data: Sha256Hash,
+        /// Additional Optional Spending [`Conditions`]
         conditions: Option<Conditions>,
     },
 }
@@ -291,6 +305,7 @@ impl SpendingConditions {
         }
     }
 
+    /// Number if signatures required to unlock
     pub fn num_sigs(&self) -> Option<u64> {
         match self {
             Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.num_sigs),
@@ -298,6 +313,7 @@ impl SpendingConditions {
         }
     }
 
+    /// Public keys of locked [`Proof`]
     pub fn pubkeys(&self) -> Option<Vec<PublicKey>> {
         match self {
             Self::P2PKConditions { data, conditions } => {
@@ -312,6 +328,7 @@ impl SpendingConditions {
         }
     }
 
+    /// Locktime of Spending Conditions
     pub fn locktime(&self) -> Option<u64> {
         match self {
             Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.locktime),
@@ -319,6 +336,7 @@ impl SpendingConditions {
         }
     }
 
+    /// Refund keys
     pub fn refund_keys(&self) -> Option<Vec<PublicKey>> {
         match self {
             Self::P2PKConditions { conditions, .. } => {
@@ -373,18 +391,28 @@ impl From<SpendingConditions> for super::nut10::Secret {
 /// P2PK and HTLC spending conditions
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Conditions {
+    /// Unix locktime after which refund keys can be used
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locktime: Option<u64>,
+    /// Additional Public keys
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkeys: Option<Vec<PublicKey>>,
+    /// Refund keys
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refund_keys: Option<Vec<PublicKey>>,
+    /// Numbedr of signatures required
+    ///
+    /// Default is 1
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_sigs: Option<u64>,
+    /// Signature flag
+    ///
+    /// Default [`SigFlag::SigInputs`]
     pub sig_flag: SigFlag,
 }
 
 impl Conditions {
+    /// Create new Spending [`Conditions`]
     pub fn new(
         locktime: Option<u64>,
         pubkeys: Option<Vec<PublicKey>>,
@@ -499,7 +527,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
     }
 }
 
-// P2PK and HTLC Spending condition tags
+/// P2PK and HTLC Spending condition tags
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum TagKind {
@@ -547,10 +575,16 @@ where
     }
 }
 
+/// Signature flag
+///
+/// Defined in [NUT11](https://github.com/cashubtc/nuts/blob/main/11.md)
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
 pub enum SigFlag {
     #[default]
+    /// Requires valid signatures on all inputs.
+    /// It is the default signature flag and will be applied even if the `sigflag` tag is absent.
     SigInputs,
+    /// Requires valid signatures on all inputs and on all outputs.
     SigAll,
 }
 
@@ -574,6 +608,7 @@ impl FromStr for SigFlag {
     }
 }
 
+/// Get the signature flag that should be enforced for a set of proofs and the public keys that signatures are valid for
 pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<PublicKey>) {
     let mut sig_flag = SigFlag::SigInputs;
     let mut pubkeys = HashSet::new();
@@ -602,16 +637,23 @@ pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<PublicKey>) {
     (sig_flag, pubkeys)
 }
 
+/// Tag
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Tag {
+    /// Sigflag [`Tag`]
     SigFlag(SigFlag),
+    /// Number of Sigs [`Tag`]
     NSigs(u64),
+    /// Locktime [`Tag`]
     LockTime(u64),
+    /// Refund [`Tag`]
     Refund(Vec<PublicKey>),
+    /// Pubkeys [`Tag`]
     PubKeys(Vec<PublicKey>),
 }
 
 impl Tag {
+    /// Get [`Tag`] Kind
     pub fn kind(&self) -> TagKind {
         match self {
             Self::SigFlag(_) => TagKind::SigFlag,

@@ -1,3 +1,7 @@
+//! Nuts
+//!
+//! See all at <https://github.com/cashubtc/nuts>
+
 pub mod nut00;
 pub mod nut01;
 pub mod nut02;

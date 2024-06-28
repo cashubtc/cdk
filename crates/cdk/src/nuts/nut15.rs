@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use super::{CurrencyUnit, PaymentMethod};
 use crate::Amount;
 
+/// Multi-part payment
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename = "lowercase")]
 pub struct Mpp {
+    /// Amount
     pub amount: Amount,
 }
 
@@ -27,5 +29,6 @@ pub struct MppMethodSettings {
 /// Mpp Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Settings {
+    /// Method settings
     pub methods: Vec<MppMethodSettings>,
 }

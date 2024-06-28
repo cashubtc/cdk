@@ -18,17 +18,23 @@ pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
 use crate::amount::Amount;
 
+/// Nut01 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Secp256k1 Error
     #[error(transparent)]
     Secp256k1(#[from] secp256k1::Error),
+    /// Json Error
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[cfg(feature = "nostr")]
-    #[error(transparent)]
-    NostrKey(#[from] nostr_sdk::key::Error),
+    /// Invalid Pubkey size
     #[error("Invalid public key size: expected={expected}, found={found}")]
-    InvalidPublicKeySize { expected: usize, found: usize },
+    InvalidPublicKeySize {
+        /// Expected size
+        expected: usize,
+        /// Actual size
+        found: usize,
+    },
 }
 
 /// Mint Keys [NUT-01]
@@ -47,16 +53,19 @@ impl From<MintKeys> for Keys {
 }
 
 impl Keys {
+    /// Create new [`Keys`]
     #[inline]
     pub fn new(keys: BTreeMap<String, PublicKey>) -> Self {
         Self(keys)
     }
 
+    /// Get [`Keys`]
     #[inline]
     pub fn keys(&self) -> &BTreeMap<String, PublicKey> {
         &self.0
     }
 
+    /// Get [`PublicKey`] for [`Amount`]
     #[inline]
     pub fn amount_key(&self, amount: Amount) -> Option<PublicKey> {
         self.0.get(&amount.to_string()).copied()
@@ -72,6 +81,7 @@ impl Keys {
 /// Mint Public Keys [NUT-01]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KeysResponse {
+    /// Keysets
     pub keysets: Vec<KeySet>,
 }
 
@@ -116,19 +126,24 @@ impl DerefMut for MintKeys {
 }
 
 impl MintKeys {
+    /// Create new [`MintKeys`]
     #[inline]
     pub fn new(map: BTreeMap<Amount, MintKeyPair>) -> Self {
         Self(map)
     }
 }
 
+/// Mint Public Private key pair
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeyPair {
+    /// Publickey
     pub public_key: PublicKey,
+    /// Secretkey
     pub secret_key: SecretKey,
 }
 
 impl MintKeyPair {
+    /// [`MintKeyPair`] from secret key
     #[inline]
     pub fn from_secret_key(secret_key: SecretKey) -> Self {
         Self {

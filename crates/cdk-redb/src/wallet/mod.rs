@@ -41,12 +41,14 @@ const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("key
 
 const DATABASE_VERSION: u32 = 1;
 
+/// Wallet Redb Database
 #[derive(Debug, Clone)]
-pub struct RedbWalletDatabase {
+pub struct WalletRedbDatabase {
     db: Arc<Mutex<Database>>,
 }
 
-impl RedbWalletDatabase {
+impl WalletRedbDatabase {
+    /// Create new [`WalletRedbDatabase`]
     pub fn new(path: &Path) -> Result<Self, Error> {
         {
             let db = Arc::new(Database::create(path)?);
@@ -132,7 +134,7 @@ impl RedbWalletDatabase {
 }
 
 #[async_trait]
-impl WalletDatabase for RedbWalletDatabase {
+impl WalletDatabase for WalletRedbDatabase {
     type Err = cdk_database::Error;
 
     #[instrument(skip(self))]

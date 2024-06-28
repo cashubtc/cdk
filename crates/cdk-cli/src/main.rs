@@ -9,8 +9,8 @@ use bip39::Mnemonic;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::Wallet;
 use cdk::{cdk_database, UncheckedUrl};
-use cdk_redb::RedbWalletDatabase;
-use cdk_sqlite::WalletSQLiteDatabase;
+use cdk_redb::WalletRedbDatabase;
+use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
 use rand::Rng;
 
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
         match args.engine.as_str() {
             "sqlite" => {
                 let sql_path = work_dir.join("cdk-cli.sqlite");
-                let sql = WalletSQLiteDatabase::new(&sql_path).await?;
+                let sql = WalletSqliteDatabase::new(&sql_path).await?;
 
                 sql.migrate().await;
 
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
             "redb" => {
                 let redb_path = work_dir.join("cdk-cli.redb");
 
-                Arc::new(RedbWalletDatabase::new(&redb_path)?)
+                Arc::new(WalletRedbDatabase::new(&redb_path)?)
             }
             _ => bail!("Unknown DB engine"),
         };
