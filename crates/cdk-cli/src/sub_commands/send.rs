@@ -1,7 +1,7 @@
 use std::collections::HashMap;
+use std::io;
 use std::io::Write;
 use std::str::FromStr;
-use std::{io, println};
 
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
@@ -26,10 +26,10 @@ pub struct SendSubCommand {
     /// Locktime before refund keys can be used
     #[arg(short, long)]
     locktime: Option<u64>,
-    /// Publey to lock proofs to
+    /// Pubkey to lock proofs to
     #[arg(short, long, action = clap::ArgAction::Append)]
     pubkey: Vec<String>,
-    /// Publey to lock proofs to
+    /// Refund keys that can be used after locktime
     #[arg(long, action = clap::ArgAction::Append)]
     refund_keys: Vec<String>,
 }
