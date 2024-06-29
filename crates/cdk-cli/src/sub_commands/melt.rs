@@ -7,17 +7,10 @@ use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::wallet::Wallet;
 use cdk::{Bolt11Invoice, UncheckedUrl};
-use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;
 
-#[derive(Args)]
-pub struct MeltSubCommand {}
-
-pub async fn melt(
-    wallets: HashMap<UncheckedUrl, Wallet>,
-    _sub_command_args: &MeltSubCommand,
-) -> Result<()> {
+pub async fn pay(wallets: HashMap<UncheckedUrl, Wallet>) -> Result<()> {
     let mints_amounts = mint_balances(wallets).await?;
 
     println!("Enter mint number to melt from");

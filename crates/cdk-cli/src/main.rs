@@ -22,13 +22,13 @@ const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 #[derive(Parser)]
 #[command(name = "cashu-tool")]
 #[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = "0.1")]
+#[command(version = "0.1.0")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
     #[arg(short, long, default_value = "sqlite")]
     engine: String,
-    /// Path to Seed
+    /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -42,9 +42,9 @@ enum Commands {
     /// Balance
     Balance,
     /// Pay bolt11 invoice
-    Melt(sub_commands::melt::MeltSubCommand),
-    /// Claim pending mints
-    PendingMint,
+    Pay,
+    /// Claim pending mint quotes that have been paid
+    MintPending,
     /// Receive token
     Receive(sub_commands::receive::ReceiveSubCommand),
     /// Send
@@ -138,9 +138,7 @@ async fn main() -> Result<()> {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
         Commands::Balance => sub_commands::balance::balance(wallets).await,
-        Commands::Melt(sub_command_args) => {
-            sub_commands::melt::melt(wallets, sub_command_args).await
-        }
+        Commands::Pay => sub_commands::melt::pay(wallets).await,
         Commands::Receive(sub_command_args) => {
             sub_commands::receive::receive(
                 wallets,
@@ -166,7 +164,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::PendingMint => sub_commands::pending_mints::pending_mints(wallets).await,
+        Commands::MintPending => sub_commands::pending_mints::mint_pending(wallets).await,
         Commands::Burn(sub_command_args) => {
             sub_commands::burn::burn(wallets, sub_command_args).await
         }
