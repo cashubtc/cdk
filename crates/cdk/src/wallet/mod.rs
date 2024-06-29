@@ -88,7 +88,7 @@ impl Wallet {
         Ok(Amount::ZERO)
     }
 
-    /// Total Balance of wallet
+    /// Total balance of pending proofs
     #[instrument(skip(self))]
     pub async fn total_pending_balance(&self) -> Result<HashMap<CurrencyUnit, Amount>, Error> {
         let mut balances = HashMap::new();
@@ -98,7 +98,33 @@ impl Wallet {
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
-                Some(vec![State::Pending, State::Reserved]),
+                Some(vec![State::Pending]),
+                None,
+            )
+            .await?
+        {
+            for proof in proofs {
+                balances
+                    .entry(proof.unit)
+                    .and_modify(|ps| *ps += proof.proof.amount)
+                    .or_insert(proof.proof.amount);
+            }
+        }
+
+        Ok(balances)
+    }
+
+    /// Total balance of reserved proofs
+    #[instrument(skip(self))]
+    pub async fn total_reserved_balance(&self) -> Result<HashMap<CurrencyUnit, Amount>, Error> {
+        let mut balances = HashMap::new();
+
+        if let Some(proofs) = self
+            .localstore
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::Reserved]),
                 None,
             )
             .await?
@@ -140,6 +166,22 @@ impl Wallet {
             )
             .await?
             .map(|p| p.into_iter().map(|p| p.proof).collect()))
+    }
+
+    /// Get pending [`Proofs`]
+    #[instrument(skip(self))]
+    pub async fn get_pending_proofs(&self) -> Result<Proofs, Error> {
+        Ok(self
+            .localstore
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::Pending]),
+                None,
+            )
+            .await?
+            .map(|p| p.into_iter().map(|p| p.proof).collect())
+            .unwrap_or_default())
     }
 
     /// Get reserved [`Proofs`]
