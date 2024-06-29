@@ -20,7 +20,7 @@ pub async fn melt(
 ) -> Result<()> {
     let mints_amounts = mint_balances(wallets).await?;
 
-    println!("Enter mint number to create token");
+    println!("Enter mint number to melt from");
 
     let mut user_input = String::new();
     let stdin = io::stdin();
@@ -54,10 +54,7 @@ pub async fn melt(
 
     println!("{:?}", quote);
 
-    let melt = wallet
-        .melt(&quote.id, SplitTarget::default())
-        .await
-        .unwrap();
+    let melt = wallet.melt(&quote.id, SplitTarget::default()).await?;
 
     println!("Paid invoice: {}", melt.state);
     if let Some(preimage) = melt.preimage {
