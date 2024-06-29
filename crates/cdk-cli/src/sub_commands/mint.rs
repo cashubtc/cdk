@@ -19,6 +19,7 @@ pub struct MintSubCommand {
     /// Amount
     amount: u64,
     /// Currency unit e.g. sat
+    #[arg(default_value = "sat")]
     unit: String,
 }
 
