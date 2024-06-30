@@ -1,26 +1,3 @@
-
-# Cashu Development Kit
-
-**ALPHA** This library is in early development, the api will change and should be used with caution.
-
-CDK is the core crate implementing the cashu protocol for both the Wallet and Mint.
-
-## Crate Feature Flags
-
-The following crate feature flags are available:
-
-| Feature     | Default | Description                        |
-|-------------|:-------:|------------------------------------|
-| `wallet`    |   Yes   | Enable cashu wallet features       |
-| `mint`      |   Yes   | Enable cashu mint wallet features  |
-
-## Implemented [NUTs](https://github.com/cashubtc/nuts/):
-
-See <https://github.com/cashubtc/cdk/blob/main/README.md>
-
-## Examples
-
-```rust
 //! Wallet example with memory store
 
 use std::sync::Arc;
@@ -76,12 +53,3 @@ async fn main() {
 
     println!("{}", token);
 }
-
-```
-
-See more examples in the [examples](./examples) folder.
-
-
-## License
-
-This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details
