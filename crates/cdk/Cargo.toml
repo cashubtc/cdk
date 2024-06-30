@@ -61,6 +61,10 @@ required-features = ["wallet"]
 name = "p2pk"
 required-features = ["wallet"]
 
+[[example]]
+name = "wallet"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand = "0.8.5"
 bip39.workspace = true

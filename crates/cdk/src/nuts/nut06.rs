@@ -175,7 +175,6 @@ where
                     let vec = value
                         .as_array()
                         .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
-                    println!("{:?}", vec[0]);
                     for val in vec {
                         let vec = val
                             .as_array()
