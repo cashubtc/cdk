@@ -12,23 +12,30 @@ use thiserror::Error;
 use crate::types::InvoiceStatus;
 use crate::Sha256;
 
+/// Lightning Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),
+    /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    /// Anyhow Error
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
+    /// Parse or Semantic Error
     #[error(transparent)]
     Parse(#[from] ParseOrSemanticError),
 }
 
+/// Amount in mSats
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Amount(u64);
 
 impl Amount {
+    /// Zero amount
     pub const ZERO: Amount = Amount(0);
 
     /// To Sats
@@ -91,6 +98,7 @@ pub struct InvoiceInfo {
 }
 
 impl InvoiceInfo {
+    /// Create new invoice info
     pub fn new(
         payment_hash: &str,
         hash: &str,
@@ -117,8 +125,10 @@ impl InvoiceInfo {
     }
 }
 
+/// Mint Lightning trait
 #[async_trait]
 pub trait MintLightning {
+    /// Error type
     type Err: Into<Error> + From<Error>;
 
     /// Create a new invoice
@@ -161,16 +171,23 @@ pub trait MintLightning {
 /// Balance response
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BalanceResponse {
+    /// On chain spendable
     pub on_chain_spendable: Amount,
+    /// On chain total
     pub on_chain_total: Amount,
+    /// Channel balance
     pub ln: Amount,
 }
 
 /// Pay invoice response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PayInvoiceResponse {
+    /// Payment hash
     pub payment_hash: Sha256,
+    /// Payment preimage
     pub payment_preimage: Option<String>,
+    /// Payment secret
     pub status: InvoiceStatus,
+    /// Total spent
     pub total_spent: Amount,
 }

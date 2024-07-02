@@ -22,6 +22,19 @@ pub struct Melted {
     pub change: Option<Proofs>,
 }
 
+/// Possible states of an invoice
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InvoiceStatus {
+    /// Invoice is unpaid
+    Unpaid,
+    /// Invoice is paid
+    Paid,
+    /// Invoice is expired
+    Expired,
+    /// Invoice is in flight
+    InFlight,
+}
+
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {

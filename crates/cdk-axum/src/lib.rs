@@ -14,11 +14,13 @@ use axum::Router;
 use cdk::cdk_lightning::{self, Amount as CDKLightningAmount, MintLightning};
 use cdk::error::{Error, ErrorResponse};
 use cdk::mint::Mint;
+use cdk::nuts::MintQuoteState;
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeysResponse, KeysetResponse,
-    MeltBolt11Request, MeltBolt11Response, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    nut05::MeltBolt11Response, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id,
+    KeysResponse, KeysetResponse, MeltBolt11Request, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response, MintInfo,
+    MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse, SwapRequest,
+    SwapResponse,
 };
 use cdk::types::MintQuote;
 use cdk::util::unix_time;
@@ -100,7 +102,7 @@ async fn handle_paid_invoice(mint: Arc<Mint>, request: &str) -> Result<()> {
                 amount: quote.amount,
                 unit: quote.unit,
                 request: quote.request,
-                paid: true,
+                state: MintQuoteState::Paid,
                 expiry: quote.expiry,
             };
 
@@ -278,7 +280,7 @@ async fn post_melt_bolt11(
     {
         Some(melt_quote) => {
             let mut melt_quote = melt_quote;
-            melt_quote.paid = true;
+            melt_quote.state = MintQuoteState::Paid;
 
             let amount = quote.amount;
 
@@ -310,7 +312,7 @@ async fn post_melt_bolt11(
         .await
         .map_err(into_response)?;
 
-    Ok(Json(res))
+    Ok(Json(res.into()))
 }
 
 async fn post_check(

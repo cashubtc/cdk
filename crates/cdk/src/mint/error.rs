@@ -50,6 +50,7 @@ pub enum Error {
     /// Multiple units provided
     #[error("Cannot have multiple units")]
     MultipleUnits,
+    /// Unit not supported
     #[error("Unit not supported")]
     UnsupportedUnit,
     /// BlindMessage is already signed
