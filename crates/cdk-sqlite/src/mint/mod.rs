@@ -8,7 +8,10 @@ use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::mint::MintKeySetInfo;
-use cdk::nuts::{BlindSignature, CurrencyUnit, Id, Proof, PublicKey};
+use cdk::nuts::nut05::QuoteState;
+use cdk::nuts::{
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
+};
 use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote};
 use cdk::Amount;
@@ -18,12 +21,14 @@ use sqlx::{ConnectOptions, Row};
 
 pub mod error;
 
+/// Mint SQLite Database
 #[derive(Debug, Clone)]
 pub struct MintSqliteDatabase {
     pool: SqlitePool,
 }
 
 impl MintSqliteDatabase {
+    /// Create new [`MintSqliteDatabase`]
     pub async fn new(path: &Path) -> Result<Self, Error> {
         let path = path.to_str().ok_or(Error::InvalidDbPath)?;
         let _conn = SqliteConnectOptions::from_str(path)?
@@ -39,6 +44,7 @@ impl MintSqliteDatabase {
         Ok(Self { pool })
     }
 
+    /// Migrate [`MintSqliteDatabase`]
     pub async fn migrate(&self) {
         sqlx::migrate!("./src/mint/migrations")
             .run(&self.pool)
@@ -122,7 +128,7 @@ WHERE active = 1
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, paid, expiry)
+(id, mint_url, amount, unit, request, state, expiry)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
         )
@@ -131,7 +137,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(u64::from(quote.amount) as i64)
         .bind(quote.unit.to_string())
         .bind(quote.request)
-        .bind(quote.paid)
+        .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .execute(&self.pool)
         .await
@@ -162,6 +168,44 @@ WHERE id=?;
 
         Ok(Some(sqlite_row_to_mint_quote(rec)?))
     }
+
+    async fn update_mint_quote_state(
+        &self,
+        quote_id: &str,
+        state: MintQuoteState,
+    ) -> Result<MintQuoteState, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM mint_quote
+WHERE id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_one(&mut transaction)
+        .await
+        .map_err(Error::from)?;
+
+        let quote = sqlite_row_to_mint_quote(rec)?;
+
+        sqlx::query(
+            r#"
+        UPDATE mint_quote SET state = ? WHERE id = ?
+        "#,
+        )
+        .bind(state.to_string())
+        .bind(quote_id)
+        .execute(&mut transaction)
+        .await
+        .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(quote.state)
+    }
+
     async fn get_mint_quote_by_request(
         &self,
         request: &str,
@@ -222,8 +266,8 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
-(id, unit, amount, request, fee_reserve, paid, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -231,8 +275,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(u64::from(quote.amount) as i64)
         .bind(quote.request)
         .bind(u64::from(quote.fee_reserve) as i64)
-        .bind(quote.paid)
+        .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
+        .bind(quote.payment_preimage)
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -276,6 +321,44 @@ FROM melt_quote
 
         Ok(melt_quotes)
     }
+
+    async fn update_melt_quote_state(
+        &self,
+        quote_id: &str,
+        state: MeltQuoteState,
+    ) -> Result<MeltQuoteState, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM melt_quote
+WHERE id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_one(&mut transaction)
+        .await
+        .map_err(Error::from)?;
+
+        let quote = sqlite_row_to_melt_quote(rec)?;
+
+        sqlx::query(
+            r#"
+        UPDATE melt_quote SET state = ? WHERE id = ?
+        "#,
+        )
+        .bind(state.to_string())
+        .bind(quote_id)
+        .execute(&mut transaction)
+        .await
+        .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(quote.state)
+    }
+
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -351,25 +434,29 @@ FROM keyset;
             .collect())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+    async fn add_spent_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        for proof in proofs {
+            sqlx::query(
+                r#"
 INSERT OR REPLACE INTO proof
 (y, amount, keyset_id, secret, c, witness, state)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
-        )
-        .bind(proof.y()?.to_bytes().to_vec())
-        .bind(u64::from(proof.amount) as i64)
-        .bind(proof.keyset_id.to_string())
-        .bind(proof.secret.to_string())
-        .bind(proof.c.to_bytes().to_vec())
-        .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
-        .bind("SPENT")
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
+            )
+            .bind(proof.y()?.to_bytes().to_vec())
+            .bind(u64::from(proof.amount) as i64)
+            .bind(proof.keyset_id.to_string())
+            .bind(proof.secret.to_string())
+            .bind(proof.c.to_bytes().to_vec())
+            .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
+            .bind("SPENT")
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+        transaction.commit().await.map_err(Error::from)?;
         Ok(())
     }
     async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
@@ -419,24 +506,28 @@ AND state="SPENT";
         Ok(Some(sqlite_row_to_proof(rec)?))
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+    async fn add_pending_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for proof in proofs {
+            sqlx::query(
+                r#"
 INSERT OR REPLACE INTO proof
-(y, amount, keyset_id, secret, c, witness, spent, pending)
+(y, amount, keyset_id, secret, c, witness, state)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
-        )
-        .bind(proof.y()?.to_bytes().to_vec())
-        .bind(u64::from(proof.amount) as i64)
-        .bind(proof.keyset_id.to_string())
-        .bind(proof.secret.to_string())
-        .bind(proof.c.to_bytes().to_vec())
-        .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
-        .bind("PENDING")
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
+            )
+            .bind(proof.y()?.to_bytes().to_vec())
+            .bind(u64::from(proof.amount) as i64)
+            .bind(proof.keyset_id.to_string())
+            .bind(proof.secret.to_string())
+            .bind(proof.c.to_bytes().to_vec())
+            .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
+            .bind("PENDING")
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }
@@ -488,18 +579,22 @@ AND state="PENDING";
         };
         Ok(Some(sqlite_row_to_proof(rec)?))
     }
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for secret in secrets {
+            sqlx::query(
+                r#"
 DELETE FROM proof
 WHERE secret=?
 AND state="PENDING";
         "#,
-        )
-        .bind(secret.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
+            )
+            .bind(secret.to_string())
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }
@@ -607,7 +702,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
-    let row_paid: bool = row.try_get("paid").map_err(Error::from)?;
+    let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
 
     Ok(MintQuote {
@@ -616,7 +711,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from(row_unit),
         request: row_request,
-        paid: row_paid,
+        state: MintQuoteState::from_str(&row_state).map_err(Error::from)?,
         expiry: row_expiry as u64,
     })
 }
@@ -627,8 +722,9 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<MeltQuote, Error> {
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
     let row_fee_reserve: i64 = row.try_get("fee_reserve").map_err(Error::from)?;
-    let row_paid: bool = row.try_get("paid").map_err(Error::from)?;
+    let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+    let row_preimage: Option<String> = row.try_get("payment_preimage").map_err(Error::from)?;
 
     Ok(MeltQuote {
         id: row_id,
@@ -636,8 +732,9 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<MeltQuote, Error> {
         unit: CurrencyUnit::from(row_unit),
         request: row_request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
-        paid: row_paid,
+        state: QuoteState::from_str(&row_state)?,
         expiry: row_expiry as u64,
+        payment_preimage: row_preimage,
     })
 }
 

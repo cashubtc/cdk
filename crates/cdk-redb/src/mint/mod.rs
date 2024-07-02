@@ -1,3 +1,6 @@
+//! SQLite Storage for CDK
+
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -8,14 +11,16 @@ use cdk::cdk_database;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
 use cdk::mint::MintKeySetInfo;
-use cdk::nuts::{BlindSignature, CurrencyUnit, Id, Proof, PublicKey};
+use cdk::nuts::{
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, PublicKey,
+};
 use cdk::secret::Secret;
 use cdk::types::{MeltQuote, MintQuote};
 use redb::{Database, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
-use tracing::debug;
 
 use super::error::Error;
+use crate::migrations::migrate_00_to_01;
 
 const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("active_keysets");
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");
@@ -29,50 +34,89 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
 
-const DATABASE_VERSION: u64 = 0;
+const DATABASE_VERSION: u32 = 1;
 
+/// Mint Redbdatabase
 #[derive(Debug, Clone)]
 pub struct MintRedbDatabase {
     db: Arc<Mutex<Database>>,
 }
 
 impl MintRedbDatabase {
+    /// Create new [`MintRedbDatabase`]
     pub fn new(path: &Path) -> Result<Self, Error> {
-        let db = Database::create(path)?;
-
-        let write_txn = db.begin_write()?;
-        // Check database version
         {
-            let _ = write_txn.open_table(CONFIG_TABLE)?;
-            let mut table = write_txn.open_table(CONFIG_TABLE)?;
+            // Check database version
 
-            let db_version = table.get("db_version")?;
-            let db_version = db_version.map(|v| v.value().to_owned());
+            let db = Arc::new(Database::create(path)?);
 
+            // Check database version
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(CONFIG_TABLE);
+
+            let db_version = match table {
+                Ok(table) => table.get("db_version")?.map(|v| v.value().to_owned()),
+                Err(_) => None,
+            };
             match db_version {
                 Some(db_version) => {
-                    let current_file_version = u64::from_str(&db_version)?;
-                    if current_file_version.ne(&DATABASE_VERSION) {
-                        // Database needs to be upgraded
-                        todo!()
+                    let mut current_file_version = u32::from_str(&db_version)?;
+                    match current_file_version.cmp(&DATABASE_VERSION) {
+                        Ordering::Less => {
+                            tracing::info!(
+                                "Database needs to be upgraded at {} current is {}",
+                                current_file_version,
+                                DATABASE_VERSION
+                            );
+                            if current_file_version == 0 {
+                                current_file_version = migrate_00_to_01(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version != DATABASE_VERSION {
+                                tracing::warn!(
+                                    "Database upgrade did not complete at {} current is {}",
+                                    current_file_version,
+                                    DATABASE_VERSION
+                                );
+                                return Err(Error::UnknownDatabaseVersion);
+                            }
+                        }
+                        Ordering::Equal => {
+                            tracing::info!("Database is at current version {}", DATABASE_VERSION);
+                        }
+                        Ordering::Greater => {
+                            tracing::warn!(
+                                "Database upgrade did not complete at {} current is {}",
+                                current_file_version,
+                                DATABASE_VERSION
+                            );
+                            return Err(Error::UnknownDatabaseVersion);
+                        }
                     }
                 }
                 None => {
-                    // Open all tables to init a new db
-                    let _ = write_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
-                    let _ = write_txn.open_table(KEYSETS_TABLE)?;
-                    let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
-                    let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-                    let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
-                    let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
-                    let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
+                    let write_txn = db.begin_write()?;
+                    {
+                        let mut table = write_txn.open_table(CONFIG_TABLE)?;
+                        // Open all tables to init a new db
+                        let _ = write_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
+                        let _ = write_txn.open_table(KEYSETS_TABLE)?;
+                        let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
+                        let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
+                        let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
+                        let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
+                        let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
 
-                    table.insert("db_version", "0")?;
+                        table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
+                    }
+
+                    write_txn.commit()?;
                 }
             }
+            drop(db);
         }
 
-        write_txn.commit()?;
+        let db = Database::create(path)?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
         })
@@ -219,20 +263,51 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn get_mint_quote_by_request(
+    async fn update_mint_quote_state(
         &self,
-        request: &str,
-    ) -> Result<Option<MintQuote>, Self::Err> {
-        let quotes = self.get_mint_quotes().await?;
+        quote_id: &str,
+        state: MintQuoteState,
+    ) -> Result<MintQuoteState, Self::Err> {
+        let db = self.db.lock().await;
 
-        let quote = quotes
-            .into_iter()
-            .filter(|q| q.request.eq(request))
-            .collect::<Vec<MintQuote>>()
-            .first()
-            .cloned();
+        let mut mint_quote: MintQuote;
+        {
+            let read_txn = db.begin_read().map_err(Error::from)?;
+            let table = read_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
 
-        Ok(quote)
+            let quote_guard = table
+                .get(quote_id)
+                .map_err(Error::from)?
+                .ok_or(Error::UnknownMintInfo)?;
+
+            let quote = quote_guard.value();
+
+            mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
+        }
+
+        let current_state = mint_quote.state;
+        mint_quote.state = state;
+
+        let write_txn = db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+
+            table
+                .insert(
+                    quote_id,
+                    serde_json::to_string(&mint_quote)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(current_state)
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
@@ -302,6 +377,52 @@ impl MintDatabase for MintRedbDatabase {
         Ok(quote.map(|q| serde_json::from_str(q.value()).unwrap()))
     }
 
+    async fn update_melt_quote_state(
+        &self,
+        quote_id: &str,
+        state: MeltQuoteState,
+    ) -> Result<MeltQuoteState, Self::Err> {
+        let db = self.db.lock().await;
+        let mut melt_quote: MeltQuote;
+        {
+            let read_txn = db.begin_read().map_err(Error::from)?;
+            let table = read_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+
+            let quote_guard = table
+                .get(quote_id)
+                .map_err(Error::from)?
+                .ok_or(Error::UnknownMintInfo)?;
+
+            let quote = quote_guard.value();
+
+            melt_quote = serde_json::from_str(quote).map_err(Error::from)?;
+        }
+
+        let current_state = melt_quote.state;
+        melt_quote.state = state;
+
+        let write_txn = db.begin_write().map_err(Error::from)?;
+        {
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+
+            table
+                .insert(
+                    quote_id,
+                    serde_json::to_string(&melt_quote)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(current_state)
+    }
+
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -336,7 +457,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
+    async fn add_spent_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -345,16 +466,17 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(SPENT_PROOFS_TABLE)
                 .map_err(Error::from)?;
-            let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
-            table
-                .insert(
-                    y.to_bytes(),
-                    serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                )
-                .map_err(Error::from)?;
+            for proof in proofs {
+                let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
+                table
+                    .insert(
+                        y.to_bytes(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
-        debug!("Added spend secret: {}", proof.secret.to_string());
 
         Ok(())
     }
@@ -387,7 +509,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
+    async fn add_pending_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -396,12 +518,14 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(PENDING_PROOFS_TABLE)
                 .map_err(Error::from)?;
-            table
-                .insert(
-                    hash_to_curve(&proof.secret.to_bytes())?.to_bytes(),
-                    serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                )
-                .map_err(Error::from)?;
+            for proof in proofs {
+                table
+                    .insert(
+                        hash_to_curve(&proof.secret.to_bytes())?.to_bytes(),
+                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 
@@ -439,7 +563,7 @@ impl MintDatabase for MintRedbDatabase {
         }
     }
 
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
+    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -448,8 +572,10 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(PENDING_PROOFS_TABLE)
                 .map_err(Error::from)?;
-            let secret_hash = hash_to_curve(&secret.to_bytes()).map_err(Error::from)?;
-            table.remove(secret_hash.to_bytes()).map_err(Error::from)?;
+            for secret in secrets {
+                let secret_hash = hash_to_curve(&secret.to_bytes()).map_err(Error::from)?;
+                table.remove(secret_hash.to_bytes()).map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 

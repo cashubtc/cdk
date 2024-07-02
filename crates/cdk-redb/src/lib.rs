@@ -1,4 +1,10 @@
+//! SQLite Storage backend for CDK
+
+#![warn(missing_docs)]
+#![warn(rustdoc::bare_urls)]
+
 pub mod error;
+mod migrations;
 
 #[cfg(feature = "mint")]
 pub mod mint;
@@ -8,4 +14,4 @@ pub mod wallet;
 #[cfg(feature = "mint")]
 pub use mint::MintRedbDatabase;
 #[cfg(feature = "wallet")]
-pub use wallet::RedbWalletDatabase;
+pub use wallet::WalletRedbDatabase;

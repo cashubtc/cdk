@@ -18,22 +18,31 @@ pub enum Error {
     UnknownState,
 }
 
+/// State of Proof
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum State {
+    /// Spent
     Spent,
+    /// Unspent
     Unspent,
+    /// Pending
+    ///
+    /// Currently being used in a transaction i.e. melt in progress
     Pending,
+    /// Proof is reserved
+    ///
+    /// i.e. used to create a token
     Reserved,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            State::Spent => "SPENT",
-            State::Unspent => "UNSPENT",
-            State::Pending => "PENDING",
-            State::Reserved => "RESERVED",
+            Self::Spent => "SPENT",
+            Self::Unspent => "UNSPENT",
+            Self::Pending => "PENDING",
+            Self::Reserved => "RESERVED",
         };
 
         write!(f, "{}", s)
@@ -77,5 +86,6 @@ pub struct ProofState {
 /// Check Spendable Response [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckStateResponse {
+    /// Proof states
     pub states: Vec<ProofState>,
 }

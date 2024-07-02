@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::Error;
 use crate::SECP256K1;
 
+/// PublicKey
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PublicKey {
     inner: secp256k1::PublicKey,
@@ -27,38 +28,6 @@ impl Deref for PublicKey {
 impl From<secp256k1::PublicKey> for PublicKey {
     fn from(inner: secp256k1::PublicKey) -> Self {
         Self { inner }
-    }
-}
-
-#[cfg(feature = "nostr")]
-impl TryFrom<PublicKey> for nostr_sdk::PublicKey {
-    type Error = Error;
-    fn try_from(pubkey: PublicKey) -> Result<Self, Self::Error> {
-        Ok(nostr_sdk::PublicKey::from_slice(&pubkey.to_bytes())?)
-    }
-}
-
-#[cfg(feature = "nostr")]
-impl TryFrom<&PublicKey> for nostr_sdk::PublicKey {
-    type Error = Error;
-    fn try_from(pubkey: &PublicKey) -> Result<Self, Self::Error> {
-        Ok(nostr_sdk::PublicKey::from_slice(&pubkey.to_bytes())?)
-    }
-}
-
-#[cfg(feature = "nostr")]
-impl TryFrom<nostr_sdk::PublicKey> for PublicKey {
-    type Error = Error;
-    fn try_from(pubkey: nostr_sdk::PublicKey) -> Result<Self, Self::Error> {
-        (&pubkey).try_into()
-    }
-}
-
-#[cfg(feature = "nostr")]
-impl TryFrom<&nostr_sdk::PublicKey> for PublicKey {
-    type Error = Error;
-    fn try_from(pubkey: &nostr_sdk::PublicKey) -> Result<Self, Self::Error> {
-        PublicKey::from_slice(&pubkey.to_bytes())
     }
 }
 
@@ -92,16 +61,19 @@ impl PublicKey {
         })
     }
 
+    /// [`PublicKey`] to bytes
     #[inline]
     pub fn to_bytes(&self) -> [u8; 33] {
         self.inner.serialize()
     }
 
+    /// To uncompressed bytes
     #[inline]
     pub fn to_uncompressed_bytes(&self) -> [u8; 65] {
         self.inner.serialize_uncompressed()
     }
 
+    /// To [`XOnlyPublicKey`]
     #[inline]
     pub fn x_only_public_key(&self) -> XOnlyPublicKey {
         self.inner.x_only_public_key().0

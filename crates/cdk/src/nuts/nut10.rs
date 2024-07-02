@@ -18,6 +18,7 @@ pub enum Kind {
     HTLC,
 }
 
+/// Secert Date
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SecretData {
     /// Unique random string
@@ -29,6 +30,7 @@ pub struct SecretData {
     pub tags: Option<Vec<Vec<String>>>,
 }
 
+/// NUT10 Secret
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 pub struct Secret {
     ///  Kind of the spending condition
@@ -38,6 +40,7 @@ pub struct Secret {
 }
 
 impl Secret {
+    /// Create new [`Secret`]
     pub fn new<S, V>(kind: Kind, data: S, tags: Option<V>) -> Self
     where
         S: Into<String>,

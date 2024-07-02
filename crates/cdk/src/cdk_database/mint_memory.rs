@@ -1,3 +1,5 @@
+//! Mint in memory database
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -7,10 +9,13 @@ use tokio::sync::RwLock;
 use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
 use crate::mint::MintKeySetInfo;
-use crate::nuts::{BlindSignature, CurrencyUnit, Id, Proof, Proofs, PublicKey};
+use crate::nuts::{
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
+};
 use crate::secret::Secret;
 use crate::types::{MeltQuote, MintQuote};
 
+/// Mint Memory Database
 #[derive(Debug, Clone)]
 pub struct MintMemoryDatabase {
     active_keysets: Arc<RwLock<HashMap<CurrencyUnit, Id>>>,
@@ -23,6 +28,7 @@ pub struct MintMemoryDatabase {
 }
 
 impl MintMemoryDatabase {
+    /// Create new [`MintMemoryDatabase`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         active_keysets: HashMap<CurrencyUnit, Id>,
@@ -119,6 +125,27 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(quote)
     }
 
+    async fn update_mint_quote_state(
+        &self,
+        quote_id: &str,
+        state: MintQuoteState,
+    ) -> Result<MintQuoteState, Self::Err> {
+        let mut mint_quotes = self.mint_quotes.write().await;
+
+        let mut quote = mint_quotes
+            .get(quote_id)
+            .cloned()
+            .ok_or(Error::UnknownQuote)?;
+
+        let current_state = quote.state;
+
+        quote.state = state;
+
+        mint_quotes.insert(quote_id.to_string(), quote.clone());
+
+        Ok(current_state)
+    }
+
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         Ok(self.mint_quotes.read().await.values().cloned().collect())
     }
@@ -141,6 +168,27 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.melt_quotes.read().await.get(quote_id).cloned())
     }
 
+    async fn update_melt_quote_state(
+        &self,
+        quote_id: &str,
+        state: MeltQuoteState,
+    ) -> Result<MeltQuoteState, Self::Err> {
+        let mut melt_quotes = self.melt_quotes.write().await;
+
+        let mut quote = melt_quotes
+            .get(quote_id)
+            .cloned()
+            .ok_or(Error::UnknownQuote)?;
+
+        let current_state = quote.state;
+
+        quote.state = state;
+
+        melt_quotes.insert(quote_id.to_string(), quote.clone());
+
+        Ok(current_state)
+    }
+
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
         Ok(self.melt_quotes.read().await.values().cloned().collect())
     }
@@ -151,12 +199,13 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn add_spent_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
-        self.spent_proofs
-            .write()
-            .await
-            .insert(secret_point.to_bytes(), proof);
+    async fn add_spent_proofs(&self, spent_proofs: Proofs) -> Result<(), Self::Err> {
+        let mut proofs = self.spent_proofs.write().await;
+
+        for proof in spent_proofs {
+            let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
+            proofs.insert(secret_point.to_bytes(), proof);
+        }
         Ok(())
     }
 
@@ -173,11 +222,12 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.spent_proofs.read().await.get(&y.to_bytes()).cloned())
     }
 
-    async fn add_pending_proof(&self, proof: Proof) -> Result<(), Self::Err> {
-        self.pending_proofs
-            .write()
-            .await
-            .insert(hash_to_curve(&proof.secret.to_bytes())?.to_bytes(), proof);
+    async fn add_pending_proofs(&self, pending_proofs: Proofs) -> Result<(), Self::Err> {
+        let mut proofs = self.pending_proofs.write().await;
+
+        for proof in pending_proofs {
+            proofs.insert(hash_to_curve(&proof.secret.to_bytes())?.to_bytes(), proof);
+        }
         Ok(())
     }
 
@@ -198,12 +248,14 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.pending_proofs.read().await.get(&y.to_bytes()).cloned())
     }
 
-    async fn remove_pending_proof(&self, secret: &Secret) -> Result<(), Self::Err> {
-        let secret_point = hash_to_curve(&secret.to_bytes())?;
-        self.pending_proofs
-            .write()
-            .await
-            .remove(&secret_point.to_bytes());
+    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
+        let mut proofs = self.pending_proofs.write().await;
+
+        for secret in secrets {
+            let secret_point = hash_to_curve(&secret.to_bytes())?;
+            proofs.remove(&secret_point.to_bytes());
+        }
+
         Ok(())
     }
 

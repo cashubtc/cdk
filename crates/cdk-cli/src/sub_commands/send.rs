@@ -1,12 +1,13 @@
+use std::collections::HashMap;
+use std::io;
 use std::io::Write;
 use std::str::FromStr;
-use std::{io, println};
 
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
-use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
+use cdk::nuts::{Conditions, PublicKey, SpendingConditions};
 use cdk::wallet::Wallet;
-use cdk::Amount;
+use cdk::{Amount, UncheckedUrl};
 use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;
@@ -25,16 +26,19 @@ pub struct SendSubCommand {
     /// Locktime before refund keys can be used
     #[arg(short, long)]
     locktime: Option<u64>,
-    /// Publey to lock proofs to
+    /// Pubkey to lock proofs to
     #[arg(short, long, action = clap::ArgAction::Append)]
     pubkey: Vec<String>,
-    /// Publey to lock proofs to
+    /// Refund keys that can be used after locktime
     #[arg(long, action = clap::ArgAction::Append)]
     refund_keys: Vec<String>,
 }
 
-pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<()> {
-    let mints_amounts = mint_balances(&wallet).await?;
+pub async fn send(
+    wallets: HashMap<UncheckedUrl, Wallet>,
+    sub_command_args: &SendSubCommand,
+) -> Result<()> {
+    let mints_amounts = mint_balances(wallets).await?;
 
     println!("Enter mint number to create token");
 
@@ -49,8 +53,6 @@ pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<(
         bail!("Invalid mint number");
     }
 
-    let mint_url = mints_amounts[mint_number].0.clone();
-
     println!("Enter value of token in sats");
 
     let mut user_input = String::new();
@@ -59,11 +61,7 @@ pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<(
     stdin.read_line(&mut user_input)?;
     let token_amount = Amount::from(user_input.trim().parse::<u64>()?);
 
-    if token_amount.gt(mints_amounts[mint_number]
-        .1
-        .get(&CurrencyUnit::Sat)
-        .unwrap())
-    {
+    if token_amount.gt(&mints_amounts[mint_number].1) {
         bail!("Not enough funds");
     }
 
@@ -135,8 +133,6 @@ pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<(
                 )
                 .unwrap();
 
-                tracing::debug!("{}", data_pubkey.to_string());
-
                 Some(SpendingConditions::P2PKConditions {
                     data: data_pubkey,
                     conditions: Some(conditions),
@@ -145,10 +141,10 @@ pub async fn send(wallet: Wallet, sub_command_args: &SendSubCommand) -> Result<(
         },
     };
 
+    let wallet = mints_amounts[mint_number].0.clone();
+
     let token = wallet
         .send(
-            &mint_url,
-            CurrencyUnit::Sat,
             token_amount,
             sub_command_args.memo.clone(),
             conditions,

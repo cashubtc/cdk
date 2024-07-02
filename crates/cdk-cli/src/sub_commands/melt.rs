@@ -1,23 +1,19 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::str::FromStr;
 use std::{io, println};
 
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
-use cdk::nuts::CurrencyUnit;
 use cdk::wallet::Wallet;
-use cdk::Bolt11Invoice;
-use clap::Args;
+use cdk::{Bolt11Invoice, UncheckedUrl};
 
 use crate::sub_commands::balance::mint_balances;
 
-#[derive(Args)]
-pub struct MeltSubCommand {}
+pub async fn pay(wallets: HashMap<UncheckedUrl, Wallet>) -> Result<()> {
+    let mints_amounts = mint_balances(wallets).await?;
 
-pub async fn melt(wallet: Wallet, _sub_command_args: &MeltSubCommand) -> Result<()> {
-    let mints_amounts = mint_balances(&wallet).await?;
-
-    println!("Enter mint number to create token");
+    println!("Enter mint number to melt from");
 
     let mut user_input = String::new();
     let stdin = io::stdin();
@@ -30,7 +26,7 @@ pub async fn melt(wallet: Wallet, _sub_command_args: &MeltSubCommand) -> Result<
         bail!("Invalid mint number");
     }
 
-    let mint_url = mints_amounts[mint_number].0.clone();
+    let wallet = mints_amounts[mint_number].0.clone();
 
     println!("Enter bolt11 invoice request");
 
@@ -43,30 +39,17 @@ pub async fn melt(wallet: Wallet, _sub_command_args: &MeltSubCommand) -> Result<
     if bolt11
         .amount_milli_satoshis()
         .unwrap()
-        .gt(&(<cdk::Amount as Into<u64>>::into(
-            *mints_amounts[mint_number]
-                .1
-                .get(&CurrencyUnit::Sat)
-                .unwrap(),
-        ) * 1000_u64))
+        .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * 1000_u64))
     {
         bail!("Not enough funds");
     }
-    let quote = wallet
-        .melt_quote(
-            mint_url.clone(),
-            cdk::nuts::CurrencyUnit::Sat,
-            bolt11.to_string(),
-            None,
-        )
-        .await?;
+    let quote = wallet.melt_quote(bolt11.to_string(), None).await?;
 
-    let melt = wallet
-        .melt(&mint_url, &quote.id, SplitTarget::default())
-        .await
-        .unwrap();
+    println!("{:?}", quote);
 
-    println!("Paid invoice: {}", melt.paid);
+    let melt = wallet.melt(&quote.id, SplitTarget::default()).await?;
+
+    println!("Paid invoice: {}", melt.state);
     if let Some(preimage) = melt.preimage {
         println!("Payment preimage: {}", preimage);
     }

@@ -1,7 +1,10 @@
+//! Redb Error
+
 use std::num::ParseIntError;
 
 use thiserror::Error;
 
+/// Redb Database Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Redb Error
@@ -46,6 +49,9 @@ pub enum Error {
     /// Unknown Proof Y
     #[error("Unknown Proof Y")]
     UnknownY,
+    /// Unknown Database Version
+    #[error("Unknown Database Version")]
+    UnknownDatabaseVersion,
 }
 
 impl From<Error> for cdk::cdk_database::Error {

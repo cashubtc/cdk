@@ -1,8 +1,9 @@
 [package]
 name = "cdk-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["CDK Developers"]
+description = "Cashu cli wallet built on CDK"
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true # MSRV
@@ -13,9 +14,9 @@ license.workspace = true
 [dependencies]
 anyhow = "1.0.75"
 bip39.workspace = true
-cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
-cdk-redb = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
-cdk-sqlite = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
+cdk = { workspace = true, default-features = false, features = ["wallet"] }
+cdk-redb = { workspace = true, default-features = false, features = ["wallet"] }
+cdk-sqlite = { workspace = true, default-features = false, features = ["wallet"] }
 clap = { version = "4.4.8", features = ["derive", "env"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -24,3 +25,7 @@ tracing.workspace = true
 tracing-subscriber = "0.3.18"
 rand = "0.8.5"
 home = "0.5.9"
+nostr-sdk = { version = "0.32.0", default-features = false, features = [
+    "nip04",
+    "nip44"
+]}

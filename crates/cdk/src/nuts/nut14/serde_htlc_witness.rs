@@ -1,3 +1,5 @@
+//! Serde helpers for HTLC Witness
+
 use serde::{de, ser, Deserialize, Deserializer, Serializer};
 
 use super::HTLCWitness;

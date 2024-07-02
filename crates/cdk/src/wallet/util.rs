@@ -5,8 +5,7 @@ use crate::nuts::{CurrencyUnit, Proofs, Token};
 use crate::UncheckedUrl;
 
 /// Extract token from text
-#[cfg(feature = "nostr")]
-pub(crate) fn token_from_text(text: &str) -> Option<&str> {
+pub fn token_from_text(text: &str) -> Option<&str> {
     let text = text.trim();
     if let Some(start) = text.find("cashu") {
         match text[start..].find(' ') {
@@ -28,7 +27,6 @@ pub fn proof_to_token(
     Ok(Token::new(mint_url, proofs, memo, unit)?)
 }
 
-#[cfg(feature = "nostr")]
 #[cfg(test)]
 mod tests {
 

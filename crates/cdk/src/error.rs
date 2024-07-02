@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::util::hex;
 
+/// CDK Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Mint does not have a key for amount
@@ -80,10 +81,16 @@ pub enum Error {
     CustomError(String),
 }
 
+/// CDK Error Response
+///
+/// See NUT defenation in [00](https://github.com/cashubtc/nuts/blob/main/00.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorResponse {
+    /// Error Code
     pub code: ErrorCode,
+    /// Human readable Text
     pub error: Option<String>,
+    /// Longer human readable description
     pub detail: Option<String>,
 }
 
@@ -100,19 +107,14 @@ impl fmt::Display for ErrorResponse {
 }
 
 impl ErrorResponse {
-    pub fn new(code: ErrorCode, error: Option<String>, detail: Option<String>) -> Self {
-        Self {
-            code,
-            error,
-            detail,
-        }
-    }
+    /// Error response from json
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let value: Value = serde_json::from_str(json)?;
 
         Self::from_value(value)
     }
 
+    /// Error response from json Value
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         match serde_json::from_value::<ErrorResponse>(value.clone()) {
             Ok(res) => Ok(res),
@@ -125,28 +127,15 @@ impl ErrorResponse {
     }
 }
 
-impl From<Error> for ErrorResponse {
-    fn from(err: Error) -> ErrorResponse {
-        match err {
-            Error::TokenSpent => ErrorResponse {
-                code: ErrorCode::TokenAlreadySpent,
-                error: Some(err.to_string()),
-                detail: None,
-            },
-            _ => ErrorResponse {
-                code: ErrorCode::Unknown(9999),
-                error: Some(err.to_string()),
-                detail: None,
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ErrorCode {
+    /// Token is already spent
     TokenAlreadySpent,
+    /// Quote is not paid
     QuoteNotPaid,
+    /// Keyset is not found
     KeysetNotFound,
+    /// Unknown error code
     Unknown(u16),
 }
 

@@ -1,5 +1,8 @@
+//! SQLite Wallet Error
+
 use thiserror::Error;
 
+/// SQLite Wallet Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// SQLX Error
@@ -17,6 +20,12 @@ pub enum Error {
     /// NUT02 Error
     #[error(transparent)]
     CDKNUT02(#[from] cdk::nuts::nut02::Error),
+    /// NUT04 Error
+    #[error(transparent)]
+    CDKNUT04(#[from] cdk::nuts::nut04::Error),
+    /// NUT05 Error
+    #[error(transparent)]
+    CDKNUT05(#[from] cdk::nuts::nut05::Error),
     /// NUT07 Error
     #[error(transparent)]
     CDKNUT07(#[from] cdk::nuts::nut07::Error),

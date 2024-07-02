@@ -1,3 +1,6 @@
+//! Redb Wallet
+
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -17,6 +20,7 @@ use tokio::sync::Mutex;
 use tracing::instrument;
 
 use super::error::Error;
+use crate::migrations::migrate_00_to_01;
 
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
 // <Mint_Url, Keyset_id>
@@ -24,62 +28,105 @@ const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &[u8]> =
     MultimapTableDefinition::new("mint_keysets");
 // <Keyset_id, KeysetInfo>
 const KEYSETS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("keysets");
+// <Quote_id, quote>
 const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
+// <Quote_id, quote>
 const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
 const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_keys");
 // <Y, Proof Info>
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
-#[cfg(feature = "nostr")]
 const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 
-const DATABASE_VERSION: u32 = 0;
+const DATABASE_VERSION: u32 = 1;
 
+/// Wallet Redb Database
 #[derive(Debug, Clone)]
-pub struct RedbWalletDatabase {
+pub struct WalletRedbDatabase {
     db: Arc<Mutex<Database>>,
 }
 
-impl RedbWalletDatabase {
+impl WalletRedbDatabase {
+    /// Create new [`WalletRedbDatabase`]
     pub fn new(path: &Path) -> Result<Self, Error> {
-        let db = Database::create(path)?;
-
-        let write_txn = db.begin_write()?;
-
-        // Check database version
         {
-            let _ = write_txn.open_table(CONFIG_TABLE)?;
-            let mut table = write_txn.open_table(CONFIG_TABLE)?;
+            let db = Arc::new(Database::create(path)?);
 
-            let db_version = table.get("db_version")?.map(|v| v.value().to_owned());
+            let db_version: Option<String>;
+            {
+                // Check database version
+                let read_txn = db.begin_read()?;
+                let table = read_txn.open_table(CONFIG_TABLE);
+
+                db_version = match table {
+                    Ok(table) => table.get("db_version")?.map(|v| v.value().to_string()),
+                    Err(_) => None,
+                };
+            }
 
             match db_version {
                 Some(db_version) => {
-                    let current_file_version = u32::from_str(&db_version)?;
-                    if current_file_version.ne(&DATABASE_VERSION) {
-                        // Database needs to be upgraded
-                        todo!()
+                    let mut current_file_version = u32::from_str(&db_version)?;
+                    tracing::info!("Current file version {}", current_file_version);
+
+                    match current_file_version.cmp(&DATABASE_VERSION) {
+                        Ordering::Less => {
+                            tracing::info!(
+                                "Database needs to be upgraded at {} current is {}",
+                                current_file_version,
+                                DATABASE_VERSION
+                            );
+                            if current_file_version == 0 {
+                                current_file_version = migrate_00_to_01(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version != DATABASE_VERSION {
+                                tracing::warn!(
+                                    "Database upgrade did not complete at {} current is {}",
+                                    current_file_version,
+                                    DATABASE_VERSION
+                                );
+                                return Err(Error::UnknownDatabaseVersion);
+                            }
+                        }
+                        Ordering::Equal => {
+                            tracing::info!("Database is at current version {}", DATABASE_VERSION);
+                        }
+                        Ordering::Greater => {
+                            tracing::warn!(
+                                "Database upgrade did not complete at {} current is {}",
+                                current_file_version,
+                                DATABASE_VERSION
+                            );
+                            return Err(Error::UnknownDatabaseVersion);
+                        }
                     }
-                    let _ = write_txn.open_table(KEYSET_COUNTER)?;
                 }
                 None => {
-                    // Open all tables to init a new db
-                    let _ = write_txn.open_table(MINTS_TABLE)?;
-                    let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
-                    let _ = write_txn.open_table(KEYSETS_TABLE)?;
-                    let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
-                    let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-                    let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
-                    let _ = write_txn.open_table(PROOFS_TABLE)?;
-                    let _ = write_txn.open_table(KEYSET_COUNTER)?;
-                    #[cfg(feature = "nostr")]
-                    let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
-                    table.insert("db_version", "0")?;
+                    let write_txn = db.begin_write()?;
+                    {
+                        let mut table = write_txn.open_table(CONFIG_TABLE)?;
+                        // Open all tables to init a new db
+                        let _ = write_txn.open_table(MINTS_TABLE)?;
+                        let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+                        let _ = write_txn.open_table(KEYSETS_TABLE)?;
+                        let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
+                        let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
+                        let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
+                        let _ = write_txn.open_table(PROOFS_TABLE)?;
+                        let _ = write_txn.open_table(KEYSET_COUNTER)?;
+                        let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
+                        table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
+                    }
+
+                    write_txn.commit()?;
                 }
             }
+            drop(db);
         }
-        write_txn.commit()?;
+
+        let db = Database::create(path)?;
 
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
@@ -88,7 +135,7 @@ impl RedbWalletDatabase {
 }
 
 #[async_trait]
-impl WalletDatabase for RedbWalletDatabase {
+impl WalletDatabase for WalletRedbDatabase {
     type Err = cdk_database::Error;
 
     #[instrument(skip(self))]
@@ -655,7 +702,6 @@ impl WalletDatabase for RedbWalletDatabase {
         Ok(counter.map(|c| c.value()))
     }
 
-    #[cfg(feature = "nostr")]
     #[instrument(skip(self))]
     async fn get_nostr_last_checked(
         &self,
@@ -673,7 +719,6 @@ impl WalletDatabase for RedbWalletDatabase {
 
         Ok(last_checked.map(|c| c.value()))
     }
-    #[cfg(feature = "nostr")]
     #[instrument(skip(self))]
     async fn add_nostr_last_checked(
         &self,

@@ -1,15 +1,13 @@
 //! Wallet Js Bindings
 
 use std::ops::Deref;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk::amount::SplitTarget;
-use cdk::nuts::Proofs;
-use cdk::url::UncheckedUrl;
+use cdk::nuts::{Proofs, SecretKey};
 use cdk::wallet::Wallet;
 use cdk::Amount;
-use cdk_rexie::RexieWalletDatabase;
+use cdk_rexie::WalletRexieDatabase;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{into_err, Result};
@@ -43,38 +41,10 @@ impl From<Wallet> for JsWallet {
 #[wasm_bindgen(js_class = Wallet)]
 impl JsWallet {
     #[wasm_bindgen(constructor)]
-    pub async fn new(seed: Vec<u8>, p2pk_signing_keys: Vec<JsSecretKey>) -> Self {
-        let db = RexieWalletDatabase::new().await.unwrap();
+    pub async fn new(mints_url: String, unit: JsCurrencyUnit, seed: Vec<u8>) -> Self {
+        let db = WalletRexieDatabase::new().await.unwrap();
 
-        Wallet::new(
-            Arc::new(db),
-            &seed,
-            p2pk_signing_keys
-                .into_iter()
-                .map(|s| s.deref().clone())
-                .collect(),
-        )
-        .into()
-    }
-
-    #[wasm_bindgen(js_name = unitBalance)]
-    pub async fn unit_balance(&self, unit: JsCurrencyUnit) -> Result<JsAmount> {
-        Ok(self
-            .inner
-            .unit_balance(unit.into())
-            .await
-            .map_err(into_err)?
-            .into())
-    }
-
-    #[wasm_bindgen(js_name = pendingUnitBalance)]
-    pub async fn pending_unit_balance(&self, unit: JsCurrencyUnit) -> Result<JsAmount> {
-        Ok(self
-            .inner
-            .pending_unit_balance(unit.into())
-            .await
-            .map_err(into_err)?
-            .into())
+        Wallet::new(&mints_url, unit.into(), Arc::new(db), &seed).into()
     }
 
     #[wasm_bindgen(js_name = totalBalance)]
@@ -92,64 +62,36 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = checkAllPendingProofs)]
-    pub async fn check_all_pending_proofs(
-        &self,
-        mint_url: Option<String>,
-        unit: Option<JsCurrencyUnit>,
-    ) -> Result<JsAmount> {
-        let mint_url = match mint_url {
-            Some(url) => Some(UncheckedUrl::from_str(&url).map_err(into_err)?),
-            None => None,
-        };
-
+    pub async fn check_all_pending_proofs(&self) -> Result<JsAmount> {
         Ok(self
             .inner
-            .check_all_pending_proofs(mint_url, unit.map(|u| u.into()))
+            .check_all_pending_proofs()
             .await
             .map_err(into_err)?
             .into())
     }
 
-    #[wasm_bindgen(js_name = mintBalances)]
-    pub async fn mint_balances(&self) -> Result<JsValue> {
-        let mint_balances = self.inner.mint_balances().await.map_err(into_err)?;
-
-        Ok(serde_wasm_bindgen::to_value(&mint_balances)?)
-    }
-
-    #[wasm_bindgen(js_name = addMint)]
-    pub async fn add_mint(&self, mint_url: String) -> Result<Option<JsMintInfo>> {
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
-
+    #[wasm_bindgen(js_name = getMintInfo)]
+    pub async fn get_mint_info(&self) -> Result<Option<JsMintInfo>> {
         Ok(self
             .inner
-            .add_mint(mint_url)
+            .get_mint_info()
             .await
             .map_err(into_err)?
             .map(|i| i.into()))
     }
 
     #[wasm_bindgen(js_name = refreshMint)]
-    pub async fn refresh_mint_keys(&self, mint_url: String) -> Result<()> {
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
-        self.inner
-            .refresh_mint_keys(&mint_url)
-            .await
-            .map_err(into_err)?;
+    pub async fn refresh_mint_keys(&self) -> Result<()> {
+        self.inner.refresh_mint_keys().await.map_err(into_err)?;
         Ok(())
     }
 
     #[wasm_bindgen(js_name = mintQuote)]
-    pub async fn mint_quote(
-        &mut self,
-        mint_url: String,
-        amount: u64,
-        unit: JsCurrencyUnit,
-    ) -> Result<JsMintQuote> {
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
+    pub async fn mint_quote(&mut self, amount: u64) -> Result<JsMintQuote> {
         let quote = self
             .inner
-            .mint_quote(mint_url, unit.into(), amount.into())
+            .mint_quote(amount.into())
             .await
             .map_err(into_err)?;
 
@@ -157,16 +99,10 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = mintQuoteStatus)]
-    pub async fn mint_quote_status(
-        &self,
-        mint_url: String,
-        quote_id: String,
-    ) -> Result<JsMintQuoteBolt11Response> {
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
-
+    pub async fn mint_quote_status(&self, quote_id: String) -> Result<JsMintQuoteBolt11Response> {
         let quote = self
             .inner
-            .mint_quote_status(mint_url, &quote_id)
+            .mint_quote_state(&quote_id)
             .await
             .map_err(into_err)?;
 
@@ -183,7 +119,6 @@ impl JsWallet {
     #[wasm_bindgen(js_name = mint)]
     pub async fn mint(
         &mut self,
-        mint_url: String,
         quote_id: String,
         p2pk_condition: Option<JsP2PKSpendingConditions>,
         htlc_condition: Option<JsHTLCSpendingConditions>,
@@ -192,7 +127,6 @@ impl JsWallet {
         let target = split_target_amount
             .map(|a| SplitTarget::Value(*a.deref()))
             .unwrap_or_default();
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let conditions = match (p2pk_condition, htlc_condition) {
             (Some(_), Some(_)) => {
                 return Err(JsValue::from_str(
@@ -206,7 +140,7 @@ impl JsWallet {
 
         Ok(self
             .inner
-            .mint(mint_url, &quote_id, target, conditions)
+            .mint(&quote_id, target, conditions)
             .await
             .map_err(into_err)?
             .into())
@@ -215,20 +149,12 @@ impl JsWallet {
     #[wasm_bindgen(js_name = meltQuote)]
     pub async fn melt_quote(
         &mut self,
-        mint_url: String,
-        unit: JsCurrencyUnit,
         request: String,
         mpp_amount: Option<JsAmount>,
     ) -> Result<JsMeltQuote> {
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
         let melt_quote = self
             .inner
-            .melt_quote(
-                mint_url,
-                unit.into(),
-                request,
-                mpp_amount.map(|a| *a.deref()),
-            )
+            .melt_quote(request, mpp_amount.map(|a| *a.deref()))
             .await
             .map_err(into_err)?;
 
@@ -236,16 +162,10 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = meltQuoteStatus)]
-    pub async fn melt_quote_status(
-        &self,
-        mint_url: String,
-        quote_id: String,
-    ) -> Result<JsMeltQuoteBolt11Response> {
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
-
+    pub async fn melt_quote_status(&self, quote_id: String) -> Result<JsMeltQuoteBolt11Response> {
         let quote = self
             .inner
-            .melt_quote_status(mint_url, &quote_id)
+            .melt_quote_status(&quote_id)
             .await
             .map_err(into_err)?;
 
@@ -255,31 +175,35 @@ impl JsWallet {
     #[wasm_bindgen(js_name = melt)]
     pub async fn melt(
         &mut self,
-        mint_url: String,
         quote_id: String,
         split_target_amount: Option<JsAmount>,
     ) -> Result<JsMelted> {
         let target = split_target_amount
             .map(|a| SplitTarget::Value(*a.deref()))
             .unwrap_or_default();
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
 
-        let melted = self
-            .inner
-            .melt(&mint_url, &quote_id, target)
-            .await
-            .map_err(into_err)?;
+        let melted = self.inner.melt(&quote_id, target).await.map_err(into_err)?;
 
         Ok(melted.into())
     }
 
     #[wasm_bindgen(js_name = receive)]
-    pub async fn receive(&mut self, encoded_token: String, preimages: JsValue) -> Result<JsAmount> {
-        let preimages: Option<Vec<String>> = serde_wasm_bindgen::from_value(preimages)?;
+    pub async fn receive(
+        &mut self,
+        encoded_token: String,
+        signing_keys: Vec<JsSecretKey>,
+        preimages: Vec<String>,
+    ) -> Result<JsAmount> {
+        let signing_keys: Vec<SecretKey> = signing_keys.iter().map(|s| s.deref().clone()).collect();
 
         Ok(self
             .inner
-            .receive(&encoded_token, &SplitTarget::default(), preimages)
+            .receive(
+                &encoded_token,
+                &SplitTarget::default(),
+                &signing_keys,
+                &preimages,
+            )
             .await
             .map_err(into_err)?
             .into())
@@ -289,8 +213,6 @@ impl JsWallet {
     #[wasm_bindgen(js_name = send)]
     pub async fn send(
         &mut self,
-        mint_url: String,
-        unit: JsCurrencyUnit,
         memo: Option<String>,
         amount: u64,
         p2pk_condition: Option<JsP2PKSpendingConditions>,
@@ -308,20 +230,11 @@ impl JsWallet {
             (None, None) => None,
         };
 
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
-
         let target = split_target_amount
             .map(|a| SplitTarget::Value(*a.deref()))
             .unwrap_or_default();
         self.inner
-            .send(
-                &mint_url,
-                unit.into(),
-                Amount::from(amount),
-                memo,
-                conditions,
-                &target,
-            )
+            .send(Amount::from(amount), memo, conditions, &target)
             .await
             .map_err(into_err)
     }
@@ -330,8 +243,6 @@ impl JsWallet {
     #[wasm_bindgen(js_name = swap)]
     pub async fn swap(
         &mut self,
-        mint_url: String,
-        unit: JsCurrencyUnit,
         amount: u64,
         input_proofs: Vec<JsProof>,
         p2pk_condition: Option<JsP2PKSpendingConditions>,
@@ -349,8 +260,6 @@ impl JsWallet {
             (None, None) => None,
         };
 
-        let mint_url = UncheckedUrl::from_str(&mint_url).map_err(into_err)?;
-
         let proofs: Proofs = input_proofs.iter().map(|p| p.deref()).cloned().collect();
 
         let target = split_target_amount
@@ -358,14 +267,7 @@ impl JsWallet {
             .unwrap_or_default();
         let post_swap_proofs = self
             .inner
-            .swap(
-                &mint_url,
-                &unit.into(),
-                Some(Amount::from(amount)),
-                &target,
-                proofs,
-                conditions,
-            )
+            .swap(Some(Amount::from(amount)), &target, proofs, conditions)
             .await
             .map_err(into_err)?;
 

@@ -1,3 +1,5 @@
+//! CDK Wallet Error
+
 use std::num::ParseIntError;
 
 use thiserror::Error;
@@ -5,6 +7,7 @@ use thiserror::Error;
 use crate::cdk_database;
 use crate::error::{ErrorCode, ErrorResponse};
 
+/// Wallet Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Insufficient Funds
@@ -31,6 +34,7 @@ pub enum Error {
     /// Preimage not provided
     #[error("Preimage not provided")]
     PreimageNotProvided,
+    /// Unknown Key
     #[error("Unknown Key")]
     UnknownKey,
     /// Spending Locktime not provided
@@ -63,6 +67,15 @@ pub enum Error {
     ///  Unknown error response
     #[error("Unknown Error response: `{0}`")]
     UnknownErrorResponse(String),
+    /// Unknown Wallet
+    #[error("Unknown Wallet: `{0}`")]
+    UnknownWallet(String),
+    /// Unknown Wallet
+    #[error("Unknown Wallet: `{0}`")]
+    IncorrectWallet(String),
+    /// Max Fee Ecxeded
+    #[error("Max fee exceeded")]
+    MaxFeeExceeded,
     /// CDK Error
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),
@@ -93,14 +106,6 @@ pub enum Error {
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
-    /// Nostr Client Error
-    #[cfg(feature = "nostr")]
-    #[error(transparent)]
-    NostrClient(#[from] nostr_sdk::client::Error),
-    /// Nostr Key Error
-    #[cfg(feature = "nostr")]
-    #[error(transparent)]
-    NostrKey(#[from] nostr_sdk::key::Error),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

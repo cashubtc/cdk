@@ -2,6 +2,8 @@
 name = "cdk-redb"
 version = "0.1.0"
 edition = "2021"
+authors = ["CDK Developers"]
+description = "Redb storage backend for CDK"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -12,7 +14,6 @@ rust-version.workspace = true
 default = ["mint", "wallet"]
 mint = ["cdk/mint"]
 wallet = ["cdk/wallet"]
-nostr = ["cdk/nostr"]
 
 [dependencies]
 async-trait.workspace = true

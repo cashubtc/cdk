@@ -1,3 +1,7 @@
+//! Nuts
+//!
+//! See all at <https://github.com/cashubtc/nuts>
+
 pub mod nut00;
 pub mod nut01;
 pub mod nut02;
@@ -28,13 +32,13 @@ pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, Settings as NUT04Settings,
+    MintQuoteBolt11Response, QuoteState as MintQuoteState, Settings as NUT04Settings,
 };
 pub use nut05::{
-    MeltBolt11Request, MeltBolt11Response, MeltMethodSettings, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, Settings as NUT05Settings,
+    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
-pub use nut06::{MintInfo, MintVersion, Nuts};
+pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
 pub use nut09::{RestoreRequest, RestoreResponse};
 pub use nut10::{Kind, Secret as Nut10Secret, SecretData};

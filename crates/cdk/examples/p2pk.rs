@@ -1,13 +1,12 @@
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, SecretKey, SpendingConditions};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, SecretKey, SpendingConditions};
 use cdk::wallet::Wallet;
-use cdk::{Amount, UncheckedUrl};
+use cdk::Amount;
 use rand::Rng;
 use tokio::time::sleep;
 
@@ -16,28 +15,22 @@ async fn main() -> Result<(), Error> {
     let localstore = WalletMemoryDatabase::default();
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
-    let mint_url = UncheckedUrl::from_str("https://testnut.cashu.space").unwrap();
+    let mint_url = "https://testnut.cashu.space";
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
-    let wallet = Wallet::new(Arc::new(localstore), &seed, vec![]);
+    let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), &seed);
 
-    let quote = wallet
-        .mint_quote(mint_url.clone(), unit.clone(), amount)
-        .await
-        .unwrap();
+    let quote = wallet.mint_quote(amount).await.unwrap();
 
     println!("Minting nuts ...");
 
     loop {
-        let status = wallet
-            .mint_quote_status(mint_url.clone(), &quote.id)
-            .await
-            .unwrap();
+        let status = wallet.mint_quote_state(&quote.id).await.unwrap();
 
-        println!("Quote status: {}", status.paid);
+        println!("Quote status: {}", status.state);
 
-        if status.paid {
+        if status.state == MintQuoteState::Paid {
             break;
         }
 
@@ -45,7 +38,7 @@ async fn main() -> Result<(), Error> {
     }
 
     let _receive_amount = wallet
-        .mint(mint_url.clone(), &quote.id, SplitTarget::default(), None)
+        .mint(&quote.id, SplitTarget::default(), None)
         .await
         .unwrap();
 
@@ -54,24 +47,15 @@ async fn main() -> Result<(), Error> {
     let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
 
     let token = wallet
-        .send(
-            &mint_url,
-            unit,
-            amount,
-            None,
-            Some(spending_conditions),
-            &SplitTarget::None,
-        )
+        .send(amount, None, Some(spending_conditions), &SplitTarget::None)
         .await
         .unwrap();
 
     println!("Created token locked to pubkey: {}", secret.public_key());
     println!("{}", token);
 
-    wallet.add_p2pk_signing_key(secret).await;
-
     let amount = wallet
-        .receive(&token, &SplitTarget::default(), None)
+        .receive(&token, &SplitTarget::default(), &[secret], &[])
         .await
         .unwrap();
 

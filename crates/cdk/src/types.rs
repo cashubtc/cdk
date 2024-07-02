@@ -4,40 +4,45 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::Error;
-use crate::nuts::{CurrencyUnit, Proof, Proofs, PublicKey, SpendingConditions, State};
+use crate::nuts::{
+    CurrencyUnit, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey, SpendingConditions,
+    State,
+};
 use crate::url::UncheckedUrl;
 use crate::Amount;
 
 /// Melt response with proofs
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Melted {
-    pub paid: bool,
+    /// State of quote
+    pub state: MeltQuoteState,
+    /// Preimage of melt payment
     pub preimage: Option<String>,
+    /// Melt change
     pub change: Option<Proofs>,
-}
-
-/// Possible states of an invoice
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InvoiceStatus {
-    Unpaid,
-    Paid,
-    Expired,
-    InFlight,
 }
 
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {
+    /// Quote id
     pub id: String,
+    /// Mint Url
     pub mint_url: UncheckedUrl,
+    /// Amount of quote
     pub amount: Amount,
+    /// Unit of quote
     pub unit: CurrencyUnit,
+    /// Quote payment request e.g. bolt11
     pub request: String,
-    pub paid: bool,
+    /// Quote state
+    pub state: MintQuoteState,
+    /// Expiration time of quote
     pub expiry: u64,
 }
 
 impl MintQuote {
+    /// Create new [`MintQuote`]
     pub fn new(
         mint_url: UncheckedUrl,
         request: String,
@@ -53,7 +58,7 @@ impl MintQuote {
             amount,
             unit,
             request,
-            paid: false,
+            state: MintQuoteState::Unpaid,
             expiry,
         }
     }
@@ -62,16 +67,27 @@ impl MintQuote {
 /// Melt Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
+    /// Quote id
     pub id: String,
+    /// Quote unit
     pub unit: CurrencyUnit,
+    /// Quote amount
     pub amount: Amount,
+    /// Quote Payment request e.g. bolt11
     pub request: String,
+    /// Quote fee reserve
     pub fee_reserve: Amount,
-    pub paid: bool,
+    /// Quote state
+    pub state: MeltQuoteState,
+    /// Expiration time of quote
     pub expiry: u64,
+    /// Payment preimage
+    pub payment_preimage: Option<String>,
 }
 
+#[cfg(feature = "mint")]
 impl MeltQuote {
+    /// Create new [`MeltQuote`]
     pub fn new(
         request: String,
         unit: CurrencyUnit,
@@ -87,23 +103,32 @@ impl MeltQuote {
             unit,
             request,
             fee_reserve,
-            paid: false,
+            state: MeltQuoteState::Unpaid,
             expiry,
+            payment_preimage: None,
         }
     }
 }
 
+/// Prooinfo
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofInfo {
+    /// Proof
     pub proof: Proof,
+    /// y
     pub y: PublicKey,
+    /// Mint Url
     pub mint_url: UncheckedUrl,
+    /// Proof State
     pub state: State,
+    /// Proof Spending Conditions
     pub spending_condition: Option<SpendingConditions>,
+    /// Unit
     pub unit: CurrencyUnit,
 }
 
 impl ProofInfo {
+    /// Create new [`ProofInfo`]
     pub fn new(
         proof: Proof,
         mint_url: UncheckedUrl,
@@ -126,6 +151,7 @@ impl ProofInfo {
         })
     }
 
+    /// Check if [`Proof`] matches conditions
     pub fn matches_conditions(
         &self,
         mint_url: &Option<UncheckedUrl>,
