@@ -118,7 +118,7 @@ impl MintLightning for Cln {
         };
 
         Ok(PaymentQuoteResponse {
-            request_lookup_id: melt_quote_request.request.to_string(),
+            request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
             amount,
             fee,
         })
