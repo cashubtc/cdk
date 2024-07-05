@@ -14,6 +14,8 @@ pub struct PreSwap {
     pub pre_mint_secrets: PreMintSecrets,
     /// Swap request
     pub swap_request: SwapRequest,
+    /// Amount to increment keyset counter by
+    pub derived_secret_count: u32,
 }
 
 /// Split Request [NUT-06]
