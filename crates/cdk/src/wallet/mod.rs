@@ -687,9 +687,8 @@ impl Wallet {
 
         let active_keyset_id = self.active_mint_keyset().await?;
 
-        // FIXME: Should not increment keyset counter for condition proofs
         self.localstore
-            .increment_keyset_counter(&active_keyset_id, post_swap_proofs.len() as u32)
+            .increment_keyset_counter(&active_keyset_id, pre_swap.derived_secret_count)
             .await?;
 
         let mut keep_proofs = Proofs::new();
@@ -791,6 +790,8 @@ impl Wallet {
         let desired_amount = amount.unwrap_or(proofs_total);
         let change_amount = proofs_total - desired_amount;
 
+        let derived_secret_count;
+
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {
                 let count = self
@@ -807,6 +808,8 @@ impl Wallet {
                     change_amount,
                     amount_split_target,
                 )?;
+
+                derived_secret_count = change_premint_secrets.len();
 
                 (
                     PreMintSecrets::with_conditions(
@@ -844,6 +847,8 @@ impl Wallet {
                     amount_split_target,
                 )?;
 
+                derived_secret_count = change_premint_secrets.len() + premint_secrets.len();
+
                 (premint_secrets, change_premint_secrets)
             }
         };
@@ -858,6 +863,7 @@ impl Wallet {
         Ok(PreSwap {
             pre_mint_secrets: desired_messages,
             swap_request,
+            derived_secret_count: derived_secret_count as u32,
         })
     }
 
