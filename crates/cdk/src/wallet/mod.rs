@@ -378,6 +378,33 @@ impl Wallet {
         Ok(keys)
     }
 
+    /// Reclaim unspent proofs
+    #[instrument(skip(self, proofs))]
+    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
+        let proof_ys = proofs
+            .iter()
+            // Find Y for the secret
+            .flat_map(|p| hash_to_curve(p.secret.as_bytes()))
+            .collect::<Vec<PublicKey>>();
+
+        let spendable = self
+            .client
+            .post_check_state(self.mint_url.clone().try_into()?, proof_ys)
+            .await?
+            .states;
+
+        let unspent: Proofs = proofs
+            .into_iter()
+            .zip(spendable)
+            .filter_map(|(p, s)| (s.state == State::Unspent).then_some(p))
+            .collect();
+
+        self.swap(None, &SplitTarget::default(), unspent, None)
+            .await?;
+
+        Ok(())
+    }
+
     /// Check if a proof is spent
     #[instrument(skip(self, proofs))]
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
@@ -386,7 +413,7 @@ impl Wallet {
             .post_check_state(
                 self.mint_url.clone().try_into()?,
                 proofs
-                    .into_iter()
+                    .iter()
                     // Find Y for the secret
                     .flat_map(|p| hash_to_curve(p.secret.as_bytes()))
                     .collect::<Vec<PublicKey>>(),
@@ -726,6 +753,17 @@ impl Wallet {
                 .await?;
         }
 
+        if let Some(proofs) = proofs_to_send.clone() {
+            let send_proofs = proofs
+                .into_iter()
+                .flat_map(|proof| {
+                    ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())
+                })
+                .collect();
+
+            self.localstore.add_proofs(send_proofs).await?;
+        }
+
         let keep_proofs = keep_proofs
             .into_iter()
             .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone()))
@@ -1006,10 +1044,21 @@ impl Wallet {
                     )
                     .await?;
 
-                proofs.ok_or(Error::InsufficientFunds)?
+                match proofs {
+                    Some(proofs) => proofs,
+                    None => {
+                        return Err(Error::InsufficientFunds);
+                    }
+                }
             }
             false => proofs,
         };
+
+        for proof in input_proofs.iter() {
+            self.localstore
+                .set_proof_state(proof.y()?, State::Pending)
+                .await?;
+        }
 
         let active_keyset_id = self.active_mint_keyset().await?;
 
@@ -1035,7 +1084,19 @@ impl Wallet {
                 input_proofs.clone(),
                 Some(premint_secrets.blinded_messages()),
             )
-            .await?;
+            .await;
+
+        let melt_response = match melt_response {
+            Ok(melt_response) => melt_response,
+            Err(err) => {
+                tracing::error!("Could not melt: {}", err);
+                tracing::info!("Checking status of input proofs.");
+
+                self.reclaim_unspent(input_proofs).await?;
+
+                return Err(err);
+            }
+        };
 
         let change_proofs = match melt_response.change {
             Some(change) => Some(construct_proofs(
