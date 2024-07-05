@@ -198,6 +198,32 @@ WHERE request=?;
 
         Ok(Some(sqlite_row_to_mint_quote(rec)?))
     }
+
+    async fn get_mint_quote_by_request_lookup_id(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM mint_quote
+WHERE request_lookup_id=?;
+        "#,
+        )
+        .bind(request_lookup_id)
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(Some(sqlite_row_to_mint_quote(rec)?))
+    }
     async fn update_mint_quote_state(
         &self,
         quote_id: &str,

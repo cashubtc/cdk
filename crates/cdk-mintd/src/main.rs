@@ -177,9 +177,9 @@ async fn main() -> anyhow::Result<()> {
         loop {
             match ln.wait_any_invoice().await {
                 Ok(mut stream) => {
-                    while let Some(invoice) = stream.next().await {
+                    while let Some(request_lookup_id) = stream.next().await {
                         if let Err(err) =
-                            handle_paid_invoice(Arc::clone(&mint), &invoice.to_string()).await
+                            handle_paid_invoice(Arc::clone(&mint), &request_lookup_id).await
                         {
                             tracing::warn!("{:?}", err);
                         }
@@ -201,8 +201,12 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Update mint quote when called for a paid invoice
-async fn handle_paid_invoice(mint: Arc<Mint>, request: &str) -> Result<()> {
-    if let Ok(Some(mint_quote)) = mint.localstore.get_mint_quote_by_request(request).await {
+async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result<()> {
+    if let Ok(Some(mint_quote)) = mint
+        .localstore
+        .get_mint_quote_by_request_lookup_id(request_lookup_id)
+        .await
+    {
         mint.localstore
             .update_mint_quote_state(&mint_quote.id, cdk::nuts::MintQuoteState::Paid)
             .await?;

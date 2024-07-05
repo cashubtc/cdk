@@ -64,9 +64,10 @@ pub trait MintLightning {
     ) -> Result<PayInvoiceResponse, Self::Err>;
 
     /// Listen for invoices to be paid to the mint
+    /// Returns a stream of request_lookup_id once invoices are paid
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = Bolt11Invoice> + Send>>, Self::Err>;
+    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err>;
 
     /// Check the status of an incoming payment
     async fn check_invoice_status(
