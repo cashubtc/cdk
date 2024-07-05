@@ -56,7 +56,7 @@ impl MintLightning for Cln {
 
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = Bolt11Invoice> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
         let last_pay_index = self.get_last_pay_index().await?;
         let cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
@@ -86,11 +86,7 @@ impl MintLightning for Cln {
 
                     last_pay_idx = invoice.pay_index;
 
-                    if let Some(bolt11) = invoice.bolt11 {
-                        if let Ok(invoice) = Bolt11Invoice::from_str(&bolt11) {
-                            break Some((invoice, (cln_client, last_pay_idx)));
-                        }
-                    }
+                    break Some((invoice.label, (cln_client, last_pay_idx)));
                 }
             },
         )

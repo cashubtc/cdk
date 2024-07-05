@@ -128,6 +128,22 @@ impl MintDatabase for MintMemoryDatabase {
 
         Ok(current_state)
     }
+
+    async fn get_mint_quote_by_request_lookup_id(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let quotes = self.get_mint_quotes().await?;
+
+        let quote = quotes
+            .into_iter()
+            .filter(|q| q.request_lookup_id.eq(request))
+            .collect::<Vec<MintQuote>>()
+            .first()
+            .cloned();
+
+        Ok(quote)
+    }
     async fn get_mint_quote_by_request(
         &self,
         request: &str,

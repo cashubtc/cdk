@@ -185,6 +185,11 @@ pub trait MintDatabase {
         &self,
         request: &str,
     ) -> Result<Option<MintMintQuote>, Self::Err>;
+    /// Get all [`MintMintQuote`]s
+    async fn get_mint_quote_by_request_lookup_id(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
     /// Remove [`MintMintQuote`]
