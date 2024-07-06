@@ -213,6 +213,12 @@ pub async fn post_melt_bolt11(
 
     let (preimage, amount_spent_quote_unit) = match mint_quote {
         Some(mint_quote) => {
+            if mint_quote.state == MintQuoteState::Issued
+                || mint_quote.state == MintQuoteState::Paid
+            {
+                return Err(into_response(Error::RequestAlreadyPaid));
+            }
+
             let mut mint_quote = mint_quote;
 
             if mint_quote.amount > inputs_amount_quote_unit {
@@ -320,7 +326,12 @@ pub async fn post_melt_bolt11(
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
 
-                    return Err(into_response(Error::PaymentFailed));
+                    let err = match err {
+                        cdk::cdk_lightning::Error::InvoiceAlreadyPaid => Error::RequestAlreadyPaid,
+                        _ => Error::PaymentFailed,
+                    };
+
+                    return Err(into_response(err));
                 }
             };
 

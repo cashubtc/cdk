@@ -2,15 +2,15 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Invoice amount not defined
+    #[error("Unknown invoice amount")]
+    UnknownInvoiceAmount,
     /// Wrong CLN response
     #[error("Wrong cln response")]
     WrongClnResponse,
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
-    /// Invoice amount not defined
-    #[error("Unknown invoice amount")]
-    UnknownInvoiceAmount,
     /// Cln Error
     #[error(transparent)]
     Cln(#[from] cln_rpc::Error),

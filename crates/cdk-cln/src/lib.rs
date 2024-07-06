@@ -15,9 +15,11 @@ use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteS
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use cln_rpc::model::requests::{
-    InvoiceRequest, ListinvoicesRequest, PayRequest, WaitanyinvoiceRequest,
+    InvoiceRequest, ListinvoicesRequest, ListpaysRequest, PayRequest, WaitanyinvoiceRequest,
 };
-use cln_rpc::model::responses::{ListinvoicesInvoicesStatus, PayStatus, WaitanyinvoiceResponse};
+use cln_rpc::model::responses::{
+    ListinvoicesInvoicesStatus, ListpaysPaysStatus, PayStatus, WaitanyinvoiceResponse,
+};
 use cln_rpc::model::Request;
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
 use error::Error;
@@ -131,6 +133,22 @@ impl MintLightning for Cln {
         max_fee_msats: Option<u64>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
+
+        let pay_state =
+            check_pay_invoice_status(&mut cln_client, melt_quote.request.to_string()).await?;
+
+        match pay_state {
+            MeltQuoteState::Paid => {
+                tracing::debug!("Melt attempted on invoice already paid");
+                return Err(Self::Err::InvoiceAlreadyPaid);
+            }
+            MeltQuoteState::Pending => {
+                tracing::debug!("Melt attempted on invoice already pending");
+                return Err(Self::Err::InvoicePaymentPending);
+            }
+            MeltQuoteState::Unpaid => (),
+        }
+
         let cln_response = cln_client
             .call(Request::Pay(PayRequest {
                 bolt11: melt_quote.request.to_string(),
@@ -190,7 +208,7 @@ impl MintLightning for Cln {
             .call(cln_rpc::Request::Invoice(InvoiceRequest {
                 amount_msat,
                 description,
-                label: Uuid::new_v4().to_string(),
+                label: label.clone(),
                 expiry: Some(unix_expiry - time_now),
                 fallbacks: None,
                 preimage: None,
@@ -292,4 +310,39 @@ fn cln_invoice_status_to_mint_state(status: ListinvoicesInvoicesStatus) -> MintQ
         ListinvoicesInvoicesStatus::PAID => MintQuoteState::Paid,
         ListinvoicesInvoicesStatus::EXPIRED => MintQuoteState::Unpaid,
     }
+}
+
+async fn check_pay_invoice_status(
+    cln_client: &mut cln_rpc::ClnRpc,
+    bolt11: String,
+) -> Result<MeltQuoteState, cdk_lightning::Error> {
+    let cln_response = cln_client
+        .call(Request::ListPays(ListpaysRequest {
+            bolt11: Some(bolt11),
+            payment_hash: None,
+            status: None,
+        }))
+        .await
+        .map_err(Error::from)?;
+
+    let state = match cln_response {
+        cln_rpc::Response::ListPays(pay_response) => {
+            let pay = pay_response.pays.first();
+
+            match pay {
+                Some(pay) => match pay.status {
+                    ListpaysPaysStatus::COMPLETE => MeltQuoteState::Paid,
+                    ListpaysPaysStatus::PENDING => MeltQuoteState::Pending,
+                    ListpaysPaysStatus::FAILED => MeltQuoteState::Unpaid,
+                },
+                None => MeltQuoteState::Unpaid,
+            }
+        }
+        _ => {
+            tracing::warn!("CLN returned wrong response kind. When checking pay status");
+            return Err(cdk_lightning::Error::from(Error::WrongClnResponse));
+        }
+    };
+
+    Ok(state)
 }
