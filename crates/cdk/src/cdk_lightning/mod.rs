@@ -14,6 +14,12 @@ use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuot
 /// CDK Lightning Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Invoice already paid
+    #[error("Invoice already paid")]
+    InvoiceAlreadyPaid,
+    /// Invoice pay pending
+    #[error("Invoice pay is pending")]
+    InvoicePaymentPending,
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),

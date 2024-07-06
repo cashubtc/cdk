@@ -30,6 +30,9 @@ pub enum Error {
     /// Melt Request is not valid
     #[error("Melt request is not valid")]
     MeltRequestInvalid,
+    /// Invoice already paid
+    #[error("Request already paid")]
+    RequestAlreadyPaid,
     /// Amount is not what expected
     #[error("Amount miss match")]
     Amount,

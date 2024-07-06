@@ -124,7 +124,21 @@ impl Mint {
         expiry: u64,
         ln_lookup: String,
     ) -> Result<MintQuote, Error> {
-        let quote = MintQuote::new(mint_url, request, unit, amount, expiry, ln_lookup);
+        let quote = MintQuote::new(
+            mint_url,
+            request,
+            unit.clone(),
+            amount,
+            expiry,
+            ln_lookup.clone(),
+        );
+        tracing::debug!(
+            "New mint quote {} for {} {} with request id {}",
+            quote.id,
+            amount,
+            unit,
+            &ln_lookup
+        );
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
