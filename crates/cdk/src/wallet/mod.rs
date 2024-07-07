@@ -78,7 +78,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Unspent]),
                 None,
             )
@@ -101,7 +101,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Pending]),
                 None,
             )
@@ -127,7 +127,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Reserved]),
                 None,
             )
@@ -164,7 +164,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Unspent]),
                 None,
             )
@@ -179,7 +179,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Pending]),
                 None,
             )
@@ -195,7 +195,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Reserved]),
                 None,
             )
@@ -435,7 +435,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Pending, State::Reserved]),
                 None,
             )
@@ -474,17 +474,17 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn mint_quote(&self, amount: Amount) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
-        let unit = self.unit.clone();
+        let unit = self.unit;
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone().try_into()?, amount, unit.clone())
+            .post_mint_quote(mint_url.clone().try_into()?, amount, unit)
             .await?;
 
         let quote = MintQuote {
             mint_url,
             id: quote_res.quote.clone(),
             amount,
-            unit: unit.clone(),
+            unit,
             request: quote_res.request,
             state: quote_res.state,
             expiry: quote_res.expiry.unwrap_or(0),
@@ -643,7 +643,7 @@ impl Wallet {
                     proof,
                     self.mint_url.clone(),
                     State::Unspent,
-                    quote_info.unit.clone(),
+                    quote_info.unit,
                 )
             })
             .collect();
@@ -735,7 +735,7 @@ impl Wallet {
                     .clone()
                     .into_iter()
                     .flat_map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())
+                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, *unit)
                     })
                     .collect();
 
@@ -758,9 +758,7 @@ impl Wallet {
         if let Some(proofs) = proofs_to_send.clone() {
             let send_proofs = proofs
                 .into_iter()
-                .flat_map(|proof| {
-                    ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())
-                })
+                .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Reserved, *unit))
                 .collect();
 
             self.localstore.add_proofs(send_proofs).await?;
@@ -768,7 +766,7 @@ impl Wallet {
 
         let keep_proofs = keep_proofs
             .into_iter()
-            .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone()))
+            .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, *unit))
             .collect();
 
         self.localstore.add_proofs(keep_proofs).await?;
@@ -939,7 +937,7 @@ impl Wallet {
                 .await?;
         }
 
-        Ok(Token::new(mint_url.clone(), send_proofs, memo, Some(unit.clone())).to_string())
+        Ok(Token::new(mint_url.clone(), send_proofs, memo, Some(*unit)).to_string())
     }
 
     /// Melt Quote
@@ -963,12 +961,7 @@ impl Wallet {
 
         let quote_res = self
             .client
-            .post_melt_quote(
-                self.mint_url.clone().try_into()?,
-                self.unit.clone(),
-                invoice,
-                mpp,
-            )
+            .post_melt_quote(self.mint_url.clone().try_into()?, self.unit, invoice, mpp)
             .await?;
 
         if quote_res.amount != amount {
@@ -979,7 +972,7 @@ impl Wallet {
             id: quote_res.quote,
             amount,
             request,
-            unit: self.unit.clone(),
+            unit: self.unit,
             fee_reserve: quote_res.fee_reserve,
             state: quote_res.state,
             expiry: quote_res.expiry,
@@ -1146,7 +1139,7 @@ impl Wallet {
                         proof,
                         self.mint_url.clone(),
                         State::Unspent,
-                        quote_info.unit.clone(),
+                        quote_info.unit,
                     )
                 })
                 .collect();
@@ -1176,7 +1169,7 @@ impl Wallet {
                 .localstore
                 .get_proofs(
                     Some(mint_url.clone()),
-                    Some(self.unit.clone()),
+                    Some(self.unit),
                     Some(vec![State::Unspent]),
                     conditions,
                 )
@@ -1194,7 +1187,7 @@ impl Wallet {
 
         let (active, inactive): (HashSet<KeySetInfo>, HashSet<KeySetInfo>) = mint_keysets
             .into_iter()
-            .filter(|p| p.unit.eq(&self.unit.clone()))
+            .filter(|p| p.unit.eq(&self.unit))
             .partition(|x| x.active);
 
         let active: HashSet<Id> = active.iter().map(|k| k.id).collect();
@@ -1236,7 +1229,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(mint_url.clone()),
-                Some(self.unit.clone()),
+                Some(self.unit),
                 Some(vec![State::Unspent]),
                 None,
             )
@@ -1410,9 +1403,7 @@ impl Wallet {
             total_amount += proofs.iter().map(|p| p.amount).sum();
             let proofs = proofs
                 .into_iter()
-                .flat_map(|proof| {
-                    ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit.clone())
-                })
+                .flat_map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
                 .collect();
             self.localstore.add_proofs(proofs).await?;
         }
@@ -1431,7 +1422,7 @@ impl Wallet {
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
 
-        let unit = token_data.unit().clone().unwrap_or_default();
+        let unit = token_data.unit().unwrap_or_default();
 
         if unit != self.unit {
             return Err(Error::UnitNotSupported);
@@ -1551,12 +1542,7 @@ impl Wallet {
                 let unspent_proofs = unspent_proofs
                     .into_iter()
                     .flat_map(|proof| {
-                        ProofInfo::new(
-                            proof,
-                            self.mint_url.clone(),
-                            State::Unspent,
-                            keyset.unit.clone(),
-                        )
+                        ProofInfo::new(proof, self.mint_url.clone(), State::Unspent, keyset.unit)
                     })
                     .collect();
 
