@@ -124,14 +124,7 @@ impl Mint {
         expiry: u64,
         ln_lookup: String,
     ) -> Result<MintQuote, Error> {
-        let quote = MintQuote::new(
-            mint_url,
-            request,
-            unit.clone(),
-            amount,
-            expiry,
-            ln_lookup.clone(),
-        );
+        let quote = MintQuote::new(mint_url, request, unit, amount, expiry, ln_lookup.clone());
         tracing::debug!(
             "New mint quote {} for {} {} with request id {}",
             quote.id,
@@ -319,13 +312,8 @@ impl Mint {
         derivation_path: DerivationPath,
         max_order: u8,
     ) -> Result<(), Error> {
-        let (keyset, keyset_info) = create_new_keyset(
-            &self.secp_ctx,
-            self.xpriv,
-            derivation_path,
-            unit.clone(),
-            max_order,
-        );
+        let (keyset, keyset_info) =
+            create_new_keyset(&self.secp_ctx, self.xpriv, derivation_path, unit, max_order);
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info).await?;
         self.localstore.add_active_keyset(unit, id).await?;
@@ -962,7 +950,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
-        unit: keyset.unit.clone(),
+        unit: keyset.unit,
         active: true,
         valid_from: unix_time(),
         valid_to: None,
