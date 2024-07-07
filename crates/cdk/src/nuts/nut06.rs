@@ -215,29 +215,24 @@ where
                     let vec = value
                         .as_array()
                         .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
-                    for val in vec {
-                        let vec = val
-                            .as_array()
-                            .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
-                        if vec.len() == 2 {
-                            let method = vec[0]
-                                .as_str()
-                                .ok_or_else(|| de::Error::custom("expected a string"))?
-                                .to_string();
-                            let info = vec[1]
-                                .as_str()
-                                .ok_or_else(|| de::Error::custom("expected a string"))?
-                                .to_string();
-                            contacts.push(ContactInfo { method, info });
-                        } else {
-                            return Err(de::Error::custom("expected a list of two strings"));
-                        }
+
+                    if vec.len() == 2 {
+                        let method = vec[0]
+                            .as_str()
+                            .ok_or_else(|| de::Error::custom("expected a string"))?
+                            .to_string();
+                        let info = vec[1]
+                            .as_str()
+                            .ok_or_else(|| de::Error::custom("expected a string"))?
+                            .to_string();
+                        contacts.push(ContactInfo { method, info });
+                    } else {
+                        return Err(de::Error::custom("expected a list of two strings"));
                     }
                 } else {
                     return Err(de::Error::custom("expected an object or a list of strings"));
                 }
             }
-
             Ok(Some(contacts))
         }
     }
@@ -249,6 +244,42 @@ where
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn test_des_mint_into() {
+        let mint_info_str = r#"{
+    "name": "Cashu mint",
+    "pubkey": "0296d0aa13b6a31cf0cd974249f28c7b7176d7274712c95a41c7d8066d3f29d679",
+    "version": "Nutshell/0.15.3",
+    "contact": [
+        ["", ""],
+        ["", ""]
+    ],
+    "nuts": {
+        "4": {
+            "methods": [
+                {"method": "bolt11", "unit": "sat"},
+                {"method": "bolt11", "unit": "usd"}
+            ],
+            "disabled": false
+        },
+        "5": {
+            "methods": [
+                {"method": "bolt11", "unit": "sat"},
+                {"method": "bolt11", "unit": "usd"}
+            ],
+            "disabled": false
+        },
+        "7": {"supported": true},
+        "8": {"supported": true},
+        "9": {"supported": true},
+        "10": {"supported": true},
+        "11": {"supported": true}
+    }
+}"#;
+
+        let _mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
+    }
 
     #[test]
     fn test_ser_mint_info() {
@@ -322,10 +353,8 @@ mod tests {
   "description": "The short mint description",
   "description_long": "A description that can be a long piece of text.",
   "contact": [
-    [
         ["nostr", "xxxxx"],
         ["email", "contact@me.com"]
-    ]
   ],
   "motd": "Message to display to users.",
   "nuts": {
