@@ -44,7 +44,7 @@ pub trait MintLightning {
     type Err: Into<Error> + From<Error>;
 
     /// Base Unit
-    fn get_base_unit(&self) -> CurrencyUnit;
+    fn get_settings(&self) -> Settings;
 
     /// Create a new invoice
     async fn create_invoice(
@@ -113,6 +113,27 @@ pub struct PaymentQuoteResponse {
     pub amount: u64,
     /// Fee required for melt
     pub fee: u64,
+}
+
+/// Ln backend settings
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    /// MPP supported
+    pub mpp: bool,
+    /// Min amount to mint
+    pub min_mint_amount: u64,
+    /// Max amount to mint
+    pub max_mint_amount: u64,
+    /// Min amount to melt
+    pub min_melt_amount: u64,
+    /// Max amount to melt
+    pub max_melt_amount: u64,
+    /// Base unit of backend
+    pub unit: CurrencyUnit,
+    /// Minting enabled
+    pub mint_enabled: bool,
+    /// Melting enabled
+    pub melt_enabled: bool,
 }
 
 const MSAT_IN_SAT: u64 = 1000;
