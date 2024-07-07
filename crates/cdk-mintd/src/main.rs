@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -14,7 +15,8 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{FeeReserve, Mint};
-use cdk::nuts::{ContactInfo, MintInfo, MintVersion, Nuts};
+use cdk::nuts::{ContactInfo, CurrencyUnit, MintInfo, MintVersion, Nuts, PaymentMethod};
+use cdk_axum::LnKey;
 use cdk_cln::Cln;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -164,9 +166,15 @@ async fn main() -> anyhow::Result<()> {
         .seconds_quote_is_valid_for
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
 
+    let mut ln_backends = HashMap::new();
+
+    ln_backends.insert(
+        LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11),
+        Arc::clone(&ln),
+    );
+
     let v1_service =
-        cdk_axum::create_mint_router(&mint_url, Arc::clone(&mint), Arc::clone(&ln), quote_ttl)
-            .await?;
+        cdk_axum::create_mint_router(&mint_url, Arc::clone(&mint), ln_backends, quote_ttl).await?;
 
     let mint_service = Router::new()
         .nest("/", v1_service)
