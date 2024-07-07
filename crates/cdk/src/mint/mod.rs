@@ -148,11 +148,18 @@ impl Mint {
 
         let paid = quote.state == MintQuoteState::Paid;
 
+        // Since the pending state is not part of the NUT it should not be part of the response.
+        // In practice the wallet should not be checking the state of a quote while waiting for the mint response.
+        let state = match quote.state {
+            MintQuoteState::Pending => MintQuoteState::Paid,
+            s => s,
+        };
+
         Ok(MintQuoteBolt11Response {
             quote: quote.id,
             request: quote.request,
             paid: Some(paid),
-            state: quote.state,
+            state,
             expiry: Some(quote.expiry),
         })
     }
@@ -354,10 +361,18 @@ impl Mint {
                 .await?
                 .is_some()
             {
-                tracing::error!(
+                tracing::info!(
                     "Output has already been signed: {}",
                     blinded_message.blinded_secret
                 );
+                tracing::info!(
+                    "Mint {} did not succeed returning quote to Paid state",
+                    mint_request.quote
+                );
+
+                self.localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
+                    .await?;
                 return Err(Error::BlindedMessageAlreadySigned);
             }
         }
