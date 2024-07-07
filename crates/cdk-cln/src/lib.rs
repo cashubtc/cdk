@@ -9,6 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use cdk::cdk_lightning::{
     self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+    Settings,
 };
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
@@ -34,16 +35,35 @@ pub struct Cln {
     rpc_socket: PathBuf,
     cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
     fee_reserve: FeeReserve,
+    min_melt_amount: u64,
+    max_melt_amount: u64,
+    min_mint_amount: u64,
+    max_mint_amount: u64,
+    mint_enabled: bool,
+    melt_enabled: bool,
 }
 
 impl Cln {
-    pub async fn new(rpc_socket: PathBuf, fee_reserve: FeeReserve) -> Result<Self, Error> {
+    pub async fn new(
+        rpc_socket: PathBuf,
+        fee_reserve: FeeReserve,
+        min_melt_amount: u64,
+        max_melt_amount: u64,
+        min_mint_amount: u64,
+        max_mint_amount: u64,
+    ) -> Result<Self, Error> {
         let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
 
         Ok(Self {
             rpc_socket,
             cln_client: Arc::new(Mutex::new(cln_client)),
             fee_reserve,
+            min_mint_amount,
+            max_mint_amount,
+            min_melt_amount,
+            max_melt_amount,
+            mint_enabled: true,
+            melt_enabled: true,
         })
     }
 }
@@ -52,8 +72,17 @@ impl Cln {
 impl MintLightning for Cln {
     type Err = cdk_lightning::Error;
 
-    fn get_base_unit(&self) -> CurrencyUnit {
-        CurrencyUnit::Msat
+    fn get_settings(&self) -> Settings {
+        Settings {
+            mpp: true,
+            min_mint_amount: self.min_mint_amount,
+            max_mint_amount: self.max_mint_amount,
+            min_melt_amount: self.min_melt_amount,
+            max_melt_amount: self.max_melt_amount,
+            unit: CurrencyUnit::Msat,
+            mint_enabled: self.mint_enabled,
+            melt_enabled: self.melt_enabled,
+        }
     }
 
     async fn wait_any_invoice(

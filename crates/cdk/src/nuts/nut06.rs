@@ -8,7 +8,7 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-use super::{nut04, nut05, nut15};
+use super::{nut04, nut05, nut15, MppMethodSettings};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -83,27 +83,81 @@ pub struct MintInfo {
 }
 
 impl MintInfo {
-    #![allow(clippy::too_many_arguments)]
     /// Create new [`MintInfo`]
-    pub fn new(
-        name: Option<String>,
-        pubkey: Option<PublicKey>,
-        version: Option<MintVersion>,
-        description: Option<String>,
-        description_long: Option<String>,
-        contact: Option<Vec<ContactInfo>>,
-        nuts: Nuts,
-        motd: Option<String>,
-    ) -> Self {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set name
+    pub fn name<S>(self, name: S) -> Self
+    where
+        S: Into<String>,
+    {
         Self {
-            name,
-            pubkey,
-            version,
-            description,
-            description_long,
-            contact,
-            nuts,
-            motd,
+            name: Some(name.into()),
+            ..self
+        }
+    }
+
+    /// Set pubkey
+    pub fn pubkey(self, pubkey: PublicKey) -> Self {
+        Self {
+            pubkey: Some(pubkey),
+            ..self
+        }
+    }
+
+    /// Set [`MintVersion`]
+    pub fn version(self, mint_version: MintVersion) -> Self {
+        Self {
+            version: Some(mint_version),
+            ..self
+        }
+    }
+
+    /// Set description
+    pub fn description<S>(self, description: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            description: Some(description.into()),
+            ..self
+        }
+    }
+
+    /// Set long description
+    pub fn long_description<S>(self, description_long: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            description_long: Some(description_long.into()),
+            ..self
+        }
+    }
+
+    /// Set contact info
+    pub fn contact_info(self, contact_info: Vec<ContactInfo>) -> Self {
+        Self {
+            contact: Some(contact_info),
+            ..self
+        }
+    }
+
+    /// Set nuts
+    pub fn nuts(self, nuts: Nuts) -> Self {
+        Self { nuts, ..self }
+    }
+
+    /// Set motd
+    pub fn motd<S>(self, motd: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            motd: Some(motd.into()),
+            ..self
         }
     }
 }
@@ -154,7 +208,104 @@ pub struct Nuts {
     /// NUT15 Settings
     #[serde(default)]
     #[serde(rename = "15")]
-    pub nut15: nut15::MppMethodSettings,
+    pub nut15: nut15::Settings,
+}
+
+impl Nuts {
+    /// Create new [`Nuts`]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Nut04 settings
+    pub fn nut04(self, nut04_settings: nut04::Settings) -> Self {
+        Self {
+            nut04: nut04_settings,
+            ..self
+        }
+    }
+
+    /// Nut05 settings
+    pub fn nut05(self, nut05_settings: nut05::Settings) -> Self {
+        Self {
+            nut05: nut05_settings,
+            ..self
+        }
+    }
+
+    /// Nut07 settings
+    pub fn nut07(self, supported: bool) -> Self {
+        Self {
+            nut07: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut08 settings
+    pub fn nut08(self, supported: bool) -> Self {
+        Self {
+            nut08: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut09 settings
+    pub fn nut09(self, supported: bool) -> Self {
+        Self {
+            nut09: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut10 settings
+    pub fn nut10(self, supported: bool) -> Self {
+        Self {
+            nut10: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut11 settings
+    pub fn nut11(self, supported: bool) -> Self {
+        Self {
+            nut11: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut12 settings
+    pub fn nut12(self, supported: bool) -> Self {
+        Self {
+            nut12: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut13 settings
+    pub fn nut13(self, supported: bool) -> Self {
+        Self {
+            nut13: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut14 settings
+    pub fn nut14(self, supported: bool) -> Self {
+        Self {
+            nut14: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut15 settings
+    pub fn nut15(self, mpp_settings: Vec<MppMethodSettings>) -> Self {
+        Self {
+            nut15: nut15::Settings {
+                methods: mpp_settings,
+            },
+            ..self
+        }
+    }
 }
 
 /// Check state Settings

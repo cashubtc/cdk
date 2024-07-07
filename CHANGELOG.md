@@ -35,6 +35,14 @@ cdk(NUT00): Rename `MintProofs` to `TokenV3Token` ([thesimplekid]).
 cdk: TokenV4 CBOR ([davidcaseria]/[thesimplekid]).
 cdk(wallet): `wallet::receive_proof` functions to claim specific proofs instead of encoded token ([thesimplekid]).
 cdk-cli: Flag on `send` to print v3 token, default is v4 ([thesimplekid]).
+cdk: `MintLightning` trait ([thesimplekid]).
+cdk-mintd: Mint binary ([thesimplekid]).
+cdk-cln: cln backend for mint ([thesimplekid]).
+cdk-axum: Mint axum server ([thesimplekid]).
+cdk: NUT06 `MintInfo` and `NUTs` builder ([thesimplekid]).
+
+### Fixed
+cdk: NUT06 deseralize `MintInfo` ([thesimplekid]).
 
 
 ## [v0.1.1]

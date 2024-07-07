@@ -61,10 +61,11 @@ pub async fn get_mint_bolt11_quote(
             into_response(Error::UnsupportedUnit)
         })?;
 
-    let amount = to_unit(payload.amount, &payload.unit, &ln.get_base_unit()).map_err(|err| {
-        tracing::error!("Backed does not support unit: {}", err);
-        into_response(Error::UnsupportedUnit)
-    })?;
+    let amount =
+        to_unit(payload.amount, &payload.unit, &ln.get_settings().unit).map_err(|err| {
+            tracing::error!("Backed does not support unit: {}", err);
+            into_response(Error::UnsupportedUnit)
+        })?;
 
     let quote_expiry = unix_time() + state.quote_ttl;
 
@@ -370,7 +371,7 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            let amount_spent = to_unit(pre.total_spent_msats, &ln.get_base_unit(), &quote.unit)
+            let amount_spent = to_unit(pre.total_spent_msats, &ln.get_settings().unit, &quote.unit)
                 .map_err(|_| into_response(Error::UnsupportedUnit))?;
 
             (pre.payment_preimage, amount_spent.into())

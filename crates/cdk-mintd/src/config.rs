@@ -58,11 +58,11 @@ pub struct Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
-    pub name: Option<String>,
+    pub name: String,
     /// hex pubkey of the mint
     pub pubkey: Option<PublicKey>,
     /// short description of the mint
-    pub description: Option<String>,
+    pub description: String,
     /// long description
     pub description_long: Option<String>,
     /// message of the day that the wallet must display to the user
