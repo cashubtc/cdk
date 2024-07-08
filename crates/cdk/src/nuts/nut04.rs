@@ -217,6 +217,13 @@ pub struct Settings {
     pub disabled: bool,
 }
 
+impl Settings {
+    /// Create new [`Settings`]
+    pub fn new(methods: Vec<MintMethodSettings>, disabled: bool) -> Self {
+        Self { methods, disabled }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let bolt11_mint = MintMethodSettings {

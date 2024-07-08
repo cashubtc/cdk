@@ -142,8 +142,8 @@ async fn main() -> anyhow::Result<()> {
         Vec<MppMethodSettings>,
     ) = ln_backends.iter().fold(
         (
-            nut04::Settings::default(),
-            nut05::Settings::default(),
+            nut04::Settings::new(vec![], false),
+            nut05::Settings::new(vec![], false),
             Vec::new(),
         ),
         |(mut nut_04, mut nut_05, mut mpp), (key, ln)| {
