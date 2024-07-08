@@ -252,6 +252,13 @@ pub struct MeltMethodSettings {
     pub max_amount: Option<Amount>,
 }
 
+impl Settings {
+    /// Create new [`Settings`]
+    pub fn new(methods: Vec<MeltMethodSettings>, disabled: bool) -> Self {
+        Self { methods, disabled }
+    }
+}
+
 /// Melt Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Settings {

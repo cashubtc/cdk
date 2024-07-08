@@ -294,7 +294,10 @@ impl HttpClient {
 
         match serde_json::from_value::<MintInfo>(res.clone()) {
             Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+            Err(err) => {
+                tracing::error!("Could not get mint info: {}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
         }
     }
 

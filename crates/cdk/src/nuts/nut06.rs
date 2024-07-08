@@ -2,9 +2,6 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
-use std::fmt;
-
-use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
@@ -73,7 +70,6 @@ pub struct MintInfo {
     pub description_long: Option<String>,
     /// Contact info
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(deserialize_with = "deserialize_contact_info")]
     pub contact: Option<Vec<ContactInfo>>,
     /// shows which NUTs the mint supports
     pub nuts: Nuts,
@@ -334,61 +330,6 @@ impl ContactInfo {
     pub fn new(method: String, info: String) -> Self {
         Self { method, info }
     }
-}
-
-fn deserialize_contact_info<'de, D>(deserializer: D) -> Result<Option<Vec<ContactInfo>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct ContactInfoVisitor;
-
-    impl<'de> Visitor<'de> for ContactInfoVisitor {
-        type Value = Option<Vec<ContactInfo>>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a list of ContactInfo or a list of lists of strings")
-        }
-
-        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: SeqAccess<'de>,
-        {
-            let mut contacts = Vec::new();
-
-            while let Some(value) = seq.next_element::<serde_json::Value>()? {
-                if value.is_object() {
-                    // Deserialize as ContactInfo
-                    let contact: ContactInfo =
-                        serde_json::from_value(value).map_err(de::Error::custom)?;
-                    contacts.push(contact);
-                } else if value.is_array() {
-                    // Deserialize as Vec<String>
-                    let vec = value
-                        .as_array()
-                        .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
-
-                    if vec.len() == 2 {
-                        let method = vec[0]
-                            .as_str()
-                            .ok_or_else(|| de::Error::custom("expected a string"))?
-                            .to_string();
-                        let info = vec[1]
-                            .as_str()
-                            .ok_or_else(|| de::Error::custom("expected a string"))?
-                            .to_string();
-                        contacts.push(ContactInfo { method, info });
-                    } else {
-                        return Err(de::Error::custom("expected a list of two strings"));
-                    }
-                } else {
-                    return Err(de::Error::custom("expected an object or a list of strings"));
-                }
-            }
-            Ok(Some(contacts))
-        }
-    }
-
-    deserializer.deserialize_seq(ContactInfoVisitor)
 }
 
 #[cfg(test)]
