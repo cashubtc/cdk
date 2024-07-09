@@ -1145,18 +1145,17 @@ impl MintLightning for Node {
                 .try_into()
                 .map_err(|_| map_err("Invalid request_lookup_id"))?,
         );
-        let inflight_payments = self.inflight_payments.read().await;
-        if inflight_payments.contains_key(&payment_hash) {
-            return Ok(MintQuoteState::Pending);
-        }
-        let payment = self.db.get_payment(payment_hash).await.map_err(map_err)?;
-        Ok(payment.map_or(MintQuoteState::Unpaid, |payment| {
-            if payment.paid {
-                MintQuoteState::Paid
-            } else {
-                MintQuoteState::Unpaid
-            }
-        }))
+        let invoice = self
+            .db
+            .get_invoice(payment_hash)
+            .await
+            .map_err(map_err)?
+            .ok_or(map_err("Invoice not found"))?;
+        Ok(if invoice.paid {
+            MintQuoteState::Paid
+        } else {
+            MintQuoteState::Unpaid
+        })
     }
 }
 
@@ -1381,6 +1380,14 @@ impl NodeDatabase {
         }
         write_txn.commit()?;
         Ok(invoice)
+    }
+
+    async fn get_invoice(&self, payment_hash: PaymentHash) -> Result<Option<Invoice>, Error> {
+        let db = self.db.read().await;
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(INVOICES_TABLE)?;
+        let entry = table.get(payment_hash.0)?;
+        Ok(entry.map(|e| e.value()))
     }
 
     async fn insert_payment(&self, invoice: &Bolt11Invoice, amount: Amount) -> Result<(), Error> {
