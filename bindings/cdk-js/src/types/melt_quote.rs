@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use cdk::types::MeltQuote;
+use cdk::wallet::types::MeltQuote;
 use wasm_bindgen::prelude::*;
 
 use crate::nuts::JsCurrencyUnit;
@@ -33,7 +33,7 @@ impl JsMeltQuote {
 
     #[wasm_bindgen(getter)]
     pub fn unit(&self) -> JsCurrencyUnit {
-        self.inner.unit.clone().into()
+        self.inner.unit.into()
     }
 
     #[wasm_bindgen(getter)]

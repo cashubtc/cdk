@@ -11,7 +11,8 @@ use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
-use crate::types::MeltQuote;
+#[cfg(feature = "mint")]
+use crate::mint;
 use crate::{Amount, Bolt11Invoice};
 
 /// NUT05 Error
@@ -178,8 +179,9 @@ impl<'de> Deserialize<'de> for MeltQuoteBolt11Response {
     }
 }
 
-impl From<MeltQuote> for MeltQuoteBolt11Response {
-    fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response {
+#[cfg(feature = "mint")]
+impl From<mint::MeltQuote> for MeltQuoteBolt11Response {
+    fn from(melt_quote: mint::MeltQuote) -> MeltQuoteBolt11Response {
         let paid = melt_quote.state == QuoteState::Paid;
         MeltQuoteBolt11Response {
             quote: melt_quote.id,
@@ -239,20 +241,45 @@ impl From<MeltQuoteBolt11Response> for MeltBolt11Response {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
-    method: PaymentMethod,
+    pub method: PaymentMethod,
     /// Currency Unit e.g. sat
-    unit: CurrencyUnit,
+    pub unit: CurrencyUnit,
     /// Min Amount
     #[serde(skip_serializing_if = "Option::is_none")]
-    min_amount: Option<Amount>,
+    pub min_amount: Option<Amount>,
     /// Max Amount
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_amount: Option<Amount>,
+    pub max_amount: Option<Amount>,
+}
+
+impl Settings {
+    /// Create new [`Settings`]
+    pub fn new(methods: Vec<MeltMethodSettings>, disabled: bool) -> Self {
+        Self { methods, disabled }
+    }
 }
 
 /// Melt Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Settings {
-    methods: Vec<MeltMethodSettings>,
-    disabled: bool,
+    /// Methods to melt
+    pub methods: Vec<MeltMethodSettings>,
+    /// Minting disabled
+    pub disabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        let bolt11_mint = MeltMethodSettings {
+            method: PaymentMethod::Bolt11,
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(1)),
+            max_amount: Some(Amount::from(1000000)),
+        };
+
+        Settings {
+            methods: vec![bolt11_mint],
+            disabled: false,
+        }
+    }
 }

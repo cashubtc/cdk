@@ -2,13 +2,10 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
-use std::fmt;
-
-use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-use super::{nut04, nut05, nut15};
+use super::{nut04, nut05, nut15, MppMethodSettings};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -17,6 +14,13 @@ pub struct MintVersion {
     pub name: String,
     /// Mint Version
     pub version: String,
+}
+
+impl MintVersion {
+    /// Create new [`MintVersion`]
+    pub fn new(name: String, version: String) -> Self {
+        Self { name, version }
+    }
 }
 
 impl Serialize for MintVersion {
@@ -46,7 +50,7 @@ impl<'de> Deserialize<'de> for MintVersion {
     }
 }
 
-/// Mint Info [NIP-09]
+/// Mint Info [NIP-06]
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
@@ -66,13 +70,92 @@ pub struct MintInfo {
     pub description_long: Option<String>,
     /// Contact info
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(deserialize_with = "deserialize_contact_info")]
     pub contact: Option<Vec<ContactInfo>>,
     /// shows which NUTs the mint supports
     pub nuts: Nuts,
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
+}
+
+impl MintInfo {
+    /// Create new [`MintInfo`]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set name
+    pub fn name<S>(self, name: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            name: Some(name.into()),
+            ..self
+        }
+    }
+
+    /// Set pubkey
+    pub fn pubkey(self, pubkey: PublicKey) -> Self {
+        Self {
+            pubkey: Some(pubkey),
+            ..self
+        }
+    }
+
+    /// Set [`MintVersion`]
+    pub fn version(self, mint_version: MintVersion) -> Self {
+        Self {
+            version: Some(mint_version),
+            ..self
+        }
+    }
+
+    /// Set description
+    pub fn description<S>(self, description: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            description: Some(description.into()),
+            ..self
+        }
+    }
+
+    /// Set long description
+    pub fn long_description<S>(self, description_long: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            description_long: Some(description_long.into()),
+            ..self
+        }
+    }
+
+    /// Set contact info
+    pub fn contact_info(self, contact_info: Vec<ContactInfo>) -> Self {
+        Self {
+            contact: Some(contact_info),
+            ..self
+        }
+    }
+
+    /// Set nuts
+    pub fn nuts(self, nuts: Nuts) -> Self {
+        Self { nuts, ..self }
+    }
+
+    /// Set motd
+    pub fn motd<S>(self, motd: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            motd: Some(motd.into()),
+            ..self
+        }
+    }
 }
 
 /// Supported nuts and settings
@@ -121,7 +204,104 @@ pub struct Nuts {
     /// NUT15 Settings
     #[serde(default)]
     #[serde(rename = "15")]
-    pub nut15: nut15::MppMethodSettings,
+    pub nut15: nut15::Settings,
+}
+
+impl Nuts {
+    /// Create new [`Nuts`]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Nut04 settings
+    pub fn nut04(self, nut04_settings: nut04::Settings) -> Self {
+        Self {
+            nut04: nut04_settings,
+            ..self
+        }
+    }
+
+    /// Nut05 settings
+    pub fn nut05(self, nut05_settings: nut05::Settings) -> Self {
+        Self {
+            nut05: nut05_settings,
+            ..self
+        }
+    }
+
+    /// Nut07 settings
+    pub fn nut07(self, supported: bool) -> Self {
+        Self {
+            nut07: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut08 settings
+    pub fn nut08(self, supported: bool) -> Self {
+        Self {
+            nut08: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut09 settings
+    pub fn nut09(self, supported: bool) -> Self {
+        Self {
+            nut09: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut10 settings
+    pub fn nut10(self, supported: bool) -> Self {
+        Self {
+            nut10: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut11 settings
+    pub fn nut11(self, supported: bool) -> Self {
+        Self {
+            nut11: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut12 settings
+    pub fn nut12(self, supported: bool) -> Self {
+        Self {
+            nut12: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut13 settings
+    pub fn nut13(self, supported: bool) -> Self {
+        Self {
+            nut13: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut14 settings
+    pub fn nut14(self, supported: bool) -> Self {
+        Self {
+            nut14: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut15 settings
+    pub fn nut15(self, mpp_settings: Vec<MppMethodSettings>) -> Self {
+        Self {
+            nut15: nut15::Settings {
+                methods: mpp_settings,
+            },
+            ..self
+        }
+    }
 }
 
 /// Check state Settings
@@ -145,71 +325,53 @@ pub struct ContactInfo {
     pub info: String,
 }
 
-fn deserialize_contact_info<'de, D>(deserializer: D) -> Result<Option<Vec<ContactInfo>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct ContactInfoVisitor;
-
-    impl<'de> Visitor<'de> for ContactInfoVisitor {
-        type Value = Option<Vec<ContactInfo>>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a list of ContactInfo or a list of lists of strings")
-        }
-
-        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: SeqAccess<'de>,
-        {
-            let mut contacts = Vec::new();
-
-            while let Some(value) = seq.next_element::<serde_json::Value>()? {
-                if value.is_object() {
-                    // Deserialize as ContactInfo
-                    let contact: ContactInfo =
-                        serde_json::from_value(value).map_err(de::Error::custom)?;
-                    contacts.push(contact);
-                } else if value.is_array() {
-                    // Deserialize as Vec<String>
-                    let vec = value
-                        .as_array()
-                        .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
-                    println!("{:?}", vec[0]);
-                    for val in vec {
-                        let vec = val
-                            .as_array()
-                            .ok_or_else(|| de::Error::custom("expected a list of strings"))?;
-                        if vec.len() == 2 {
-                            let method = vec[0]
-                                .as_str()
-                                .ok_or_else(|| de::Error::custom("expected a string"))?
-                                .to_string();
-                            let info = vec[1]
-                                .as_str()
-                                .ok_or_else(|| de::Error::custom("expected a string"))?
-                                .to_string();
-                            contacts.push(ContactInfo { method, info });
-                        } else {
-                            return Err(de::Error::custom("expected a list of two strings"));
-                        }
-                    }
-                } else {
-                    return Err(de::Error::custom("expected an object or a list of strings"));
-                }
-            }
-
-            Ok(Some(contacts))
-        }
+impl ContactInfo {
+    /// Create new [`ContactInfo`]
+    pub fn new(method: String, info: String) -> Self {
+        Self { method, info }
     }
-
-    deserializer.deserialize_seq(ContactInfoVisitor)
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn test_des_mint_into() {
+        let mint_info_str = r#"{
+    "name": "Cashu mint",
+    "pubkey": "0296d0aa13b6a31cf0cd974249f28c7b7176d7274712c95a41c7d8066d3f29d679",
+    "version": "Nutshell/0.15.3",
+    "contact": [
+        ["", ""],
+        ["", ""]
+    ],
+    "nuts": {
+        "4": {
+            "methods": [
+                {"method": "bolt11", "unit": "sat"},
+                {"method": "bolt11", "unit": "usd"}
+            ],
+            "disabled": false
+        },
+        "5": {
+            "methods": [
+                {"method": "bolt11", "unit": "sat"},
+                {"method": "bolt11", "unit": "usd"}
+            ],
+            "disabled": false
+        },
+        "7": {"supported": true},
+        "8": {"supported": true},
+        "9": {"supported": true},
+        "10": {"supported": true},
+        "11": {"supported": true}
+    }
+}"#;
+
+        let _mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
+    }
 
     #[test]
     fn test_ser_mint_info() {
@@ -283,10 +445,8 @@ mod tests {
   "description": "The short mint description",
   "description_long": "A description that can be a long piece of text.",
   "contact": [
-    [
         ["nostr", "xxxxx"],
         ["email", "contact@me.com"]
-    ]
   ],
   "motd": "Message to display to users.",
   "nuts": {

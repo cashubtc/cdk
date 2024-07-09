@@ -1,6 +1,6 @@
 //! CDK Amount
 //!
-//! Is any and will be treated as the unit of the wallet
+//! Is any unit and will be treated as the unit of the wallet
 
 use std::fmt;
 

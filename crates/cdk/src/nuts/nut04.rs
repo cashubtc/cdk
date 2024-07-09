@@ -11,7 +11,6 @@ use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use super::MintQuoteState;
-use crate::types::MintQuote;
 use crate::Amount;
 
 /// NUT04 Error
@@ -41,6 +40,7 @@ pub enum QuoteState {
     /// Quote has been paid and wallet can mint
     Paid,
     /// Minting is in progress
+    /// **Note:** This state is to be used internally but is not part of the nut.
     Pending,
     /// ecash issued for quote
     Issued,
@@ -153,8 +153,9 @@ impl<'de> Deserialize<'de> for MintQuoteBolt11Response {
     }
 }
 
-impl From<MintQuote> for MintQuoteBolt11Response {
-    fn from(mint_quote: MintQuote) -> MintQuoteBolt11Response {
+#[cfg(feature = "mint")]
+impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
+    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response {
         let paid = mint_quote.state == QuoteState::Paid;
         MintQuoteBolt11Response {
             quote: mint_quote.id,
@@ -196,20 +197,45 @@ pub struct MintBolt11Response {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
-    method: PaymentMethod,
+    pub method: PaymentMethod,
     /// Currency Unit e.g. sat
-    unit: CurrencyUnit,
+    pub unit: CurrencyUnit,
     /// Min Amount
     #[serde(skip_serializing_if = "Option::is_none")]
-    min_amount: Option<Amount>,
+    pub min_amount: Option<Amount>,
     /// Max Amount
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_amount: Option<Amount>,
+    pub max_amount: Option<Amount>,
 }
 
 /// Mint Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Settings {
-    methods: Vec<MintMethodSettings>,
-    disabled: bool,
+    /// Methods to mint
+    pub methods: Vec<MintMethodSettings>,
+    /// Minting disabled
+    pub disabled: bool,
+}
+
+impl Settings {
+    /// Create new [`Settings`]
+    pub fn new(methods: Vec<MintMethodSettings>, disabled: bool) -> Self {
+        Self { methods, disabled }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        let bolt11_mint = MintMethodSettings {
+            method: PaymentMethod::Bolt11,
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(1)),
+            max_amount: Some(Amount::from(1000000)),
+        };
+
+        Settings {
+            methods: vec![bolt11_mint],
+            disabled: false,
+        }
+    }
 }

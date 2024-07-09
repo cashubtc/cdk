@@ -34,6 +34,7 @@ jobs:
             -p cdk-sqlite,
             -p cdk-axum,
             --bin cdk-cli,
+            --bin cdk-mintd,
             --examples
           ]
     steps:

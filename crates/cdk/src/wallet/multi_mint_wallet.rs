@@ -2,7 +2,7 @@
 //!
 //! Wrapper around core [`Wallet`] that enables the use of multiple mint unit pairs
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -14,7 +14,8 @@ use tracing::instrument;
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::nuts::{CurrencyUnit, SecretKey, SpendingConditions, Token};
-use crate::types::{Melted, MintQuote};
+use crate::types::Melted;
+use crate::wallet::types::MintQuote;
 use crate::{Amount, UncheckedUrl, Wallet};
 
 /// Multi Mint Wallet
@@ -51,7 +52,7 @@ impl MultiMintWallet {
             wallets: Arc::new(Mutex::new(
                 wallets
                     .into_iter()
-                    .map(|w| (WalletKey::new(w.mint_url.clone(), w.unit.clone()), w))
+                    .map(|w| (WalletKey::new(w.mint_url.clone(), w.unit), w))
                     .collect(),
             )),
         }
@@ -60,7 +61,7 @@ impl MultiMintWallet {
     /// Add wallet to MultiMintWallet
     #[instrument(skip(self, wallet))]
     pub async fn add_wallet(&self, wallet: Wallet) {
-        let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit.clone());
+        let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit);
 
         let mut wallets = self.wallets.lock().await;
 
@@ -163,14 +164,14 @@ impl MultiMintWallet {
                     .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
 
                 let amount = wallet.check_all_mint_quotes().await?;
-                amount_minted.insert(wallet.unit.clone(), amount);
+                amount_minted.insert(wallet.unit, amount);
             }
             None => {
                 for (_, wallet) in self.wallets.lock().await.iter() {
                     let amount = wallet.check_all_mint_quotes().await?;
 
                     amount_minted
-                        .entry(wallet.unit.clone())
+                        .entry(wallet.unit)
                         .and_modify(|b| *b += amount)
                         .or_insert(amount);
                 }
@@ -207,33 +208,38 @@ impl MultiMintWallet {
         preimages: &[String],
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
-        let unit = token_data.unit.unwrap_or_default();
-        let mint_url = token_data.token.first().unwrap().mint.clone();
+        let unit = token_data.unit().unwrap_or_default();
 
-        let mints: HashSet<&UncheckedUrl> = token_data.token.iter().map(|d| &d.mint).collect();
+        let mint_proofs = token_data.proofs();
+
+        let mut amount_received = Amount::ZERO;
 
         // Check that all mints in tokes have wallets
-        for mint in mints {
-            let wallet_key = WalletKey::new(mint.clone(), unit.clone());
+        for (mint_url, proofs) in mint_proofs {
+            let wallet_key = WalletKey::new(mint_url.clone(), unit);
             if !self.has(&wallet_key).await {
                 return Err(Error::UnknownWallet(wallet_key.to_string()));
             }
+
+            let wallet_key = WalletKey::new(mint_url, unit);
+            let wallet = self
+                .get_wallet(&wallet_key)
+                .await
+                .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+
+            let amount = wallet
+                .receive_proofs(
+                    proofs,
+                    &SplitTarget::default(),
+                    p2pk_signing_keys,
+                    preimages,
+                )
+                .await?;
+
+            amount_received += amount;
         }
 
-        let wallet_key = WalletKey::new(mint_url, unit);
-        let wallet = self
-            .get_wallet(&wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
-
-        wallet
-            .receive(
-                encoded_token,
-                &SplitTarget::default(),
-                p2pk_signing_keys,
-                preimages,
-            )
-            .await
+        Ok(amount_received)
     }
 
     /// Pay an bolt11 invoice from specific wallet

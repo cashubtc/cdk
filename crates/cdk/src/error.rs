@@ -15,6 +15,24 @@ pub enum Error {
     /// Mint does not have a key for amount
     #[error("No Key for Amount")]
     AmountKey,
+    /// Not enough input proofs provided
+    #[error("Not enough input proofs spent")]
+    InsufficientInputProofs,
+    /// Database update failed
+    #[error("Database error")]
+    DatabaseError,
+    /// Unsupported unit
+    #[error("Unit unsupported")]
+    UnsupportedUnit,
+    /// Payment failed
+    #[error("Payment failed")]
+    PaymentFailed,
+    /// Melt Request is not valid
+    #[error("Melt request is not valid")]
+    MeltRequestInvalid,
+    /// Invoice already paid
+    #[error("Request already paid")]
+    RequestAlreadyPaid,
     /// Amount is not what expected
     #[error("Amount miss match")]
     Amount,
@@ -107,7 +125,7 @@ impl fmt::Display for ErrorResponse {
 }
 
 impl ErrorResponse {
-    /// Create new error response
+    /// Create new [`ErrorResponse`]
     pub fn new(code: ErrorCode, error: Option<String>, detail: Option<String>) -> Self {
         Self {
             code,
@@ -153,7 +171,7 @@ impl From<Error> for ErrorResponse {
     }
 }
 
-/// Error Code
+/// Possible Error Codes
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ErrorCode {
     /// Token is already spent

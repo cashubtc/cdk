@@ -8,12 +8,11 @@ use tokio::sync::RwLock;
 
 use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
-use crate::mint::MintKeySetInfo;
+use crate::mint::{self, MintKeySetInfo, MintQuote};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
 };
 use crate::secret::Secret;
-use crate::types::{MeltQuote, MintQuote};
 
 /// Mint Memory Database
 #[derive(Debug, Clone)]
@@ -21,7 +20,7 @@ pub struct MintMemoryDatabase {
     active_keysets: Arc<RwLock<HashMap<CurrencyUnit, Id>>>,
     keysets: Arc<RwLock<HashMap<Id, MintKeySetInfo>>>,
     mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
-    melt_quotes: Arc<RwLock<HashMap<String, MeltQuote>>>,
+    melt_quotes: Arc<RwLock<HashMap<String, mint::MeltQuote>>>,
     pending_proofs: Arc<RwLock<HashMap<[u8; 33], Proof>>>,
     spent_proofs: Arc<RwLock<HashMap<[u8; 33], Proof>>>,
     blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
@@ -34,7 +33,7 @@ impl MintMemoryDatabase {
         active_keysets: HashMap<CurrencyUnit, Id>,
         keysets: Vec<MintKeySetInfo>,
         mint_quotes: Vec<MintQuote>,
-        melt_quotes: Vec<MeltQuote>,
+        melt_quotes: Vec<mint::MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
@@ -146,6 +145,37 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(current_state)
     }
 
+    async fn get_mint_quote_by_request_lookup_id(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let quotes = self.get_mint_quotes().await?;
+
+        let quote = quotes
+            .into_iter()
+            .filter(|q| q.request_lookup_id.eq(request))
+            .collect::<Vec<MintQuote>>()
+            .first()
+            .cloned();
+
+        Ok(quote)
+    }
+    async fn get_mint_quote_by_request(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let quotes = self.get_mint_quotes().await?;
+
+        let quote = quotes
+            .into_iter()
+            .filter(|q| q.request.eq(request))
+            .collect::<Vec<MintQuote>>()
+            .first()
+            .cloned();
+
+        Ok(quote)
+    }
+
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         Ok(self.mint_quotes.read().await.values().cloned().collect())
     }
@@ -156,7 +186,7 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), Self::Err> {
+    async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         self.melt_quotes
             .write()
             .await
@@ -164,7 +194,7 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, Self::Err> {
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<mint::MeltQuote>, Self::Err> {
         Ok(self.melt_quotes.read().await.get(quote_id).cloned())
     }
 
@@ -189,7 +219,7 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(current_state)
     }
 
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, Self::Err> {
+    async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
         Ok(self.melt_quotes.read().await.values().cloned().collect())
     }
 

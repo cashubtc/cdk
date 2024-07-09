@@ -8,11 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
-use base64::engine::{general_purpose, GeneralPurpose};
-use base64::{alphabet, Engine as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
-use url::Url;
 
 use super::nut10;
 use super::nut11::SpendingConditions;
@@ -24,8 +21,10 @@ use crate::nuts::nut12::BlindSignatureDleq;
 use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
-use crate::url::UncheckedUrl;
 use crate::Amount;
+
+pub mod token;
+pub use token::{Token, TokenV3, TokenV4};
 
 /// List of [Proof]
 pub type Proofs = Vec<Proof>;
@@ -39,6 +38,9 @@ pub enum Error {
     /// Unsupported token
     #[error("Unsupported token")]
     UnsupportedToken,
+    /// Unsupported token
+    #[error("Unsupported unit")]
+    UnsupportedUnit,
     /// Invalid Url
     #[error("Invalid Url")]
     InvalidUrl,
@@ -54,6 +56,9 @@ pub enum Error {
     /// Parse Url Error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
+    /// Ciborium error
+    #[error(transparent)]
+    CiboriumError(#[from] ciborium::de::Error<std::io::Error>),
     /// CDK error
     #[error(transparent)]
     Cdk(#[from] crate::error::Error),
@@ -233,8 +238,81 @@ impl PartialOrd for Proof {
     }
 }
 
+/// Proof V4
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofV4 {
+    /// Amount in satoshi
+    #[serde(rename = "a")]
+    pub amount: Amount,
+    /// Secret message
+    #[serde(rename = "s")]
+    pub secret: Secret,
+    /// Unblinded signature
+    #[serde(
+        serialize_with = "serialize_v4_pubkey",
+        deserialize_with = "deserialize_v4_pubkey"
+    )]
+    pub c: PublicKey,
+    /// Witness
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub witness: Option<Witness>,
+    /// DLEQ Proof
+    #[serde(rename = "d")]
+    pub dleq: Option<ProofDleq>,
+}
+
+impl ProofV4 {
+    /// [`ProofV4`] into [`Proof`]
+    pub fn into_proof(&self, keyset_id: &Id) -> Proof {
+        Proof {
+            amount: self.amount,
+            keyset_id: *keyset_id,
+            secret: self.secret.clone(),
+            c: self.c,
+            witness: self.witness.clone(),
+            dleq: self.dleq.clone(),
+        }
+    }
+}
+
+impl From<Proof> for ProofV4 {
+    fn from(proof: Proof) -> ProofV4 {
+        let Proof {
+            amount,
+            keyset_id: _,
+            secret,
+            c,
+            witness,
+            dleq,
+        } = proof;
+        ProofV4 {
+            amount,
+            secret,
+            c,
+            witness,
+            dleq,
+        }
+    }
+}
+
+fn serialize_v4_pubkey<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_bytes(&key.to_bytes())
+}
+
+fn deserialize_v4_pubkey<'de, D>(deserializer: D) -> Result<PublicKey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let bytes = Vec::<u8>::deserialize(deserializer)?;
+    PublicKey::from_slice(&bytes).map_err(serde::de::Error::custom)
+}
+
 /// Currency Unit
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum CurrencyUnit {
     /// Sat
     #[default]
@@ -243,20 +321,19 @@ pub enum CurrencyUnit {
     Msat,
     /// Usd
     Usd,
-    /// Custom unit
-    Custom(String),
+    /// Euro
+    Eur,
 }
 
-impl<S> From<S> for CurrencyUnit
-where
-    S: AsRef<str>,
-{
-    fn from(currency: S) -> Self {
-        match currency.as_ref() {
-            "sat" => Self::Sat,
-            "usd" => Self::Usd,
-            "msat" => Self::Msat,
-            o => Self::Custom(o.to_string()),
+impl FromStr for CurrencyUnit {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "sat" => Ok(Self::Sat),
+            "msat" => Ok(Self::Msat),
+            "usd" => Ok(Self::Usd),
+            "eur" => Ok(Self::Eur),
+            _ => Err(Error::UnsupportedUnit),
         }
     }
 }
@@ -267,7 +344,7 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Sat => write!(f, "sat"),
             CurrencyUnit::Msat => write!(f, "msat"),
             CurrencyUnit::Usd => write!(f, "usd"),
-            CurrencyUnit::Custom(unit) => write!(f, "{unit}"),
+            CurrencyUnit::Eur => write!(f, "eur"),
         }
     }
 }
@@ -287,7 +364,7 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
         D: Deserializer<'de>,
     {
         let currency: String = String::deserialize(deserializer)?;
-        Ok(Self::from(currency))
+        Self::from_str(&currency).map_err(|_| serde::de::Error::custom("Unsupported unit"))
     }
 }
 
@@ -563,102 +640,6 @@ impl PartialOrd for PreMintSecrets {
     }
 }
 
-/// Token
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Token {
-    /// Proofs in [`Token`] by mint
-    pub token: Vec<MintProofs>,
-    /// Memo for token
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memo: Option<String>,
-    /// Token Unit
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unit: Option<CurrencyUnit>,
-}
-
-impl Token {
-    /// Create new [`Token`]
-    pub fn new(
-        mint_url: UncheckedUrl,
-        proofs: Proofs,
-        memo: Option<String>,
-        unit: Option<CurrencyUnit>,
-    ) -> Result<Self, Error> {
-        if proofs.is_empty() {
-            return Err(Error::ProofsRequired);
-        }
-
-        // Check Url is valid
-        let _: Url = (&mint_url).try_into().map_err(|_| Error::InvalidUrl)?;
-
-        Ok(Self {
-            token: vec![MintProofs::new(mint_url, proofs)],
-            memo,
-            unit,
-        })
-    }
-
-    /// Token Info
-    /// Assumes only one mint in [`Token`]
-    pub fn token_info(&self) -> (Amount, String) {
-        let mut amount = Amount::ZERO;
-
-        for proofs in &self.token {
-            for proof in &proofs.proofs {
-                amount += proof.amount;
-            }
-        }
-
-        (amount, self.token[0].mint.to_string())
-    }
-}
-
-impl FromStr for Token {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = if s.starts_with("cashuA") {
-            s.replace("cashuA", "")
-        } else {
-            return Err(Error::UnsupportedToken);
-        };
-
-        let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
-        let decoded = GeneralPurpose::new(&alphabet::STANDARD, decode_config).decode(s)?;
-        let decoded_str = String::from_utf8(decoded)?;
-        let token: Token = serde_json::from_str(&decoded_str)?;
-        Ok(token)
-    }
-}
-
-impl fmt::Display for Token {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json_string = serde_json::to_string(self).map_err(|_| fmt::Error)?;
-        let encoded = general_purpose::STANDARD.encode(json_string);
-        write!(f, "cashuA{}", encoded)
-    }
-}
-
-/// Mint Proofs
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintProofs {
-    /// Url of mint
-    pub mint: UncheckedUrl,
-    /// [`Proofs`]
-    pub proofs: Proofs,
-}
-
-impl MintProofs {
-    /// Create new [`MintProofs`]
-    pub fn new(mint_url: UncheckedUrl, proofs: Proofs) -> Self {
-        Self {
-            mint: mint_url,
-            proofs,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -679,30 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn test_token_str_round_trip() {
-        let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
-
-        let token = Token::from_str(token_str).unwrap();
-        assert_eq!(
-            token.token[0].mint,
-            UncheckedUrl::from_str("https://8333.space:3338").unwrap()
-        );
-        assert_eq!(
-            token.token[0].proofs[0].clone().keyset_id,
-            Id::from_str("009a1f293253e41e").unwrap()
-        );
-        assert_eq!(token.unit.clone().unwrap(), CurrencyUnit::Sat);
-
-        let encoded = &token.to_string();
-
-        let token_data = Token::from_str(encoded).unwrap();
-
-        assert_eq!(token_data, token);
-    }
-
-    #[test]
     fn test_blank_blinded_messages() {
-        // TODO: Need to update id to new type in proof
         let b = PreMintSecrets::blank(
             Id::from_str("009a1f293253e41e").unwrap(),
             Amount::from(1000),
@@ -710,30 +668,8 @@ mod tests {
         .unwrap();
         assert_eq!(b.len(), 10);
 
-        // TODO: Need to update id to new type in proof
         let b = PreMintSecrets::blank(Id::from_str("009a1f293253e41e").unwrap(), Amount::from(1))
             .unwrap();
         assert_eq!(b.len(), 1);
-    }
-
-    #[test]
-    fn incorrect_tokens() {
-        let incorrect_prefix = "casshuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
-
-        let incorrect_prefix_token = Token::from_str(incorrect_prefix);
-
-        assert!(incorrect_prefix_token.is_err());
-
-        let no_prefix = "eyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
-
-        let no_prefix_token = Token::from_str(no_prefix);
-
-        assert!(no_prefix_token.is_err());
-
-        let correct_token = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
-
-        let correct_token = Token::from_str(correct_token);
-
-        assert!(correct_token.is_ok());
     }
 }

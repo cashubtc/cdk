@@ -14,12 +14,14 @@ use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
-use crate::types::{MeltQuote, MintQuote};
 use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::Amount;
 
 pub mod error;
+pub mod types;
+
+pub use types::{MeltQuote, MintQuote};
 
 /// Cashu Mint
 #[derive(Clone)]
@@ -120,8 +122,16 @@ impl Mint {
         unit: CurrencyUnit,
         amount: Amount,
         expiry: u64,
+        ln_lookup: String,
     ) -> Result<MintQuote, Error> {
-        let quote = MintQuote::new(mint_url, request, unit, amount, expiry);
+        let quote = MintQuote::new(mint_url, request, unit, amount, expiry, ln_lookup.clone());
+        tracing::debug!(
+            "New mint quote {} for {} {} with request id {}",
+            quote.id,
+            amount,
+            unit,
+            &ln_lookup
+        );
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
@@ -138,11 +148,18 @@ impl Mint {
 
         let paid = quote.state == MintQuoteState::Paid;
 
+        // Since the pending state is not part of the NUT it should not be part of the response.
+        // In practice the wallet should not be checking the state of a quote while waiting for the mint response.
+        let state = match quote.state {
+            MintQuoteState::Pending => MintQuoteState::Paid,
+            s => s,
+        };
+
         Ok(MintQuoteBolt11Response {
             quote: quote.id,
             request: quote.request,
             paid: Some(paid),
-            state: quote.state,
+            state,
             expiry: Some(quote.expiry),
         })
     }
@@ -157,6 +174,16 @@ impl Mint {
     pub async fn mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let quotes = self.localstore.get_mint_quotes().await?;
         Ok(quotes)
+    }
+
+    /// Get pending mint quotes
+    pub async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let mint_quotes = self.localstore.get_mint_quotes().await?;
+
+        Ok(mint_quotes
+            .into_iter()
+            .filter(|p| p.state == MintQuoteState::Pending)
+            .collect())
     }
 
     /// Remove mint quote
@@ -174,8 +201,16 @@ impl Mint {
         amount: Amount,
         fee_reserve: Amount,
         expiry: u64,
+        request_lookup_id: String,
     ) -> Result<MeltQuote, Error> {
-        let quote = MeltQuote::new(request, unit, amount, fee_reserve, expiry);
+        let quote = MeltQuote::new(
+            request,
+            unit,
+            amount,
+            fee_reserve,
+            expiry,
+            request_lookup_id,
+        );
 
         self.localstore.add_melt_quote(quote.clone()).await?;
 
@@ -284,13 +319,8 @@ impl Mint {
         derivation_path: DerivationPath,
         max_order: u8,
     ) -> Result<(), Error> {
-        let (keyset, keyset_info) = create_new_keyset(
-            &self.secp_ctx,
-            self.xpriv,
-            derivation_path,
-            unit.clone(),
-            max_order,
-        );
+        let (keyset, keyset_info) =
+            create_new_keyset(&self.secp_ctx, self.xpriv, derivation_path, unit, max_order);
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info).await?;
         self.localstore.add_active_keyset(unit, id).await?;
@@ -331,10 +361,18 @@ impl Mint {
                 .await?
                 .is_some()
             {
-                tracing::error!(
+                tracing::info!(
                     "Output has already been signed: {}",
                     blinded_message.blinded_secret
                 );
+                tracing::info!(
+                    "Mint {} did not succeed returning quote to Paid state",
+                    mint_request.quote
+                );
+
+                self.localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
+                    .await?;
                 return Err(Error::BlindedMessageAlreadySigned);
             }
         }
@@ -699,6 +737,21 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Process unpaid melt request
+    /// In the event that a melt request fails and the lighthing payment is not made
+    /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
+    pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
+        self.localstore
+            .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
+            .await?;
+
+        self.localstore
+            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Unpaid)
+            .await?;
+
+        Ok(())
+    }
+
     /// Process melt request marking [`Proofs`] as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`] before calling [`Self::process_melt_request`]
     pub async fn process_melt_request(
@@ -912,7 +965,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
-        unit: keyset.unit.clone(),
+        unit: keyset.unit,
         active: true,
         valid_from: unix_time(),
         valid_to: None,

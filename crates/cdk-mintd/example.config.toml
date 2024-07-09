@@ -1,0 +1,40 @@
+[info]
+url = "https://mint.thesimplekid.dev/"
+listen_host = "127.0.0.1"
+listen_port = 8085
+mnemonic = ""
+
+
+
+[mint_info]
+# name = "cdk-mintd mutiney net mint"
+# Hex publey of mint
+# pubkey = ""
+# description = "These are not real sats for testing only"
+# description_long = "A longer mint for testing"
+# motd = "Hello world"
+# contact_email = "hello@cashu.me"
+# Nostr pubkey of mint (Hex)
+# contact_nostr_public_key = ""
+
+
+[database]
+# Database engine (sqlite/redb) defaults to sqlite
+# engine = "sqlite"
+
+[ln]
+
+# Required ln backend `cln`
+ln_backend = "cln"
+
+# CLN
+# Required if using cln backend path to rpc
+cln_path = ""
+
+# Required to start greenlight for the first time
+# greenlight_invite_code = ""
+
+# Fee reserve for melting as a percent of payment amount
+fee_percent = 1.0
+# Fee reserve for melting as an absolute value
+reserve_fee_min = 1000
