@@ -331,21 +331,6 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(current_state)
     }
-    async fn get_mint_quote_by_request(
-        &self,
-        request: &str,
-    ) -> Result<Option<MintQuote>, Self::Err> {
-        let quotes = self.get_mint_quotes().await?;
-
-        let quote = quotes
-            .into_iter()
-            .filter(|q| q.request.eq(request))
-            .collect::<Vec<MintQuote>>()
-            .first()
-            .cloned();
-
-        Ok(quote)
-    }
 
     async fn get_mint_quote_by_request_lookup_id(
         &self,

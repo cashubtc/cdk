@@ -14,18 +14,21 @@ use std::{
 
 use async_trait::async_trait;
 use bitcoin::{
-    absolute::LockTime, hashes::Hash, key::Secp256k1, secp256k1::PublicKey, BlockHash, Network,
-    ScriptBuf, Transaction, Txid,
+    absolute::LockTime, key::Secp256k1, secp256k1::PublicKey, BlockHash, Network, ScriptBuf,
+    Transaction, Txid,
 };
 use cdk::{
+    amount::Amount,
     cdk_lightning::{
-        self, Amount, BalanceResponse, InvoiceInfo, MintLightning, PayInvoiceResponse,
+        self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+        Settings,
     },
     lightning_invoice::{
         payment::payment_parameters_from_invoice, utils::create_invoice_from_channelmanager,
     },
+    mint::MeltQuote,
+    nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState},
     secp256k1::rand::random,
-    types::InvoiceStatus,
     util::{hex, unix_time},
     Bolt11Invoice, Sha256,
 };
@@ -661,7 +664,7 @@ impl Node {
                     .update_payment(
                         payment_hash,
                         payment_preimage,
-                        Amount::from_msat(fee_paid_msat.unwrap_or_default()),
+                        Amount::from(fee_paid_msat.unwrap_or_default()),
                     )
                     .await
                 {
@@ -758,7 +761,7 @@ impl Node {
         let channels = self.channel_manager.list_channels();
         let channel_balances = channels
             .iter()
-            .map(|c| (c.channel_id, Amount::from_msat(c.balance_msat)))
+            .map(|c| (c.channel_id, Amount::from(c.balance_msat)))
             .collect();
         let peers = self
             .peer_manager
@@ -819,7 +822,7 @@ impl Node {
         let (tx, rx) = oneshot::channel();
         let channel_id = self
             .channel_manager
-            .create_channel(node_id, amount.to_sat(), 0, random(), None, None)
+            .create_channel(node_id, amount.into(), 0, random(), None, None)
             .map_err(|e| Error::Ldk(format!("{:?}", e)))?;
         pending_channel_scripts.insert(channel_id, tx);
         drop(pending_channel_scripts);
@@ -912,7 +915,7 @@ impl Node {
             .iter()
             .find(|c| c.channel_id == channel_id)
             .ok_or(Error::ChannelNotFound)?;
-        Ok(Amount::from_msat(channel.balance_msat))
+        Ok(Amount::from(channel.balance_msat))
     }
 
     pub fn get_inbound_liquidity(&self) -> Result<Amount, Error> {
@@ -922,7 +925,7 @@ impl Node {
             .filter(|c| c.is_usable)
             .map(|c| c.inbound_capacity_msat)
             .sum::<u64>();
-        Ok(Amount::from_msat(inbound_liquidity))
+        Ok(Amount::from(inbound_liquidity))
     }
 
     pub async fn get_spendable_output_balance(&self) -> Result<Amount, Error> {
@@ -931,7 +934,7 @@ impl Node {
                 .get_all_spendable_outputs()
                 .await
                 .map_or(Amount::ZERO, |outputs| {
-                    Amount::from_sat(
+                    Amount::from(
                         outputs
                             .values()
                             .flat_map(|a| a)
@@ -944,7 +947,7 @@ impl Node {
                                 }
                                 SpendableOutputDescriptor::StaticPaymentOutput(o) => o.output.value,
                             })
-                            .sum(),
+                            .sum::<u64>(),
                     )
                 });
         Ok(spendable_balance)
@@ -1016,87 +1019,79 @@ pub struct PendingChannel {
 impl MintLightning for Node {
     type Err = cdk_lightning::Error;
 
-    async fn get_invoice(
+    fn get_settings(&self) -> Settings {
+        Settings {
+            mpp: true,
+            min_mint_amount: 1,
+            max_mint_amount: 10_000_000,
+            min_melt_amount: 1,
+            max_melt_amount: 10_000_000,
+            unit: CurrencyUnit::Sat,
+            mint_enabled: true,
+            melt_enabled: true,
+        }
+    }
+
+    async fn create_invoice(
         &self,
-        amount: Amount,
-        hash: &str,
-        description: &str,
-    ) -> Result<InvoiceInfo, Self::Err> {
+        amount: u64,
+        description: String,
+        unix_expiry: u64,
+    ) -> Result<CreateInvoiceResponse, Self::Err> {
+        let expiry = unix_expiry - unix_time();
         let invoice = create_invoice_from_channelmanager(
             &self.channel_manager,
             self.keys_manager.clone(),
             self.logger.clone(),
             self.network.into(),
-            Some(amount.to_msat()),
+            Some(amount * 1000),
             description.to_string(),
-            3600,
+            expiry as u32,
             None,
         )
         .map_err(map_err)?;
         let payment_hash =
             Sha256::from_str(&invoice.payment_hash().to_string()).map_err(map_err)?;
         self.db.insert_invoice(&invoice).await.map_err(map_err)?;
-        Ok(InvoiceInfo {
-            payment_hash: payment_hash.to_string(),
-            hash: hash.to_string(),
-            invoice,
-            amount,
-            status: InvoiceStatus::Unpaid,
-            memo: description.to_string(),
-            confirmed_at: None,
+        Ok(CreateInvoiceResponse {
+            request_lookup_id: payment_hash.to_string(),
+            request: invoice,
         })
     }
 
-    async fn wait_invoice(
+    async fn get_payment_quote(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (Bolt11Invoice, Option<u64>)> + Send>>, Self::Err> {
-        let mut rx = self.paid_invoices.subscribe();
-        let db = self.db.clone();
-        Ok(Box::pin(async_stream::stream! {
-            while let Ok(payment_hash) = rx.recv().await {
-                if let Ok(Some(invoice)) = db.get_invoice(payment_hash).await {
-                    if let Ok(invoice) = Bolt11Invoice::from_str(&invoice.bolt_11) {
-                        yield (invoice, None);
-                    }
-                }
-            }
-        }))
-    }
-
-    async fn check_invoice_status(
-        &self,
-        payment_hash: &cdk::Sha256,
-    ) -> Result<InvoiceStatus, Self::Err> {
-        let payment_hash = PaymentHash(payment_hash.to_byte_array());
-        let inflight_payments = self.inflight_payments.read().await;
-        if inflight_payments.contains_key(&payment_hash) {
-            return Ok(InvoiceStatus::InFlight);
-        }
-        let payment = self.db.get_payment(payment_hash).await.map_err(map_err)?;
-        Ok(payment.map_or(InvoiceStatus::Unpaid, |payment| {
-            if payment.paid {
-                InvoiceStatus::Paid
-            } else {
-                InvoiceStatus::Unpaid
-            }
-        }))
+        melt_quote_request: &MeltQuoteBolt11Request,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        Ok(PaymentQuoteResponse {
+            request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
+            amount: melt_quote_request
+                .request
+                .amount_milli_satoshis()
+                .unwrap_or_default(),
+            fee: melt_quote_request
+                .request
+                .amount_milli_satoshis()
+                .unwrap_or_default()
+                / 100, // TODO: estimate fee
+        })
     }
 
     async fn pay_invoice(
         &self,
-        bolt11: Bolt11Invoice,
-        partial_msat: Option<Amount>,
-        max_fee: Option<Amount>,
+        melt_quote: MeltQuote,
+        partial_msats: Option<u64>,
+        max_fee_msats: Option<u64>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let amount_msat = partial_msat
-            .map(|f| f.to_msat())
+        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let amount_msat = partial_msats
             .or(bolt11.amount_milli_satoshis())
             .ok_or(map_err("No amount"))?;
         let (payment_hash, recipient_onion, mut route_params) =
             payment_parameters_from_invoice(&bolt11)
                 .map_err(|_| map_err("Error extracting payment parameters"))?;
         self.db
-            .insert_payment(&bolt11, Amount::from_msat(amount_msat))
+            .insert_payment(&bolt11, Amount::from(amount_msat))
             .await
             .map_err(map_err)?;
         let (tx, rx) = oneshot::channel();
@@ -1105,7 +1100,7 @@ impl MintLightning for Node {
         drop(inflight_payments);
 
         route_params.final_value_msat = amount_msat;
-        route_params.max_total_routing_fee_msat = max_fee.map(|f| f.to_msat());
+        route_params.max_total_routing_fee_msat = max_fee_msats;
         self.channel_manager
             .send_payment(
                 payment_hash,
@@ -1118,53 +1113,50 @@ impl MintLightning for Node {
 
         let payment = rx.await.map_err(map_err)?;
         Ok(PayInvoiceResponse {
-            payment_hash: Sha256::from_byte_array(payment_hash.0),
+            payment_hash: payment_hash.to_string(),
             payment_preimage: payment.pre_image.map(|p| hex::encode(p)),
             status: if payment.pre_image.is_some() {
-                InvoiceStatus::Paid
+                MeltQuoteState::Paid
             } else {
-                InvoiceStatus::Unpaid
+                MeltQuoteState::Unpaid
             },
-            total_spent: payment.spent_msat,
+            total_spent_msats: payment.spent_msat.into(),
         })
     }
 
-    async fn get_balance(&self) -> Result<BalanceResponse, Self::Err> {
-        let balance_msat: u64 = self
-            .channel_manager
-            .list_channels()
-            .iter()
-            .map(|c| c.balance_msat)
-            .sum();
-        Ok(BalanceResponse {
-            on_chain_spendable: Amount::ZERO,
-            on_chain_total: Amount::ZERO,
-            ln: Amount::from_sat(balance_msat / 1000),
-        })
-    }
-
-    async fn create_invoice(
+    async fn wait_any_invoice(
         &self,
-        amount: Amount,
-        description: String,
-        unix_expiry: u64,
-    ) -> Result<Bolt11Invoice, Self::Err> {
-        let time_now = unix_time();
-        assert!(unix_expiry > time_now);
+    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+        let mut rx = self.paid_invoices.subscribe();
+        Ok(Box::pin(async_stream::stream! {
+            while let Ok(payment_hash) = rx.recv().await {
+                yield payment_hash.to_string();
+            }
+        }))
+    }
 
-        let invoice = create_invoice_from_channelmanager(
-            &self.channel_manager,
-            self.keys_manager.clone(),
-            self.logger.clone(),
-            self.network.into(),
-            Some(amount.to_msat()),
-            description,
-            (unix_expiry - time_now) as u32,
-            None,
-        )
-        .map_err(map_err)?;
-        self.db.insert_invoice(&invoice).await.map_err(map_err)?;
-        Ok(invoice)
+    async fn check_invoice_status(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<MintQuoteState, Self::Err> {
+        let payment_hash = PaymentHash(
+            hex::decode(request_lookup_id)
+                .map_err(map_err)?
+                .try_into()
+                .map_err(|_| map_err("Invalid request_lookup_id"))?,
+        );
+        let inflight_payments = self.inflight_payments.read().await;
+        if inflight_payments.contains_key(&payment_hash) {
+            return Ok(MintQuoteState::Pending);
+        }
+        let payment = self.db.get_payment(payment_hash).await.map_err(map_err)?;
+        Ok(payment.map_or(MintQuoteState::Unpaid, |payment| {
+            if payment.paid {
+                MintQuoteState::Paid
+            } else {
+                MintQuoteState::Unpaid
+            }
+        }))
     }
 }
 
@@ -1391,14 +1383,6 @@ impl NodeDatabase {
         Ok(invoice)
     }
 
-    async fn get_invoice(&self, payment_hash: PaymentHash) -> Result<Option<Invoice>, Error> {
-        let db = self.db.read().await;
-        let read_txn = db.begin_read()?;
-        let table = read_txn.open_table(INVOICES_TABLE)?;
-        let entry = table.get(payment_hash.0)?;
-        Ok(entry.map(|e| e.value()))
-    }
-
     async fn insert_payment(&self, invoice: &Bolt11Invoice, amount: Amount) -> Result<(), Error> {
         let payment_hash = invoice.payment_hash();
         let db = self.db.read().await;
@@ -1436,7 +1420,7 @@ impl NodeDatabase {
         if let Some(payment) = payment.as_mut() {
             let mut table = write_txn.open_table(PAYMENTS_TABLE)?;
             payment.paid = true;
-            payment.spent_msat = Amount::from_msat(payment.amount.to_msat() + fee_paid.to_msat());
+            payment.spent_msat = payment.amount + fee_paid;
             payment.pre_image = Some(pre_image.0);
             table.insert(payment_hash.0, payment)?;
         }
