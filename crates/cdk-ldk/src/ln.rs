@@ -761,7 +761,7 @@ impl Node {
         let channels = self.channel_manager.list_channels();
         let channel_balances = channels
             .iter()
-            .map(|c| (c.channel_id, Amount::from(c.balance_msat)))
+            .map(|c| (c.channel_id, Amount::from(c.balance_msat / 1000)))
             .collect();
         let peers = self
             .peer_manager
@@ -915,7 +915,7 @@ impl Node {
             .iter()
             .find(|c| c.channel_id == channel_id)
             .ok_or(Error::ChannelNotFound)?;
-        Ok(Amount::from(channel.balance_msat))
+        Ok(Amount::from(channel.balance_msat / 1000))
     }
 
     pub fn get_inbound_liquidity(&self) -> Result<Amount, Error> {
@@ -923,7 +923,7 @@ impl Node {
         let inbound_liquidity = channels
             .iter()
             .filter(|c| c.is_usable)
-            .map(|c| c.inbound_capacity_msat)
+            .map(|c| c.inbound_capacity_msat / 1000)
             .sum::<u64>();
         Ok(Amount::from(inbound_liquidity))
     }
