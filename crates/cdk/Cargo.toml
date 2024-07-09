@@ -40,7 +40,6 @@ serde_with = "3.4"
 futures = { workspace = true, optional = true }
 tracing.workspace = true
 thiserror.workspace = true
-futures = { workspace = true, optional = true }
 url = "2.3"
 uuid.workspace = true
 
