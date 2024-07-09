@@ -1038,6 +1038,7 @@ impl MintLightning for Node {
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
+        tracing::info!("Creating invoice: {} {}", amount, description);
         let expiry = unix_expiry - unix_time();
         let invoice = create_invoice_from_channelmanager(
             &self.channel_manager,
@@ -1083,6 +1084,7 @@ impl MintLightning for Node {
         partial_msats: Option<u64>,
         max_fee_msats: Option<u64>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        tracing::info!("Paying invoice: {}", melt_quote.request);
         let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
         let amount_msat = partial_msats
             .or(bolt11.amount_milli_satoshis())
@@ -1130,6 +1132,7 @@ impl MintLightning for Node {
         let mut rx = self.paid_invoices.subscribe();
         Ok(Box::pin(async_stream::stream! {
             while let Ok(payment_hash) = rx.recv().await {
+                tracing::info!("Invoice paid: {}", payment_hash);
                 yield payment_hash.to_string();
             }
         }))
@@ -1139,6 +1142,7 @@ impl MintLightning for Node {
         &self,
         request_lookup_id: &str,
     ) -> Result<MintQuoteState, Self::Err> {
+        tracing::debug!("Checking invoice status: {}", request_lookup_id);
         let payment_hash = PaymentHash(
             hex::decode(request_lookup_id)
                 .map_err(map_err)?
