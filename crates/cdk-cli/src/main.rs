@@ -13,6 +13,7 @@ use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
 use rand::Rng;
+use tracing::Level;
 
 mod sub_commands;
 
@@ -31,6 +32,9 @@ struct Cli {
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
+    /// Logging level
+    #[arg(short, long, default_value = "error")]
+    log_level: Level,
     #[command(subcommand)]
     command: Commands,
 }
@@ -65,12 +69,11 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
-
     // Parse input
     let args: Cli = Cli::parse();
+    tracing_subscriber::fmt()
+        .with_max_level(args.log_level)
+        .init();
 
     let work_dir = match &args.work_dir {
         Some(work_dir) => work_dir.clone(),
