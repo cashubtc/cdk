@@ -27,7 +27,11 @@ use cdk::{
         payment::payment_parameters_from_invoice, utils::create_invoice_from_channelmanager,
     },
     mint::MeltQuote,
-    nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState},
+    nuts::{
+        nut04::Settings as MintSettings, nut05::Settings as MeltSettings, CurrencyUnit,
+        MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+        MintQuoteState, PaymentMethod,
+    },
     secp256k1::rand::random,
     util::{hex, unix_time},
     Bolt11Invoice, Sha256,
@@ -926,6 +930,32 @@ impl Node {
             .map(|c| c.inbound_capacity_msat / 1000)
             .sum::<u64>();
         Ok(Amount::from(inbound_liquidity))
+    }
+
+    pub fn get_mint_settings(&self) -> MintSettings {
+        let settings = self.get_settings();
+        MintSettings {
+            methods: vec![MintMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: CurrencyUnit::Sat,
+                min_amount: Some(Amount::from(settings.min_mint_amount)),
+                max_amount: Some(Amount::from(settings.max_mint_amount)),
+            }],
+            disabled: false,
+        }
+    }
+
+    pub fn get_melt_settings(&self) -> MeltSettings {
+        let settings = self.get_settings();
+        MeltSettings {
+            methods: vec![MeltMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: CurrencyUnit::Sat,
+                min_amount: Some(Amount::from(settings.min_melt_amount)),
+                max_amount: Some(Amount::from(settings.max_melt_amount)),
+            }],
+            disabled: false,
+        }
     }
 
     pub async fn get_spendable_output_balance(&self) -> Result<Amount, Error> {
