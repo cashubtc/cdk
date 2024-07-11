@@ -58,6 +58,20 @@ impl MintDatabase for MintSqliteDatabase {
     type Err = cdk_database::Error;
 
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        sqlx::query(
+            r#"
+UPDATE keyset
+SET active=FALSE
+WHERE unit IS ?;
+        "#,
+        )
+        .bind(unit.to_string())
+        .bind(id.to_string())
+        .execute(&mut transaction)
+        .await
+        .map_err(Error::from)?;
+
         sqlx::query(
             r#"
 UPDATE keyset
@@ -68,10 +82,11 @@ AND id IS ?;
         )
         .bind(unit.to_string())
         .bind(id.to_string())
-        .execute(&self.pool)
+        .execute(&mut transaction)
         .await
-        // TODO: should check if error is not found and return none
         .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }
