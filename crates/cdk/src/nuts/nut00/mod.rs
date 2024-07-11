@@ -325,6 +325,19 @@ pub enum CurrencyUnit {
     Eur,
 }
 
+#[cfg(feature = "mint")]
+impl CurrencyUnit {
+    /// Derivation index mint will use for unit
+    pub fn derivation_index(&self) -> u32 {
+        match self {
+            Self::Sat => 0,
+            Self::Msat => 1,
+            Self::Usd => 2,
+            Self::Eur => 3,
+        }
+    }
+}
+
 impl FromStr for CurrencyUnit {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {

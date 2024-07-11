@@ -213,14 +213,16 @@ async fn main() -> anyhow::Result<()> {
 
     let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
 
+    let mut supported_units = HashMap::new();
+
+    supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+
     let mint = Mint::new(
         &settings.info.url,
         &mnemonic.to_seed_normalized(""),
         mint_info,
         localstore,
-        absolute_ln_fee_reserve,
-        relative_ln_fee,
-        input_fee_ppk,
+        supported_units,
     )
     .await?;
 
