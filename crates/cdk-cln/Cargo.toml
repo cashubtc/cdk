@@ -7,6 +7,7 @@ homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true # MSRV
 license.workspace = true
+description = "CDK ln backend for cln"
 
 [dependencies]
 async-trait.workspace = true
