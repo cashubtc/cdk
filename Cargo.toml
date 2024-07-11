@@ -25,10 +25,10 @@ async-trait = "0.1.74"
 anyhow = "1"
 bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
 bip39 = "2.0"
-cdk = { version = "0.1", path = "./crates/cdk", default-features = false }
-cdk-rexie = { version = "0.1", path = "./crates/cdk-rexie", default-features = false }
-cdk-sqlite = { version = "0.1", path = "./crates/cdk-sqlite", default-features = false }
-cdk-redb = { version = "0.1", path = "./crates/cdk-redb", default-features = false }
+cdk = { version = "0.2", path = "./crates/cdk", default-features = false }
+cdk-rexie = { version = "0.2", path = "./crates/cdk-rexie", default-features = false }
+cdk-sqlite = { version = "0.2", path = "./crates/cdk-sqlite", default-features = false }
+cdk-redb = { version = "0.2", path = "./crates/cdk-redb", default-features = false }
 cdk-cln = { version = "0.1", path = "./crates/cdk-cln", default-features = false }
 cdk-axum = { version = "0.1", path = "./crates/cdk-axum", default-features = false }
 tokio = { version = "1", default-features = false }
