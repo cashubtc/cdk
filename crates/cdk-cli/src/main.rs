@@ -32,7 +32,7 @@ struct Cli {
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
-    /// Log level
+    /// Logging level
     #[arg(short, long, default_value = "error")]
     log_level: Level,
     #[command(subcommand)]
