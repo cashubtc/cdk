@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 
 /// Amount can be any unit
-/// For unit safety with Bitcoin, `from_sat` and `to_sat` or `from_msat` and `to_msat` should be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Amount(u64);
@@ -18,36 +17,6 @@ pub struct Amount(u64);
 impl Amount {
     /// Amount zero
     pub const ZERO: Amount = Amount(0);
-
-    /// From satoshis
-    pub fn from_sat(satoshis: u64) -> Self {
-        Self(satoshis * 1000)
-    }
-
-    /// To satoshis
-    pub fn to_sat(&self) -> u64 {
-        self.0 / 1000
-    }
-
-    /// To satoshis Amount
-    pub fn to_sat_amount(&self) -> Amount {
-        Amount(self.to_sat())
-    }
-
-    /// From millisatoshis
-    pub fn from_msat(millisatoshis: u64) -> Self {
-        Self(millisatoshis)
-    }
-
-    /// To millisatoshis
-    pub fn to_msat(&self) -> u64 {
-        self.0
-    }
-
-    /// To millisatoshis Amount
-    pub fn to_msat_amount(&self) -> Amount {
-        Amount(self.to_msat())
-    }
 
     /// Split into parts that are powers of two
     pub fn split(&self) -> Vec<Self> {

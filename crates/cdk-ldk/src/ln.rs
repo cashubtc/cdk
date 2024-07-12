@@ -1052,10 +1052,10 @@ impl MintLightning for Node {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: true,
-            min_mint_amount: Amount::from_sat(1),
-            max_mint_amount: Amount::from_sat(10_000_000),
-            min_melt_amount: Amount::from_sat(1),
-            max_melt_amount: Amount::from_sat(10_000_000),
+            min_mint_amount: Amount::from(1),
+            max_mint_amount: Amount::from(10_000_000),
+            min_melt_amount: Amount::from(1),
+            max_melt_amount: Amount::from(10_000_000),
             unit: CurrencyUnit::Sat,
             mint_enabled: true,
             melt_enabled: true,
@@ -1075,7 +1075,7 @@ impl MintLightning for Node {
             self.keys_manager.clone(),
             self.logger.clone(),
             self.network.into(),
-            Some(amount.to_msat()),
+            Some(Into::<u64>::into(amount) * 1000),
             description.to_string(),
             expiry as u32,
             None,
@@ -1094,21 +1094,21 @@ impl MintLightning for Node {
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         Ok(PaymentQuoteResponse {
             request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
-            amount: Amount::from_msat(
-                melt_quote_request
-                    .request
-                    .amount_milli_satoshis()
-                    .unwrap_or_default(),
-            )
-            .to_sat_amount(),
-            fee: Amount::from_msat(
+            amount: Amount::from(
                 melt_quote_request
                     .request
                     .amount_milli_satoshis()
                     .unwrap_or_default()
+                    / 1000,
+            ),
+            fee: Amount::from(
+                melt_quote_request
+                    .request
+                    .amount_milli_satoshis()
+                    .unwrap_or_default()
+                    / 1000
                     / 100,
-            )
-            .to_sat_amount(), // TODO: estimate fee
+            ), // TODO: estimate fee
         })
     }
 
@@ -1120,14 +1120,15 @@ impl MintLightning for Node {
     ) -> Result<PayInvoiceResponse, Self::Err> {
         tracing::info!("Paying invoice: {}", melt_quote.request);
         let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
-        let amount = partial_amount
-            .or(bolt11.amount_milli_satoshis().map(Amount::from_msat))
+        let amount_msats = partial_amount
+            .map(|a| Into::<u64>::into(a) * 1000)
+            .or(bolt11.amount_milli_satoshis())
             .ok_or(map_err("No amount"))?;
         let (payment_hash, recipient_onion, mut route_params) =
             payment_parameters_from_invoice(&bolt11)
                 .map_err(|_| map_err("Error extracting payment parameters"))?;
         self.db
-            .insert_payment(&bolt11, amount)
+            .insert_payment(&bolt11, Amount::from(amount_msats / 1000))
             .await
             .map_err(map_err)?;
         let (tx, rx) = oneshot::channel();
@@ -1135,8 +1136,8 @@ impl MintLightning for Node {
         inflight_payments.insert(payment_hash, tx);
         drop(inflight_payments);
 
-        route_params.final_value_msat = amount.to_msat();
-        route_params.max_total_routing_fee_msat = max_fee.map(|f| f.to_msat());
+        route_params.final_value_msat = amount_msats;
+        route_params.max_total_routing_fee_msat = max_fee.map(|f| Into::<u64>::into(f) * 1000);
         self.channel_manager
             .send_payment(
                 payment_hash,

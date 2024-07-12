@@ -76,10 +76,10 @@ impl MintLightning for Cln {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: true,
-            min_mint_amount: Amount::from_msat(self.min_mint_amount),
-            max_mint_amount: Amount::from_msat(self.max_mint_amount),
-            min_melt_amount: Amount::from_msat(self.min_melt_amount),
-            max_melt_amount: Amount::from_msat(self.max_melt_amount),
+            min_mint_amount: self.min_mint_amount.into(),
+            max_mint_amount: self.max_mint_amount.into(),
+            min_melt_amount: self.min_melt_amount.into(),
+            max_melt_amount: self.max_melt_amount.into(),
             unit: CurrencyUnit::Msat,
             mint_enabled: self.mint_enabled,
             melt_enabled: self.melt_enabled,
@@ -151,8 +151,8 @@ impl MintLightning for Cln {
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
-            amount: Amount::from_msat(amount),
-            fee: Amount::from_msat(fee),
+            amount: amount.into(),
+            fee: fee.into(),
         })
     }
 
@@ -191,9 +191,9 @@ impl MintLightning for Cln {
                 exemptfee: None,
                 localinvreqid: None,
                 exclude: None,
-                maxfee: max_fee.map(|v| CLN_Amount::from_msat(v.to_msat())),
+                maxfee: max_fee.map(|v| CLN_Amount::from_msat(v.into())),
                 description: None,
-                partial_msat: partial_amount.map(|v| CLN_Amount::from_msat(v.to_msat())),
+                partial_msat: partial_amount.map(|v| CLN_Amount::from_msat(v.into())),
             }))
             .await
             .map_err(Error::from)?;
@@ -209,7 +209,7 @@ impl MintLightning for Cln {
                     payment_preimage: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_hash: pay_response.payment_hash.to_string(),
                     status,
-                    total_spent: Amount::from_msat(pay_response.amount_sent_msat.msat()),
+                    total_spent: pay_response.amount_sent_msat.msat().into(),
                 }
             }
             _ => {
@@ -233,7 +233,7 @@ impl MintLightning for Cln {
         let mut cln_client = self.cln_client.lock().await;
 
         let label = Uuid::new_v4().to_string();
-        let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.to_msat()));
+        let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.into()));
         let cln_response = cln_client
             .call(cln_rpc::Request::Invoice(InvoiceRequest {
                 amount_msat,

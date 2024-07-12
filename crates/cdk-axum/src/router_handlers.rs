@@ -4,7 +4,6 @@ use anyhow::Result;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::amount::Amount;
 use cdk::cdk_lightning::to_unit;
 use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
@@ -67,16 +66,11 @@ pub async fn get_mint_bolt11_quote(
             tracing::error!("Backed does not support unit: {}", err);
             into_response(Error::UnsupportedUnit)
         })?;
-    let amount = match payload.unit {
-        CurrencyUnit::Sat => Amount::from_sat(amount),
-        CurrencyUnit::Msat => Amount::from_msat(amount),
-        _ => Amount::from(amount),
-    };
 
     let quote_expiry = unix_time() + state.quote_ttl;
 
     let create_invoice_response = ln
-        .create_invoice(amount, "".to_string(), quote_expiry)
+        .create_invoice(amount.into(), "".to_string(), quote_expiry)
         .await
         .map_err(|err| {
             tracing::error!("Could not create invoice: {}", err);
@@ -357,11 +351,23 @@ pub async fn post_melt_bolt11(
                     into_response(Error::UnsupportedUnit)
                 })?;
 
+            let partial_amount = partial_msats
+                .map(|partial_msats| {
+                    to_unit(partial_msats, &CurrencyUnit::Msat, &ln.get_settings().unit)
+                        .map_err(|_| into_response(Error::UnsupportedUnit))
+                })
+                .transpose()?;
+            let max_fee = max_fee_msats
+                .map(|max_fee_msats| {
+                    to_unit(max_fee_msats, &CurrencyUnit::Msat, &ln.get_settings().unit)
+                        .map_err(|_| into_response(Error::UnsupportedUnit))
+                })
+                .transpose()?;
             let pre = match ln
                 .pay_invoice(
                     quote.clone(),
-                    partial_msats.map(|v| Amount::from_msat(v)),
-                    max_fee_msats.map(|v| Amount::from_msat(v)),
+                    partial_amount.map(|v| v.into()),
+                    max_fee.map(|v| v.into()),
                 )
                 .await
             {
@@ -381,7 +387,10 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            (pre.payment_preimage, pre.total_spent)
+            let amount_spent = to_unit(pre.total_spent, &ln.get_settings().unit, &quote.unit)
+                .map_err(|_| into_response(Error::UnsupportedUnit))?;
+
+            (pre.payment_preimage, amount_spent.into())
         }
     };
 
