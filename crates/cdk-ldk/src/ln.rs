@@ -34,7 +34,7 @@ use cdk::{
     },
     secp256k1::rand::random,
     util::{hex, unix_time},
-    Bolt11Invoice, Sha256,
+    Bolt11Invoice,
 };
 use chrono::{DateTime, Utc};
 use futures::Stream;
@@ -1081,11 +1081,9 @@ impl MintLightning for Node {
             None,
         )
         .map_err(map_err)?;
-        let payment_hash =
-            Sha256::from_str(&invoice.payment_hash().to_string()).map_err(map_err)?;
         self.db.insert_invoice(&invoice).await.map_err(map_err)?;
         Ok(CreateInvoiceResponse {
-            request_lookup_id: payment_hash.to_string(),
+            request_lookup_id: invoice.payment_hash().to_string(),
             request: invoice,
         })
     }
