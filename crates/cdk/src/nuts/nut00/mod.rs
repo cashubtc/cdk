@@ -325,6 +325,19 @@ pub enum CurrencyUnit {
     Eur,
 }
 
+#[cfg(feature = "mint")]
+impl CurrencyUnit {
+    /// Derivation index mint will use for unit
+    pub fn derivation_index(&self) -> u32 {
+        match self {
+            Self::Sat => 0,
+            Self::Msat => 1,
+            Self::Usd => 2,
+            Self::Eur => 3,
+        }
+    }
+}
+
 impl FromStr for CurrencyUnit {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -444,20 +457,30 @@ impl PartialOrd for PreMint {
 }
 
 /// Premint Secrets
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreMintSecrets {
     /// Secrets
     pub secrets: Vec<PreMint>,
+    /// Keyset Id
+    pub keyset_id: Id,
 }
 
 impl PreMintSecrets {
+    /// Create new [`PreMintSecrets`]
+    pub fn new(keyset_id: Id) -> Self {
+        Self {
+            secrets: Vec::new(),
+            keyset_id,
+        }
+    }
+
     /// Outputs for speceifed amount with random secret
     pub fn random(
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target);
+        let amount_split = amount.split_targeted(amount_split_target)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -475,7 +498,10 @@ impl PreMintSecrets {
             });
         }
 
-        Ok(PreMintSecrets { secrets: output })
+        Ok(PreMintSecrets {
+            secrets: output,
+            keyset_id,
+        })
     }
 
     /// Outputs from pre defined secrets
@@ -499,7 +525,10 @@ impl PreMintSecrets {
             });
         }
 
-        Ok(PreMintSecrets { secrets: output })
+        Ok(PreMintSecrets {
+            secrets: output,
+            keyset_id,
+        })
     }
 
     /// Blank Outputs used for NUT-08 change
@@ -522,7 +551,10 @@ impl PreMintSecrets {
             })
         }
 
-        Ok(PreMintSecrets { secrets: output })
+        Ok(PreMintSecrets {
+            secrets: output,
+            keyset_id,
+        })
     }
 
     /// Outputs with specific spending conditions
@@ -532,7 +564,7 @@ impl PreMintSecrets {
         amount_split_target: &SplitTarget,
         conditions: &SpendingConditions,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target);
+        let amount_split = amount.split_targeted(amount_split_target)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -552,7 +584,10 @@ impl PreMintSecrets {
             });
         }
 
-        Ok(PreMintSecrets { secrets: output })
+        Ok(PreMintSecrets {
+            secrets: output,
+            keyset_id,
+        })
     }
 
     /// Iterate over secrets

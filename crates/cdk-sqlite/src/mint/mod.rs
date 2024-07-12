@@ -58,6 +58,20 @@ impl MintDatabase for MintSqliteDatabase {
     type Err = cdk_database::Error;
 
     async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        sqlx::query(
+            r#"
+UPDATE keyset
+SET active=FALSE
+WHERE unit IS ?;
+        "#,
+        )
+        .bind(unit.to_string())
+        .bind(id.to_string())
+        .execute(&mut transaction)
+        .await
+        .map_err(Error::from)?;
+
         sqlx::query(
             r#"
 UPDATE keyset
@@ -68,10 +82,11 @@ AND id IS ?;
         )
         .bind(unit.to_string())
         .bind(id.to_string())
-        .execute(&self.pool)
+        .execute(&mut transaction)
         .await
-        // TODO: should check if error is not found and return none
         .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }
@@ -407,9 +422,9 @@ WHERE id=?
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT INTO keyset
-(id, unit, active, valid_from, valid_to, derivation_path, max_order)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO keyset
+(id, unit, active, valid_from, valid_to, derivation_path, max_order, input_fee_ppk, derivation_path_index)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(keyset.id.to_string())
@@ -419,6 +434,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(keyset.valid_to.map(|v| v as i64))
         .bind(keyset.derivation_path.to_string())
         .bind(keyset.max_order)
+        .bind(keyset.input_fee_ppk as i64)
+            .bind(keyset.derivation_path_index)
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -714,6 +731,9 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
     let row_valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
     let row_derivation_path: String = row.try_get("derivation_path").map_err(Error::from)?;
     let row_max_order: u8 = row.try_get("max_order").map_err(Error::from)?;
+    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
+    let row_derivation_path_index: Option<i64> =
+        row.try_get("derivation_path_index").map_err(Error::from)?;
 
     Ok(MintKeySetInfo {
         id: Id::from_str(&row_id).map_err(Error::from)?,
@@ -722,7 +742,9 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
         valid_from: row_valid_from as u64,
         valid_to: row_valid_to.map(|v| v as u64),
         derivation_path: DerivationPath::from_str(&row_derivation_path).map_err(Error::from)?,
+        derivation_path_index: row_derivation_path_index.map(|d| d as u32),
         max_order: row_max_order,
+        input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
     })
 }
 

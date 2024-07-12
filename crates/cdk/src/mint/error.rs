@@ -20,6 +20,9 @@ pub enum Error {
     /// Amount is not what is expected
     #[error("Amount")]
     Amount,
+    /// Not engough inputs provided
+    #[error("Inputs: `{0}`, Outputs: `{0}`, Fee: `{0}`")]
+    InsufficientInputs(u64, u64, u64),
     /// Duplicate proofs provided
     #[error("Duplicate proofs")]
     DuplicateProofs,

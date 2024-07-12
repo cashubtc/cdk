@@ -5,6 +5,7 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, SecretKey, SpendingConditions};
+use cdk::wallet::types::SendKind;
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use rand::Rng;
@@ -19,7 +20,7 @@ async fn main() -> Result<(), Error> {
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
 
     let quote = wallet.mint_quote(amount).await.unwrap();
 
@@ -47,7 +48,14 @@ async fn main() -> Result<(), Error> {
     let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
 
     let token = wallet
-        .send(amount, None, Some(spending_conditions), &SplitTarget::None)
+        .send(
+            amount,
+            None,
+            Some(spending_conditions),
+            &SplitTarget::None,
+            &SendKind::default(),
+            false,
+        )
         .await
         .unwrap();
 
@@ -55,7 +63,7 @@ async fn main() -> Result<(), Error> {
     println!("{}", token);
 
     let amount = wallet
-        .receive(&token, &SplitTarget::default(), &[secret], &[])
+        .receive(&token, SplitTarget::default(), &[secret], &[])
         .await
         .unwrap();
 

@@ -28,6 +28,7 @@ use cli::CLIArgs;
 use config::{DatabaseEngine, LnBackend};
 use futures::StreamExt;
 use tower_http::cors::CorsLayer;
+use tracing_subscriber::EnvFilter;
 
 mod cli;
 mod config;
@@ -37,9 +38,13 @@ const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
+    let default_filter = "debug";
+
+    let sqlx_filter = "sqlx=warn";
+
+    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let args = CLIArgs::parse();
 
@@ -206,13 +211,18 @@ async fn main() -> anyhow::Result<()> {
 
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
+    let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
+
+    let mut supported_units = HashMap::new();
+
+    supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+
     let mint = Mint::new(
         &settings.info.url,
         &mnemonic.to_seed_normalized(""),
         mint_info,
         localstore,
-        absolute_ln_fee_reserve,
-        relative_ln_fee,
+        supported_units,
     )
     .await?;
 

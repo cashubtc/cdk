@@ -7,6 +7,7 @@ homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true # MSRV
 license.workspace = true
+description = "CDK mint binary"
 
 [dependencies]
 anyhow = "1.0.75"
@@ -21,7 +22,7 @@ config = { version = "0.13.3", features = ["toml"] }
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber = "0.3.18"
+tracing-subscriber.workspace = true
 futures = "0.3.28"
 serde.workspace = true
 bip39.workspace = true

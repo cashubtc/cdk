@@ -32,7 +32,13 @@ pub async fn mint(
     let mint_url = sub_command_args.mint_url.clone();
     let wallet = match wallets.get(&mint_url) {
         Some(wallet) => wallet.clone(),
-        None => Wallet::new(&mint_url.to_string(), CurrencyUnit::Sat, localstore, seed),
+        None => Wallet::new(
+            &mint_url.to_string(),
+            CurrencyUnit::Sat,
+            localstore,
+            seed,
+            None,
+        ),
     };
 
     let quote = wallet

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::instrument;
 
+use super::types::SendKind;
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::nuts::{CurrencyUnit, SecretKey, SpendingConditions, Token};
@@ -122,6 +123,8 @@ impl MultiMintWallet {
         amount: Amount,
         memo: Option<String>,
         conditions: Option<SpendingConditions>,
+        send_kind: SendKind,
+        include_fees: bool,
     ) -> Result<String, Error> {
         let wallet = self
             .get_wallet(wallet_key)
@@ -129,7 +132,14 @@ impl MultiMintWallet {
             .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
 
         wallet
-            .send(amount, memo, conditions, &SplitTarget::default())
+            .send(
+                amount,
+                memo,
+                conditions,
+                &SplitTarget::default(),
+                &send_kind,
+                include_fees,
+            )
             .await
     }
 
@@ -228,12 +238,7 @@ impl MultiMintWallet {
                 .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
 
             let amount = wallet
-                .receive_proofs(
-                    proofs,
-                    &SplitTarget::default(),
-                    p2pk_signing_keys,
-                    preimages,
-                )
+                .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
                 .await?;
 
             amount_received += amount;

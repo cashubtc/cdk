@@ -211,14 +211,15 @@ FROM mint
             sqlx::query(
                 r#"
 INSERT OR REPLACE INTO keyset
-(mint_url, id, unit, active)
-VALUES (?, ?, ?, ?);
+(mint_url, id, unit, active, input_fee_ppk)
+VALUES (?, ?, ?, ?, ?);
         "#,
             )
             .bind(mint_url.to_string())
             .bind(keyset.id.to_string())
             .bind(keyset.unit.to_string())
             .bind(keyset.active)
+            .bind(keyset.input_fee_ppk as i64)
             .execute(&self.pool)
             .await
             .map_err(Error::from)?;
@@ -708,11 +709,13 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
     let row_id: String = row.try_get("id").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let active: bool = row.try_get("active").map_err(Error::from)?;
+    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
 
     Ok(KeySetInfo {
         id: Id::from_str(&row_id)?,
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         active,
+        input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
     })
 }
 

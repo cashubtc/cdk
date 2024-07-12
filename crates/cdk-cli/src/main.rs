@@ -14,6 +14,7 @@ use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
 use rand::Rng;
 use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 mod sub_commands;
 
@@ -69,11 +70,15 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse input
     let args: Cli = Cli::parse();
-    tracing_subscriber::fmt()
-        .with_max_level(args.log_level)
-        .init();
+    let default_filter = args.log_level;
+
+    let sqlx_filter = "sqlx=warn";
+
+    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+
+    // Parse input
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let work_dir = match &args.work_dir {
         Some(work_dir) => work_dir.clone(),
@@ -131,6 +136,7 @@ async fn main() -> Result<()> {
             cdk::nuts::CurrencyUnit::Sat,
             localstore.clone(),
             &mnemonic.to_seed_normalized(""),
+            None,
         );
 
         wallets.insert(mint, wallet);

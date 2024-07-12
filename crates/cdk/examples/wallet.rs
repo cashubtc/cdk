@@ -6,6 +6,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::wallet::types::SendKind;
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use rand::Rng;
@@ -21,7 +22,7 @@ async fn main() {
 
     let localstore = WalletMemoryDatabase::default();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
 
     let quote = wallet.mint_quote(amount).await.unwrap();
 
@@ -47,7 +48,14 @@ async fn main() {
     println!("Minted {}", receive_amount);
 
     let token = wallet
-        .send(amount, None, None, &SplitTarget::None)
+        .send(
+            amount,
+            None,
+            None,
+            &SplitTarget::None,
+            &SendKind::default(),
+            false,
+        )
         .await
         .unwrap();
 
