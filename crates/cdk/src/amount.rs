@@ -29,6 +29,11 @@ impl Amount {
         self.0 / 1000
     }
 
+    /// To satoshis Amount
+    pub fn to_sat_amount(&self) -> Amount {
+        Amount(self.to_sat())
+    }
+
     /// From millisatoshis
     pub fn from_msat(millisatoshis: u64) -> Self {
         Self(millisatoshis)
@@ -37,6 +42,11 @@ impl Amount {
     /// To millisatoshis
     pub fn to_msat(&self) -> u64 {
         self.0
+    }
+
+    /// To millisatoshis Amount
+    pub fn to_msat_amount(&self) -> Amount {
+        Amount(self.to_msat())
     }
 
     /// Split into parts that are powers of two

@@ -1099,14 +1099,16 @@ impl MintLightning for Node {
                     .request
                     .amount_milli_satoshis()
                     .unwrap_or_default(),
-            ),
+            )
+            .to_sat_amount(),
             fee: Amount::from_msat(
                 melt_quote_request
                     .request
                     .amount_milli_satoshis()
                     .unwrap_or_default()
                     / 100,
-            ), // TODO: estimate fee
+            )
+            .to_sat_amount(), // TODO: estimate fee
         })
     }
 
