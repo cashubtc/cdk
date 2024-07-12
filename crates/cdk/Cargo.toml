@@ -6,7 +6,7 @@ authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 homepage.workspace = true
 repository.workspace = true
-rust-version.workspace = true                                                      # MSRV
+rust-version.workspace = true # MSRV
 license.workspace = true
 
 
@@ -38,9 +38,9 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde.workspace = true
 serde_json.workspace = true
 serde_with = "3.4"
-futures = { workspace = true, optional = true }
 tracing.workspace = true
 thiserror.workspace = true
+futures = { workspace = true, optional = true }
 url = "2.3"
 uuid.workspace = true
 

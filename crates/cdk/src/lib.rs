@@ -3,8 +3,6 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-pub use bitcoin::hashes::sha256::Hash as Sha256;
-
 pub mod amount;
 pub mod cdk_database;
 #[cfg(feature = "mint")]

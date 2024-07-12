@@ -108,22 +108,6 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.mint_quotes.read().await.get(quote_id).cloned())
     }
 
-    async fn get_mint_quote_by_request(
-        &self,
-        request: &str,
-    ) -> Result<Option<MintQuote>, Self::Err> {
-        let quotes = self.get_mint_quotes().await?;
-
-        let quote = quotes
-            .into_iter()
-            .filter(|q| q.request.eq(request))
-            .collect::<Vec<MintQuote>>()
-            .first()
-            .cloned();
-
-        Ok(quote)
-    }
-
     async fn update_mint_quote_state(
         &self,
         quote_id: &str,
@@ -154,6 +138,21 @@ impl MintDatabase for MintMemoryDatabase {
         let quote = quotes
             .into_iter()
             .filter(|q| q.request_lookup_id.eq(request))
+            .collect::<Vec<MintQuote>>()
+            .first()
+            .cloned();
+
+        Ok(quote)
+    }
+    async fn get_mint_quote_by_request(
+        &self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        let quotes = self.get_mint_quotes().await?;
+
+        let quote = quotes
+            .into_iter()
+            .filter(|q| q.request.eq(request))
             .collect::<Vec<MintQuote>>()
             .first()
             .cloned();
