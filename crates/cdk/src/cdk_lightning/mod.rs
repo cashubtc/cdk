@@ -8,8 +8,8 @@ use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::mint;
 use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use crate::{mint, Amount};
 
 /// CDK Lightning Error
 #[derive(Debug, Error)]
@@ -49,7 +49,7 @@ pub trait MintLightning {
     /// Create a new invoice
     async fn create_invoice(
         &self,
-        amount: u64,
+        amount: Amount,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err>;
@@ -65,8 +65,8 @@ pub trait MintLightning {
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
-        partial_msats: Option<u64>,
-        max_fee_msats: Option<u64>,
+        partial_amount: Option<Amount>,
+        max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err>;
 
     /// Listen for invoices to be paid to the mint
@@ -100,8 +100,8 @@ pub struct PayInvoiceResponse {
     pub payment_preimage: Option<String>,
     /// Status
     pub status: MeltQuoteState,
-    /// Totoal Amount Spent in msats
-    pub total_spent_msats: u64,
+    /// Total Amount Spent
+    pub total_spent: Amount,
 }
 
 /// Payment quote response
@@ -110,9 +110,9 @@ pub struct PaymentQuoteResponse {
     /// Request look up id
     pub request_lookup_id: String,
     /// Amount
-    pub amount: u64,
+    pub amount: Amount,
     /// Fee required for melt
-    pub fee: u64,
+    pub fee: Amount,
 }
 
 /// Ln backend settings
@@ -121,13 +121,13 @@ pub struct Settings {
     /// MPP supported
     pub mpp: bool,
     /// Min amount to mint
-    pub min_mint_amount: u64,
+    pub min_mint_amount: Amount,
     /// Max amount to mint
-    pub max_mint_amount: u64,
+    pub max_mint_amount: Amount,
     /// Min amount to melt
-    pub min_melt_amount: u64,
+    pub min_melt_amount: Amount,
     /// Max amount to melt
-    pub max_melt_amount: u64,
+    pub max_melt_amount: Amount,
     /// Base unit of backend
     pub unit: CurrencyUnit,
     /// Minting enabled

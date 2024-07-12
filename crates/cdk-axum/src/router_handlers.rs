@@ -4,6 +4,7 @@ use anyhow::Result;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use cdk::amount::Amount;
 use cdk::cdk_lightning::to_unit;
 use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
@@ -66,6 +67,11 @@ pub async fn get_mint_bolt11_quote(
             tracing::error!("Backed does not support unit: {}", err);
             into_response(Error::UnsupportedUnit)
         })?;
+    let amount = match payload.unit {
+        CurrencyUnit::Sat => Amount::from_sat(amount),
+        CurrencyUnit::Msat => Amount::from_msat(amount),
+        _ => Amount::from(amount),
+    };
 
     let quote_expiry = unix_time() + state.quote_ttl;
 
@@ -352,7 +358,11 @@ pub async fn post_melt_bolt11(
                 })?;
 
             let pre = match ln
-                .pay_invoice(quote.clone(), partial_msats, max_fee_msats)
+                .pay_invoice(
+                    quote.clone(),
+                    partial_msats.map(|v| Amount::from_msat(v)),
+                    max_fee_msats.map(|v| Amount::from_msat(v)),
+                )
                 .await
             {
                 Ok(pay) => pay,
@@ -371,10 +381,7 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            let amount_spent = to_unit(pre.total_spent_msats, &ln.get_settings().unit, &quote.unit)
-                .map_err(|_| into_response(Error::UnsupportedUnit))?;
-
-            (pre.payment_preimage, amount_spent.into())
+            (pre.payment_preimage, pre.total_spent)
         }
     };
 

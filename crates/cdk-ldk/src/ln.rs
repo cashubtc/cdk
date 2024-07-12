@@ -1052,10 +1052,10 @@ impl MintLightning for Node {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: true,
-            min_mint_amount: 1,
-            max_mint_amount: 10_000_000,
-            min_melt_amount: 1,
-            max_melt_amount: 10_000_000,
+            min_mint_amount: Amount::from_sat(1),
+            max_mint_amount: Amount::from_sat(10_000_000),
+            min_melt_amount: Amount::from_sat(1),
+            max_melt_amount: Amount::from_sat(10_000_000),
             unit: CurrencyUnit::Sat,
             mint_enabled: true,
             melt_enabled: true,
@@ -1064,7 +1064,7 @@ impl MintLightning for Node {
 
     async fn create_invoice(
         &self,
-        amount: u64,
+        amount: Amount,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -1075,7 +1075,7 @@ impl MintLightning for Node {
             self.keys_manager.clone(),
             self.logger.clone(),
             self.network.into(),
-            Some(amount * 1000),
+            Some(amount.to_msat()),
             description.to_string(),
             expiry as u32,
             None,
@@ -1094,34 +1094,38 @@ impl MintLightning for Node {
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         Ok(PaymentQuoteResponse {
             request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
-            amount: melt_quote_request
-                .request
-                .amount_milli_satoshis()
-                .unwrap_or_default(),
-            fee: melt_quote_request
-                .request
-                .amount_milli_satoshis()
-                .unwrap_or_default()
-                / 100, // TODO: estimate fee
+            amount: Amount::from_msat(
+                melt_quote_request
+                    .request
+                    .amount_milli_satoshis()
+                    .unwrap_or_default(),
+            ),
+            fee: Amount::from_msat(
+                melt_quote_request
+                    .request
+                    .amount_milli_satoshis()
+                    .unwrap_or_default()
+                    / 100,
+            ), // TODO: estimate fee
         })
     }
 
     async fn pay_invoice(
         &self,
         melt_quote: MeltQuote,
-        partial_msats: Option<u64>,
-        max_fee_msats: Option<u64>,
+        partial_amount: Option<Amount>,
+        max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         tracing::info!("Paying invoice: {}", melt_quote.request);
         let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
-        let amount_msat = partial_msats
-            .or(bolt11.amount_milli_satoshis())
+        let amount = partial_amount
+            .or(bolt11.amount_milli_satoshis().map(Amount::from_msat))
             .ok_or(map_err("No amount"))?;
         let (payment_hash, recipient_onion, mut route_params) =
             payment_parameters_from_invoice(&bolt11)
                 .map_err(|_| map_err("Error extracting payment parameters"))?;
         self.db
-            .insert_payment(&bolt11, Amount::from(amount_msat))
+            .insert_payment(&bolt11, amount)
             .await
             .map_err(map_err)?;
         let (tx, rx) = oneshot::channel();
@@ -1129,8 +1133,8 @@ impl MintLightning for Node {
         inflight_payments.insert(payment_hash, tx);
         drop(inflight_payments);
 
-        route_params.final_value_msat = amount_msat;
-        route_params.max_total_routing_fee_msat = max_fee_msats;
+        route_params.final_value_msat = amount.to_msat();
+        route_params.max_total_routing_fee_msat = max_fee.map(|f| f.to_msat());
         self.channel_manager
             .send_payment(
                 payment_hash,
@@ -1150,7 +1154,7 @@ impl MintLightning for Node {
             } else {
                 MeltQuoteState::Unpaid
             },
-            total_spent_msats: payment.spent_msat.into(),
+            total_spent: payment.spent,
         })
     }
 
@@ -1233,7 +1237,7 @@ struct Payment {
     bolt_11: String,
     amount: Amount,
     paid: bool,
-    spent_msat: Amount,
+    spent: Amount,
     pre_image: Option<[u8; 32]>,
 }
 
@@ -1434,7 +1438,7 @@ impl NodeDatabase {
                     bolt_11: invoice.to_string(),
                     amount,
                     paid: false,
-                    spent_msat: Amount::ZERO,
+                    spent: Amount::ZERO,
                     pre_image: None,
                 },
             )?;
@@ -1459,7 +1463,7 @@ impl NodeDatabase {
         if let Some(payment) = payment.as_mut() {
             let mut table = write_txn.open_table(PAYMENTS_TABLE)?;
             payment.paid = true;
-            payment.spent_msat = payment.amount + fee_paid;
+            payment.spent = payment.amount + fee_paid;
             payment.pre_image = Some(pre_image.0);
             table.insert(payment_hash.0, payment)?;
         }
