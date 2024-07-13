@@ -4,7 +4,6 @@ use cdk::nuts::PublicKey;
 use cdk::Amount;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Info {
@@ -83,7 +82,7 @@ impl Settings {
         match from_file {
             Ok(f) => f,
             Err(e) => {
-                warn!("Error reading config file ({:?})", e);
+                tracing::warn!("Error reading config file ({:?})", e);
                 default_settings
             }
         }
@@ -110,8 +109,6 @@ impl Settings {
             .add_source(File::with_name(&config))
             .build()?;
         let settings: Settings = config.try_deserialize()?;
-
-        debug!("{settings:?}");
 
         match settings.ln.ln_backend {
             LnBackend::Cln => assert!(settings.ln.cln_path.is_some()),
