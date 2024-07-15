@@ -2,7 +2,9 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(feature = "mint")]
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::{fmt, vec};
 
@@ -16,7 +18,9 @@ use thiserror::Error;
 
 use super::nut00::Witness;
 use super::nut01::PublicKey;
-use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
+#[cfg(feature = "mint")]
+use super::Proofs;
+use super::{Kind, Nut10Secret, Proof, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;
 use crate::util::{hex, unix_time};
@@ -501,7 +505,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
 
         let sig_flag = if let Some(tag) = tags.get(&TagKind::SigFlag) {
             match tag {
-                Tag::SigFlag(sigflag) => sigflag.clone(),
+                Tag::SigFlag(sigflag) => *sigflag,
                 _ => SigFlag::SigInputs,
             }
         } else {
@@ -610,6 +614,7 @@ impl FromStr for SigFlag {
     }
 }
 
+#[cfg(feature = "mint")]
 /// Get the signature flag that should be enforced for a set of proofs and the public keys that signatures are valid for
 pub(crate) fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
     let mut sig_flag = SigFlag::SigInputs;
@@ -650,6 +655,7 @@ pub(crate) fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
     }
 }
 
+#[cfg(feature = "mint")]
 /// Enforce Sigflag info
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnforceSigFlag {
