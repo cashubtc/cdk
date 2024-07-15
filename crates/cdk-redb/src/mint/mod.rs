@@ -518,32 +518,54 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
+    async fn get_spent_proofs_by_ys(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(SPENT_PROOFS_TABLE)
             .map_err(Error::from)?;
 
-        match table.get(y.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
+        let mut proofs = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            match table.get(y.to_bytes()).map_err(Error::from)? {
+                Some(proof) => proofs.push(Some(
+                    serde_json::from_str(proof.value()).map_err(Error::from)?,
+                )),
+                None => proofs.push(None),
+            }
         }
+
+        Ok(proofs)
     }
 
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
+    async fn get_spent_proofs_by_secrets(
+        &self,
+        secrets: &[Secret],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(SPENT_PROOFS_TABLE)
             .map_err(Error::from)?;
 
-        let y: PublicKey = hash_to_curve(&secret.to_bytes())?;
+        let mut proofs = Vec::with_capacity(secrets.len());
 
-        match table.get(y.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
+        for secret in secrets {
+            let y: PublicKey = hash_to_curve(&secret.to_bytes())?;
+
+            match table.get(y.to_bytes()).map_err(Error::from)? {
+                Some(proof) => proofs.push(Some(
+                    serde_json::from_str(proof.value()).map_err(Error::from)?,
+                )),
+                None => proofs.push(None),
+            }
         }
+
+        Ok(proofs)
     }
 
     async fn add_pending_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
@@ -569,35 +591,54 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
+    async fn get_pending_proofs_by_ys(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(PENDING_PROOFS_TABLE)
             .map_err(Error::from)?;
 
-        match table.get(y.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
+        let mut proofs = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            match table.get(y.to_bytes()).map_err(Error::from)? {
+                Some(proof) => proofs.push(Some(
+                    serde_json::from_str(proof.value()).map_err(Error::from)?,
+                )),
+                None => proofs.push(None),
+            }
         }
+
+        Ok(proofs)
     }
 
-    async fn get_pending_proof_by_secret(
+    async fn get_pending_proofs_by_secrets(
         &self,
-        secret: &Secret,
-    ) -> Result<Option<Proof>, Self::Err> {
+        secrets: &[Secret],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(PENDING_PROOFS_TABLE)
             .map_err(Error::from)?;
 
-        let secret_hash = hash_to_curve(&secret.to_bytes())?;
+        let mut proofs = Vec::with_capacity(secrets.len());
 
-        match table.get(secret_hash.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
+        for secret in secrets {
+            let y: PublicKey = hash_to_curve(&secret.to_bytes())?;
+
+            match table.get(y.to_bytes()).map_err(Error::from)? {
+                Some(proof) => proofs.push(Some(
+                    serde_json::from_str(proof.value()).map_err(Error::from)?,
+                )),
+                None => proofs.push(None),
+            }
         }
+
+        Ok(proofs)
     }
 
     async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
