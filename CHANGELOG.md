@@ -21,6 +21,20 @@
 
 -->
 
+
+## [Unreleased]
+
+### Summary
+
+### Changed
+
+### Added
+
+### Fixed
+- cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
+
+### Removed
+
 ## [v0.2.0]
 
 ### Summary
