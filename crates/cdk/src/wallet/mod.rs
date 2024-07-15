@@ -35,6 +35,7 @@ pub mod multi_mint_wallet;
 pub mod types;
 pub mod util;
 
+pub use multi_mint_wallet::MultiMintWallet;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
 /// CDK Wallet

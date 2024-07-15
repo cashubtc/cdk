@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,7 +6,8 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::url::UncheckedUrl;
-use cdk::wallet::Wallet;
+use cdk::wallet::multi_mint_wallet::WalletKey;
+use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk::Amount;
 use clap::Args;
 use tokio::time::sleep;
@@ -24,21 +24,29 @@ pub struct MintSubCommand {
 }
 
 pub async fn mint(
-    wallets: HashMap<UncheckedUrl, Wallet>,
+    multi_mint_wallet: &MultiMintWallet,
     seed: &[u8],
     localstore: Arc<dyn WalletDatabase<Err = Error> + Sync + Send>,
     sub_command_args: &MintSubCommand,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
-    let wallet = match wallets.get(&mint_url) {
+    let wallet = match multi_mint_wallet
+        .get_wallet(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
+        .await
+    {
         Some(wallet) => wallet.clone(),
-        None => Wallet::new(
-            &mint_url.to_string(),
-            CurrencyUnit::Sat,
-            localstore,
-            seed,
-            None,
-        ),
+        None => {
+            let wallet = Wallet::new(
+                &mint_url.to_string(),
+                CurrencyUnit::Sat,
+                localstore,
+                seed,
+                None,
+            );
+
+            multi_mint_wallet.add_wallet(wallet.clone()).await;
+            wallet
+        }
     };
 
     let quote = wallet

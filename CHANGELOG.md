@@ -28,6 +28,7 @@
 
 ### Changed
 - cdk(wallet): `fn send` returns `Token` so the user can use the struct of convert it to a v3 or v4 string.
+- cdk(wallet): Publicly export `MultiMintWallet` ([thesimplekid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).

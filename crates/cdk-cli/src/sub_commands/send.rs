@@ -1,14 +1,14 @@
-use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
-use cdk::nuts::{Conditions, PublicKey, SpendingConditions};
+use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
+use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::types::SendKind;
-use cdk::wallet::Wallet;
-use cdk::{Amount, UncheckedUrl};
+use cdk::wallet::MultiMintWallet;
+use cdk::Amount;
 use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;
@@ -48,10 +48,10 @@ pub struct SendSubCommand {
 }
 
 pub async fn send(
-    wallets: HashMap<UncheckedUrl, Wallet>,
+    multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
-    let mints_amounts = mint_balances(wallets).await?;
+    let mints_amounts = mint_balances(multi_mint_wallet).await?;
 
     println!("Enter mint number to create token");
 
@@ -155,6 +155,10 @@ pub async fn send(
     };
 
     let wallet = mints_amounts[mint_number].0.clone();
+    let wallet = multi_mint_wallet
+        .get_wallet(&WalletKey::new(wallet, CurrencyUnit::Sat))
+        .await
+        .expect("Known wallet");
 
     let send_kind = match (sub_command_args.offline, sub_command_args.tolerance) {
         (true, Some(amount)) => SendKind::OfflineTolerance(Amount::from(amount)),

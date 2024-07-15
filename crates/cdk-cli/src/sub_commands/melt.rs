@@ -1,16 +1,16 @@
-use std::collections::HashMap;
+use std::io;
 use std::io::Write;
 use std::str::FromStr;
-use std::{io, println};
 
 use anyhow::{bail, Result};
-use cdk::wallet::Wallet;
-use cdk::{Bolt11Invoice, UncheckedUrl};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::multi_mint_wallet::{MultiMintWallet, WalletKey};
+use cdk::Bolt11Invoice;
 
 use crate::sub_commands::balance::mint_balances;
 
-pub async fn pay(wallets: HashMap<UncheckedUrl, Wallet>) -> Result<()> {
-    let mints_amounts = mint_balances(wallets).await?;
+pub async fn pay(multi_mint_wallet: MultiMintWallet) -> Result<()> {
+    let mints_amounts = mint_balances(&multi_mint_wallet).await?;
 
     println!("Enter mint number to melt from");
 
@@ -26,6 +26,10 @@ pub async fn pay(wallets: HashMap<UncheckedUrl, Wallet>) -> Result<()> {
     }
 
     let wallet = mints_amounts[mint_number].0.clone();
+    let wallet = multi_mint_wallet
+        .get_wallet(&WalletKey::new(wallet, CurrencyUnit::Sat))
+        .await
+        .expect("Known wallet");
 
     println!("Enter bolt11 invoice request");
 
