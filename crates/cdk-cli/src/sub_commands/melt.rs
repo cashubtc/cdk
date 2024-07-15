@@ -6,11 +6,23 @@ use anyhow::{bail, Result};
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::multi_mint_wallet::{MultiMintWallet, WalletKey};
 use cdk::Bolt11Invoice;
+use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;
 
-pub async fn pay(multi_mint_wallet: MultiMintWallet) -> Result<()> {
-    let mints_amounts = mint_balances(&multi_mint_wallet).await?;
+#[derive(Args)]
+pub struct MeltSubCommand {
+    /// Currency unit e.g. sat
+    #[arg(default_value = "sat")]
+    unit: String,
+}
+
+pub async fn pay(
+    multi_mint_wallet: &MultiMintWallet,
+    sub_command_args: &MeltSubCommand,
+) -> Result<()> {
+    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
 
     println!("Enter mint number to melt from");
 
@@ -26,8 +38,9 @@ pub async fn pay(multi_mint_wallet: MultiMintWallet) -> Result<()> {
     }
 
     let wallet = mints_amounts[mint_number].0.clone();
+
     let wallet = multi_mint_wallet
-        .get_wallet(&WalletKey::new(wallet, CurrencyUnit::Sat))
+        .get_wallet(&WalletKey::new(wallet, unit))
         .await
         .expect("Known wallet");
 

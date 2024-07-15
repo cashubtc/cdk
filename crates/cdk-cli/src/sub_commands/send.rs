@@ -45,13 +45,17 @@ pub struct SendSubCommand {
     /// Amount willing to overpay to avoid a swap
     #[arg(short, long)]
     tolerance: Option<u64>,
+    /// Currency unit e.g. sat
+    #[arg(default_value = "sat")]
+    unit: String,
 }
 
 pub async fn send(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
-    let mints_amounts = mint_balances(multi_mint_wallet).await?;
+    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
 
     println!("Enter mint number to create token");
 
@@ -156,7 +160,7 @@ pub async fn send(
 
     let wallet = mints_amounts[mint_number].0.clone();
     let wallet = multi_mint_wallet
-        .get_wallet(&WalletKey::new(wallet, CurrencyUnit::Sat))
+        .get_wallet(&WalletKey::new(wallet, unit))
         .await
         .expect("Known wallet");
 
