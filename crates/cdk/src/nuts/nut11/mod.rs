@@ -578,7 +578,9 @@ where
 /// Signature flag
 ///
 /// Defined in [NUT11](https://github.com/cashubtc/nuts/blob/main/11.md)
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash,
+)]
 pub enum SigFlag {
     #[default]
     /// Requires valid signatures on all inputs.
@@ -609,9 +611,10 @@ impl FromStr for SigFlag {
 }
 
 /// Get the signature flag that should be enforced for a set of proofs and the public keys that signatures are valid for
-pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<PublicKey>) {
+pub(crate) fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
     let mut sig_flag = SigFlag::SigInputs;
     let mut pubkeys = HashSet::new();
+    let mut sigs_required = 1;
     for proof in proofs {
         if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
             if secret.kind.eq(&Kind::P2PK) {
@@ -626,6 +629,12 @@ pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<PublicKey>) {
                         sig_flag = SigFlag::SigAll;
                     }
 
+                    if let Some(sigs) = conditions.num_sigs {
+                        if sigs > sigs_required {
+                            sigs_required = sigs;
+                        }
+                    }
+
                     if let Some(pubs) = conditions.pubkeys {
                         pubkeys.extend(pubs);
                     }
@@ -634,7 +643,22 @@ pub fn enforce_sig_flag(proofs: Proofs) -> (SigFlag, HashSet<PublicKey>) {
         }
     }
 
-    (sig_flag, pubkeys)
+    EnforceSigFlag {
+        sig_flag,
+        pubkeys,
+        sigs_required,
+    }
+}
+
+/// Enforce Sigflag info
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnforceSigFlag {
+    /// Sigflag required for proofs
+    pub sig_flag: SigFlag,
+    /// Pubkeys that can sign for proofs
+    pub pubkeys: HashSet<PublicKey>,
+    /// Number of sigs required for proofs
+    pub sigs_required: u64,
 }
 
 /// Tag

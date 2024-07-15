@@ -29,9 +29,11 @@
 ### Changed
 
 ### Added
+- cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
+- cdk(mint): On `swap` verify correct number of sigs on outputs when `SigAll` ([thesimplekid]).
 
 ### Removed
 

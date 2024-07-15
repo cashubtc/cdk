@@ -11,6 +11,7 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 
 use self::nut05::QuoteState;
+use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::nuts::nut11::enforce_sig_flag;
@@ -656,12 +657,16 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        let (sig_flag, pubkeys) = enforce_sig_flag(swap_request.inputs.clone());
+        let EnforceSigFlag {
+            sig_flag,
+            pubkeys,
+            sigs_required,
+        } = enforce_sig_flag(swap_request.inputs.clone());
 
         if sig_flag.eq(&SigFlag::SigAll) {
             let pubkeys = pubkeys.into_iter().collect();
-            for blinded_messaage in &swap_request.outputs {
-                blinded_messaage.verify_p2pk(&pubkeys, 1)?;
+            for blinded_message in &swap_request.outputs {
+                blinded_message.verify_p2pk(&pubkeys, sigs_required)?;
             }
         }
 
@@ -819,7 +824,7 @@ impl Mint {
         }
 
         if let Some(outputs) = &melt_request.outputs {
-            let (sig_flag, _pubkeys) = enforce_sig_flag(melt_request.inputs.clone());
+            let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
 
             if sig_flag.eq(&SigFlag::SigAll) {
                 return Err(Error::SigAllUsedInMelt);
