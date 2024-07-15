@@ -963,6 +963,18 @@ impl Wallet {
         .ok_or(Error::InsufficientFunds)
     }
 
+    /// Send specific proofs
+    #[instrument(skip(self))]
+    pub async fn send_proofs(&self, memo: Option<String>, proofs: Proofs) -> Result<String, Error> {
+        for proof in proofs.iter() {
+            self.localstore
+                .set_proof_state(proof.y()?, State::Reserved)
+                .await?;
+        }
+
+        Ok(Token::new(self.mint_url.clone(), proofs, memo, Some(self.unit)).to_string())
+    }
+
     /// Send
     #[instrument(skip(self))]
     pub async fn send(
@@ -1102,13 +1114,7 @@ impl Wallet {
             }
         };
 
-        for proof in send_proofs.iter() {
-            self.localstore
-                .set_proof_state(proof.y()?, State::Reserved)
-                .await?;
-        }
-
-        Ok(Token::new(mint_url.clone(), send_proofs, memo, Some(*unit)).to_string())
+        self.send_proofs(memo, send_proofs).await
     }
 
     /// Melt Quote
