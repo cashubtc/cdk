@@ -219,20 +219,29 @@ pub trait MintDatabase {
 
     /// Add spent [`Proofs`]
     async fn add_spent_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get spent [`Proof`] by secret
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err>;
-    /// Get spent [`Proof`] by y
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err>;
+    /// Get spent [`Proofs`] by secrets
+    async fn get_spent_proofs_by_secrets(
+        &self,
+        secret: &[Secret],
+    ) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get spent [`Proofs`] by ys
+    async fn get_spent_proofs_by_ys(
+        &self,
+        y: &[PublicKey],
+    ) -> Result<Vec<Option<Proof>>, Self::Err>;
 
     /// Add pending [`Proofs`]
     async fn add_pending_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get pending [`Proof`] by secret
-    async fn get_pending_proof_by_secret(
+    /// Get pending [`Proofs`] by secrets
+    async fn get_pending_proofs_by_secrets(
         &self,
-        secret: &Secret,
-    ) -> Result<Option<Proof>, Self::Err>;
-    /// Get pending [`Proof`] by y
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err>;
+        secrets: &[Secret],
+    ) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get pending [`Proofs`] by ys
+    async fn get_pending_proofs_by_ys(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Remove pending [`Proofs`]
     async fn remove_pending_proofs(&self, secret: Vec<&Secret>) -> Result<(), Self::Err>;
 

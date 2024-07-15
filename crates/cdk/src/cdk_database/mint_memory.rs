@@ -223,17 +223,40 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
-        Ok(self
-            .spent_proofs
-            .read()
-            .await
-            .get(&hash_to_curve(&secret.to_bytes())?.to_bytes())
-            .cloned())
+    async fn get_spent_proofs_by_secrets(
+        &self,
+        secrets: &[Secret],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
+        let spent_proofs = self.spent_proofs.read().await;
+
+        let mut proofs = Vec::with_capacity(secrets.len());
+
+        for secret in secrets {
+            let y = hash_to_curve(&secret.to_bytes())?;
+
+            let proof = spent_proofs.get(&y.to_bytes()).cloned();
+
+            proofs.push(proof);
+        }
+
+        Ok(proofs)
     }
 
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
-        Ok(self.spent_proofs.read().await.get(&y.to_bytes()).cloned())
+    async fn get_spent_proofs_by_ys(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
+        let spent_proofs = self.spent_proofs.read().await;
+
+        let mut proofs = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            let proof = spent_proofs.get(&y.to_bytes()).cloned();
+
+            proofs.push(proof);
+        }
+
+        Ok(proofs)
     }
 
     async fn add_pending_proofs(&self, pending_proofs: Proofs) -> Result<(), Self::Err> {
@@ -245,21 +268,40 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn get_pending_proof_by_secret(
+    async fn get_pending_proofs_by_secrets(
         &self,
-        secret: &Secret,
-    ) -> Result<Option<Proof>, Self::Err> {
-        let secret_point = hash_to_curve(&secret.to_bytes())?;
-        Ok(self
-            .pending_proofs
-            .read()
-            .await
-            .get(&secret_point.to_bytes())
-            .cloned())
+        secrets: &[Secret],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
+        let spent_proofs = self.pending_proofs.read().await;
+
+        let mut proofs = Vec::with_capacity(secrets.len());
+
+        for secret in secrets {
+            let y = hash_to_curve(&secret.to_bytes())?;
+
+            let proof = spent_proofs.get(&y.to_bytes()).cloned();
+
+            proofs.push(proof);
+        }
+
+        Ok(proofs)
     }
 
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
-        Ok(self.pending_proofs.read().await.get(&y.to_bytes()).cloned())
+    async fn get_pending_proofs_by_ys(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<Proof>>, Self::Err> {
+        let spent_proofs = self.pending_proofs.read().await;
+
+        let mut proofs = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            let proof = spent_proofs.get(&y.to_bytes()).cloned();
+
+            proofs.push(proof);
+        }
+
+        Ok(proofs)
     }
 
     async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
