@@ -965,14 +965,19 @@ impl Wallet {
 
     /// Send specific proofs
     #[instrument(skip(self))]
-    pub async fn send_proofs(&self, memo: Option<String>, proofs: Proofs) -> Result<String, Error> {
+    pub async fn send_proofs(&self, memo: Option<String>, proofs: Proofs) -> Result<Token, Error> {
         for proof in proofs.iter() {
             self.localstore
                 .set_proof_state(proof.y()?, State::Reserved)
                 .await?;
         }
 
-        Ok(Token::new(self.mint_url.clone(), proofs, memo, Some(self.unit)).to_string())
+        Ok(Token::new(
+            self.mint_url.clone(),
+            proofs,
+            memo,
+            Some(self.unit),
+        ))
     }
 
     /// Send
@@ -985,7 +990,7 @@ impl Wallet {
         amount_split_target: &SplitTarget,
         send_kind: &SendKind,
         include_fees: bool,
-    ) -> Result<String, Error> {
+    ) -> Result<Token, Error> {
         // If online send check mint for current keysets fees
         if matches!(
             send_kind,

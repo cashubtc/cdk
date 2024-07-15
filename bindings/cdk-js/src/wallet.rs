@@ -219,7 +219,8 @@ impl JsWallet {
         let target = split_target_amount
             .map(|a| SplitTarget::Value(*a.deref()))
             .unwrap_or_default();
-        self.inner
+        Ok(self
+            .inner
             .send(
                 Amount::from(amount),
                 memo,
@@ -229,7 +230,8 @@ impl JsWallet {
                 false,
             )
             .await
-            .map_err(into_err)
+            .map_err(into_err)?
+            .to_string())
     }
 
     #[allow(clippy::too_many_arguments)]
