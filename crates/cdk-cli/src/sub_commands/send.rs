@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
-use cdk::nuts::{Conditions, PublicKey, SpendingConditions, Token};
+use cdk::nuts::{Conditions, PublicKey, SpendingConditions};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::Wallet;
 use cdk::{Amount, UncheckedUrl};
@@ -176,7 +176,7 @@ pub async fn send(
 
     match sub_command_args.v3 {
         true => {
-            let token = Token::from_str(&token)?;
+            let token = token;
 
             println!("{}", token.to_v3_string());
         }
