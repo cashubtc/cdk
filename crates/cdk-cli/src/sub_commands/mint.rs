@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,19 +31,15 @@ pub async fn mint(
     sub_command_args: &MintSubCommand,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
+    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+
     let wallet = match multi_mint_wallet
         .get_wallet(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
         .await
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(
-                &mint_url.to_string(),
-                CurrencyUnit::Sat,
-                localstore,
-                seed,
-                None,
-            );
+            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None);
 
             multi_mint_wallet.add_wallet(wallet.clone()).await;
             wallet
