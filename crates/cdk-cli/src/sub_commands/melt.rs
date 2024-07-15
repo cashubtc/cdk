@@ -4,7 +4,6 @@ use std::str::FromStr;
 use std::{io, println};
 
 use anyhow::{bail, Result};
-use cdk::amount::SplitTarget;
 use cdk::wallet::Wallet;
 use cdk::{Bolt11Invoice, UncheckedUrl};
 
@@ -47,7 +46,7 @@ pub async fn pay(wallets: HashMap<UncheckedUrl, Wallet>) -> Result<()> {
 
     println!("{:?}", quote);
 
-    let melt = wallet.melt(&quote.id, SplitTarget::default()).await?;
+    let melt = wallet.melt(&quote.id).await?;
 
     println!("Paid invoice: {}", melt.state);
     if let Some(preimage) = melt.preimage {

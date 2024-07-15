@@ -267,7 +267,7 @@ impl MultiMintWallet {
             }
         }
 
-        wallet.melt(&quote.id, SplitTarget::default()).await
+        wallet.melt(&quote.id).await
     }
 
     /// Restore
