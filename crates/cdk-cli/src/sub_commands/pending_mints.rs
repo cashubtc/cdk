@@ -1,16 +1,12 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
-use cdk::wallet::Wallet;
-use cdk::{Amount, UncheckedUrl};
+use cdk::wallet::MultiMintWallet;
+use cdk::Amount;
 
-pub async fn mint_pending(wallets: HashMap<UncheckedUrl, Wallet>) -> Result<()> {
-    let mut amount_claimed = Amount::ZERO;
-    for wallet in wallets.values() {
-        let claimed = wallet.check_all_mint_quotes().await?;
-        amount_claimed += claimed;
-    }
+pub async fn mint_pending(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
+    let amounts = multi_mint_wallet.check_all_mint_quotes(None).await?;
 
-    println!("Amount minted: {amount_claimed}");
+    let amount = amounts.into_values().sum::<Amount>();
+
+    println!("Amount minted: {amount}");
     Ok(())
 }
