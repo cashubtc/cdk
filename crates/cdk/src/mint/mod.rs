@@ -819,13 +819,10 @@ impl Mint {
         }
 
         if let Some(outputs) = &melt_request.outputs {
-            let (sig_flag, pubkeys) = enforce_sig_flag(melt_request.inputs.clone());
+            let (sig_flag, _pubkeys) = enforce_sig_flag(melt_request.inputs.clone());
 
             if sig_flag.eq(&SigFlag::SigAll) {
-                let pubkeys = pubkeys.into_iter().collect();
-                for blinded_messaage in outputs {
-                    blinded_messaage.verify_p2pk(&pubkeys, 1)?;
-                }
+                return Err(Error::SigAllUsedInMelt);
             }
 
             let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();

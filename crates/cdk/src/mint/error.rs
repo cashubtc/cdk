@@ -59,6 +59,9 @@ pub enum Error {
     /// BlindMessage is already signed
     #[error("Blinded Message is already signed")]
     BlindedMessageAlreadySigned,
+    /// Sig all cannot be used in melt
+    #[error("Sig all cannot be used in melt")]
+    SigAllUsedInMelt,
     /// Cashu Error
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),
