@@ -30,6 +30,8 @@
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
+- cdk(wallet): Add `fn send_proofs` that marks proofs as `reserved` and creates token ([thesimplekid]).
+- cdk(wallet): Add `fn melt_proofs` that uses specific proofs for `melt` instead of selecting ([thesimplekid]).
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).

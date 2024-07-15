@@ -1187,11 +1187,10 @@ impl Wallet {
         Ok(response)
     }
 
-    /// Melt
+    /// Melt specific proofs
     #[instrument(skip(self))]
-    pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
+    pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
-
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
                 return Err(Error::QuoteExpired);
@@ -1202,15 +1201,7 @@ impl Wallet {
             return Err(Error::QuoteUnknown);
         };
 
-        let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
-
-        let available_proofs = self.get_proofs().await?;
-
-        let input_proofs = self
-            .select_proofs_to_swap(inputs_needed_amount, available_proofs)
-            .await?;
-
-        for proof in input_proofs.iter() {
+        for proof in proofs.iter() {
             self.localstore
                 .set_proof_state(proof.y()?, State::Pending)
                 .await?;
@@ -1237,7 +1228,7 @@ impl Wallet {
             .post_melt(
                 self.mint_url.clone().try_into()?,
                 quote_id.to_string(),
-                input_proofs.clone(),
+                proofs.clone(),
                 Some(premint_secrets.blinded_messages()),
             )
             .await;
@@ -1248,7 +1239,7 @@ impl Wallet {
                 tracing::error!("Could not melt: {}", err);
                 tracing::info!("Checking status of input proofs.");
 
-                self.reclaim_unspent(input_proofs).await?;
+                self.reclaim_unspent(proofs).await?;
 
                 return Err(err);
             }
@@ -1309,9 +1300,35 @@ impl Wallet {
 
         self.localstore.remove_melt_quote(&quote_info.id).await?;
 
-        self.localstore.remove_proofs(&input_proofs).await?;
+        self.localstore.remove_proofs(&proofs).await?;
 
         Ok(melted)
+    }
+
+    /// Melt
+    #[instrument(skip(self))]
+    pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
+        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+
+        let quote_info = if let Some(quote) = quote_info {
+            if quote.expiry.le(&unix_time()) {
+                return Err(Error::QuoteExpired);
+            }
+
+            quote.clone()
+        } else {
+            return Err(Error::QuoteUnknown);
+        };
+
+        let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
+
+        let available_proofs = self.get_proofs().await?;
+
+        let input_proofs = self
+            .select_proofs_to_swap(inputs_needed_amount, available_proofs)
+            .await?;
+
+        self.melt_proofs(quote_id, input_proofs).await
     }
 
     /// Select proofs to send
