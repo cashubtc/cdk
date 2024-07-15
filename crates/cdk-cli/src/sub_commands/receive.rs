@@ -46,7 +46,15 @@ pub async fn receive(
         let mut s_keys: Vec<SecretKey> = sub_command_args
             .signing_key
             .iter()
-            .map(|s| SecretKey::from_str(s).unwrap())
+            .flat_map(|s| {
+                if s.starts_with("nsec") {
+                    let nostr_key = nostr_sdk::SecretKey::from_str(s).expect("Invalid secret key");
+
+                    SecretKey::from_str(&nostr_key.to_secret_hex())
+                } else {
+                    SecretKey::from_str(s)
+                }
+            })
             .collect();
         signing_keys.append(&mut s_keys);
     }
@@ -67,7 +75,8 @@ pub async fn receive(
             //wallet.add_p2pk_signing_key(nostr_signing_key).await;
             let nostr_key = match sub_command_args.nostr_key.as_ref() {
                 Some(nostr_key) => {
-                    let secret_key = SecretKey::from_str(nostr_key)?;
+                    let secret_key = nostr_sdk::SecretKey::from_str(nostr_key)?;
+                    let secret_key = SecretKey::from_str(&secret_key.to_secret_hex())?;
                     Some(secret_key)
                 }
                 None => None,
