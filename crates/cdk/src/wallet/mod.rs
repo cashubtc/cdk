@@ -1189,11 +1189,7 @@ impl Wallet {
 
     /// Melt
     #[instrument(skip(self))]
-    pub async fn melt(
-        &self,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-    ) -> Result<Melted, Error> {
+    pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {

@@ -167,16 +167,8 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = melt)]
-    pub async fn melt(
-        &mut self,
-        quote_id: String,
-        split_target_amount: Option<JsAmount>,
-    ) -> Result<JsMelted> {
-        let target = split_target_amount
-            .map(|a| SplitTarget::Value(*a.deref()))
-            .unwrap_or_default();
-
-        let melted = self.inner.melt(&quote_id, target).await.map_err(into_err)?;
+    pub async fn melt(&mut self, quote_id: String) -> Result<JsMelted> {
+        let melted = self.inner.melt(&quote_id).await.map_err(into_err)?;
 
         Ok(melted.into())
     }

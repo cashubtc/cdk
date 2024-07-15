@@ -36,6 +36,7 @@
 - cdk(mint): On `swap` verify correct number of sigs on outputs when `SigAll` ([thesimplekid]).
 
 ### Removed
+- cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).
 
 ## [v0.2.0]
 
