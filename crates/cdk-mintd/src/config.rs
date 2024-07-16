@@ -20,8 +20,8 @@ pub struct Info {
 pub enum LnBackend {
     #[default]
     Cln,
-    //  Greenlight,
-    //  Ldk,
+    FakeWallet, //  Greenlight,
+                //  Ldk,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,6 +114,7 @@ impl Settings {
             LnBackend::Cln => assert!(settings.ln.cln_path.is_some()),
             //LnBackend::Greenlight => (),
             //LnBackend::Ldk => (),
+            LnBackend::FakeWallet => (),
         }
 
         Ok(settings)
