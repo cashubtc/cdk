@@ -131,7 +131,7 @@ pub trait WalletDatabase: Debug {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Vec<ProofInfo>>, Self::Err>;
+    ) -> Result<Vec<ProofInfo>, Self::Err>;
     /// Remove proofs from storage
     async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err>;
 

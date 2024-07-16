@@ -507,7 +507,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, Self::Err> {
         let recs = sqlx::query(
             r#"
 SELECT *
@@ -520,12 +520,10 @@ FROM proof;
         let recs = match recs {
             Ok(rec) => rec,
             Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
+                sqlx::Error::RowNotFound => return Ok(vec![]),
                 _ => return Err(Error::SQLX(err).into()),
             },
         };
-
-        tracing::debug!("{}", recs.len());
 
         let proofs: Vec<ProofInfo> = recs
             .iter()
@@ -547,11 +545,10 @@ FROM proof;
                 }
             })
             .collect();
-        tracing::debug!("{}", proofs.len());
 
         match proofs.is_empty() {
-            false => Ok(Some(proofs)),
-            true => return Ok(None),
+            false => Ok(proofs),
+            true => return Ok(vec![]),
         }
     }
     async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
