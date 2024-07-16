@@ -246,10 +246,10 @@ pub trait MintDatabase {
     async fn remove_pending_proofs(&self, secret: Vec<&Secret>) -> Result<(), Self::Err>;
 
     /// Add [`BlindSignature`]
-    async fn add_blinded_signature(
+    async fn add_blind_signatures(
         &self,
-        blinded_message: PublicKey,
-        blinded_signature: BlindSignature,
+        blinded_messages: &[PublicKey],
+        blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err>;
     /// Get [`BlindSignature`]
     async fn get_blinded_signature(
