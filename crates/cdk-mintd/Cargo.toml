@@ -17,6 +17,7 @@ cdk = { workspace = true, default-features = false, features = ["mint"] }
 cdk-redb = { workspace = true, default-features = false, features = ["mint"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["mint"] }
 cdk-cln = { workspace = true, default-features = false }
+cdk-fake-wallet = { workspace = true, default-features = false }
 cdk-axum = { workspace = true, default-features = false }
 config = { version = "0.13.3", features = ["toml"] }
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }

@@ -34,6 +34,7 @@ buildargs=(
     "-p cdk-sqlite --no-default-features --features wallet"
     "-p cdk-cln"
     "-p cdk-axum"
+    "-p cdk-fake-wallet"
     "--bin cdk-cli"
     "--bin cdk-mintd"
     "--examples"

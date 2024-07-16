@@ -31,6 +31,7 @@ cdk-sqlite = { version = "0.2", path = "./crates/cdk-sqlite", default-features =
 cdk-redb = { version = "0.2", path = "./crates/cdk-redb", default-features = false }
 cdk-cln = { version = "0.1", path = "./crates/cdk-cln", default-features = false }
 cdk-axum = { version = "0.1", path = "./crates/cdk-axum", default-features = false }
+cdk-fake-wallet = { version = "0.1", path = "./crates/cdk-fake-wallet", default-features = false }
 tokio = { version = "1", default-features = false }
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }

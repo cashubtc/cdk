@@ -21,6 +21,7 @@ use cdk::nuts::{
 use cdk::{cdk_lightning, Amount};
 use cdk_axum::LnKey;
 use cdk_cln::Cln;
+use cdk_fake_wallet::FakeWallet;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
@@ -116,23 +117,26 @@ async fn main() -> anyhow::Result<()> {
         min_fee_reserve: absolute_ln_fee_reserve,
         percent_fee_reserve: relative_ln_fee,
     };
-    let ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync> =
-        match settings.ln.ln_backend {
-            LnBackend::Cln => {
-                let cln_socket = expand_path(
-                    settings
-                        .ln
-                        .cln_path
-                        .clone()
-                        .ok_or(anyhow!("cln socket not defined"))?
-                        .to_str()
-                        .ok_or(anyhow!("cln socket not defined"))?,
-                )
-                .ok_or(anyhow!("cln socket not defined"))?;
+    let ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync> = match settings
+        .ln
+        .ln_backend
+    {
+        LnBackend::Cln => {
+            let cln_socket = expand_path(
+                settings
+                    .ln
+                    .cln_path
+                    .clone()
+                    .ok_or(anyhow!("cln socket not defined"))?
+                    .to_str()
+                    .ok_or(anyhow!("cln socket not defined"))?,
+            )
+            .ok_or(anyhow!("cln socket not defined"))?;
 
-                Arc::new(Cln::new(cln_socket, fee_reserve, 1000, 1000000, 1000, 100000).await?)
-            }
-        };
+            Arc::new(Cln::new(cln_socket, fee_reserve, 1000, 1000000, 1000, 100000).await?)
+        }
+        LnBackend::FakeWallet => Arc::new(FakeWallet::new(fee_reserve, 1000, 1000000, 1000, 10000)),
+    };
 
     let mut ln_backends = HashMap::new();
 

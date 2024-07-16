@@ -1,0 +1,24 @@
+[package]
+name = "cdk-fake-wallet"
+version = "0.1.0"
+edition = "2021"
+authors = ["CDK Developers"]
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true # MSRV
+license.workspace = true
+description = "CDK ln backend for cln"
+
+[dependencies]
+async-trait.workspace = true
+bitcoin.workspace = true
+cdk = { workspace = true, default-features = false, features = ["mint"] }
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+lightning-invoice.workspace = true
+lightning = "0.0.123"
+tokio-stream = "0.1.15"
+rand = "0.8.5"
