@@ -231,19 +231,17 @@ impl WalletDatabase for WalletRedbDatabase {
                 .await
                 .map_err(Error::from)?;
 
-            if let Some(proofs) = proofs {
-                // Proofs with new url
-                let updated_proofs: Vec<ProofInfo> = proofs
-                    .clone()
-                    .into_iter()
-                    .map(|mut p| {
-                        p.mint_url = new_mint_url.clone();
-                        p
-                    })
-                    .collect();
+            // Proofs with new url
+            let updated_proofs: Vec<ProofInfo> = proofs
+                .clone()
+                .into_iter()
+                .map(|mut p| {
+                    p.mint_url = new_mint_url.clone();
+                    p
+                })
+                .collect();
 
-                println!("{:?}", updated_proofs);
-
+            if !updated_proofs.is_empty() {
                 self.add_proofs(updated_proofs).await?;
             }
         }
@@ -577,7 +575,7 @@ impl WalletDatabase for WalletRedbDatabase {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
 
@@ -606,11 +604,7 @@ impl WalletDatabase for WalletRedbDatabase {
             })
             .collect();
 
-        if proofs.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(proofs))
+        Ok(proofs)
     }
 
     #[instrument(skip(self, proofs))]

@@ -211,16 +211,15 @@ impl WalletDatabase for WalletRexieDatabase {
             .await
             .map_err(Error::from)?;
 
-        if let Some(proofs) = proofs {
-            let updated_proofs: Vec<ProofInfo> = proofs
-                .clone()
-                .into_iter()
-                .map(|mut p| {
-                    p.mint_url = new_mint_url.clone();
-                    p
-                })
-                .collect();
+        let updated_proofs: Vec<ProofInfo> = proofs
+            .into_iter()
+            .map(|mut p| {
+                p.mint_url = new_mint_url.clone();
+                p
+            })
+            .collect();
 
+        if !updated_proofs.is_empty() {
             self.add_proofs(updated_proofs).await?;
         }
 
@@ -583,7 +582,7 @@ impl WalletDatabase for WalletRexieDatabase {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -620,11 +619,7 @@ impl WalletDatabase for WalletRexieDatabase {
 
         transaction.done().await.map_err(Error::from)?;
 
-        if proofs.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(proofs))
+        Ok(proofs)
     }
 
     async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
