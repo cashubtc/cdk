@@ -315,15 +315,17 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn add_blinded_signature(
+    async fn add_blind_signatures(
         &self,
-        blinded_message: PublicKey,
-        blinded_signature: BlindSignature,
+        blinded_message: &[PublicKey],
+        blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err> {
-        self.blinded_signatures
-            .write()
-            .await
-            .insert(blinded_message.to_bytes(), blinded_signature);
+        let mut current_blinded_signatures = self.blinded_signatures.write().await;
+
+        for (blinded_message, blind_signature) in blinded_message.iter().zip(blind_signatures) {
+            current_blinded_signatures.insert(blinded_message.to_bytes(), blind_signature.clone());
+        }
+
         Ok(())
     }
 

@@ -689,25 +689,30 @@ AND state="PENDING";
         Ok(())
     }
 
-    async fn add_blinded_signature(
+    async fn add_blind_signatures(
         &self,
-        blinded_message: PublicKey,
-        blinded_signature: BlindSignature,
+        blinded_messages: &[PublicKey],
+        blinded_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
+            sqlx::query(
+                r#"
 INSERT INTO blind_signature
 (y, amount, keyset_id, c)
 VALUES (?, ?, ?, ?);
         "#,
-        )
-        .bind(blinded_message.to_bytes().to_vec())
-        .bind(u64::from(blinded_signature.amount) as i64)
-        .bind(blinded_signature.keyset_id.to_string())
-        .bind(blinded_signature.c.to_bytes().to_vec())
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
+            )
+            .bind(message.to_bytes().to_vec())
+            .bind(u64::from(signature.amount) as i64)
+            .bind(signature.keyset_id.to_string())
+            .bind(signature.c.to_bytes().to_vec())
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }

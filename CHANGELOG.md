@@ -27,8 +27,10 @@
 ### Summary
 
 ### Changed
-- cdk(wallet): `fn send` returns `Token` so the user can use the struct of convert it to a v3 or v4 string.
+- cdk(wallet): `fn send` returns `Token` so the user can use the struct of convert it to a v3 or v4 string ([thesimplekid]).
 - cdk(wallet): Publicly export `MultiMintWallet` ([thesimplekid]).
+- cdk-database: Get `pending` and `spent` `proofs` by `ys` or `secrets` instead of a single proofs ([thesimplekid]).
+- cdk-database: Change `add_blind_signature` to `add_blind_signatures` ([thesimplekid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).

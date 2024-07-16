@@ -495,13 +495,21 @@ impl Mint {
 
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
-        for blinded_message in mint_request.outputs.into_iter() {
-            let blinded_signature = self.blind_sign(&blinded_message).await?;
-            self.localstore
-                .add_blinded_signature(blinded_message.blinded_secret, blinded_signature.clone())
-                .await?;
-            blind_signatures.push(blinded_signature);
+        for blinded_message in mint_request.outputs.iter() {
+            let blind_signature = self.blind_sign(blinded_message).await?;
+            blind_signatures.push(blind_signature);
         }
+
+        self.localstore
+            .add_blind_signatures(
+                &mint_request
+                    .outputs
+                    .iter()
+                    .map(|p| p.blinded_secret)
+                    .collect::<Vec<PublicKey>>(),
+                &blind_signatures,
+            )
+            .await?;
 
         self.localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
@@ -704,13 +712,21 @@ impl Mint {
 
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
 
-        for blinded_message in swap_request.outputs {
-            let blinded_signature = self.blind_sign(&blinded_message).await?;
-            self.localstore
-                .add_blinded_signature(blinded_message.blinded_secret, blinded_signature.clone())
-                .await?;
+        for blinded_message in swap_request.outputs.iter() {
+            let blinded_signature = self.blind_sign(blinded_message).await?;
             promises.push(blinded_signature);
         }
+
+        self.localstore
+            .add_blind_signatures(
+                &swap_request
+                    .outputs
+                    .iter()
+                    .map(|o| o.blinded_secret)
+                    .collect::<Vec<PublicKey>>(),
+                &promises,
+            )
+            .await?;
 
         Ok(SwapResponse::new(promises))
     }
@@ -1008,19 +1024,24 @@ impl Mint {
                 amounts.sort_by(|a, b| b.cmp(a));
             }
 
-            for (amount, blinded_message) in amounts.iter().zip(outputs) {
-                let mut blinded_message = blinded_message;
+            let mut outputs = outputs;
+
+            for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
                 blinded_message.amount = *amount;
 
-                let blinded_signature = self.blind_sign(&blinded_message).await?;
-                self.localstore
-                    .add_blinded_signature(
-                        blinded_message.blinded_secret,
-                        blinded_signature.clone(),
-                    )
-                    .await?;
+                let blinded_signature = self.blind_sign(blinded_message).await?;
                 change_sigs.push(blinded_signature)
             }
+
+            self.localstore
+                .add_blind_signatures(
+                    &outputs[0..change_sigs.len()]
+                        .iter()
+                        .map(|o| o.blinded_secret)
+                        .collect::<Vec<PublicKey>>(),
+                    &change_sigs,
+                )
+                .await?;
 
             change = Some(change_sigs);
         } else {

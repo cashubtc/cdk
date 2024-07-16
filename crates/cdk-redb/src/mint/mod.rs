@@ -660,10 +660,10 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_blinded_signature(
+    async fn add_blind_signatures(
         &self,
-        blinded_message: PublicKey,
-        blinded_signature: BlindSignature,
+        blinded_messages: &[PublicKey],
+        blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -672,14 +672,18 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(BLINDED_SIGNATURES)
                 .map_err(Error::from)?;
-            table
-                .insert(
-                    blinded_message.to_bytes(),
-                    serde_json::to_string(&blinded_signature)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
+
+            for (blinded_message, blind_signature) in blinded_messages.iter().zip(blind_signatures)
+            {
+                table
+                    .insert(
+                        blinded_message.to_bytes(),
+                        serde_json::to_string(&blind_signature)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
 
         write_txn.commit().map_err(Error::from)?;
