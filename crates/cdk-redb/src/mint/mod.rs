@@ -133,7 +133,7 @@ impl MintRedbDatabase {
 impl MintDatabase for MintRedbDatabase {
     type Err = cdk_database::Error;
 
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;

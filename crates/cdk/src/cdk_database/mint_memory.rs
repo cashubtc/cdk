@@ -70,7 +70,7 @@ impl MintMemoryDatabase {
 impl MintDatabase for MintMemoryDatabase {
     type Err = Error;
 
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         self.active_keysets.write().await.insert(unit, id);
         Ok(())
     }

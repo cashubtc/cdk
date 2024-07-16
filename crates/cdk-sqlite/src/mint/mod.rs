@@ -57,7 +57,7 @@ impl MintSqliteDatabase {
 impl MintDatabase for MintSqliteDatabase {
     type Err = cdk_database::Error;
 
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         sqlx::query(
             r#"
@@ -67,7 +67,6 @@ WHERE unit IS ?;
         "#,
         )
         .bind(unit.to_string())
-        .bind(id.to_string())
         .execute(&mut transaction)
         .await
         .map_err(Error::from)?;
@@ -90,6 +89,7 @@ AND id IS ?;
 
         Ok(())
     }
+
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -115,6 +115,7 @@ AND unit IS ?
             Id::from_str(rec.try_get("id").map_err(Error::from)?).map_err(Error::from)?,
         ))
     }
+
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let recs = sqlx::query(
             r#"
@@ -125,7 +126,6 @@ WHERE active = 1
         )
         .fetch_all(&self.pool)
         .await
-        // TODO: should check if error is not found and return none
         .map_err(Error::from)?;
 
         let keysets = recs
@@ -160,7 +160,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.request_lookup_id)
         .execute(&self.pool)
         .await
-        // TODO: should check if error is not found and return none
         .map_err(Error::from)?;
 
         Ok(())
