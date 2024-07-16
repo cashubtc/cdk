@@ -614,38 +614,16 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let secrets: Vec<PublicKey> = swap_request
+        let ys: Vec<PublicKey> = swap_request
             .inputs
             .iter()
             .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
             .collect();
 
-        let pending_proofs: Proofs = self
-            .localstore
-            .get_pending_proofs_by_ys(&secrets)
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        if !pending_proofs.is_empty() {
-            return Err(Error::TokenPending);
-        }
-
-        let spent_proofs: Proofs = self
-            .localstore
-            .get_spent_proofs_by_ys(&secrets)
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        if !spent_proofs.is_empty() {
-            return Err(Error::TokenAlreadySpent);
-        }
+        self.check_ys_unspent(&ys).await?;
 
         // Check that there are no duplicate proofs in request
-        if secrets
+        if ys
             .iter()
             .collect::<HashSet<&PublicKey>>()
             .len()
@@ -771,8 +749,6 @@ impl Mint {
         &self,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        let mut states = Vec::with_capacity(check_state.ys.len());
-
         let spent_proofs = self
             .localstore
             .get_spent_proofs_by_ys(&check_state.ys)
@@ -782,50 +758,39 @@ impl Mint {
             .get_pending_proofs_by_ys(&check_state.ys)
             .await?;
 
-        for ((spent, pending), y) in spent_proofs
+        let states = spent_proofs
             .iter()
             .zip(&pending_proofs)
             .zip(&check_state.ys)
-        {
-            let state = match (spent, pending) {
-                (None, None) => State::Unspent,
-                (Some(_), None) => State::Spent,
-                (None, Some(_)) => State::Pending,
-                (Some(_), Some(_)) => {
-                    tracing::error!("Proof should not be both pending and spent. Assuming Spent");
-                    State::Spent
+            .map(|((spent, pending), y)| {
+                let state = match (spent, pending) {
+                    (None, None) => State::Unspent,
+                    (Some(_), None) => State::Spent,
+                    (None, Some(_)) => State::Pending,
+                    (Some(_), Some(_)) => {
+                        tracing::error!(
+                            "Proof should not be both pending and spent. Assuming Spent"
+                        );
+                        State::Spent
+                    }
+                };
+                ProofState {
+                    y: *y,
+                    state,
+                    witness: None,
                 }
-            };
-
-            states.push(ProofState {
-                y: *y,
-                state,
-                witness: None,
             })
-        }
+            .collect();
+
         Ok(CheckStateResponse { states })
     }
 
-    /// Verify melt request is valid
+    /// Check Tokens are not spent or pending
     #[instrument(skip_all)]
-    pub async fn verify_melt_request(
-        &self,
-        melt_request: &MeltBolt11Request,
-    ) -> Result<MeltQuote, Error> {
-        let secrets: Vec<PublicKey> = melt_request
-            .inputs
-            .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
-
-        // Ensure proofs are unique and not being double spent
-        if melt_request.inputs.len() != secrets.iter().collect::<HashSet<_>>().len() {
-            return Err(Error::DuplicateProofs);
-        }
-
+    pub async fn check_ys_unspent(&self, ys: &[PublicKey]) -> Result<(), Error> {
         let pending_proofs: Proofs = self
             .localstore
-            .get_pending_proofs_by_ys(&secrets)
+            .get_pending_proofs_by_ys(ys)
             .await?
             .into_iter()
             .flatten()
@@ -837,7 +802,7 @@ impl Mint {
 
         let spent_proofs: Proofs = self
             .localstore
-            .get_spent_proofs_by_ys(&secrets)
+            .get_spent_proofs_by_ys(ys)
             .await?
             .into_iter()
             .flatten()
@@ -846,6 +811,28 @@ impl Mint {
         if !spent_proofs.is_empty() {
             return Err(Error::TokenAlreadySpent);
         }
+
+        Ok(())
+    }
+
+    /// Verify melt request is valid
+    #[instrument(skip_all)]
+    pub async fn verify_melt_request(
+        &self,
+        melt_request: &MeltBolt11Request,
+    ) -> Result<MeltQuote, Error> {
+        let ys: Vec<PublicKey> = melt_request
+            .inputs
+            .iter()
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect();
+
+        // Ensure proofs are unique and not being double spent
+        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
+            return Err(Error::DuplicateProofs);
+        }
+
+        self.check_ys_unspent(&ys).await?;
 
         for proof in &melt_request.inputs {
             self.verify_proof(proof).await?;
