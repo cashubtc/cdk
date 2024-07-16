@@ -102,7 +102,7 @@ impl Mint {
                             let mut keyset_info = highest_index_keyset;
                             keyset_info.active = true;
                             localstore.add_keyset_info(keyset_info).await?;
-                            localstore.add_active_keyset(unit, id).await?;
+                            localstore.set_active_keyset(unit, id).await?;
                             continue;
                         } else {
                             highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
@@ -123,7 +123,7 @@ impl Mint {
 
                         let id = keyset_info.id;
                         localstore.add_keyset_info(keyset_info).await?;
-                        localstore.add_active_keyset(unit, id).await?;
+                        localstore.set_active_keyset(unit, id).await?;
                         active_keysets.insert(id, keyset);
                     }
                 }
@@ -143,7 +143,7 @@ impl Mint {
                     );
                     let id = keyset_info.id;
                     localstore.add_keyset_info(keyset_info).await?;
-                    localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
+                    localstore.set_active_keyset(CurrencyUnit::Sat, id).await?;
                     active_keysets.insert(id, keyset);
                 }
             }
@@ -438,7 +438,7 @@ impl Mint {
         );
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info).await?;
-        self.localstore.add_active_keyset(unit, id).await?;
+        self.localstore.set_active_keyset(unit, id).await?;
 
         let mut keysets = self.keysets.write().await;
         keysets.insert(id, keyset);

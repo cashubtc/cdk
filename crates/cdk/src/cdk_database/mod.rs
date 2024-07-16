@@ -164,7 +164,7 @@ pub trait MintDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Add Active Keyset
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
+    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
     /// Get Active Keyset
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
     /// Get all Active Keyset
