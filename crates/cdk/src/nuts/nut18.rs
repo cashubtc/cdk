@@ -4,10 +4,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::nut05::MeltMethodSettings;
+use super::nut05::{self, MeltMethodSettings};
 use super::CurrencyUnit;
+#[cfg(feature = "mint")]
+use crate::mint;
 use crate::nuts::Proofs;
-use crate::{Amount, Bolt11Invoice};
+use crate::Amount;
 
 /// Melt quote request [NUT-18]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +17,7 @@ pub struct MeltQuoteBtcOnchainRequest {
     /// Amount to be paid
     pub amount: Amount,
     /// Bitcoin onchain address to be paid
-    pub address: Bolt11Invoice,
+    pub address: String,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
 }
@@ -26,15 +28,23 @@ pub struct MeltQuoteBtcOnchainResponse {
     /// Quote Id
     pub quote: String,
     /// Description
-    pub description: String,
-    /// The amount that needs to be provided
-    pub amount: u64,
+    pub amount: Amount,
     /// The fee that is required
-    pub fee: u64,
+    pub fee: Amount,
     /// Whether the the request has been paid
-    pub paid: bool,
-    /// Unix timestamp until the quote is valid
-    pub expiry: u64,
+    pub state: nut05::QuoteState,
+}
+
+#[cfg(feature = "mint")]
+impl From<mint::MeltQuote> for MeltQuoteBtcOnchainResponse {
+    fn from(melt_quote: mint::MeltQuote) -> MeltQuoteBtcOnchainResponse {
+        MeltQuoteBtcOnchainResponse {
+            quote: melt_quote.id,
+            amount: melt_quote.amount,
+            fee: melt_quote.fee_reserve,
+            state: melt_quote.state,
+        }
+    }
 }
 
 /// Melt BTC on chain Request [NUT-18]

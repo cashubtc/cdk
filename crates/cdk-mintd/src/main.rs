@@ -319,9 +319,14 @@ async fn main() -> anyhow::Result<()> {
         .seconds_quote_is_valid_for
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
 
-    let v1_service =
-        cdk_axum::create_mint_router(&mint_url, Arc::clone(&mint), ln_backends.clone(), quote_ttl)
-            .await?;
+    let v1_service = cdk_axum::create_mint_router(
+        &mint_url,
+        Arc::clone(&mint),
+        ln_backends,
+        HashMap::new(),
+        quote_ttl,
+    )
+    .await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)

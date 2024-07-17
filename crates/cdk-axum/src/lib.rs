@@ -10,6 +10,7 @@ use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
 use cdk::cdk_lightning::{self, MintLightning};
+use cdk::cdk_onchain::{self, MintOnChain};
 use cdk::mint::Mint;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use router_handlers::*;
@@ -21,10 +22,12 @@ pub async fn create_mint_router(
     mint_url: &str,
     mint: Arc<Mint>,
     ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    onchain: HashMap<LnKey, Arc<dyn MintOnChain<Err = cdk_onchain::Error> + Send + Sync>>,
     quote_ttl: u64,
 ) -> Result<Router> {
     let state = MintState {
         ln,
+        onchain,
         mint,
         mint_url: mint_url.to_string(),
         quote_ttl,
@@ -36,15 +39,26 @@ pub async fn create_mint_router(
         .route("/keys/:keyset_id", get(get_keyset_pubkeys))
         .route("/swap", post(post_swap))
         .route("/mint/quote/bolt11", post(get_mint_bolt11_quote))
+        .route("/mint/quote/onchain", post(get_mint_onchain_quote))
         .route(
             "/mint/quote/bolt11/:quote_id",
             get(get_check_mint_bolt11_quote),
         )
+        .route(
+            "/mint/quote/onchain/:quote_id",
+            get(get_check_mint_onchain_quote),
+        )
         .route("/mint/bolt11", post(post_mint_bolt11))
+        .route("/mint/onchain", post(post_mint_onchain))
         .route("/melt/quote/bolt11", post(get_melt_bolt11_quote))
+        .route("/melt/quote/onchain", post(get_melt_onchain_quote))
         .route(
             "/melt/quote/bolt11/:quote_id",
             get(get_check_melt_bolt11_quote),
+        )
+        .route(
+            "/melt/quote/onchain/:quote_id",
+            get(get_check_melt_onchain_quote),
         )
         .route("/melt/bolt11", post(post_melt_bolt11))
         .route("/checkstate", post(post_check))
@@ -59,6 +73,7 @@ pub async fn create_mint_router(
 #[derive(Clone)]
 struct MintState {
     ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    onchain: HashMap<LnKey, Arc<dyn MintOnChain<Err = cdk_onchain::Error> + Send + Sync>>,
     mint: Arc<Mint>,
     mint_url: String,
     quote_ttl: u64,

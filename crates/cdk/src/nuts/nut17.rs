@@ -27,8 +27,6 @@ pub struct MintQuoteBtcOnchainResponse {
     pub address: String,
     /// Whether the the request has been paid
     pub state: MintQuoteState,
-    /// Unix timestamp until the quote is valid
-    pub expiry: u64,
 }
 
 #[cfg(feature = "mint")]
@@ -38,7 +36,6 @@ impl From<mint::MintQuote> for MintQuoteBtcOnchainResponse {
             quote: mint_quote.id,
             address: mint_quote.request,
             state: mint_quote.state,
-            expiry: mint_quote.expiry,
         }
     }
 }

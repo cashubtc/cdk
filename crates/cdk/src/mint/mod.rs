@@ -538,6 +538,80 @@ impl Mint {
         })
     }
 
+    /// Process mint request
+    #[instrument(skip_all)]
+    pub async fn process_mint_onchain_request(
+        &self,
+        mint_request: nut17::MintBtcOnchainRequest,
+    ) -> Result<nut17::MintBtcOnchainResponse, Error> {
+        let state = self
+            .localstore
+            .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)
+            .await?;
+
+        match state {
+            MintQuoteState::Unpaid => {
+                return Err(Error::UnpaidQuote);
+            }
+            MintQuoteState::Pending => {
+                return Err(Error::PendingQuote);
+            }
+            MintQuoteState::Issued => {
+                return Err(Error::IssuedQuote);
+            }
+            MintQuoteState::Paid => (),
+        }
+
+        for blinded_message in &mint_request.outputs {
+            if self
+                .localstore
+                .get_blinded_signature(&blinded_message.blinded_secret)
+                .await?
+                .is_some()
+            {
+                tracing::info!(
+                    "Output has already been signed: {}",
+                    blinded_message.blinded_secret
+                );
+                tracing::info!(
+                    "Mint {} did not succeed returning quote to Paid state",
+                    mint_request.quote
+                );
+
+                self.localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
+                    .await?;
+                return Err(Error::BlindedMessageAlreadySigned);
+            }
+        }
+
+        let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
+
+        for blinded_message in mint_request.outputs.iter() {
+            let blind_signature = self.blind_sign(blinded_message).await?;
+            blind_signatures.push(blind_signature);
+        }
+
+        self.localstore
+            .add_blind_signatures(
+                &mint_request
+                    .outputs
+                    .iter()
+                    .map(|p| p.blinded_secret)
+                    .collect::<Vec<PublicKey>>(),
+                &blind_signatures,
+            )
+            .await?;
+
+        self.localstore
+            .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
+            .await?;
+
+        Ok(nut17::MintBtcOnchainResponse {
+            signatures: blind_signatures,
+        })
+    }
+
     /// Blind Sign
     #[instrument(skip_all)]
     pub async fn blind_sign(

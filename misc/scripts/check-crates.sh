@@ -36,6 +36,7 @@ buildargs=(
     "-p cdk-axum"
     "-p cdk-fake-wallet"
     "-p cdk-strike"
+    "-p cdk-bdk"
     "--bin cdk-cli"
     "--bin cdk-mintd"
     "--examples"
