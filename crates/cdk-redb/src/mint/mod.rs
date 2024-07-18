@@ -90,6 +90,16 @@ impl MintRedbDatabase {
                                 );
                                 return Err(Error::UnknownDatabaseVersion);
                             }
+
+                            let write_txn = db.begin_write()?;
+                            {
+                                let mut table = write_txn.open_table(CONFIG_TABLE)?;
+
+                                table
+                                    .insert("db_version", DATABASE_VERSION.to_string().as_str())?;
+                            }
+
+                            write_txn.commit()?;
                         }
                         Ordering::Equal => {
                             tracing::info!("Database is at current version {}", DATABASE_VERSION);
@@ -507,12 +517,14 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
             for proof in proofs {
                 let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
-                table
-                    .insert(
-                        y.to_bytes(),
-                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
+                if table.get(y.to_bytes()).map_err(Error::from)?.is_none() {
+                    table
+                        .insert(
+                            y.to_bytes(),
+                            serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                        )
+                        .map_err(Error::from)?;
+                }
             }
         }
         write_txn.commit().map_err(Error::from)?;
@@ -567,25 +579,30 @@ impl MintDatabase for MintRedbDatabase {
     ) -> Result<Vec<Option<State>>, Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
-        let mut table = write_txn
-            .open_table(PROOFS_STATE_TABLE)
-            .map_err(Error::from)?;
 
         let mut states = Vec::with_capacity(ys.len());
 
         let state_str = serde_json::to_string(&proofs_state).map_err(Error::from)?;
 
-        for y in ys {
-            match table
-                .insert(y.to_bytes(), state_str.as_str())
-                .map_err(Error::from)?
-            {
-                Some(state) => states.push(Some(
-                    serde_json::from_str(state.value()).map_err(Error::from)?,
-                )),
-                None => states.push(None),
+        {
+            let mut table = write_txn
+                .open_table(PROOFS_STATE_TABLE)
+                .map_err(Error::from)?;
+
+            for y in ys {
+                match table
+                    .insert(y.to_bytes(), state_str.as_str())
+                    .map_err(Error::from)?
+                {
+                    Some(state) => states.push(Some(
+                        serde_json::from_str(state.value()).map_err(Error::from)?,
+                    )),
+                    None => states.push(None),
+                }
             }
         }
+
+        write_txn.commit().map_err(Error::from)?;
 
         Ok(states)
     }
