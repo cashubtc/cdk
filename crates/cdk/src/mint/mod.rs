@@ -614,16 +614,19 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let ys: Vec<PublicKey> = swap_request
+        let input_ys: Vec<PublicKey> = swap_request
             .inputs
             .iter()
             .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
             .collect();
 
-        self.check_ys_unspent(&ys).await?;
+        self.localstore
+            .add_proofs(swap_request.inputs.clone())
+            .await?;
+        self.check_ys_spendable(&input_ys, State::Pending).await?;
 
         // Check that there are no duplicate proofs in request
-        if ys
+        if input_ys
             .iter()
             .collect::<HashSet<&PublicKey>>()
             .len()
@@ -684,16 +687,16 @@ impl Mint {
             }
         }
 
-        self.localstore
-            .add_spent_proofs(swap_request.inputs)
-            .await?;
-
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
 
         for blinded_message in swap_request.outputs.iter() {
             let blinded_signature = self.blind_sign(blinded_message).await?;
             promises.push(blinded_signature);
         }
+
+        self.localstore
+            .update_proofs_states(&input_ys, State::Spent)
+            .await?;
 
         self.localstore
             .add_blind_signatures(
@@ -749,31 +752,17 @@ impl Mint {
         &self,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        let spent_proofs = self
-            .localstore
-            .get_spent_proofs_by_ys(&check_state.ys)
-            .await?;
-        let pending_proofs = self
-            .localstore
-            .get_pending_proofs_by_ys(&check_state.ys)
-            .await?;
+        let states = self.localstore.get_proofs_states(&check_state.ys).await?;
 
-        let states = spent_proofs
+        let states = states
             .iter()
-            .zip(&pending_proofs)
             .zip(&check_state.ys)
-            .map(|((spent, pending), y)| {
-                let state = match (spent, pending) {
-                    (None, None) => State::Unspent,
-                    (Some(_), None) => State::Spent,
-                    (None, Some(_)) => State::Pending,
-                    (Some(_), Some(_)) => {
-                        tracing::error!(
-                            "Proof should not be both pending and spent. Assuming Spent"
-                        );
-                        State::Spent
-                    }
+            .map(|(state, y)| {
+                let state = match state {
+                    Some(state) => *state,
+                    None => State::Unspent,
                 };
+
                 ProofState {
                     y: *y,
                     state,
@@ -787,28 +776,23 @@ impl Mint {
 
     /// Check Tokens are not spent or pending
     #[instrument(skip_all)]
-    pub async fn check_ys_unspent(&self, ys: &[PublicKey]) -> Result<(), Error> {
-        let pending_proofs: Proofs = self
+    pub async fn check_ys_spendable(
+        &self,
+        ys: &[PublicKey],
+        proof_state: State,
+    ) -> Result<(), Error> {
+        let proofs_state = self
             .localstore
-            .get_pending_proofs_by_ys(ys)
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
+            .update_proofs_states(ys, proof_state)
+            .await?;
 
-        if !pending_proofs.is_empty() {
+        let proofs_state = proofs_state.iter().flatten().collect::<HashSet<&State>>();
+
+        if proofs_state.contains(&State::Pending) {
             return Err(Error::TokenPending);
         }
 
-        let spent_proofs: Proofs = self
-            .localstore
-            .get_spent_proofs_by_ys(ys)
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        if !spent_proofs.is_empty() {
+        if proofs_state.contains(&State::Spent) {
             return Err(Error::TokenAlreadySpent);
         }
 
@@ -832,7 +816,10 @@ impl Mint {
             return Err(Error::DuplicateProofs);
         }
 
-        self.check_ys_unspent(&ys).await?;
+        self.localstore
+            .add_proofs(melt_request.inputs.clone())
+            .await?;
+        self.check_ys_spendable(&ys, State::Pending).await?;
 
         for proof in &melt_request.inputs {
             self.verify_proof(proof).await?;
@@ -929,11 +916,6 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        // Add proofs to pending
-        self.localstore
-            .add_pending_proofs(melt_request.inputs.clone())
-            .await?;
-
         tracing::debug!("Verified melt quote: {}", melt_request.quote);
         Ok(quote)
     }
@@ -943,8 +925,14 @@ impl Mint {
     /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
+        let input_ys: Vec<PublicKey> = melt_request
+            .inputs
+            .iter()
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect();
+
         self.localstore
-            .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
+            .update_proofs_states(&input_ys, State::Unspent)
             .await?;
 
         self.localstore
@@ -986,10 +974,6 @@ impl Mint {
                 }
             }
         }
-
-        self.localstore
-            .add_spent_proofs(melt_request.inputs.clone())
-            .await?;
 
         let mut change = None;
 
@@ -1038,8 +1022,14 @@ impl Mint {
             );
         }
 
+        let input_ys: Vec<PublicKey> = melt_request
+            .inputs
+            .iter()
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect();
+
         self.localstore
-            .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
+            .update_proofs_states(&input_ys, State::Spent)
             .await?;
 
         self.localstore

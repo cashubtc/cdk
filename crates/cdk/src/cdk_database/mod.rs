@@ -14,16 +14,12 @@ use crate::mint;
 use crate::mint::MintKeySetInfo;
 #[cfg(feature = "mint")]
 use crate::mint::MintQuote as MintMintQuote;
-#[cfg(feature = "wallet")]
-use crate::nuts::State;
 #[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
-use crate::nuts::{CurrencyUnit, Id, Proofs, PublicKey};
+use crate::nuts::{CurrencyUnit, Id, Proofs, PublicKey, State};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
-#[cfg(feature = "mint")]
-use crate::secret::Secret;
 #[cfg(feature = "wallet")]
 use crate::types::ProofInfo;
 #[cfg(feature = "wallet")]
@@ -218,22 +214,17 @@ pub trait MintDatabase {
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     /// Add spent [`Proofs`]
-    async fn add_spent_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get spent [`Proofs`] by ys
-    async fn get_spent_proofs_by_ys(
-        &self,
-        y: &[PublicKey],
-    ) -> Result<Vec<Option<Proof>>, Self::Err>;
-
-    /// Add pending [`Proofs`]
-    async fn add_pending_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get pending [`Proofs`] by ys
-    async fn get_pending_proofs_by_ys(
+    async fn add_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
+    /// Get [`Proofs`] by ys
+    async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get [`Proofs`] state
+    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get [`Proofs`] state
+    async fn update_proofs_states(
         &self,
         ys: &[PublicKey],
-    ) -> Result<Vec<Option<Proof>>, Self::Err>;
-    /// Remove pending [`Proofs`]
-    async fn remove_pending_proofs(&self, secret: Vec<&Secret>) -> Result<(), Self::Err>;
+        proofs_state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err>;
 
     /// Add [`BlindSignature`]
     async fn add_blind_signatures(
