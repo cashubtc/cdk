@@ -40,6 +40,7 @@
 - cdk(wallet): Add `fn melt_proofs` that uses specific proofs for `melt` instead of selecting ([thesimplekid]).
 - cdk-cli(receive): Add support for signing keys to be nostr nsec encoded ([thesimplekid]).
 - cdk-fake-wallet: Add Fake wallet for testing ([thesimplekid]).
+- cdk(cdk-database/mint): Add `add_proofs`, `get_proofs_by_ys`, `get_proofs_states`, and `update_proofs_states` ([thesimplekid]).
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
@@ -47,6 +48,7 @@
 
 ### Removed
 - cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).
+- cdk(cdk-database/mint): Remove `get_spent_proofs`, `get_spent_proofs_by_ys`,`get_pending_proofs`, `get_pending_proofs_by_ys`, and `remove_pending_proofs` ([thesimplekid]).
 
 ## [v0.2.0]
 
