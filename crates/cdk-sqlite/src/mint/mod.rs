@@ -584,6 +584,7 @@ WHERE y=?;
 
         let proofs_state = proofs_state.to_string();
         for y in ys {
+            let current_state;
             let y = y.to_bytes().to_vec();
             let rec = sqlx::query(
                 r#"
@@ -599,25 +600,30 @@ WHERE y=?;
             match rec {
                 Ok(rec) => {
                     let state: String = rec.get("state");
-                    let state = State::from_str(&state).map_err(Error::from)?;
-                    states.push(Some(state));
+                    current_state = Some(State::from_str(&state).map_err(Error::from)?);
                 }
                 Err(err) => match err {
-                    sqlx::Error::RowNotFound => states.push(None),
+                    sqlx::Error::RowNotFound => {
+                        current_state = None;
+                    }
                     _ => return Err(Error::SQLX(err).into()),
                 },
             };
 
-            sqlx::query(
-                r#"
+            states.push(current_state);
+
+            if current_state != Some(State::Spent) {
+                sqlx::query(
+                    r#"
         UPDATE proof SET state = ? WHERE y = ?
         "#,
-            )
-            .bind(&proofs_state)
-            .bind(y)
-            .execute(&mut transaction)
-            .await
-            .map_err(Error::from)?;
+                )
+                .bind(&proofs_state)
+                .bind(y)
+                .execute(&mut transaction)
+                .await
+                .map_err(Error::from)?;
+            }
         }
 
         transaction.commit().await.map_err(Error::from)?;
