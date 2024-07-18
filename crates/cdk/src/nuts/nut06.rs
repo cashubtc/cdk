@@ -193,10 +193,6 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "12")]
     pub nut12: SupportedSettings,
-    /// NUT13 Settings
-    #[serde(default)]
-    #[serde(rename = "13")]
-    pub nut13: SupportedSettings,
     /// NUT14 Settings
     #[serde(default)]
     #[serde(rename = "14")]
@@ -277,14 +273,6 @@ impl Nuts {
         }
     }
 
-    /// Nut13 settings
-    pub fn nut13(self, supported: bool) -> Self {
-        Self {
-            nut13: SupportedSettings { supported },
-            ..self
-        }
-    }
-
     /// Nut14 settings
     pub fn nut14(self, supported: bool) -> Self {
         Self {
@@ -305,15 +293,9 @@ impl Nuts {
 }
 
 /// Check state Settings
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
 pub struct SupportedSettings {
     supported: bool,
-}
-
-impl Default for SupportedSettings {
-    fn default() -> Self {
-        Self { supported: true }
-    }
 }
 
 /// Contact Info
