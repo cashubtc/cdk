@@ -73,7 +73,16 @@ impl BlockSource for BitcoinClient {
             let res = self
                 .client
                 .get_block_header_info(header_hash)
-                .map_err(|e| BlockSourceError::persistent(e))?;
+                .map_err(|e| match e {
+                    bitcoincore_rpc::Error::JsonRpc(e) => match e {
+                        bitcoincore_rpc::jsonrpc::Error::Transport(e) => {
+                            BlockSourceError::transient(e)
+                        }
+                        e => BlockSourceError::persistent(e),
+                    },
+                    bitcoincore_rpc::Error::Io(e) => BlockSourceError::transient(e),
+                    e => BlockSourceError::persistent(e),
+                })?;
             Ok(BlockHeaderData {
                 header: Header {
                     version: res.version,

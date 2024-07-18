@@ -14,8 +14,8 @@ use std::{
 
 use async_trait::async_trait;
 use bitcoin::{
-    absolute::LockTime, key::Secp256k1, secp256k1::PublicKey, BlockHash, Network, ScriptBuf,
-    Transaction, Txid,
+    absolute::LockTime, key::Secp256k1, secp256k1::PublicKey, BlockHash, Network, OutPoint,
+    ScriptBuf, Transaction, Txid,
 };
 use cdk::{
     amount::Amount,
@@ -896,6 +896,27 @@ impl Node {
             .map_err(|e| Error::Ldk(format!("{:?}", e)))
     }
 
+    pub fn get_channel_info(&self, channel_id: ChannelId) -> Result<ChannelInfo, Error> {
+        let channels = self.channel_manager.list_channels();
+        let channel = channels
+            .iter()
+            .find(|c| c.channel_id == channel_id)
+            .ok_or(Error::ChannelNotFound)?;
+        Ok(ChannelInfo {
+            channel_id,
+            counterparty_node_id: channel.counterparty.node_id,
+            funding_txo: channel.funding_txo.map(|o| o.into_bitcoin_outpoint()),
+            balance: Amount::from(channel.balance_msat / 1000),
+            inbound_capacity: Amount::from(channel.inbound_capacity_msat / 1000),
+            is_ready: channel.is_channel_ready,
+            is_usable: channel.is_usable,
+            is_outbound: channel.is_outbound,
+            short_channel_id: channel.short_channel_id,
+            outbound_scid: channel.outbound_scid_alias,
+            inbound_scid: channel.inbound_scid_alias,
+        })
+    }
+
     pub fn is_channel_ready(&self, channel_id: ChannelId) -> bool {
         self.channel_manager
             .list_channels()
@@ -911,15 +932,6 @@ impl Node {
             .await?
             .ok_or(Error::ChannelNotFound)?;
         Ok(channel.amount)
-    }
-
-    pub fn get_current_channel_balance(&self, channel_id: ChannelId) -> Result<Amount, Error> {
-        let channels = self.channel_manager.list_channels();
-        let channel = channels
-            .iter()
-            .find(|c| c.channel_id == channel_id)
-            .ok_or(Error::ChannelNotFound)?;
-        Ok(Amount::from(channel.balance_msat / 1000))
     }
 
     pub fn get_inbound_liquidity(&self) -> Result<Amount, Error> {
@@ -1028,6 +1040,20 @@ impl Node {
     pub fn stop(&self) {
         self.cancel_token.cancel();
     }
+}
+
+pub struct ChannelInfo {
+    pub channel_id: ChannelId,
+    pub counterparty_node_id: PublicKey,
+    pub funding_txo: Option<OutPoint>,
+    pub balance: Amount,
+    pub inbound_capacity: Amount,
+    pub is_ready: bool,
+    pub is_usable: bool,
+    pub is_outbound: bool,
+    pub short_channel_id: Option<u64>,
+    pub outbound_scid: Option<u64>,
+    pub inbound_scid: Option<u64>,
 }
 
 pub struct NodeInfo {
