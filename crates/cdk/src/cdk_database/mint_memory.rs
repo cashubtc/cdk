@@ -223,25 +223,6 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn get_spent_proofs_by_secrets(
-        &self,
-        secrets: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let spent_proofs = self.spent_proofs.read().await;
-
-        let mut proofs = Vec::with_capacity(secrets.len());
-
-        for secret in secrets {
-            let y = hash_to_curve(&secret.to_bytes())?;
-
-            let proof = spent_proofs.get(&y.to_bytes()).cloned();
-
-            proofs.push(proof);
-        }
-
-        Ok(proofs)
-    }
-
     async fn get_spent_proofs_by_ys(
         &self,
         ys: &[PublicKey],
@@ -266,25 +247,6 @@ impl MintDatabase for MintMemoryDatabase {
             proofs.insert(hash_to_curve(&proof.secret.to_bytes())?.to_bytes(), proof);
         }
         Ok(())
-    }
-
-    async fn get_pending_proofs_by_secrets(
-        &self,
-        secrets: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let spent_proofs = self.pending_proofs.read().await;
-
-        let mut proofs = Vec::with_capacity(secrets.len());
-
-        for secret in secrets {
-            let y = hash_to_curve(&secret.to_bytes())?;
-
-            let proof = spent_proofs.get(&y.to_bytes()).cloned();
-
-            proofs.push(proof);
-        }
-
-        Ok(proofs)
     }
 
     async fn get_pending_proofs_by_ys(
