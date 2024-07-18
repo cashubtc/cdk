@@ -219,11 +219,6 @@ pub trait MintDatabase {
 
     /// Add spent [`Proofs`]
     async fn add_spent_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get spent [`Proofs`] by secrets
-    async fn get_spent_proofs_by_secrets(
-        &self,
-        secret: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get spent [`Proofs`] by ys
     async fn get_spent_proofs_by_ys(
         &self,
@@ -232,11 +227,6 @@ pub trait MintDatabase {
 
     /// Add pending [`Proofs`]
     async fn add_pending_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get pending [`Proofs`] by secrets
-    async fn get_pending_proofs_by_secrets(
-        &self,
-        secrets: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get pending [`Proofs`] by ys
     async fn get_pending_proofs_by_ys(
         &self,

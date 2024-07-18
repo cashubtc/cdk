@@ -542,32 +542,6 @@ impl MintDatabase for MintRedbDatabase {
         Ok(proofs)
     }
 
-    async fn get_spent_proofs_by_secrets(
-        &self,
-        secrets: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(SPENT_PROOFS_TABLE)
-            .map_err(Error::from)?;
-
-        let mut proofs = Vec::with_capacity(secrets.len());
-
-        for secret in secrets {
-            let y: PublicKey = hash_to_curve(&secret.to_bytes())?;
-
-            match table.get(y.to_bytes()).map_err(Error::from)? {
-                Some(proof) => proofs.push(Some(
-                    serde_json::from_str(proof.value()).map_err(Error::from)?,
-                )),
-                None => proofs.push(None),
-            }
-        }
-
-        Ok(proofs)
-    }
-
     async fn add_pending_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
@@ -604,32 +578,6 @@ impl MintDatabase for MintRedbDatabase {
         let mut proofs = Vec::with_capacity(ys.len());
 
         for y in ys {
-            match table.get(y.to_bytes()).map_err(Error::from)? {
-                Some(proof) => proofs.push(Some(
-                    serde_json::from_str(proof.value()).map_err(Error::from)?,
-                )),
-                None => proofs.push(None),
-            }
-        }
-
-        Ok(proofs)
-    }
-
-    async fn get_pending_proofs_by_secrets(
-        &self,
-        secrets: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(PENDING_PROOFS_TABLE)
-            .map_err(Error::from)?;
-
-        let mut proofs = Vec::with_capacity(secrets.len());
-
-        for secret in secrets {
-            let y: PublicKey = hash_to_curve(&secret.to_bytes())?;
-
             match table.get(y.to_bytes()).map_err(Error::from)? {
                 Some(proof) => proofs.push(Some(
                     serde_json::from_str(proof.value()).map_err(Error::from)?,

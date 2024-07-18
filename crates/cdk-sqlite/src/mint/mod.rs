@@ -505,41 +505,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         transaction.commit().await.map_err(Error::from)?;
         Ok(())
     }
-    async fn get_spent_proofs_by_secrets(
-        &self,
-        secrets: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-
-        let mut proofs = Vec::with_capacity(secrets.len());
-
-        for secret in secrets {
-            let rec = sqlx::query(
-                r#"
-SELECT *
-FROM proof
-WHERE secret=?
-AND state="SPENT";
-        "#,
-            )
-            .bind(secret.to_string())
-            .fetch_one(&mut transaction)
-            .await;
-
-            match rec {
-                Ok(rec) => {
-                    proofs.push(Some(sqlite_row_to_proof(rec)?));
-                }
-                Err(err) => match err {
-                    sqlx::Error::RowNotFound => proofs.push(None),
-                    _ => return Err(Error::SQLX(err).into()),
-                },
-            };
-        }
-        transaction.commit().await.map_err(Error::from)?;
-
-        Ok(proofs)
-    }
     async fn get_spent_proofs_by_ys(
         &self,
         ys: &[PublicKey],
@@ -600,39 +565,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
-    }
-    async fn get_pending_proofs_by_secrets(
-        &self,
-        secrets: &[Secret],
-    ) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-
-        let mut proofs = Vec::with_capacity(secrets.len());
-
-        for secret in secrets {
-            let rec = sqlx::query(
-                r#"
-SELECT *
-FROM proof
-WHERE secret=?
-AND state="PENDING";
-        "#,
-            )
-            .bind(secret.to_string())
-            .fetch_one(&mut transaction)
-            .await;
-            match rec {
-                Ok(rec) => {
-                    proofs.push(Some(sqlite_row_to_proof(rec)?));
-                }
-                Err(err) => match err {
-                    sqlx::Error::RowNotFound => proofs.push(None),
-                    _ => return Err(Error::SQLX(err).into()),
-                },
-            };
-        }
-        transaction.commit().await.map_err(Error::from)?;
-        Ok(proofs)
     }
     async fn get_pending_proofs_by_ys(
         &self,
