@@ -32,9 +32,11 @@ cdk-sqlite = { version = "0.2", path = "./crates/cdk-sqlite", default-features =
 cdk-redb = { version = "0.2", path = "./crates/cdk-redb", default-features = false }
 cdk-cln = { version = "0.1", path = "./crates/cdk-cln", default-features = false }
 cdk-axum = { version = "0.1", path = "./crates/cdk-axum", default-features = false }
+cdk-bdk = { version = "0.1", path = "./crates/cdk-bdk", default-features = false }
 cdk-fake-wallet = { version = "0.1", path = "./crates/cdk-fake-wallet", default-features = false }
 cdk-strike = { version = "0.1", path = "./crates/cdk-strike", default-features = false }
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }
+payjoin = { version = "0.19.0", features = ["receive", "v2", "io"] }
 tokio = { version = "1", default-features = false }
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
@@ -48,6 +50,12 @@ uuid = { version = "1", features = ["v4"] }
 lightning-invoice = { version = "0.31", features = ["serde"] }
 home = "0.5.9"
 rand = "0.8.5"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "rustls-tls-native-roots",
+    "socks",
+] }
 
 [profile]
 

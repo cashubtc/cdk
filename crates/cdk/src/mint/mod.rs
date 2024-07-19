@@ -562,27 +562,31 @@ impl Mint {
             MintQuoteState::Paid => (),
         }
 
-        for blinded_message in &mint_request.outputs {
-            if self
-                .localstore
-                .get_blinded_signature(&blinded_message.blinded_secret)
-                .await?
-                .is_some()
-            {
-                tracing::info!(
-                    "Output has already been signed: {}",
-                    blinded_message.blinded_secret
-                );
-                tracing::info!(
-                    "Mint {} did not succeed returning quote to Paid state",
-                    mint_request.quote
-                );
+        let blinded_messages: Vec<PublicKey> = mint_request
+            .outputs
+            .iter()
+            .map(|b| b.blinded_secret)
+            .collect();
 
-                self.localstore
-                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                    .await?;
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
+        if self
+            .localstore
+            .get_blind_signatures(&blinded_messages)
+            .await?
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
+        {
+            tracing::info!("Output has already been signed",);
+            tracing::info!(
+                "Mint {} did not succeed returning quote to Paid state",
+                mint_request.quote
+            );
+
+            self.localstore
+                .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
+                .await?;
+            return Err(Error::BlindedMessageAlreadySigned);
         }
 
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());

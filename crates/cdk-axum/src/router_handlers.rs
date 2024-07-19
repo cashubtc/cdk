@@ -10,7 +10,7 @@ use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
 use cdk::nuts::nut17::{
     MintBtcOnchainRequest, MintBtcOnchainResponse, MintQuoteBtcOnchainRequest,
-    MintQuoteBtcOnchainResponse,
+    MintQuoteBtcOnchainResponse, PayjoinInfo,
 };
 use cdk::nuts::nut18::{MeltQuoteBtcOnchainRequest, MeltQuoteBtcOnchainResponse};
 use cdk::nuts::{
@@ -106,11 +106,12 @@ pub async fn get_mint_onchain_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBtcOnchainRequest>,
 ) -> Result<Json<MintQuoteBtcOnchainResponse>, Response> {
+    tracing::debug!("Mint quote unit: {}", payload.unit);
     let onchain = state
         .onchain
-        .get(&LnKey::new(payload.unit, PaymentMethod::Bolt11))
+        .get(&LnKey::new(payload.unit, PaymentMethod::BtcOnChain))
         .ok_or({
-            tracing::info!("Bolt11 mint request for unsupported unit");
+            tracing::info!("Onchain mint request for unsupported unit");
 
             into_response(Error::UnsupportedUnit)
         })?;
@@ -118,7 +119,7 @@ pub async fn get_mint_onchain_quote(
     let quote_expiry = unix_time() + state.quote_ttl;
 
     let address = onchain.new_address().await.map_err(|err| {
-        tracing::error!("Could not create invoice: {}", err);
+        tracing::error!("Could not get onchain address: {}", err);
         into_response(Error::InvalidPaymentRequest)
     })?;
 
@@ -126,11 +127,11 @@ pub async fn get_mint_onchain_quote(
         .mint
         .new_mint_quote(
             state.mint_url.into(),
-            address.clone(),
+            address.address.clone(),
             payload.unit,
             payload.amount,
             quote_expiry,
-            address,
+            address.address,
         )
         .await
         .map_err(|err| {
@@ -138,7 +139,28 @@ pub async fn get_mint_onchain_quote(
             into_response(err)
         })?;
 
-    Ok(Json(quote.into()))
+    let settings = onchain.get_settings();
+
+    let payjoin = match settings.payjoin_settings.receive_enabled {
+        true => match (settings.payjoin_settings.ohttp_relay, address.payjoin_url) {
+            (Some(ohttp_relay), Some(payjoin_directory)) => Some(PayjoinInfo {
+                origin: payjoin_directory,
+                ohttp_relay: Some(ohttp_relay),
+                pjos: false,
+            }),
+            _ => None,
+        },
+        false => None,
+    };
+
+    let mint_quote_response = MintQuoteBtcOnchainResponse {
+        quote: quote.id,
+        address: quote.request,
+        state: quote.state,
+        payjoin,
+    };
+
+    Ok(Json(mint_quote_response))
 }
 
 pub async fn get_check_mint_bolt11_quote(
@@ -171,14 +193,22 @@ pub async fn get_check_mint_onchain_quote(
 
     let address = quote.request.clone();
 
+    tracing::debug!("{:?}", state.onchain.keys());
+
     let onchain = state
         .onchain
-        .get(&LnKey::new(quote.unit, PaymentMethod::BtcOnChain))
-        .ok_or({
-            tracing::info!("Bolt11 mint request for unsupported unit");
+        .get(&LnKey::new(CurrencyUnit::Sat, PaymentMethod::BtcOnChain));
 
-            into_response(Error::UnsupportedUnit)
-        })?;
+    let onchain = match onchain {
+        Some(onchain) => onchain,
+        None => {
+            tracing::info!("Checking quote for unsupported unit");
+
+            return Err(into_response(Error::UnsupportedUnit));
+        }
+    };
+
+    tracing::info!("Checking paid status for {}", quote_id);
 
     let AddressPaidResponse {
         amount,
@@ -194,10 +224,30 @@ pub async fn get_check_mint_onchain_quote(
         state.mint.update_mint_quote(quote).await.unwrap();
     }
 
+    let settings = onchain.get_settings();
+
+    let payjoin = match settings.payjoin_settings.receive_enabled {
+        true => {
+            match (
+                settings.payjoin_settings.ohttp_relay,
+                settings.payjoin_settings.payjoin_directory,
+            ) {
+                (Some(ohttp_relay), Some(payjoin_directory)) => Some(PayjoinInfo {
+                    origin: payjoin_directory,
+                    ohttp_relay: Some(ohttp_relay),
+                    pjos: false,
+                }),
+                _ => None,
+            }
+        }
+        false => None,
+    };
+
     let res = MintQuoteBtcOnchainResponse {
         quote: quote.id,
         address: quote.request,
-        state: quote.state.clone(),
+        state: quote.state,
+        payjoin,
     };
 
     Ok(Json(res))

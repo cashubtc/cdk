@@ -13,6 +13,8 @@ pub enum Error {
     UnknownInvoice,
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
+    #[error(transparent)]
+    Reqwest(#[from] reqwest::Error),
     /// Esplora client error
     #[error(transparent)]
     EsploraClient(#[from] bdk_esplora::esplora_client::Error),

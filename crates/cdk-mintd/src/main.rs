@@ -12,14 +12,16 @@ use anyhow::{anyhow, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning;
 use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
+use cdk::cdk_onchain::{MintOnChain, PayjoinSettings};
 use cdk::mint::{FeeReserve, Mint};
 use cdk::nuts::{
     nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
     MintVersion, MppMethodSettings, Nuts, PaymentMethod,
 };
+use cdk::{cdk_lightning, cdk_onchain};
 use cdk_axum::LnKey;
+use cdk_bdk::BdkWallet;
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
 use cdk_redb::MintRedbDatabase;
@@ -319,11 +321,41 @@ async fn main() -> anyhow::Result<()> {
         .seconds_quote_is_valid_for
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
 
+    let payjoing_settings = PayjoinSettings {
+        receive_enabled: true,
+        send_enabled: false,
+        ohttp_relay: Some("https://pj.bobspacebkk.com".to_string()),
+        payjoin_directory: Some("https://payjo.in".to_string()),
+    };
+
+    let onchain = BdkWallet::new(0, 0, 0, 0, Mnemonic::parse("promote actress hand galaxy metal buzz square general outside business hard mother keen sound various").unwrap(), &work_dir, payjoing_settings)
+        .await
+        .unwrap();
+
+    let onchain_clone = onchain.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(err) = onchain_clone.wait_handle_proposal().await {
+                tracing::debug!("Handle proposal stopped: {}", err);
+            }
+        }
+    });
+
+    let mut onchain_backends: HashMap<
+        LnKey,
+        Arc<dyn MintOnChain<Err = cdk_onchain::Error> + Sync + Send>,
+    > = HashMap::new();
+
+    onchain_backends.insert(
+        LnKey::new(CurrencyUnit::Sat, PaymentMethod::BtcOnChain),
+        Arc::new(onchain),
+    );
+
     let v1_service = cdk_axum::create_mint_router(
         &mint_url,
         Arc::clone(&mint),
         ln_backends,
-        HashMap::new(),
+        onchain_backends,
         quote_ttl,
     )
     .await?;

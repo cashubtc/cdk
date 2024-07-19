@@ -38,7 +38,7 @@ pub trait MintOnChain {
     fn get_settings(&self) -> Settings;
 
     /// New onchain address
-    async fn new_address(&self) -> Result<String, Self::Err>;
+    async fn new_address(&self) -> Result<NewAddressResponse, Self::Err>;
 
     /// Pay Address
     async fn pay_address(
@@ -49,6 +49,17 @@ pub trait MintOnChain {
 
     /// Check if an address has been paid
     async fn check_address_paid(&self, address: &str) -> Result<AddressPaidResponse, Self::Err>;
+}
+
+/// New Address Response
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewAddressResponse {
+    /// Address
+    pub address: String,
+    /// Payjoin Url
+    pub payjoin_url: Option<String>,
+    /// pjos for use with payjoin
+    pub pjos: Option<bool>,
 }
 
 /// Address paid response
@@ -64,10 +75,8 @@ pub struct AddressPaidResponse {
 }
 
 /// Ln backend settings
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    /// MPP supported
-    pub mpp: bool,
     /// Min amount to mint
     pub min_mint_amount: u64,
     /// Max amount to mint
@@ -82,6 +91,21 @@ pub struct Settings {
     pub mint_enabled: bool,
     /// Melting enabled
     pub melt_enabled: bool,
+    /// Payjoin supported
+    pub payjoin_settings: PayjoinSettings,
+}
+
+/// Payjoin settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PayjoinSettings {
+    /// Enable payjoin receive support
+    pub receive_enabled: bool,
+    /// Enable payjoin send support
+    pub send_enabled: bool,
+    /// Payjoin v2 ohttp relay
+    pub ohttp_relay: Option<String>,
+    /// Payjoin v2 directory
+    pub payjoin_directory: Option<String>,
 }
 
 const MSAT_IN_SAT: u64 = 1000;

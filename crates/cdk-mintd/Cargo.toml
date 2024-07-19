@@ -19,6 +19,7 @@ cdk-cln = { workspace = true, default-features = false }
 cdk-fake-wallet = { workspace = true, default-features = false }
 cdk-strike.workspace = true
 cdk-axum = { workspace = true, default-features = false }
+cdk-bdk = { workspace = true, default-features = false }
 config = { version = "0.13.3", features = ["toml"] }
 clap.workspace = true
 tokio.workspace = true

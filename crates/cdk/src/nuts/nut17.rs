@@ -5,8 +5,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::{BlindSignature, BlindedMessage, CurrencyUnit, MintMethodSettings, MintQuoteState};
-#[cfg(feature = "mint")]
-use crate::mint;
 use crate::Amount;
 
 /// Mint quote request [NUT-17]
@@ -27,17 +25,19 @@ pub struct MintQuoteBtcOnchainResponse {
     pub address: String,
     /// Whether the the request has been paid
     pub state: MintQuoteState,
+    /// Payjoin
+    pub payjoin: Option<PayjoinInfo>,
 }
 
-#[cfg(feature = "mint")]
-impl From<mint::MintQuote> for MintQuoteBtcOnchainResponse {
-    fn from(mint_quote: mint::MintQuote) -> MintQuoteBtcOnchainResponse {
-        MintQuoteBtcOnchainResponse {
-            quote: mint_quote.id,
-            address: mint_quote.request,
-            state: mint_quote.state,
-        }
-    }
+/// Payjoin information
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayjoinInfo {
+    /// Origin Directory in v2
+    pub origin: String,
+    /// Ohttp keys
+    pub ohttp_relay: Option<String>,
+    /// PJO
+    pub pjos: bool,
 }
 
 /// Mint request [NUT-17]

@@ -1,40 +1,54 @@
 //! CDK lightning backend for CLN
 
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::Write;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
-use bdk_chain::{miniscript, ConfirmationTime};
-use bdk_esplora::esplora_client;
+use bdk_chain::{miniscript, BlockId, PersistWith};
+use bdk_esplora::{esplora_client, EsploraAsyncExt};
 use bdk_file_store::Store;
 use bdk_wallet::bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
-use bdk_wallet::bitcoin::{Address, FeeRate, Network};
+use bdk_wallet::bitcoin::{Address, FeeRate, Network, Script};
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 use bdk_wallet::template::DescriptorTemplateOut;
-use bdk_wallet::{KeychainKind, SignOptions, Wallet};
+use bdk_wallet::{ChangeSet, CreateParams, KeychainKind, PersistedWallet, SignOptions, Wallet};
 use cdk::amount::Amount;
-use cdk::cdk_onchain::{self, AddressPaidResponse, MintOnChain, Settings};
+use cdk::bitcoin::bech32::ToBase32;
+use cdk::cdk_onchain::{
+    self, AddressPaidResponse, MintOnChain, NewAddressResponse, PayjoinSettings, Settings,
+};
 use cdk::mint;
 use cdk::nuts::CurrencyUnit;
-use cdk::util::unix_time;
+use payjoin::receive::v2::{PayjoinProposal, ProvisionalProposal, UncheckedProposal};
+use payjoin::Url;
 use tokio::sync::Mutex;
 
 pub mod error;
 
 const DB_MAGIC: &str = "bdk_wallet_electrum_example";
+const STOP_GAP: usize = 50;
+const PARALLEL_REQUESTS: usize = 5;
 
+#[derive(Clone)]
 pub struct BdkWallet {
     wallet: Arc<Mutex<Wallet>>,
     client: esplora_client::AsyncClient,
+    db: Arc<Mutex<Store<bdk_wallet::ChangeSet>>>,
     min_melt_amount: u64,
     max_melt_amount: u64,
     min_mint_amount: u64,
     max_mint_amount: u64,
     mint_enabled: bool,
     melt_enabled: bool,
+    payjoin_settings: PayjoinSettings,
+    sender: tokio::sync::mpsc::Sender<UncheckedProposal>,
+    receiver: Arc<Mutex<tokio::sync::mpsc::Receiver<UncheckedProposal>>>,
+    seen_inputs: Arc<Mutex<HashSet<payjoin::bitcoin::OutPoint>>>,
 }
 
 impl BdkWallet {
@@ -43,18 +57,21 @@ impl BdkWallet {
         max_melt_amount: u64,
         min_mint_amount: u64,
         max_mint_amount: u64,
-        // REVIEW: I think it maybe best if we force a Mnemonic here as it will hole onchain funds.
+        // REVIEW: I think it maybe best if we force a Mnemonic here as it will hold onchain funds.
         // But maybe should be a byte seed like we do for mint and wallet?
         mnemonic: Mnemonic,
-        work_dir: &PathBuf,
-        network: Network,
+        work_dir: &Path,
+        payjoin_settings: PayjoinSettings,
     ) -> Result<Self, Error> {
+        let network = Network::Signet;
         let db_path = work_dir.join("bdk-mint");
-        let mut db = Store::<bdk_wallet::wallet::ChangeSet>::open_or_create_new(
-            DB_MAGIC.as_bytes(),
-            db_path,
+        let mut db = bdk_file_store::Store::<ChangeSet>::open_or_create_new(
+            b"magic_bytes",
+            "/tmp/my_wallet.db",
         )
-        .map_err(|e| anyhow!("Could not open bdk change store: {}", e))?;
+        .expect("create store");
+
+        let changeset = db.aggregate_changesets()?;
 
         let xkey: ExtendedKey = mnemonic.into_extended_key().unwrap();
         // Get xprv from the extended key
@@ -65,22 +82,76 @@ impl BdkWallet {
             .map_err(|e| anyhow!("load changes error: {}", e))
             .unwrap();
 
-        let (internal_descriptor, external_descriptor) =
+        let (descriptor, change_descriptor) =
             get_wpkh_descriptors_for_extended_key(xprv, network, 0)?;
 
-        let wallet = Wallet::new_or_load(
-            internal_descriptor,
-            external_descriptor,
-            changeset,
-            Network::Signet,
-        )
-        .map_err(|_| anyhow!("Could not create cdk wallet"))?;
+        let network = Network::Signet;
 
-        let client =
-            esplora_client::Builder::new("http://signet.bitcoindevkit.net").build_async()?;
+        let params = CreateParams::new(descriptor, change_descriptor).network(network);
+
+        let wallet_opt = Wallet::load().descriptors(descriptor, change_descriptor);
+
+        let mut wallet = match wallet_opt {
+            Some(wallet) => wallet,
+            None => Wallet::create(descriptor, change_descriptor)
+                .network(network)
+                .create_wallet(&mut db),
+        };
+
+        let client = esplora_client::Builder::new("https://mutinynet.com/api").build_async()?;
+
+        fn generate_inspect(
+            kind: KeychainKind,
+        ) -> impl FnMut(u32, &Script) + Send + Sync + 'static {
+            let mut once = Some(());
+            let mut stdout = std::io::stdout();
+            move |spk_i, _| {
+                match once.take() {
+                    Some(_) => print!("\nScanning keychain [{:?}]", kind),
+                    None => print!(" {:<3}", spk_i),
+                };
+                stdout.flush().expect("must flush");
+            }
+        }
+
+        let request = wallet
+            .start_full_scan()
+            .inspect_spks_for_all_keychains({
+                let mut once = BTreeSet::<KeychainKind>::new();
+                move |keychain, spk_i, _| {
+                    match once.insert(keychain) {
+                        true => print!("\nScanning keychain [{:?}]", keychain),
+                        false => print!(" {:<3}", spk_i),
+                    }
+                    std::io::stdout().flush().expect("must flush")
+                }
+            })
+            .inspect_spks_for_keychain(
+                KeychainKind::External,
+                generate_inspect(KeychainKind::External),
+            )
+            .inspect_spks_for_keychain(
+                KeychainKind::Internal,
+                generate_inspect(KeychainKind::Internal),
+            );
+
+        tracing::debug!("Starting wallet full scan");
+
+        let mut update = client
+            .full_scan(request, STOP_GAP, PARALLEL_REQUESTS)
+            .await?;
+        let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
+        let _ = update.graph_update.update_last_seen_unconfirmed(now);
+
+        wallet.persist(&mut db)?;
+
+        tracing::debug!("Completed wallet scan");
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
 
         Ok(Self {
             wallet: Arc::new(Mutex::new(wallet)),
+            db: Arc::new(Mutex::new(db)),
             client,
             min_mint_amount,
             max_mint_amount,
@@ -88,7 +159,337 @@ impl BdkWallet {
             max_melt_amount,
             mint_enabled: true,
             melt_enabled: true,
+            payjoin_settings,
+            sender,
+            receiver: Arc::new(Mutex::new(receiver)),
+            seen_inputs: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    async fn update_chain_tip(&self) -> Result<(), Error> {
+        let mut wallet = self.wallet.lock().await;
+        let latest_checkpoint = wallet.latest_checkpoint();
+        let latest_checkpoint_height = latest_checkpoint.height();
+
+        tracing::info!("Current wallet known height: {}", latest_checkpoint_height);
+
+        let mut fetched_blocks: Vec<BlockId> = vec![];
+
+        let mut last_fetched_height = None;
+
+        while last_fetched_height.is_none()
+            || last_fetched_height.expect("Checked for none") > latest_checkpoint_height
+        {
+            let blocks = self.client.get_blocks(last_fetched_height).await?;
+
+            for block in blocks {
+                match last_fetched_height {
+                    Some(height) if block.time.height < height => {
+                        last_fetched_height = Some(block.time.height);
+                    }
+                    None => {
+                        tracing::info!("Current block tip: {}", block.time.height);
+                        last_fetched_height = Some(block.time.height);
+                    }
+                    _ => {}
+                }
+                let block_id = BlockId {
+                    height: block.time.height,
+                    hash: block.id,
+                };
+
+                match block.time.height > latest_checkpoint_height {
+                    true => fetched_blocks.push(block_id),
+                    false => break,
+                }
+            }
+        }
+
+        fetched_blocks.reverse();
+
+        for block_id in fetched_blocks {
+            tracing::trace!("Inserting wallet checkpoint: {}", block_id.height);
+            wallet.insert_checkpoint(block_id)?;
+        }
+
+        if let Some(changeset) = wallet.take_staged() {
+            let mut db = self.db.lock().await;
+            db.append_changeset(&changeset)?;
+        }
+
+        Ok(())
+    }
+}
+
+// TODO: Making this a payjoin trait
+impl BdkWallet {
+    async fn start_payjoin(&self, address: &str) -> Result<String, Error> {
+        let ohttp_relay = self
+            .payjoin_settings
+            .ohttp_relay
+            .clone()
+            .ok_or(anyhow!("ohttp relay required"))?;
+        let payjoin_directory = self
+            .payjoin_settings
+            .payjoin_directory
+            .clone()
+            .ok_or(anyhow!("payjoin directory required"))?;
+
+        let ohttp_relay: Url = ohttp_relay.parse()?;
+        let payjoin_directory: Url = payjoin_directory.parse()?;
+
+        // Fetch keys using HTTP CONNECT method
+        let ohttp_keys =
+            payjoin::io::fetch_ohttp_keys(ohttp_relay.clone(), payjoin_directory.clone()).await?;
+
+        let mut session = payjoin::receive::v2::SessionInitializer::new(
+            payjoin::bitcoin::Address::from_str(address)?.assume_checked(),
+            payjoin_directory,
+            ohttp_keys,
+            ohttp_relay,
+            Some(std::time::Duration::from_secs(600)),
+        );
+        let (req, ctx) = session.extract_req().unwrap();
+        let http = reqwest::Client::new();
+
+        let res = http
+            .post(req.url)
+            .body(req.body)
+            .header("Content-Type", payjoin::V2_REQ_CONTENT_TYPE)
+            .send()
+            .await
+            .unwrap();
+        let mut session = session
+            .process_res(res.bytes().await?.to_vec().as_slice(), ctx)
+            .unwrap();
+
+        let uri = session
+            .pj_uri_builder()
+            .amount(payjoin::bitcoin::Amount::from_sat(88888))
+            .build();
+
+        tracing::info!("PJ url: {}", session.pj_url());
+        println!("Payjoin URI: {}", uri);
+        tracing::debug!("{}", uri.to_string());
+        let pj_url = session.pj_url().to_string();
+
+        let sender = self.sender.clone();
+        tokio::spawn(async move {
+            let proposal = loop {
+                tracing::debug!("Polling for proposal");
+                let (req, ctx) = match session.extract_req() {
+                    Ok((res, tx)) => (res, tx),
+                    Err(err) => {
+                        tracing::info!("Error extracting session: {}", err);
+                        break None;
+                    }
+                };
+
+                let res = match http
+                    .post(req.url)
+                    .body(req.body)
+                    .header("Content-Type", payjoin::V2_REQ_CONTENT_TYPE)
+                    .send()
+                    .await
+                {
+                    Ok(res) => res,
+                    Err(err) => {
+                        tracing::error!("Error making payjoin polling request: {}", err);
+
+                        continue;
+                    }
+                };
+
+                match session.process_res(res.bytes().await.unwrap().to_vec().as_slice(), ctx) {
+                    Ok(Some(proposal)) => {
+                        break Some(proposal);
+                    }
+                    Ok(None) => {
+                        continue;
+                    }
+                    Err(err) => {
+                        tracing::error!("Error polling for payjoin proposal: {}", err);
+                        continue;
+                    }
+                }
+            };
+
+            if let Some(proposal) = proposal {
+                tracing::debug!("Received Proposal");
+                if let Err(err) = sender.send(proposal).await {
+                    tracing::error!("Could not send proposal on channel: {}", err);
+                }
+            }
+        });
+
+        Ok(pj_url)
+    }
+
+    pub async fn verify_proposal(
+        wallet: Arc<Mutex<Wallet>>,
+        proposal: UncheckedProposal,
+        seen_inputs: HashSet<payjoin::bitcoin::OutPoint>,
+    ) -> Result<ProvisionalProposal, Error> {
+        let wallet = wallet.lock().await;
+        proposal
+            // TODO: Check this can be broadcast
+            .check_broadcast_suitability(None, |_tx| Ok(true))
+            .map_err(|_| anyhow!("TX cannot be broadcast"))?
+            .check_inputs_not_owned(|input| {
+                let bytes = input.to_bytes();
+                let script = Script::from_bytes(&bytes);
+                Ok(wallet.is_mine(script.into()))
+            })
+            .map_err(|_| anyhow!("Receiver should not own any of the inputs"))?
+            .check_no_mixed_input_scripts()
+            .expect("No mixed input scripts")
+            .check_no_inputs_seen_before(|outpoint| match seen_inputs.contains(outpoint) {
+                true => Ok(true),
+                false => Ok(false),
+            })
+            .expect("No inputs seen before")
+            .identify_receiver_outputs(|output_script| {
+                let bytes = output_script.to_bytes();
+                let script = Script::from_bytes(&bytes);
+                Ok(wallet.is_mine(script.into()))
+            })
+            .map_err(|_| anyhow!("Receiver outputs"))
+    }
+
+    pub async fn wait_handle_proposal(&self) -> Result<(), Error> {
+        let mut receiver = self.receiver.lock().await;
+        tokio::select! {
+            Some(proposal) = receiver.recv() => {
+                match self.handle_proposal(proposal).await {
+                    Ok(()) => {
+                        tracing::info!("Sent payjoin");
+                    }
+                    Err(err) => {
+                        tracing::error!("Could not proceed with payjoin proposal: {:?}", err);
+                    }
+                }
+            }
+            else => ()
+        }
+        Ok(())
+    }
+
+    pub async fn handle_proposal(&self, proposal: UncheckedProposal) -> Result<(), Error> {
+        let mut seen_inputs = self.seen_inputs.lock().await;
+
+        let tx = proposal.extract_tx_to_schedule_broadcast();
+
+        let their_inputs: HashSet<_> = tx.input.iter().map(|tx_in| tx_in.previous_output).collect();
+
+        let mut payjoin =
+            BdkWallet::verify_proposal(Arc::clone(&self.wallet), proposal, seen_inputs.clone())
+                .await?;
+        seen_inputs.extend(their_inputs);
+        drop(seen_inputs);
+
+        tracing::debug!("Verified proposal");
+
+        let wallet = self.wallet.lock().await;
+
+        // Augment the Proposal to Make a Batched Transaction
+        let available_inputs: Vec<_> = wallet.list_unspent().collect();
+        tracing::debug!("{} available inputs to contribute", available_inputs.len());
+        let candidate_inputs: HashMap<payjoin::bitcoin::Amount, payjoin::bitcoin::OutPoint> =
+            available_inputs
+                .iter()
+                .map(|i| {
+                    (
+                        payjoin::bitcoin::Amount::from_sat(i.txout.value.to_sat()),
+                        payjoin::bitcoin::OutPoint {
+                            txid: payjoin::bitcoin::Txid::from_str(
+                                &i.outpoint.txid.to_raw_hash().to_string(),
+                            )
+                            .unwrap(),
+                            vout: i.outpoint.vout,
+                        },
+                    )
+                })
+                .collect();
+
+        let selected_outpoint = payjoin.try_preserving_privacy(candidate_inputs).unwrap();
+        let selected_utxo = available_inputs
+            .iter()
+            .find(|i| {
+                i.outpoint.txid.to_base32() == selected_outpoint.txid.to_base32()
+                    && i.outpoint.vout == selected_outpoint.vout
+            })
+            .unwrap();
+
+        let txo_to_contribute = payjoin::bitcoin::TxOut {
+            value: selected_utxo.txout.value.to_sat(),
+            script_pubkey: payjoin::bitcoin::ScriptBuf::from_bytes(
+                selected_utxo.clone().txout.script_pubkey.into_bytes(),
+            ),
+        };
+        let outpoint_to_contribute = payjoin::bitcoin::OutPoint {
+            txid: payjoin::bitcoin::Txid::from_str(
+                &selected_utxo.outpoint.txid.to_raw_hash().to_string(),
+            )
+            .unwrap(),
+            vout: selected_utxo.outpoint.vout,
+        };
+        payjoin.contribute_witness_input(txo_to_contribute, outpoint_to_contribute);
+
+        let payjoin = payjoin
+            .finalize_proposal(
+                |psbt| {
+                    let psbt = psbt.to_string();
+                    let mut psbt = bdk_wallet::bitcoin::psbt::Psbt::from_str(&psbt).unwrap();
+
+                    let sign_options = SignOptions {
+                        trust_witness_utxo: true,
+                        ..Default::default()
+                    };
+
+                    if let Err(err) = wallet.sign(&mut psbt, sign_options.clone()) {
+                        tracing::error!("Could not sign psbt: {}", err);
+                    }
+
+                    if let Err(err) = wallet.finalize_psbt(&mut psbt, sign_options) {
+                        tracing::debug!("Could not finalize transactions: {}", err);
+                    }
+
+                    let psbt = payjoin::bitcoin::psbt::Psbt::from_str(&psbt.to_string()).unwrap();
+                    Ok(psbt)
+                },
+                Some(payjoin::bitcoin::FeeRate::MIN),
+            )
+            .map_err(|_| anyhow!("Could not finalize proposal"))?;
+
+        self.send_payjoin_proposal(payjoin).await?;
+
+        tracing::debug!("finalized transaction");
+
+        Ok(())
+    }
+
+    pub async fn send_payjoin_proposal(&self, payjoin: PayjoinProposal) -> Result<(), Error> {
+        let mut payjoin = payjoin;
+        let (req, ctx) = payjoin.extract_v2_req().unwrap();
+        let http = reqwest::Client::new();
+        let res = http
+            .post(req.url)
+            .body(req.body)
+            .header("Content-Type", payjoin::V2_REQ_CONTENT_TYPE)
+            .send()
+            .await
+            .unwrap();
+        payjoin
+            .process_res(res.bytes().await.unwrap().to_vec(), ctx)
+            .unwrap();
+        let payjoin_psbt = payjoin.psbt().clone();
+
+        println!(
+            "response successful. Watch mempool for successful payjoin. TXID: {}",
+            payjoin_psbt.extract_tx().clone().txid()
+        );
+
+        Ok(())
     }
 }
 
@@ -98,7 +499,7 @@ impl MintOnChain for BdkWallet {
 
     fn get_settings(&self) -> Settings {
         Settings {
-            mpp: true,
+            payjoin_settings: self.payjoin_settings.clone(),
             min_mint_amount: self.min_mint_amount,
             max_mint_amount: self.max_mint_amount,
             min_melt_amount: self.min_melt_amount,
@@ -110,11 +511,31 @@ impl MintOnChain for BdkWallet {
     }
 
     /// New onchain address
-    async fn new_address(&self) -> Result<String, Self::Err> {
+    async fn new_address(&self) -> Result<NewAddressResponse, Self::Err> {
         let mut wallet = self.wallet.lock().await;
-        Ok(wallet
+        let address = wallet
             .reveal_next_address(KeychainKind::External)
-            .to_string())
+            .address
+            .to_string();
+
+        if let Some(changeset) = wallet.take_staged() {
+            let mut db = self.db.lock().await;
+            if let Err(err) = db.append_changeset(&changeset) {
+                tracing::error!("Could not update change set with new address: {}", err);
+                return Err(anyhow!("Could not update used address index").into());
+            }
+        }
+
+        let payjoin_url = match self.payjoin_settings.receive_enabled {
+            true => Some(self.start_payjoin(&address).await?),
+            false => None,
+        };
+
+        Ok(NewAddressResponse {
+            address,
+            payjoin_url,
+            pjos: None,
+        })
     }
 
     /// Pay Address
@@ -156,20 +577,12 @@ impl MintOnChain for BdkWallet {
     }
 
     /// Check if an address has been paid
-<<<<<<< Updated upstream
-    async fn check_address_paid(
-        &self,
-        address: cdk::bitcoin::Address,
-    ) -> Result<AddressPaidResponse, Self::Err> {
-        let address: Address = Address::from_str(&address.to_string())
-            .unwrap()
-            .assume_checked();
-=======
     async fn check_address_paid(&self, address: &str) -> Result<AddressPaidResponse, Self::Err> {
         let address: Address = Address::from_str(address).unwrap().assume_checked();
->>>>>>> Stashed changes
 
         let script = address.script_pubkey();
+
+        self.update_chain_tip().await?;
 
         let transactions = self
             .client
@@ -200,21 +613,10 @@ impl MintOnChain for BdkWallet {
             tokio::spawn(async move {
                 let mut wallet = wallet_clone.lock().await;
 
-                let confirmation_time = tx
-                    .confirmation_time()
-                    .map(|c| ConfirmationTime::Confirmed {
-                        height: c.height,
-                        time: c.timestamp,
-                    })
-                    .unwrap_or(ConfirmationTime::Unconfirmed {
-                        last_seen: unix_time(),
-                    });
-
-                if let Err(err) = wallet.insert_tx(tx.to_tx(), confirmation_time) {
+                if !wallet.insert_tx(tx.to_tx()) {
                     tracing::warn!(
-                        "Could not insert transaction: {}, {}",
+                        "Could not insert transaction: {}",
                         tx.to_tx().compute_txid(),
-                        err
                     );
                 }
             });

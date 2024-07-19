@@ -9,6 +9,7 @@ use super::Error;
 use crate::error::ErrorResponse;
 use crate::nuts::nut05::MeltBolt11Response;
 use crate::nuts::nut15::Mpp;
+use crate::nuts::nut17::{MintQuoteBtcOnchainRequest, MintQuoteBtcOnchainResponse};
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
     KeysetResponse, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
@@ -122,6 +123,36 @@ impl HttpClient {
         }
     }
 
+    /// Mint Onchain Quote [NUT-XX]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    pub async fn post_mint_onchain_quote(
+        &self,
+        mint_url: Url,
+        amount: Amount,
+        unit: CurrencyUnit,
+    ) -> Result<MintQuoteBtcOnchainResponse, Error> {
+        let url = join_url(mint_url, &["v1", "mint", "quote", "onchain"])?;
+
+        let request = MintQuoteBtcOnchainRequest { amount, unit };
+
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<MintQuoteBtcOnchainResponse>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(err) => {
+                tracing::warn!("{}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
+        }
+    }
+
     /// Mint Quote status
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_quote_status(
@@ -134,6 +165,26 @@ impl HttpClient {
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
         match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(err) => {
+                tracing::warn!("{}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
+        }
+    }
+
+    /// Mint Quote status
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    pub async fn get_mint_onchain_quote_status(
+        &self,
+        mint_url: Url,
+        quote_id: &str,
+    ) -> Result<MintQuoteBtcOnchainResponse, Error> {
+        let url = join_url(mint_url, &["v1", "mint", "quote", "onchain", quote_id])?;
+
+        let res = self.inner.get(url).send().await?.json::<Value>().await?;
+
+        match serde_json::from_value::<MintQuoteBtcOnchainResponse>(res.clone()) {
             Ok(mint_quote_response) => Ok(mint_quote_response),
             Err(err) => {
                 tracing::warn!("{}", err);
