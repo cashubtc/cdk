@@ -604,15 +604,9 @@ impl MintDatabase for MintRedbDatabase {
                 states.push(current_state);
 
                 if current_state != Some(State::Spent) {
-                    match table
+                    table
                         .insert(y.to_bytes(), state_str.as_str())
-                        .map_err(Error::from)?
-                    {
-                        Some(state) => states.push(Some(
-                            serde_json::from_str(state.value()).map_err(Error::from)?,
-                        )),
-                        None => states.push(None),
-                    }
+                        .map_err(Error::from)?;
                 }
             }
         }
