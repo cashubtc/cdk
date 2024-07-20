@@ -287,21 +287,9 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn get_blinded_signature(
-        &self,
-        blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Self::Err> {
-        Ok(self
-            .blinded_signatures
-            .read()
-            .await
-            .get(&blinded_message.to_bytes())
-            .cloned())
-    }
-
     async fn get_blinded_signatures(
         &self,
-        blinded_messages: Vec<PublicKey>,
+        blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let mut signatures = Vec::with_capacity(blinded_messages.len());
 

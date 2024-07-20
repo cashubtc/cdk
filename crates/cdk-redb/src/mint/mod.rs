@@ -647,27 +647,9 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_blinded_signature(
-        &self,
-        blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(BLINDED_SIGNATURES)
-            .map_err(Error::from)?;
-
-        match table.get(blinded_message.to_bytes()).map_err(Error::from)? {
-            Some(blind_signature) => {
-                Ok(serde_json::from_str(blind_signature.value()).map_err(Error::from)?)
-            }
-            None => Ok(None),
-        }
-    }
-
     async fn get_blinded_signatures(
         &self,
-        blinded_messages: Vec<PublicKey>,
+        blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
