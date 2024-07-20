@@ -20,14 +20,17 @@ pub struct Info {
 pub enum LnBackend {
     #[default]
     Cln,
-    FakeWallet, //  Greenlight,
-                //  Ldk,
+    Strike,
+    FakeWallet,
+    //  Greenlight,
+    //  Ldk,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Ln {
     pub ln_backend: LnBackend,
     pub cln_path: Option<PathBuf>,
+    pub strike_api_key: Option<String>,
     pub greenlight_invite_code: Option<String>,
     pub invoice_description: Option<String>,
     pub fee_percent: f32,
@@ -115,6 +118,7 @@ impl Settings {
             //LnBackend::Greenlight => (),
             //LnBackend::Ldk => (),
             LnBackend::FakeWallet => (),
+            LnBackend::Strike => assert!(settings.ln.strike_api_key.is_some()),
         }
 
         Ok(settings)

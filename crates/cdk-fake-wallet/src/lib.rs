@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
-    Settings,
+    self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
+    PaymentQuoteResponse, Settings,
 };
 use cdk::mint;
 use cdk::mint::FeeReserve;
@@ -29,36 +29,26 @@ pub mod error;
 #[derive(Clone)]
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
-    min_melt_amount: u64,
-    max_melt_amount: u64,
-    min_mint_amount: u64,
-    max_mint_amount: u64,
-    mint_enabled: bool,
-    melt_enabled: bool,
     sender: tokio::sync::mpsc::Sender<String>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
+    mint_settings: MintMeltSettings,
+    melt_settings: MintMeltSettings,
 }
 
 impl FakeWallet {
     pub fn new(
         fee_reserve: FeeReserve,
-        min_melt_amount: u64,
-        max_melt_amount: u64,
-        min_mint_amount: u64,
-        max_mint_amount: u64,
+        mint_settings: MintMeltSettings,
+        melt_settings: MintMeltSettings,
     ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
 
         Self {
             fee_reserve,
-            min_mint_amount,
-            max_mint_amount,
-            min_melt_amount,
-            max_melt_amount,
-            mint_enabled: true,
-            melt_enabled: true,
             sender,
             receiver: Arc::new(Mutex::new(Some(receiver))),
+            mint_settings,
+            melt_settings,
         }
     }
 }
@@ -70,13 +60,9 @@ impl MintLightning for FakeWallet {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: true,
-            min_mint_amount: self.min_mint_amount,
-            max_mint_amount: self.max_mint_amount,
-            min_melt_amount: self.min_melt_amount,
-            max_melt_amount: self.max_melt_amount,
             unit: CurrencyUnit::Msat,
-            mint_enabled: self.mint_enabled,
-            melt_enabled: self.melt_enabled,
+            melt_settings: self.melt_settings,
+            mint_settings: self.mint_settings,
         }
     }
 
