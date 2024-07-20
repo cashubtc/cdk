@@ -232,14 +232,9 @@ pub trait MintDatabase {
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err>;
-    /// Get [`BlindSignature`]
-    async fn get_blinded_signature(
-        &self,
-        blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Self::Err>;
     /// Get [`BlindSignature`]s
     async fn get_blinded_signatures(
         &self,
-        blinded_messages: Vec<PublicKey>,
+        blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
 }

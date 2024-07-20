@@ -470,27 +470,31 @@ impl Mint {
             MintQuoteState::Paid => (),
         }
 
-        for blinded_message in &mint_request.outputs {
-            if self
-                .localstore
-                .get_blinded_signature(&blinded_message.blinded_secret)
-                .await?
-                .is_some()
-            {
-                tracing::info!(
-                    "Output has already been signed: {}",
-                    blinded_message.blinded_secret
-                );
-                tracing::info!(
-                    "Mint {} did not succeed returning quote to Paid state",
-                    mint_request.quote
-                );
+        let blinded_messages: Vec<PublicKey> = mint_request
+            .outputs
+            .iter()
+            .map(|b| b.blinded_secret)
+            .collect();
 
-                self.localstore
-                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                    .await?;
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
+        if self
+            .localstore
+            .get_blinded_signatures(&blinded_messages)
+            .await?
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
+        {
+            tracing::info!("Output has already been signed",);
+            tracing::info!(
+                "Mint {} did not succeed returning quote to Paid state",
+                mint_request.quote
+            );
+
+            self.localstore
+                .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
+                .await?;
+            return Err(Error::BlindedMessageAlreadySigned);
         }
 
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
@@ -577,19 +581,24 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        for blinded_message in &swap_request.outputs {
-            if self
-                .localstore
-                .get_blinded_signature(&blinded_message.blinded_secret)
-                .await?
-                .is_some()
-            {
-                tracing::error!(
-                    "Output has already been signed: {}",
-                    blinded_message.blinded_secret
-                );
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
+        let blinded_messages: Vec<PublicKey> = swap_request
+            .outputs
+            .iter()
+            .map(|b| b.blinded_secret)
+            .collect();
+
+        if self
+            .localstore
+            .get_blinded_signatures(&blinded_messages)
+            .await?
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
+        {
+            tracing::info!("Output has already been signed",);
+
+            return Err(Error::BlindedMessageAlreadySigned);
         }
 
         let proofs_total = swap_request.input_amount();
@@ -959,19 +968,21 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?;
 
         if let Some(outputs) = &melt_request.outputs {
-            for blinded_message in outputs {
-                if self
-                    .localstore
-                    .get_blinded_signature(&blinded_message.blinded_secret)
-                    .await?
-                    .is_some()
-                {
-                    tracing::error!(
-                        "Output has already been signed: {}",
-                        blinded_message.blinded_secret
-                    );
-                    return Err(Error::BlindedMessageAlreadySigned);
-                }
+            let blinded_messages: Vec<PublicKey> =
+                outputs.iter().map(|b| b.blinded_secret).collect();
+
+            if self
+                .localstore
+                .get_blinded_signatures(&blinded_messages)
+                .await?
+                .iter()
+                .flatten()
+                .next()
+                .is_some()
+            {
+                tracing::info!("Output has already been signed",);
+
+                return Err(Error::BlindedMessageAlreadySigned);
             }
         }
 
@@ -1061,7 +1072,7 @@ impl Mint {
 
         let blinded_signatures = self
             .localstore
-            .get_blinded_signatures(blinded_message)
+            .get_blinded_signatures(&blinded_message)
             .await?;
 
         assert_eq!(blinded_signatures.len(), output_len);

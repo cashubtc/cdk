@@ -657,34 +657,9 @@ VALUES (?, ?, ?, ?);
 
         Ok(())
     }
-    async fn get_blinded_signature(
-        &self,
-        blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM blind_signature
-WHERE y=?;
-        "#,
-        )
-        .bind(blinded_message.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(Some(sqlite_row_to_blind_signature(rec)?))
-    }
     async fn get_blinded_signatures(
         &self,
-        blinded_messages: Vec<PublicKey>,
+        blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let mut signatures = Vec::with_capacity(blinded_messages.len());
         for message in blinded_messages {
