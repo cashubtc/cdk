@@ -685,6 +685,30 @@ WHERE y=?;
 
         Ok(signatures)
     }
+
+    async fn get_blinded_signatures_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM blind_signature
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_all(&self.pool)
+        .await;
+
+        let signatures = rec
+            .map_err(Error::from)?
+            .into_iter()
+            .flat_map(sqlite_row_to_blind_signature)
+            .collect();
+
+        Ok(signatures)
+    }
 }
 
 fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {

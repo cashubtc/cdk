@@ -670,4 +670,27 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(signatures)
     }
+
+    async fn get_blinded_signatures_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(BLINDED_SIGNATURES)
+            .map_err(Error::from)?;
+
+        Ok(table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .filter_map(|(_m, s)| {
+                match serde_json::from_str::<BlindSignature>(s.value()).ok() {
+                    Some(signature) if &signature.keyset_id == keyset_id => Some(signature), // Filter by keyset_id
+                    _ => None, // Exclude non-matching entries
+                }
+            })
+            .collect())
+    }
 }

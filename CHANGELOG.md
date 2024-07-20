@@ -41,6 +41,7 @@
 - cdk-cli(receive): Add support for signing keys to be nostr nsec encoded ([thesimplekid]).
 - cdk-fake-wallet: Add Fake wallet for testing ([thesimplekid]).
 - cdk(cdk-database/mint): Add `add_proofs`, `get_proofs_by_ys`, `get_proofs_states`, and `update_proofs_states` ([thesimplekid]).
+- cdk(cdk-database/mint): Add `get_blinded_signatures_for_keyset` to get all blind signatures for a `keyset_id` ([thesimplekid]).
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
