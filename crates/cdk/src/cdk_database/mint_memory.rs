@@ -303,4 +303,17 @@ impl MintDatabase for MintMemoryDatabase {
 
         Ok(signatures)
     }
+
+    async fn get_blinded_signatures_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let blinded_signatures = self.blinded_signatures.read().await;
+
+        Ok(blinded_signatures
+            .values()
+            .filter(|b| &b.keyset_id == keyset_id)
+            .cloned()
+            .collect())
+    }
 }
