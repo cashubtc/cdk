@@ -1,4 +1,9 @@
-//! CDK lightning backend for CLN
+//! CDK Fake LN Backend
+//!
+//! Used for testing where quotes are auto filled
+
+#![warn(missing_docs)]
+#![warn(rustdoc::bare_urls)]
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +31,7 @@ use uuid::Uuid;
 
 pub mod error;
 
+/// Fake Wallet
 #[derive(Clone)]
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
@@ -36,6 +42,7 @@ pub struct FakeWallet {
 }
 
 impl FakeWallet {
+    /// Creat new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
         mint_settings: MintMeltSettings,
@@ -69,12 +76,7 @@ impl MintLightning for FakeWallet {
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
-        let receiver = self
-            .receiver
-            .lock()
-            .await
-            .take()
-            .ok_or(Error::Custom("No reeiver".to_string()))?;
+        let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
         Ok(Box::pin(receiver_stream.map(|label| label)))
     }
