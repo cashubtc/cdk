@@ -226,7 +226,10 @@ impl Strike {
         tracing::debug!("Got {} current subscriptions", subs.len());
 
         for sub in subs {
-            self.strike_api.delete_subscription(sub.id).await?;
+            tracing::info!("Deleting webhook: {}", &sub.id);
+            if let Err(err) = self.strike_api.delete_subscription(&sub.id).await {
+                tracing::error!("Error deleting webhook subscription: {} {}", sub.id, err);
+            }
         }
 
         self.strike_api
