@@ -221,6 +221,14 @@ impl Strike {
         webhook_endpoint: &str,
         sender: tokio::sync::mpsc::Sender<String>,
     ) -> anyhow::Result<Router> {
+        let subs = self.strike_api.get_current_subscriptions().await?;
+
+        tracing::debug!("Got {} current subscriptions", subs.len());
+
+        for sub in subs {
+            self.strike_api.delete_subscription(sub.id).await?;
+        }
+
         self.strike_api
             .create_invoice_webhook_router(webhook_endpoint, sender)
             .await
