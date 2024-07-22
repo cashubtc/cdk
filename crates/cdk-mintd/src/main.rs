@@ -377,13 +377,20 @@ async fn check_pending_quotes(
     for quote in unpaid_quotes {
         tracing::trace!("Checking status of mint quote: {}", quote.id);
         let lookup_id = quote.request_lookup_id;
-        let state = ln.check_invoice_status(&lookup_id).await?;
+        match ln.check_invoice_status(&lookup_id).await {
+            Ok(state) => {
+                if state != quote.state {
+                    tracing::trace!("Mintquote status changed: {}", quote.id);
+                    mint.localstore
+                        .update_mint_quote_state(&quote.id, state)
+                        .await?;
+                }
+            }
 
-        if state != quote.state {
-            tracing::trace!("Mintquote status changed: {}", quote.id);
-            mint.localstore
-                .update_mint_quote_state(&quote.id, state)
-                .await?;
+            Err(err) => {
+                tracing::warn!("Could not check state of pending invoice: {}", lookup_id);
+                tracing::error!("{}", err);
+            }
         }
     }
 
