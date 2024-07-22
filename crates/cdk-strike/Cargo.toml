@@ -20,4 +20,5 @@ tokio.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-strike-rs = "0.1.0"
+# strike-rs = "0.1.0"
+strike-rs = { git = "https://github.com/thesimplekid/strike-rs" }
