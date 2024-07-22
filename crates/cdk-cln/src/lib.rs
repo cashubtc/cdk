@@ -1,5 +1,8 @@
 //! CDK lightning backend for CLN
 
+#![warn(missing_docs)]
+#![warn(rustdoc::bare_urls)]
+
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -30,6 +33,7 @@ use uuid::Uuid;
 
 pub mod error;
 
+/// CLN mint backend
 #[derive(Clone)]
 pub struct Cln {
     rpc_socket: PathBuf,
@@ -40,6 +44,7 @@ pub struct Cln {
 }
 
 impl Cln {
+    /// Create new ['Cln]
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
@@ -282,7 +287,7 @@ impl MintLightning for Cln {
             }
             _ => {
                 tracing::warn!("CLN returned wrong response kind");
-                return Err(Error::Custom("CLN returned wrong response kind".to_string()).into());
+                return Err(Error::WrongClnResponse.into());
             }
         };
 
@@ -291,6 +296,7 @@ impl MintLightning for Cln {
 }
 
 impl Cln {
+    /// Get last pay index for cln
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client

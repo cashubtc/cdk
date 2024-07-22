@@ -1,5 +1,8 @@
+//! CLN Errors
+
 use thiserror::Error;
 
+/// CLN Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Invoice amount not defined
@@ -17,8 +20,6 @@ pub enum Error {
     /// Cln Rpc Error
     #[error(transparent)]
     ClnRpc(#[from] cln_rpc::RpcError),
-    #[error("`{0}`")]
-    Custom(String),
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {
