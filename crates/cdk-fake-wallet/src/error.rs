@@ -1,5 +1,8 @@
+//! Fake Wallet Error
+
 use thiserror::Error;
 
+/// Fake Wallet Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Invoice amount not defined
@@ -8,8 +11,9 @@ pub enum Error {
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
-    #[error("`{0}`")]
-    Custom(String),
+    /// Unknown invoice
+    #[error("No channel receiver")]
+    NoReceiver,
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {
