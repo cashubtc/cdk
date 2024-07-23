@@ -262,6 +262,8 @@ impl Wallet {
             .add_mint(self.mint_url.clone(), mint_info.clone())
             .await?;
 
+        tracing::trace!("Mint info fetched for {}", self.mint_url);
+
         Ok(mint_info)
     }
 
@@ -1467,8 +1469,6 @@ impl Wallet {
         p2pk_signing_keys: &[SecretKey],
         preimages: &[String],
     ) -> Result<Amount, Error> {
-        let _ = self.get_active_mint_keyset().await?;
-
         let mut received_proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
         let mint_url = &self.mint_url;
         // Add mint if it does not exist in the store
@@ -1478,8 +1478,14 @@ impl Wallet {
             .await?
             .is_none()
         {
+            tracing::debug!(
+                "Mint not in localstore fetching info for: {}",
+                self.mint_url
+            );
             self.get_mint_info().await?;
         }
+
+        let _ = self.get_active_mint_keyset().await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
