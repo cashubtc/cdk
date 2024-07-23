@@ -152,7 +152,13 @@ async fn main() -> Result<()> {
             sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Receive(sub_command_args) => {
-            sub_commands::receive::receive(&multi_mint_wallet, localstore, sub_command_args).await
+            sub_commands::receive::receive(
+                &multi_mint_wallet,
+                localstore,
+                &mnemonic.to_seed_normalized(""),
+                sub_command_args,
+            )
+            .await
         }
         Commands::Send(sub_command_args) => {
             sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
