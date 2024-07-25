@@ -20,4 +20,4 @@ tokio.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-strike-rs = "0.2.0"
+strike-rs = "0.2.2"
