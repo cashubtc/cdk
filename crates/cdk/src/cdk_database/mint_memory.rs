@@ -273,6 +273,29 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(states)
     }
 
+    async fn get_proofs_by_keyset_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
+        let proofs = self.proofs.read().await;
+
+        let proofs_for_id: Proofs = proofs
+            .iter()
+            .filter_map(|(_, p)| match &p.keyset_id == keyset_id {
+                true => Some(p),
+                false => None,
+            })
+            .cloned()
+            .collect();
+
+        let proof_ys: Vec<PublicKey> = proofs_for_id.iter().flat_map(|p| p.y()).collect();
+        assert_eq!(proofs_for_id.len(), proof_ys.len());
+
+        let states = self.get_proofs_states(&proof_ys).await?;
+
+        Ok((proofs_for_id, states))
+    }
+
     async fn add_blind_signatures(
         &self,
         blinded_message: &[PublicKey],
@@ -287,7 +310,7 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn get_blinded_signatures(
+    async fn get_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
@@ -304,7 +327,7 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(signatures)
     }
 
-    async fn get_blinded_signatures_for_keyset(
+    async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {

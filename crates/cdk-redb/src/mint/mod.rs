@@ -572,6 +572,30 @@ impl MintDatabase for MintRedbDatabase {
         Ok(states)
     }
 
+    async fn get_proofs_by_keyset_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+        let proofs_for_id: Proofs = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .flat_map(|(_, p)| serde_json::from_str::<Proof>(p.value()))
+            .filter(|p| &p.keyset_id == keyset_id)
+            .collect();
+
+        let proof_ys: Vec<PublicKey> = proofs_for_id.iter().flat_map(|p| p.y()).collect();
+        assert_eq!(proofs_for_id.len(), proof_ys.len());
+
+        let states = self.get_proofs_states(&proof_ys).await?;
+
+        Ok((proofs_for_id, states))
+    }
+
     async fn update_proofs_states(
         &self,
         ys: &[PublicKey],
@@ -647,7 +671,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_blinded_signatures(
+    async fn get_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
@@ -671,7 +695,7 @@ impl MintDatabase for MintRedbDatabase {
         Ok(signatures)
     }
 
-    async fn get_blinded_signatures_for_keyset(
+    async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {

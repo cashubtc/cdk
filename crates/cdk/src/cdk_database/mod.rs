@@ -225,6 +225,11 @@ pub trait MintDatabase {
         ys: &[PublicKey],
         proofs_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get [`Proofs`] by state
+    async fn get_proofs_by_keyset_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
 
     /// Add [`BlindSignature`]
     async fn add_blind_signatures(
@@ -233,12 +238,12 @@ pub trait MintDatabase {
         blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err>;
     /// Get [`BlindSignature`]s
-    async fn get_blinded_signatures(
+    async fn get_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
     /// Get [`BlindSignature`]s for keyset_id
-    async fn get_blinded_signatures_for_keyset(
+    async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err>;

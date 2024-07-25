@@ -573,6 +573,35 @@ WHERE y=?;
         Ok(states)
     }
 
+    async fn get_proofs_by_keyset_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM proof
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        let mut proofs_for_id = vec![];
+        let mut states = vec![];
+
+        for row in rec {
+            let (proof, state) = sqlite_row_to_proof_with_state(row)?;
+
+            proofs_for_id.push(proof);
+            states.push(state);
+        }
+
+        Ok((proofs_for_id, states))
+    }
+
     async fn update_proofs_states(
         &self,
         ys: &[PublicKey],
@@ -657,7 +686,7 @@ VALUES (?, ?, ?, ?);
 
         Ok(())
     }
-    async fn get_blinded_signatures(
+    async fn get_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
@@ -686,7 +715,7 @@ WHERE y=?;
         Ok(signatures)
     }
 
-    async fn get_blinded_signatures_for_keyset(
+    async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
@@ -809,6 +838,30 @@ fn sqlite_row_to_proof(row: SqliteRow) -> Result<Proof, Error> {
         witness: row_witness.and_then(|w| serde_json::from_str(&w).ok()),
         dleq: None,
     })
+}
+
+fn sqlite_row_to_proof_with_state(row: SqliteRow) -> Result<(Proof, Option<State>), Error> {
+    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
+    let row_secret: String = row.try_get("secret").map_err(Error::from)?;
+    let row_c: Vec<u8> = row.try_get("c").map_err(Error::from)?;
+    let row_witness: Option<String> = row.try_get("witness").map_err(Error::from)?;
+
+    let row_state: Option<String> = row.try_get("state").map_err(Error::from)?;
+
+    let state = row_state.and_then(|s| State::from_str(&s).ok());
+
+    Ok((
+        Proof {
+            amount: Amount::from(row_amount as u64),
+            keyset_id: Id::from_str(&keyset_id)?,
+            secret: Secret::from_str(&row_secret)?,
+            c: PublicKey::from_slice(&row_c)?,
+            witness: row_witness.and_then(|w| serde_json::from_str(&w).ok()),
+            dleq: None,
+        },
+        state,
+    ))
 }
 
 fn sqlite_row_to_blind_signature(row: SqliteRow) -> Result<BlindSignature, Error> {
