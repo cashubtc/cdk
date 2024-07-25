@@ -34,6 +34,8 @@
 - cdk(cdk-database/mint): Rename `add_active_keyset` to `set_active_keyset` ([thesimplekid]).
 - cdk(cdk-database/wallet): Change `get_proofs` to return `Vec<ProofInfo>` instead of `Option<Vec<ProofInfo>>` ([thesimplekid]).
 - cdk-cli: Receive will add wallet when receiving if mint is unknown ([thesimplekid]).
+- cdk(cdk-database/mint): Rename `get_blinded_signatures` to `get_blind_signatures` ([thesimplekid]).
+- cdk(cdk-database/mint):rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
@@ -43,6 +45,8 @@
 - cdk-fake-wallet: Add Fake wallet for testing ([thesimplekid]).
 - cdk(cdk-database/mint): Add `add_proofs`, `get_proofs_by_ys`, `get_proofs_states`, and `update_proofs_states` ([thesimplekid]).
 - cdk(cdk-database/mint): Add `get_blinded_signatures_for_keyset` to get all blind signatures for a `keyset_id` ([thesimplekid]).
+- cdk(mint): Add `total_issued` and `total_redeamed` ([thesimplekid]).
+- cdk(cdk-database/mint) Add `get_proofs_by_keyset_id` ([thesimplekid]).
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
