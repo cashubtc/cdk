@@ -489,7 +489,7 @@ impl Mint {
 
         if self
             .localstore
-            .get_blinded_signatures(&blinded_messages)
+            .get_blind_signatures(&blinded_messages)
             .await?
             .iter()
             .flatten()
@@ -600,7 +600,7 @@ impl Mint {
 
         if self
             .localstore
-            .get_blinded_signatures(&blinded_messages)
+            .get_blind_signatures(&blinded_messages)
             .await?
             .iter()
             .flatten()
@@ -984,7 +984,7 @@ impl Mint {
 
             if self
                 .localstore
-                .get_blinded_signatures(&blinded_messages)
+                .get_blind_signatures(&blinded_messages)
                 .await?
                 .iter()
                 .flatten()
@@ -1083,7 +1083,7 @@ impl Mint {
 
         let blinded_signatures = self
             .localstore
-            .get_blinded_signatures(&blinded_message)
+            .get_blind_signatures(&blinded_message)
             .await?;
 
         assert_eq!(blinded_signatures.len(), output_len);
@@ -1127,6 +1127,52 @@ impl Mint {
     #[instrument(skip_all)]
     pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
         MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
+    }
+
+    /// Get the total amount issed by keyset
+    #[instrument(skip_all)]
+    pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
+        let keysets = self.localstore.get_keyset_infos().await?;
+
+        let mut total_issued = HashMap::new();
+
+        for keyset in keysets {
+            let blinded = self
+                .localstore
+                .get_blind_signatures_for_keyset(&keyset.id)
+                .await?;
+
+            let total = blinded.iter().map(|b| b.amount).sum();
+
+            total_issued.insert(keyset.id, total);
+        }
+
+        Ok(total_issued)
+    }
+
+    /// Total redeamed for keyset
+    #[instrument(skip_all)]
+    pub async fn total_redeamed(&self) -> Result<HashMap<Id, Amount>, Error> {
+        let keysets = self.localstore.get_keyset_infos().await?;
+
+        let mut total_redeamed = HashMap::new();
+
+        for keyset in keysets {
+            let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
+
+            let total_spent = proofs
+                .iter()
+                .zip(state)
+                .filter_map(|(p, s)| match s == Some(State::Spent) {
+                    true => Some(p.amount),
+                    false => None,
+                })
+                .sum();
+
+            total_redeamed.insert(keyset.id, total_spent);
+        }
+
+        Ok(total_redeamed)
     }
 }
 
