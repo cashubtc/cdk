@@ -452,8 +452,6 @@ mod tests {
             Id::from_str("00ad268c4d1f5826").unwrap()
         );
 
-        let token: TokenV4 = token.try_into().unwrap();
-
         let encoded = &token.to_string();
 
         let token_data = TokenV4::from_str(encoded).unwrap();
@@ -470,7 +468,7 @@ mod tests {
 
         assert_eq!(amount, Amount::from(4));
 
-        let unit = token.unit().clone().unwrap();
+        let unit = (*token.unit()).unwrap();
 
         assert_eq!(CurrencyUnit::Sat, unit);
 

@@ -28,10 +28,11 @@ mnemonic = ""
 # Required ln backend `cln`, `strike`, `fakewallet`
 ln_backend = "cln"
 
-# CLN
+# [cln]
 # Required if using cln backend path to rpc
 # cln_path = ""
 
-# Strike
-# Required if using strike backed
-# strike_api_key=""
+# [strike]
+# api_key=""
+# Optional default sats
+# supported_units=[""]

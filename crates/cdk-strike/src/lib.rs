@@ -123,10 +123,18 @@ impl MintLightning for Strike {
             return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
         }
 
+        let source_currency = match melt_quote_request.unit {
+            CurrencyUnit::Sat => StrikeCurrencyUnit::BTC,
+            CurrencyUnit::Msat => StrikeCurrencyUnit::BTC,
+            CurrencyUnit::Usd => StrikeCurrencyUnit::USD,
+            CurrencyUnit::Eur => StrikeCurrencyUnit::EUR,
+        };
+
         let payment_quote_request = PayInvoiceQuoteRequest {
             ln_invoice: melt_quote_request.request.to_string(),
-            source_currency: strike_rs::Currency::BTC,
+            source_currency,
         };
+
         let quote = self.strike_api.payment_quote(payment_quote_request).await?;
 
         let fee = from_strike_amount(quote.lightning_network_fee, &melt_quote_request.unit)?;
@@ -249,14 +257,14 @@ pub(crate) fn from_strike_amount(
             if strike_amount.currency == StrikeCurrencyUnit::USD {
                 Ok((strike_amount.amount * 100.0).round() as u64)
             } else {
-                bail!("Could not convert ");
+                bail!("Could not convert strike USD");
             }
         }
         CurrencyUnit::Eur => {
             if strike_amount.currency == StrikeCurrencyUnit::EUR {
                 Ok((strike_amount.amount * 100.0).round() as u64)
             } else {
-                bail!("Could not convert ");
+                bail!("Could not convert to EUR");
             }
         }
     }

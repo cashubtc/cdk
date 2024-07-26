@@ -72,6 +72,7 @@ impl Mint {
                         acc.entry(ks.unit).or_default().push(ks.clone());
                         acc
                     });
+                let mut keyset_units = vec![];
 
                 for (unit, keysets) in keysets_by_unit {
                     let mut keysets = keysets;
@@ -119,6 +120,28 @@ impl Mint {
                             unit,
                             *max_order,
                             *input_fee_ppk,
+                        );
+
+                        let id = keyset_info.id;
+                        localstore.add_keyset_info(keyset_info).await?;
+                        localstore.set_active_keyset(unit, id).await?;
+                        active_keysets.insert(id, keyset);
+                        keyset_units.push(unit);
+                    }
+                }
+
+                for (unit, (fee, max_order)) in supported_units {
+                    if !keyset_units.contains(&unit) {
+                        let derivation_path = derivation_path_from_unit(unit, 0);
+
+                        let (keyset, keyset_info) = create_new_keyset(
+                            &secp_ctx,
+                            xpriv,
+                            derivation_path,
+                            Some(0),
+                            unit,
+                            max_order,
+                            fee,
                         );
 
                         let id = keyset_info.id;

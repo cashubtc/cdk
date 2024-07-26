@@ -141,19 +141,6 @@ pub async fn get_melt_bolt11_quote(
             into_response(Error::UnsupportedUnit)
         })?;
 
-    let invoice_amount_msat = payload
-        .request
-        .amount_milli_satoshis()
-        .ok_or(Error::InvoiceAmountUndefined)
-        .map_err(into_response)?;
-
-    // Convert amount to quote unit
-    let amount =
-        to_unit(invoice_amount_msat, &CurrencyUnit::Msat, &payload.unit).map_err(|err| {
-            tracing::error!("Backed does not support unit: {}", err);
-            into_response(Error::UnsupportedUnit)
-        })?;
-
     let payment_quote = ln.get_payment_quote(&payload).await.map_err(|err| {
         tracing::error!(
             "Could not get payment quote for mint quote, {} bolt11, {}",
@@ -169,7 +156,7 @@ pub async fn get_melt_bolt11_quote(
         .new_melt_quote(
             payload.request.to_string(),
             payload.unit,
-            amount.into(),
+            payment_quote.amount.into(),
             payment_quote.fee.into(),
             unix_time() + state.quote_ttl,
             payment_quote.request_lookup_id,
