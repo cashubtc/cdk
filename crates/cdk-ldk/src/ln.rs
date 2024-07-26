@@ -1232,7 +1232,7 @@ fn map_err<E: ToString>(e: E) -> cdk_lightning::Error {
     cdk_lightning::Error::Lightning(Box::new(Error::Ldk(e.to_string())))
 }
 
-// propery key -> value
+// property key -> value
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 // channeld id -> channel
 const CHANNELS_TABLE: TableDefinition<[u8; 32], Bincode<Channel>> =
