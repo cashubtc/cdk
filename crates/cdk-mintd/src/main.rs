@@ -195,16 +195,21 @@ async fn main() -> anyhow::Result<()> {
             routers
         }
         LnBackend::FakeWallet => {
-            let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11);
+            let units = settings.fake_wallet.unwrap_or_default().supported_units;
 
-            let wallet = Arc::new(FakeWallet::new(
-                fee_reserve,
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
-            ));
+            for unit in units {
+                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
 
-            ln_backends.insert(ln_key, wallet);
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+                let wallet = Arc::new(FakeWallet::new(
+                    fee_reserve.clone(),
+                    MintMeltSettings::default(),
+                    MintMeltSettings::default(),
+                ));
+
+                ln_backends.insert(ln_key, wallet);
+
+                supported_units.insert(unit, (input_fee_ppk, 64));
+            }
 
             vec![]
         }
