@@ -45,6 +45,19 @@ pub struct Cln {
     pub rpc_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FakeWallet {
+    pub supported_units: Vec<CurrencyUnit>,
+}
+
+impl Default for FakeWallet {
+    fn default() -> Self {
+        Self {
+            supported_units: vec![CurrencyUnit::Sat],
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseEngine {
@@ -65,6 +78,7 @@ pub struct Settings {
     pub ln: Ln,
     pub cln: Option<Cln>,
     pub strike: Option<Strike>,
+    pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
 }
 
