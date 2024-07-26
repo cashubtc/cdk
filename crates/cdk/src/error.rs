@@ -165,6 +165,26 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::InsufficientInputProofs => ErrorResponse {
+                code: ErrorCode::InsufficientFee,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::UnsupportedUnit => ErrorResponse {
+                code: ErrorCode::UnitUnsupported,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::PaymentFailed => ErrorResponse {
+                code: ErrorCode::LightningError,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::RequestAlreadyPaid => ErrorResponse {
+                code: ErrorCode::InvoiceAlreadyPaid,
+                error: Some("Invoice already paid.".to_string()),
+                detail: None,
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),
