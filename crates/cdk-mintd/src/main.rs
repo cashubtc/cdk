@@ -119,80 +119,96 @@ async fn main() -> anyhow::Result<()> {
         min_fee_reserve: absolute_ln_fee_reserve,
         percent_fee_reserve: relative_ln_fee,
     };
-    let (ln, ln_router): (
+
+    let mut ln_backends: HashMap<
+        LnKey,
         Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        Option<Router>,
-    ) = match settings.ln.ln_backend {
+    > = HashMap::new();
+
+    let mut supported_units = HashMap::new();
+    let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
+
+    let ln_routers: Vec<Router> = match settings.ln.ln_backend {
         LnBackend::Cln => {
             let cln_socket = expand_path(
                 settings
-                    .ln
-                    .cln_path
-                    .clone()
-                    .ok_or(anyhow!("cln socket not defined"))?
+                    .cln
+                    .expect("Config checked at load that cln is some")
+                    .rpc_path
                     .to_str()
                     .ok_or(anyhow!("cln socket not defined"))?,
             )
             .ok_or(anyhow!("cln socket not defined"))?;
+            let cln = Arc::new(
+                Cln::new(
+                    cln_socket,
+                    fee_reserve,
+                    MintMeltSettings::default(),
+                    MintMeltSettings::default(),
+                )
+                .await?,
+            );
 
-            (
-                Arc::new(
-                    Cln::new(
-                        cln_socket,
-                        fee_reserve,
-                        MintMeltSettings::default(),
-                        MintMeltSettings::default(),
-                    )
-                    .await?,
-                ),
-                None,
-            )
+            ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11), cln);
+            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+            vec![]
         }
         LnBackend::Strike => {
-            let api_key = settings
-                .ln
-                .strike_api_key
-                .expect("Checked when validaing config");
+            let strike_settings = settings.strike.expect("Checked on config load");
+            let api_key = strike_settings.api_key;
 
-            // Channel used for strike web hook
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
+            let units = strike_settings
+                .supported_units
+                .unwrap_or(vec![CurrencyUnit::Sat]);
 
-            let webhook_endpoint = "/webhook/invoice";
+            let mut routers = vec![];
 
-            let webhook_url = format!("{}{}", settings.info.url, webhook_endpoint);
+            for unit in units {
+                // Channel used for strike web hook
+                let (sender, receiver) = tokio::sync::mpsc::channel(8);
+                let webhook_endpoint = format!("/webhook/{}/invoice", unit);
 
-            let strike = Strike::new(
-                api_key,
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
-                CurrencyUnit::Sat,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url,
-            )
-            .await?;
+                let webhook_url = format!("{}{}", settings.info.url, webhook_endpoint);
 
-            let router = strike
-                .create_invoice_webhook(webhook_endpoint, sender)
+                let strike = Strike::new(
+                    api_key.clone(),
+                    MintMeltSettings::default(),
+                    MintMeltSettings::default(),
+                    unit,
+                    Arc::new(Mutex::new(Some(receiver))),
+                    webhook_url,
+                )
                 .await?;
 
-            (Arc::new(strike), Some(router))
+                let router = strike
+                    .create_invoice_webhook(&webhook_endpoint, sender)
+                    .await?;
+                routers.push(router);
+
+                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
+
+                ln_backends.insert(ln_key, Arc::new(strike));
+
+                supported_units.insert(unit, (input_fee_ppk, 64));
+            }
+
+            routers
         }
-        LnBackend::FakeWallet => (
-            Arc::new(FakeWallet::new(
+        LnBackend::FakeWallet => {
+            let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11);
+
+            let wallet = Arc::new(FakeWallet::new(
                 fee_reserve,
                 MintMeltSettings::default(),
                 MintMeltSettings::default(),
-            )),
-            None,
-        ),
+            ));
+
+            ln_backends.insert(ln_key, wallet);
+            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+
+            vec![]
+        }
     };
-
-    let mut ln_backends = HashMap::new();
-
-    ln_backends.insert(
-        LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11),
-        Arc::clone(&ln),
-    );
 
     let (nut04_settings, nut05_settings, mpp_settings): (
         nut04::Settings,
@@ -271,12 +287,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
-    let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
-
-    let mut supported_units = HashMap::new();
-
-    supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-
     let mint = Mint::new(
         &settings.info.url,
         &mnemonic.to_seed_normalized(""),
@@ -292,7 +302,9 @@ async fn main() -> anyhow::Result<()> {
     // In the event that the mint server is down but the ln node is not
     // it is possible that a mint quote was paid but the mint has not been updated
     // this will check and update the mint state of those quotes
-    check_pending_quotes(Arc::clone(&mint), Arc::clone(&ln)).await?;
+    for ln in ln_backends.values() {
+        check_pending_quotes(Arc::clone(&mint), Arc::clone(ln)).await?;
+    }
 
     let mint_url = settings.info.url;
     let listen_addr = settings.info.listen_host;
@@ -303,36 +315,40 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
 
     let v1_service =
-        cdk_axum::create_mint_router(&mint_url, Arc::clone(&mint), ln_backends, quote_ttl).await?;
+        cdk_axum::create_mint_router(&mint_url, Arc::clone(&mint), ln_backends.clone(), quote_ttl)
+            .await?;
 
-    let mint_service = Router::new()
-        .nest("/", v1_service)
+    let mut mint_service = Router::new()
+        .merge(v1_service)
         .layer(CorsLayer::permissive());
 
-    let mint_service = match ln_router {
-        Some(ln_router) => mint_service.nest("/", ln_router),
-        None => mint_service,
-    };
+    for router in ln_routers {
+        mint_service = mint_service.merge(router);
+    }
 
     // Spawn task to wait for invoces to be paid and update mint quotes
-    tokio::spawn(async move {
-        loop {
-            match ln.wait_any_invoice().await {
-                Ok(mut stream) => {
-                    while let Some(request_lookup_id) = stream.next().await {
-                        if let Err(err) =
-                            handle_paid_invoice(Arc::clone(&mint), &request_lookup_id).await
-                        {
-                            tracing::warn!("{:?}", err);
+
+    for (_, ln) in ln_backends {
+        let mint = Arc::clone(&mint);
+        tokio::spawn(async move {
+            loop {
+                match ln.wait_any_invoice().await {
+                    Ok(mut stream) => {
+                        while let Some(request_lookup_id) = stream.next().await {
+                            if let Err(err) =
+                                handle_paid_invoice(mint.clone(), &request_lookup_id).await
+                            {
+                                tracing::warn!("{:?}", err);
+                            }
                         }
                     }
-                }
-                Err(err) => {
-                    tracing::warn!("Could not get invoice stream: {}", err);
+                    Err(err) => {
+                        tracing::warn!("Could not get invoice stream: {}", err);
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 
     let listener =
         tokio::net::TcpListener::bind(format!("{}:{}", listen_addr, listen_port)).await?;

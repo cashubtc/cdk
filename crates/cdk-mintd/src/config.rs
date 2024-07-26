@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use cdk::nuts::PublicKey;
+use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
@@ -29,12 +29,20 @@ pub enum LnBackend {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Ln {
     pub ln_backend: LnBackend,
-    pub cln_path: Option<PathBuf>,
-    pub strike_api_key: Option<String>,
-    pub greenlight_invite_code: Option<String>,
     pub invoice_description: Option<String>,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Strike {
+    pub api_key: String,
+    pub supported_units: Option<Vec<CurrencyUnit>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Cln {
+    pub rpc_path: PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -55,6 +63,8 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    pub cln: Option<Cln>,
+    pub strike: Option<Strike>,
     pub database: Database,
 }
 
@@ -114,11 +124,9 @@ impl Settings {
         let settings: Settings = config.try_deserialize()?;
 
         match settings.ln.ln_backend {
-            LnBackend::Cln => assert!(settings.ln.cln_path.is_some()),
-            //LnBackend::Greenlight => (),
-            //LnBackend::Ldk => (),
+            LnBackend::Cln => assert!(settings.cln.is_some()),
             LnBackend::FakeWallet => (),
-            LnBackend::Strike => assert!(settings.ln.strike_api_key.is_some()),
+            LnBackend::Strike => assert!(settings.strike.is_some()),
         }
 
         Ok(settings)

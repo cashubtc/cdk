@@ -167,6 +167,7 @@ where
         (CurrencyUnit::Sat, CurrencyUnit::Msat) => Ok(amount * MSAT_IN_SAT),
         (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok(amount / MSAT_IN_SAT),
         (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount),
+        (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount),
         _ => Err(Error::CannotConvertUnits),
     }
 }
