@@ -20,8 +20,8 @@ use bitcoin::{
 use cdk::{
     amount::Amount,
     cdk_lightning::{
-        self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
-        Settings,
+        self, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
+        PaymentQuoteResponse, Settings,
     },
     lightning_invoice::{
         payment::payment_parameters_from_invoice, utils::create_invoice_from_channelmanager,
@@ -950,8 +950,8 @@ impl Node {
             methods: vec![MintMethodSettings {
                 method: PaymentMethod::Bolt11,
                 unit: CurrencyUnit::Sat,
-                min_amount: Some(Amount::from(settings.min_mint_amount)),
-                max_amount: Some(Amount::from(settings.max_mint_amount)),
+                min_amount: Some(settings.mint_settings.min_amount),
+                max_amount: Some(settings.mint_settings.max_amount),
             }],
             disabled: false,
         }
@@ -963,8 +963,8 @@ impl Node {
             methods: vec![MeltMethodSettings {
                 method: PaymentMethod::Bolt11,
                 unit: CurrencyUnit::Sat,
-                min_amount: Some(Amount::from(settings.min_melt_amount)),
-                max_amount: Some(Amount::from(settings.max_melt_amount)),
+                min_amount: Some(settings.melt_settings.min_amount),
+                max_amount: Some(settings.melt_settings.max_amount),
             }],
             disabled: false,
         }
@@ -1077,14 +1077,18 @@ impl MintLightning for Node {
 
     fn get_settings(&self) -> Settings {
         Settings {
-            mpp: true,
-            min_mint_amount: Amount::from(1),
-            max_mint_amount: Amount::from(10_000_000),
-            min_melt_amount: Amount::from(1),
-            max_melt_amount: Amount::from(10_000_000),
+            mpp: false,
+            mint_settings: MintMeltSettings {
+                min_amount: Amount::from(1),
+                max_amount: Amount::from(10_000_000),
+                enabled: true,
+            },
+            melt_settings: MintMeltSettings {
+                min_amount: Amount::from(1),
+                max_amount: Amount::from(10_000_000),
+                enabled: true,
+            },
             unit: CurrencyUnit::Sat,
-            mint_enabled: true,
-            melt_enabled: true,
         }
     }
 

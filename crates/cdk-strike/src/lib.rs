@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use axum::Router;
+use cdk::amount::Amount;
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
     PaymentQuoteResponse, Settings,
@@ -141,8 +142,8 @@ impl MintLightning for Strike {
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
-        _partial_msats: Option<u64>,
-        _max_fee_msats: Option<u64>,
+        _partial_msats: Option<Amount>,
+        _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let pay_response = self
             .strike_api
@@ -164,13 +165,13 @@ impl MintLightning for Strike {
             payment_hash: bolt11.payment_hash().to_string(),
             payment_preimage: None,
             status: state,
-            total_spent_msats,
+            total_spent: total_spent_msats.into(),
         })
     }
 
     async fn create_invoice(
         &self,
-        amount: u64,
+        amount: Amount,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -241,20 +242,20 @@ impl Strike {
 pub(crate) fn from_strike_amount(
     strike_amount: StrikeAmount,
     target_unit: &CurrencyUnit,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<Amount> {
     match target_unit {
-        CurrencyUnit::Sat => strike_amount.to_sats(),
-        CurrencyUnit::Msat => Ok(strike_amount.to_sats()? * 1000),
+        CurrencyUnit::Sat => Ok(strike_amount.to_sats()?.into()),
+        CurrencyUnit::Msat => Ok(Amount::from(strike_amount.to_sats()? * 1000)),
         CurrencyUnit::Usd => {
             if strike_amount.currency == StrikeCurrencyUnit::USD {
-                Ok((strike_amount.amount * 100.0).round() as u64)
+                Ok(Amount::from((strike_amount.amount * 100.0).round() as u64))
             } else {
                 bail!("Could not convert ");
             }
         }
         CurrencyUnit::Eur => {
             if strike_amount.currency == StrikeCurrencyUnit::EUR {
-                Ok((strike_amount.amount * 100.0).round() as u64)
+                Ok(Amount::from((strike_amount.amount * 100.0).round() as u64))
             } else {
                 bail!("Could not convert ");
             }
