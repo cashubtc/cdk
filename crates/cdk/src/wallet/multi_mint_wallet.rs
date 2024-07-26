@@ -125,7 +125,7 @@ impl MultiMintWallet {
         conditions: Option<SpendingConditions>,
         send_kind: SendKind,
         include_fees: bool,
-    ) -> Result<String, Error> {
+    ) -> Result<Token, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
@@ -267,7 +267,7 @@ impl MultiMintWallet {
             }
         }
 
-        wallet.melt(&quote.id, SplitTarget::default()).await
+        wallet.melt(&quote.id).await
     }
 
     /// Restore

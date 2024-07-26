@@ -33,6 +33,9 @@ jobs:
             -p cdk-redb,
             -p cdk-sqlite,
             -p cdk-axum,
+            -p cdk-cln,
+            -p cdk-fake-wallet,
+            -p cdk-strike,
             --bin cdk-cli,
             --bin cdk-mintd,
             --examples

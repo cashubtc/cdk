@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::str::FromStr;
 
 use anyhow::Result;
-use cdk::wallet::Wallet;
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::multi_mint_wallet::WalletKey;
+use cdk::wallet::MultiMintWallet;
 use cdk::{Amount, UncheckedUrl};
 use clap::Args;
 
@@ -9,20 +11,28 @@ use clap::Args;
 pub struct BurnSubCommand {
     /// Mint Url
     mint_url: Option<UncheckedUrl>,
+    /// Currency unit e.g. sat
+    #[arg(default_value = "sat")]
+    unit: String,
 }
 
 pub async fn burn(
-    wallets: HashMap<UncheckedUrl, Wallet>,
+    multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &BurnSubCommand,
 ) -> Result<()> {
     let mut total_burnt = Amount::ZERO;
+    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+
     match &sub_command_args.mint_url {
         Some(mint_url) => {
-            let wallet = wallets.get(mint_url).unwrap();
+            let wallet = multi_mint_wallet
+                .get_wallet(&WalletKey::new(mint_url.clone(), unit))
+                .await
+                .unwrap();
             total_burnt = wallet.check_all_pending_proofs().await?;
         }
         None => {
-            for wallet in wallets.values() {
+            for wallet in multi_mint_wallet.get_wallets().await {
                 let amount_burnt = wallet.check_all_pending_proofs().await?;
                 total_burnt += amount_burnt;
             }

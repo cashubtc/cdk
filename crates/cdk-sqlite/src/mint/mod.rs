@@ -11,6 +11,7 @@ use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::nuts::nut05::QuoteState;
 use cdk::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
+    State,
 };
 use cdk::secret::Secret;
 use cdk::{mint, Amount};
@@ -57,7 +58,7 @@ impl MintSqliteDatabase {
 impl MintDatabase for MintSqliteDatabase {
     type Err = cdk_database::Error;
 
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         sqlx::query(
             r#"
@@ -67,7 +68,6 @@ WHERE unit IS ?;
         "#,
         )
         .bind(unit.to_string())
-        .bind(id.to_string())
         .execute(&mut transaction)
         .await
         .map_err(Error::from)?;
@@ -90,6 +90,7 @@ AND id IS ?;
 
         Ok(())
     }
+
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -115,6 +116,7 @@ AND unit IS ?
             Id::from_str(rec.try_get("id").map_err(Error::from)?).map_err(Error::from)?,
         ))
     }
+
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let recs = sqlx::query(
             r#"
@@ -125,7 +127,6 @@ WHERE active = 1
         )
         .fetch_all(&self.pool)
         .await
-        // TODO: should check if error is not found and return none
         .map_err(Error::from)?;
 
         let keysets = recs
@@ -160,7 +161,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.request_lookup_id)
         .execute(&self.pool)
         .await
-        // TODO: should check if error is not found and return none
         .map_err(Error::from)?;
 
         Ok(())
@@ -481,13 +481,12 @@ FROM keyset;
             .collect())
     }
 
-    async fn add_spent_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-
         for proof in proofs {
-            sqlx::query(
+            if let Err(err) = sqlx::query(
                 r#"
-INSERT OR REPLACE INTO proof
+INSERT INTO proof
 (y, amount, keyset_id, secret, c, witness, state)
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
@@ -498,204 +497,198 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(proof.secret.to_string())
             .bind(proof.c.to_bytes().to_vec())
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
-            .bind("SPENT")
+            .bind("UNSPENT")
             .execute(&mut transaction)
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from)
+            {
+                tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
+            }
         }
         transaction.commit().await.map_err(Error::from)?;
+
         Ok(())
     }
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM proof
-WHERE secret=?
-AND state="SPENT";
-        "#,
-        )
-        .bind(secret.to_string())
-        .fetch_one(&self.pool)
-        .await;
-
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(Some(sqlite_row_to_proof(rec)?))
-    }
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM proof
-WHERE y=?
-AND state="SPENT";
-        "#,
-        )
-        .bind(y.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(Some(sqlite_row_to_proof(rec)?))
-    }
-
-    async fn add_pending_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-        for proof in proofs {
-            sqlx::query(
+
+        let mut proofs = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            let rec = sqlx::query(
                 r#"
-INSERT OR REPLACE INTO proof
-(y, amount, keyset_id, secret, c, witness, state)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+SELECT *
+FROM proof
+WHERE y=?;
         "#,
             )
-            .bind(proof.y()?.to_bytes().to_vec())
-            .bind(u64::from(proof.amount) as i64)
-            .bind(proof.keyset_id.to_string())
-            .bind(proof.secret.to_string())
-            .bind(proof.c.to_bytes().to_vec())
-            .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
-            .bind("PENDING")
-            .execute(&mut transaction)
-            .await
-            .map_err(Error::from)?;
+            .bind(y.to_bytes().to_vec())
+            .fetch_one(&mut transaction)
+            .await;
+
+            match rec {
+                Ok(rec) => {
+                    proofs.push(Some(sqlite_row_to_proof(rec)?));
+                }
+                Err(err) => match err {
+                    sqlx::Error::RowNotFound => proofs.push(None),
+                    _ => return Err(Error::SQLX(err).into()),
+                },
+            };
         }
-        transaction.commit().await.map_err(Error::from)?;
 
-        Ok(())
+        Ok(proofs)
     }
-    async fn get_pending_proof_by_secret(
-        &self,
-        secret: &Secret,
-    ) -> Result<Option<Proof>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM proof
-WHERE secret=?
-AND state="PENDING";
-        "#,
-        )
-        .bind(secret.to_string())
-        .fetch_one(&self.pool)
-        .await;
 
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(Some(sqlite_row_to_proof(rec)?))
-    }
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM proof
-WHERE y=?
-AND state="PENDING";
-        "#,
-        )
-        .bind(y.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-        Ok(Some(sqlite_row_to_proof(rec)?))
-    }
-    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
+    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-        for secret in secrets {
-            sqlx::query(
+
+        let mut states = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            let rec = sqlx::query(
                 r#"
-DELETE FROM proof
-WHERE secret=?
-AND state="PENDING";
+SELECT state
+FROM proof
+WHERE y=?;
         "#,
             )
-            .bind(secret.to_string())
-            .execute(&mut transaction)
-            .await
-            .map_err(Error::from)?;
-        }
-        transaction.commit().await.map_err(Error::from)?;
+            .bind(y.to_bytes().to_vec())
+            .fetch_one(&mut transaction)
+            .await;
 
-        Ok(())
+            match rec {
+                Ok(rec) => {
+                    let state: String = rec.get("state");
+                    let state = State::from_str(&state).map_err(Error::from)?;
+                    states.push(Some(state));
+                }
+                Err(err) => match err {
+                    sqlx::Error::RowNotFound => states.push(None),
+                    _ => return Err(Error::SQLX(err).into()),
+                },
+            };
+        }
+
+        Ok(states)
     }
 
-    async fn add_blinded_signature(
+    async fn get_proofs_by_keyset_id(
         &self,
-        blinded_message: PublicKey,
-        blinded_signature: BlindSignature,
+        keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM proof
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        let mut proofs_for_id = vec![];
+        let mut states = vec![];
+
+        for row in rec {
+            let (proof, state) = sqlite_row_to_proof_with_state(row)?;
+
+            proofs_for_id.push(proof);
+            states.push(state);
+        }
+
+        Ok((proofs_for_id, states))
+    }
+
+    async fn update_proofs_states(
+        &self,
+        ys: &[PublicKey],
+        proofs_state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let mut states = Vec::with_capacity(ys.len());
+
+        let proofs_state = proofs_state.to_string();
+        for y in ys {
+            let current_state;
+            let y = y.to_bytes().to_vec();
+            let rec = sqlx::query(
+                r#"
+SELECT state
+FROM proof
+WHERE y=?;
+        "#,
+            )
+            .bind(&y)
+            .fetch_one(&mut transaction)
+            .await;
+
+            match rec {
+                Ok(rec) => {
+                    let state: String = rec.get("state");
+                    current_state = Some(State::from_str(&state).map_err(Error::from)?);
+                }
+                Err(err) => match err {
+                    sqlx::Error::RowNotFound => {
+                        current_state = None;
+                    }
+                    _ => return Err(Error::SQLX(err).into()),
+                },
+            };
+
+            states.push(current_state);
+
+            if current_state != Some(State::Spent) {
+                sqlx::query(
+                    r#"
+        UPDATE proof SET state = ? WHERE y = ?
+        "#,
+                )
+                .bind(&proofs_state)
+                .bind(y)
+                .execute(&mut transaction)
+                .await
+                .map_err(Error::from)?;
+            }
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(states)
+    }
+    async fn add_blind_signatures(
+        &self,
+        blinded_messages: &[PublicKey],
+        blinded_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
+            sqlx::query(
+                r#"
 INSERT INTO blind_signature
 (y, amount, keyset_id, c)
 VALUES (?, ?, ?, ?);
         "#,
-        )
-        .bind(blinded_message.to_bytes().to_vec())
-        .bind(u64::from(blinded_signature.amount) as i64)
-        .bind(blinded_signature.keyset_id.to_string())
-        .bind(blinded_signature.c.to_bytes().to_vec())
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
+            )
+            .bind(message.to_bytes().to_vec())
+            .bind(u64::from(signature.amount) as i64)
+            .bind(signature.keyset_id.to_string())
+            .bind(signature.c.to_bytes().to_vec())
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }
-    async fn get_blinded_signature(
+    async fn get_blind_signatures(
         &self,
-        blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM blind_signature
-WHERE y=?;
-        "#,
-        )
-        .bind(blinded_message.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(Some(sqlite_row_to_blind_signature(rec)?))
-    }
-    async fn get_blinded_signatures(
-        &self,
-        blinded_messages: Vec<PublicKey>,
+        blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let mut signatures = Vec::with_capacity(blinded_messages.len());
         for message in blinded_messages {
@@ -718,6 +711,30 @@ WHERE y=?;
                 signatures.push(None);
             }
         }
+
+        Ok(signatures)
+    }
+
+    async fn get_blind_signatures_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM blind_signature
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_all(&self.pool)
+        .await;
+
+        let signatures = rec
+            .map_err(Error::from)?
+            .into_iter()
+            .flat_map(sqlite_row_to_blind_signature)
+            .collect();
 
         Ok(signatures)
     }
@@ -821,6 +838,30 @@ fn sqlite_row_to_proof(row: SqliteRow) -> Result<Proof, Error> {
         witness: row_witness.and_then(|w| serde_json::from_str(&w).ok()),
         dleq: None,
     })
+}
+
+fn sqlite_row_to_proof_with_state(row: SqliteRow) -> Result<(Proof, Option<State>), Error> {
+    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
+    let row_secret: String = row.try_get("secret").map_err(Error::from)?;
+    let row_c: Vec<u8> = row.try_get("c").map_err(Error::from)?;
+    let row_witness: Option<String> = row.try_get("witness").map_err(Error::from)?;
+
+    let row_state: Option<String> = row.try_get("state").map_err(Error::from)?;
+
+    let state = row_state.and_then(|s| State::from_str(&s).ok());
+
+    Ok((
+        Proof {
+            amount: Amount::from(row_amount as u64),
+            keyset_id: Id::from_str(&keyset_id)?,
+            secret: Secret::from_str(&row_secret)?,
+            c: PublicKey::from_slice(&row_c)?,
+            witness: row_witness.and_then(|w| serde_json::from_str(&w).ok()),
+            dleq: None,
+        },
+        state,
+    ))
 }
 
 fn sqlite_row_to_blind_signature(row: SqliteRow) -> Result<BlindSignature, Error> {

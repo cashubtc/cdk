@@ -11,7 +11,7 @@ description = "Cashu CDK axum webserver"
 [dependencies]
 anyhow = "1.0.75"
 async-trait.workspace = true
-axum = "0.7.5"
+axum.workspace = true
 axum-macros = "0.4.1"
 cdk = { workspace = true, default-features = false, features = ["mint"] }
 tokio.workspace = true

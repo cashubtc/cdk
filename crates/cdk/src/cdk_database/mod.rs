@@ -14,16 +14,12 @@ use crate::mint;
 use crate::mint::MintKeySetInfo;
 #[cfg(feature = "mint")]
 use crate::mint::MintQuote as MintMintQuote;
-#[cfg(feature = "wallet")]
-use crate::nuts::State;
 #[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
-use crate::nuts::{CurrencyUnit, Id, Proofs, PublicKey};
+use crate::nuts::{CurrencyUnit, Id, Proofs, PublicKey, State};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
-#[cfg(feature = "mint")]
-use crate::secret::Secret;
 #[cfg(feature = "wallet")]
 use crate::types::ProofInfo;
 #[cfg(feature = "wallet")]
@@ -131,7 +127,7 @@ pub trait WalletDatabase: Debug {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Vec<ProofInfo>>, Self::Err>;
+    ) -> Result<Vec<ProofInfo>, Self::Err>;
     /// Remove proofs from storage
     async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err>;
 
@@ -164,7 +160,7 @@ pub trait MintDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Add Active Keyset
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
+    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
     /// Get Active Keyset
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
     /// Get all Active Keyset
@@ -218,38 +214,37 @@ pub trait MintDatabase {
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     /// Add spent [`Proofs`]
-    async fn add_spent_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get spent [`Proof`] by secret
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err>;
-    /// Get spent [`Proof`] by y
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err>;
-
-    /// Add pending [`Proofs`]
-    async fn add_pending_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
-    /// Get pending [`Proof`] by secret
-    async fn get_pending_proof_by_secret(
+    async fn add_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
+    /// Get [`Proofs`] by ys
+    async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get [`Proofs`] state
+    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get [`Proofs`] state
+    async fn update_proofs_states(
         &self,
-        secret: &Secret,
-    ) -> Result<Option<Proof>, Self::Err>;
-    /// Get pending [`Proof`] by y
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err>;
-    /// Remove pending [`Proofs`]
-    async fn remove_pending_proofs(&self, secret: Vec<&Secret>) -> Result<(), Self::Err>;
+        ys: &[PublicKey],
+        proofs_state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get [`Proofs`] by state
+    async fn get_proofs_by_keyset_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
 
     /// Add [`BlindSignature`]
-    async fn add_blinded_signature(
+    async fn add_blind_signatures(
         &self,
-        blinded_message: PublicKey,
-        blinded_signature: BlindSignature,
+        blinded_messages: &[PublicKey],
+        blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err>;
-    /// Get [`BlindSignature`]
-    async fn get_blinded_signature(
-        &self,
-        blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Self::Err>;
     /// Get [`BlindSignature`]s
-    async fn get_blinded_signatures(
+    async fn get_blind_signatures(
         &self,
-        blinded_messages: Vec<PublicKey>,
+        blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
+    /// Get [`BlindSignature`]s for keyset_id
+    async fn get_blind_signatures_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err>;
 }

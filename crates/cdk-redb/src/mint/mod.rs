@@ -11,9 +11,9 @@ use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
 use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, PublicKey,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
+    State,
 };
-use cdk::secret::Secret;
 use cdk::{cdk_database, mint};
 use migrations::migrate_01_to_02;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
+use crate::mint::migrations::migrate_02_to_03;
 
 mod migrations;
 
@@ -28,15 +29,14 @@ const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");
 const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
 const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
-const PENDING_PROOFS_TABLE: TableDefinition<[u8; 33], &str> =
-    TableDefinition::new("pending_proofs");
-const SPENT_PROOFS_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("spent_proofs");
+const PROOFS_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("proofs");
+const PROOFS_STATE_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("proofs_state");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 // Key is hex blinded_message B_ value is blinded_signature
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
 
-const DATABASE_VERSION: u32 = 2;
+const DATABASE_VERSION: u32 = 3;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
@@ -78,6 +78,10 @@ impl MintRedbDatabase {
                                 current_file_version = migrate_01_to_02(Arc::clone(&db))?;
                             }
 
+                            if current_file_version == 2 {
+                                current_file_version = migrate_02_to_03(Arc::clone(&db))?;
+                            }
+
                             if current_file_version != DATABASE_VERSION {
                                 tracing::warn!(
                                     "Database upgrade did not complete at {} current is {}",
@@ -86,6 +90,16 @@ impl MintRedbDatabase {
                                 );
                                 return Err(Error::UnknownDatabaseVersion);
                             }
+
+                            let write_txn = db.begin_write()?;
+                            {
+                                let mut table = write_txn.open_table(CONFIG_TABLE)?;
+
+                                table
+                                    .insert("db_version", DATABASE_VERSION.to_string().as_str())?;
+                            }
+
+                            write_txn.commit()?;
                         }
                         Ordering::Equal => {
                             tracing::info!("Database is at current version {}", DATABASE_VERSION);
@@ -109,8 +123,8 @@ impl MintRedbDatabase {
                         let _ = write_txn.open_table(KEYSETS_TABLE)?;
                         let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
                         let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-                        let _ = write_txn.open_table(PENDING_PROOFS_TABLE)?;
-                        let _ = write_txn.open_table(SPENT_PROOFS_TABLE)?;
+                        let _ = write_txn.open_table(PROOFS_TABLE)?;
+                        let _ = write_txn.open_table(PROOFS_STATE_TABLE)?;
                         let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
 
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
@@ -133,7 +147,7 @@ impl MintRedbDatabase {
 impl MintDatabase for MintRedbDatabase {
     type Err = cdk_database::Error;
 
-    async fn add_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -494,23 +508,23 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_spent_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn
-                .open_table(SPENT_PROOFS_TABLE)
-                .map_err(Error::from)?;
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
             for proof in proofs {
                 let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
-                table
-                    .insert(
-                        y.to_bytes(),
-                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
+                if table.get(y.to_bytes()).map_err(Error::from)?.is_none() {
+                    table
+                        .insert(
+                            y.to_bytes(),
+                            serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                        )
+                        .map_err(Error::from)?;
+                }
             }
         }
         write_txn.commit().map_err(Error::from)?;
@@ -518,111 +532,118 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_spent_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
+    async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+        let mut proofs = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            match table.get(y.to_bytes()).map_err(Error::from)? {
+                Some(proof) => proofs.push(Some(
+                    serde_json::from_str(proof.value()).map_err(Error::from)?,
+                )),
+                None => proofs.push(None),
+            }
+        }
+
+        Ok(proofs)
+    }
+
+    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn
-            .open_table(SPENT_PROOFS_TABLE)
+            .open_table(PROOFS_STATE_TABLE)
             .map_err(Error::from)?;
 
-        match table.get(y.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
+        let mut states = Vec::with_capacity(ys.len());
+
+        for y in ys {
+            match table.get(y.to_bytes()).map_err(Error::from)? {
+                Some(state) => states.push(Some(
+                    serde_json::from_str(state.value()).map_err(Error::from)?,
+                )),
+                None => states.push(None),
+            }
         }
+
+        Ok(states)
     }
 
-    async fn get_spent_proof_by_secret(&self, secret: &Secret) -> Result<Option<Proof>, Self::Err> {
+    async fn get_proofs_by_keyset_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(SPENT_PROOFS_TABLE)
-            .map_err(Error::from)?;
+        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-        let y: PublicKey = hash_to_curve(&secret.to_bytes())?;
+        let proofs_for_id: Proofs = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .flat_map(|(_, p)| serde_json::from_str::<Proof>(p.value()))
+            .filter(|p| &p.keyset_id == keyset_id)
+            .collect();
 
-        match table.get(y.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
-        }
+        let proof_ys: Vec<PublicKey> = proofs_for_id.iter().flat_map(|p| p.y()).collect();
+        assert_eq!(proofs_for_id.len(), proof_ys.len());
+
+        let states = self.get_proofs_states(&proof_ys).await?;
+
+        Ok((proofs_for_id, states))
     }
 
-    async fn add_pending_proofs(&self, proofs: Vec<Proof>) -> Result<(), Self::Err> {
+    async fn update_proofs_states(
+        &self,
+        ys: &[PublicKey],
+        proofs_state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err> {
         let db = self.db.lock().await;
-
         let write_txn = db.begin_write().map_err(Error::from)?;
+
+        let mut states = Vec::with_capacity(ys.len());
+
+        let state_str = serde_json::to_string(&proofs_state).map_err(Error::from)?;
 
         {
             let mut table = write_txn
-                .open_table(PENDING_PROOFS_TABLE)
+                .open_table(PROOFS_STATE_TABLE)
                 .map_err(Error::from)?;
-            for proof in proofs {
-                table
-                    .insert(
-                        hash_to_curve(&proof.secret.to_bytes())?.to_bytes(),
-                        serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
+
+            for y in ys {
+                let current_state;
+
+                {
+                    match table.get(y.to_bytes()).map_err(Error::from)? {
+                        Some(state) => {
+                            current_state =
+                                Some(serde_json::from_str(state.value()).map_err(Error::from)?)
+                        }
+                        None => current_state = None,
+                    }
+                }
+                states.push(current_state);
+
+                if current_state != Some(State::Spent) {
+                    table
+                        .insert(y.to_bytes(), state_str.as_str())
+                        .map_err(Error::from)?;
+                }
             }
         }
+
         write_txn.commit().map_err(Error::from)?;
 
-        Ok(())
+        Ok(states)
     }
 
-    async fn get_pending_proof_by_y(&self, y: &PublicKey) -> Result<Option<Proof>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(PENDING_PROOFS_TABLE)
-            .map_err(Error::from)?;
-
-        match table.get(y.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
-        }
-    }
-
-    async fn get_pending_proof_by_secret(
+    async fn add_blind_signatures(
         &self,
-        secret: &Secret,
-    ) -> Result<Option<Proof>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(PENDING_PROOFS_TABLE)
-            .map_err(Error::from)?;
-
-        let secret_hash = hash_to_curve(&secret.to_bytes())?;
-
-        match table.get(secret_hash.to_bytes()).map_err(Error::from)? {
-            Some(proof) => Ok(serde_json::from_str(proof.value()).map_err(Error::from)?),
-            None => Ok(None),
-        }
-    }
-
-    async fn remove_pending_proofs(&self, secrets: Vec<&Secret>) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn
-                .open_table(PENDING_PROOFS_TABLE)
-                .map_err(Error::from)?;
-            for secret in secrets {
-                let secret_hash = hash_to_curve(&secret.to_bytes()).map_err(Error::from)?;
-                table.remove(secret_hash.to_bytes()).map_err(Error::from)?;
-            }
-        }
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    async fn add_blinded_signature(
-        &self,
-        blinded_message: PublicKey,
-        blinded_signature: BlindSignature,
+        blinded_messages: &[PublicKey],
+        blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -631,14 +652,18 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(BLINDED_SIGNATURES)
                 .map_err(Error::from)?;
-            table
-                .insert(
-                    blinded_message.to_bytes(),
-                    serde_json::to_string(&blinded_signature)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
+
+            for (blinded_message, blind_signature) in blinded_messages.iter().zip(blind_signatures)
+            {
+                table
+                    .insert(
+                        blinded_message.to_bytes(),
+                        serde_json::to_string(&blind_signature)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
 
         write_txn.commit().map_err(Error::from)?;
@@ -646,27 +671,9 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn get_blinded_signature(
+    async fn get_blind_signatures(
         &self,
-        blinded_message: &PublicKey,
-    ) -> Result<Option<BlindSignature>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(BLINDED_SIGNATURES)
-            .map_err(Error::from)?;
-
-        match table.get(blinded_message.to_bytes()).map_err(Error::from)? {
-            Some(blind_signature) => {
-                Ok(serde_json::from_str(blind_signature.value()).map_err(Error::from)?)
-            }
-            None => Ok(None),
-        }
-    }
-
-    async fn get_blinded_signatures(
-        &self,
-        blinded_messages: Vec<PublicKey>,
+        blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -686,5 +693,28 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         Ok(signatures)
+    }
+
+    async fn get_blind_signatures_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(BLINDED_SIGNATURES)
+            .map_err(Error::from)?;
+
+        Ok(table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .filter_map(|(_m, s)| {
+                match serde_json::from_str::<BlindSignature>(s.value()).ok() {
+                    Some(signature) if &signature.keyset_id == keyset_id => Some(signature), // Filter by keyset_id
+                    _ => None, // Exclude non-matching entries
+                }
+            })
+            .collect())
     }
 }

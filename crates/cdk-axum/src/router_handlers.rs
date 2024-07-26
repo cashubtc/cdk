@@ -55,7 +55,7 @@ pub async fn get_mint_bolt11_quote(
     let ln = state
         .ln
         .get(&LnKey::new(payload.unit, PaymentMethod::Bolt11))
-        .ok_or({
+        .ok_or_else(|| {
             tracing::info!("Bolt11 mint request for unsupported unit");
 
             into_response(Error::UnsupportedUnit)
@@ -135,7 +135,7 @@ pub async fn get_melt_bolt11_quote(
     let ln = state
         .ln
         .get(&LnKey::new(payload.unit, PaymentMethod::Bolt11))
-        .ok_or({
+        .ok_or_else(|| {
             tracing::info!("Could not get ln backend for {}, bolt11 ", payload.unit);
 
             into_response(Error::UnsupportedUnit)
@@ -339,17 +339,17 @@ pub async fn post_melt_bolt11(
                 }
             }
 
-            let ln = state
-                .ln
-                .get(&LnKey::new(quote.unit, PaymentMethod::Bolt11))
-                .ok_or({
+            let ln = match state.ln.get(&LnKey::new(quote.unit, PaymentMethod::Bolt11)) {
+                Some(ln) => ln,
+                None => {
                     tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
                     if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
 
-                    into_response(Error::UnsupportedUnit)
-                })?;
+                    return Err(into_response(Error::UnsupportedUnit));
+                }
+            };
 
             let partial_amount = partial_msats
                 .map(|partial_msats| {

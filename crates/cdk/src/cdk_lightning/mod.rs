@@ -121,19 +121,32 @@ pub struct Settings {
     /// MPP supported
     pub mpp: bool,
     /// Min amount to mint
-    pub min_mint_amount: Amount,
+    pub mint_settings: MintMeltSettings,
     /// Max amount to mint
-    pub max_mint_amount: Amount,
-    /// Min amount to melt
-    pub min_melt_amount: Amount,
-    /// Max amount to melt
-    pub max_melt_amount: Amount,
+    pub melt_settings: MintMeltSettings,
     /// Base unit of backend
     pub unit: CurrencyUnit,
-    /// Minting enabled
-    pub mint_enabled: bool,
-    /// Melting enabled
-    pub melt_enabled: bool,
+}
+
+/// Mint or melt settings
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintMeltSettings {
+    /// Min Amount
+    pub min_amount: Amount,
+    /// Max Amount
+    pub max_amount: Amount,
+    /// Enabled
+    pub enabled: bool,
+}
+
+impl Default for MintMeltSettings {
+    fn default() -> Self {
+        Self {
+            min_amount: Amount::from(1),
+            max_amount: Amount::from(500000),
+            enabled: true,
+        }
+    }
 }
 
 const MSAT_IN_SAT: u64 = 1000;

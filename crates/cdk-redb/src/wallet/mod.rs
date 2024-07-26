@@ -231,19 +231,17 @@ impl WalletDatabase for WalletRedbDatabase {
                 .await
                 .map_err(Error::from)?;
 
-            if let Some(proofs) = proofs {
-                // Proofs with new url
-                let updated_proofs: Vec<ProofInfo> = proofs
-                    .clone()
-                    .into_iter()
-                    .map(|mut p| {
-                        p.mint_url = new_mint_url.clone();
-                        p
-                    })
-                    .collect();
+            // Proofs with new url
+            let updated_proofs: Vec<ProofInfo> = proofs
+                .clone()
+                .into_iter()
+                .map(|mut p| {
+                    p.mint_url = new_mint_url.clone();
+                    p
+                })
+                .collect();
 
-                println!("{:?}", updated_proofs);
-
+            if !updated_proofs.is_empty() {
                 self.add_proofs(updated_proofs).await?;
             }
         }
@@ -352,7 +350,7 @@ impl WalletDatabase for WalletRedbDatabase {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
@@ -516,28 +514,33 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err> {
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(id.to_string().as_str()).map_err(Error::from)? {
+        if let Some(mint_info) = table
+            .get(keyset_id.to_string().as_str())
+            .map_err(Error::from)?
+        {
             return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
         }
 
         Ok(None)
     }
 
-    #[instrument(skip(self))]
-    async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn remove_keys(&self, keyset_id: &Id) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let write_txn = db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
-            table.remove(id.to_string().as_str()).map_err(Error::from)?;
+            table
+                .remove(keyset_id.to_string().as_str())
+                .map_err(Error::from)?;
         }
 
         write_txn.commit().map_err(Error::from)?;
@@ -570,14 +573,14 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn get_proofs(
         &self,
         mint_url: Option<UncheckedUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
 
@@ -606,11 +609,7 @@ impl WalletDatabase for WalletRedbDatabase {
             })
             .collect();
 
-        if proofs.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(proofs))
+        Ok(proofs)
     }
 
     #[instrument(skip(self, proofs))]
@@ -632,7 +631,7 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, y))]
     async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -668,7 +667,7 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
@@ -700,7 +699,7 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
@@ -713,7 +712,7 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(counter.map(|c| c.value()))
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
@@ -730,7 +729,8 @@ impl WalletDatabase for WalletRedbDatabase {
 
         Ok(last_checked.map(|c| c.value()))
     }
-    #[instrument(skip(self))]
+
+    #[instrument(skip(self, verifying_key))]
     async fn add_nostr_last_checked(
         &self,
         verifying_key: PublicKey,

@@ -19,6 +19,7 @@ use cdk::wallet::MintQuote;
 use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
+use tracing::instrument;
 
 pub mod error;
 
@@ -58,6 +59,7 @@ impl WalletSqliteDatabase {
 impl WalletDatabase for WalletSqliteDatabase {
     type Err = cdk_database::Error;
 
+    #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &self,
         mint_url: UncheckedUrl,
@@ -114,6 +116,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -129,6 +132,7 @@ WHERE mint_url=?
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -151,6 +155,8 @@ WHERE mint_url=?;
 
         Ok(Some(sqlite_row_to_mint_info(&rec)?))
     }
+
+    #[instrument(skip(self))]
     async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -176,6 +182,7 @@ FROM mint
         Ok(mints)
     }
 
+    #[instrument(skip(self))]
     async fn update_mint_url(
         &self,
         old_mint_url: UncheckedUrl,
@@ -202,6 +209,7 @@ FROM mint
         Ok(())
     }
 
+    #[instrument(skip(self, keysets))]
     async fn add_mint_keysets(
         &self,
         mint_url: UncheckedUrl,
@@ -227,6 +235,8 @@ VALUES (?, ?, ?, ?, ?);
 
         Ok(())
     }
+
+    #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
         mint_url: UncheckedUrl,
@@ -257,6 +267,8 @@ WHERE mint_url=?
             true => Ok(None),
         }
     }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -280,6 +292,7 @@ WHERE id=?
         Ok(Some(sqlite_row_to_keyset(&rec)?))
     }
 
+    #[instrument(skip_all)]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -301,6 +314,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 
         Ok(())
     }
+
+    #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -323,6 +338,8 @@ WHERE id=?;
 
         Ok(Some(sqlite_row_to_mint_quote(&rec)?))
     }
+
+    #[instrument(skip(self))]
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -338,6 +355,8 @@ FROM mint_quote
 
         Ok(mint_quotes)
     }
+
+    #[instrument(skip(self))]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -353,6 +372,7 @@ WHERE id=?
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -374,6 +394,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 
         Ok(())
     }
+
+    #[instrument(skip(self))]
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -396,6 +418,8 @@ WHERE id=?;
 
         Ok(Some(sqlite_row_to_melt_quote(&rec)?))
     }
+
+    #[instrument(skip(self))]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -411,6 +435,7 @@ WHERE id=?
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -427,7 +452,9 @@ VALUES (?, ?);
 
         Ok(())
     }
-    async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err> {
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -435,7 +462,7 @@ FROM key
 WHERE id=?;
         "#,
         )
-        .bind(id.to_string())
+        .bind(keyset_id.to_string())
         .fetch_one(&self.pool)
         .await;
 
@@ -451,6 +478,8 @@ WHERE id=?;
 
         Ok(serde_json::from_str(&keys).map_err(Error::from)?)
     }
+
+    #[instrument(skip(self))]
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -466,6 +495,7 @@ WHERE id=?
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn add_proofs(&self, proof_info: Vec<ProofInfo>) -> Result<(), Self::Err> {
         for proof in proof_info {
             sqlx::query(
@@ -501,13 +531,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
         Ok(())
     }
+
+    #[instrument(skip(self, state, spending_conditions))]
     async fn get_proofs(
         &self,
         mint_url: Option<UncheckedUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Option<Vec<ProofInfo>>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, Self::Err> {
         let recs = sqlx::query(
             r#"
 SELECT *
@@ -520,12 +552,10 @@ FROM proof;
         let recs = match recs {
             Ok(rec) => rec,
             Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
+                sqlx::Error::RowNotFound => return Ok(vec![]),
                 _ => return Err(Error::SQLX(err).into()),
             },
         };
-
-        tracing::debug!("{}", recs.len());
 
         let proofs: Vec<ProofInfo> = recs
             .iter()
@@ -547,13 +577,14 @@ FROM proof;
                 }
             })
             .collect();
-        tracing::debug!("{}", proofs.len());
 
         match proofs.is_empty() {
-            false => Ok(Some(proofs)),
-            true => return Ok(None),
+            false => Ok(proofs),
+            true => return Ok(vec![]),
         }
     }
+
+    #[instrument(skip_all)]
     async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
         // TODO: Generate a IN clause
         for proof in proofs {
@@ -572,6 +603,7 @@ WHERE y = ?
         Ok(())
     }
 
+    #[instrument(skip(self, y))]
     async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -589,6 +621,7 @@ WHERE y IS ?;
         Ok(())
     }
 
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -605,6 +638,8 @@ WHERE id IS ?;
 
         Ok(())
     }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -631,6 +666,7 @@ WHERE id=?;
         Ok(count)
     }
 
+    #[instrument(skip_all)]
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
@@ -659,6 +695,8 @@ WHERE key=?;
 
         Ok(count)
     }
+
+    #[instrument(skip_all)]
     async fn add_nostr_last_checked(
         &self,
         verifying_key: PublicKey,

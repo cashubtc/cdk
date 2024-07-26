@@ -15,10 +15,16 @@ The project is split up into several crates in the `crates/` directory:
 
 * Libraries:
     * [**cdk**](./crates/cdk/): Rust implementation of Cashu protocol.
-    * [**cdk-sqlite**](./crates/cdk-sqlite/): Sqlite Storage backend
-    * [**cdk-redb**](./crates/cdk-redb/): Redb Storage backend
+    * [**cdk-sqlite**](./crates/cdk-sqlite/): Sqlite Storage backend.
+    * [**cdk-redb**](./crates/cdk-redb/): Redb Storage backend.
+    * [**cdk-rexie**](./crates/cdk-rexie/): Rexie Storage backend for browsers
+    * [**cdk-axum**](./crates/cdk-axum/): Axum webserver for mint.
+    * [**cdk-cln**](./crates/cdk-cln/): CLN Lightning backend for mint.
+    * [**cdk-strike**](./crates/cdk-strike/): Strike Lightning backend for mint.
+    * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
 * Binaries:
-    * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI
+    * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
+    * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
 
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):

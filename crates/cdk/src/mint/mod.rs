@@ -11,6 +11,7 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 
 use self::nut05::QuoteState;
+use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::nuts::nut11::enforce_sig_flag;
@@ -101,7 +102,7 @@ impl Mint {
                             let mut keyset_info = highest_index_keyset;
                             keyset_info.active = true;
                             localstore.add_keyset_info(keyset_info).await?;
-                            localstore.add_active_keyset(unit, id).await?;
+                            localstore.set_active_keyset(unit, id).await?;
                             continue;
                         } else {
                             highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
@@ -122,7 +123,7 @@ impl Mint {
 
                         let id = keyset_info.id;
                         localstore.add_keyset_info(keyset_info).await?;
-                        localstore.add_active_keyset(unit, id).await?;
+                        localstore.set_active_keyset(unit, id).await?;
                         active_keysets.insert(id, keyset);
                     }
                 }
@@ -142,7 +143,7 @@ impl Mint {
                     );
                     let id = keyset_info.id;
                     localstore.add_keyset_info(keyset_info).await?;
-                    localstore.add_active_keyset(CurrencyUnit::Sat, id).await?;
+                    localstore.set_active_keyset(CurrencyUnit::Sat, id).await?;
                     active_keysets.insert(id, keyset);
                 }
             }
@@ -258,6 +259,17 @@ impl Mint {
         Ok(mint_quotes
             .into_iter()
             .filter(|p| p.state == MintQuoteState::Pending)
+            .collect())
+    }
+
+    /// Get pending mint quotes
+    #[instrument(skip_all)]
+    pub async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let mint_quotes = self.localstore.get_mint_quotes().await?;
+
+        Ok(mint_quotes
+            .into_iter()
+            .filter(|p| p.state == MintQuoteState::Unpaid)
             .collect())
     }
 
@@ -437,7 +449,7 @@ impl Mint {
         );
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info).await?;
-        self.localstore.add_active_keyset(unit, id).await?;
+        self.localstore.set_active_keyset(unit, id).await?;
 
         let mut keysets = self.keysets.write().await;
         keysets.insert(id, keyset);
@@ -469,38 +481,50 @@ impl Mint {
             MintQuoteState::Paid => (),
         }
 
-        for blinded_message in &mint_request.outputs {
-            if self
-                .localstore
-                .get_blinded_signature(&blinded_message.blinded_secret)
-                .await?
-                .is_some()
-            {
-                tracing::info!(
-                    "Output has already been signed: {}",
-                    blinded_message.blinded_secret
-                );
-                tracing::info!(
-                    "Mint {} did not succeed returning quote to Paid state",
-                    mint_request.quote
-                );
+        let blinded_messages: Vec<PublicKey> = mint_request
+            .outputs
+            .iter()
+            .map(|b| b.blinded_secret)
+            .collect();
 
-                self.localstore
-                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                    .await?;
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
+        if self
+            .localstore
+            .get_blind_signatures(&blinded_messages)
+            .await?
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
+        {
+            tracing::info!("Output has already been signed",);
+            tracing::info!(
+                "Mint {} did not succeed returning quote to Paid state",
+                mint_request.quote
+            );
+
+            self.localstore
+                .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
+                .await?;
+            return Err(Error::BlindedMessageAlreadySigned);
         }
 
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
-        for blinded_message in mint_request.outputs.into_iter() {
-            let blinded_signature = self.blind_sign(&blinded_message).await?;
-            self.localstore
-                .add_blinded_signature(blinded_message.blinded_secret, blinded_signature.clone())
-                .await?;
-            blind_signatures.push(blinded_signature);
+        for blinded_message in mint_request.outputs.iter() {
+            let blind_signature = self.blind_sign(blinded_message).await?;
+            blind_signatures.push(blind_signature);
         }
+
+        self.localstore
+            .add_blind_signatures(
+                &mint_request
+                    .outputs
+                    .iter()
+                    .map(|p| p.blinded_secret)
+                    .collect::<Vec<PublicKey>>(),
+                &blind_signatures,
+            )
+            .await?;
 
         self.localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
@@ -568,19 +592,24 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        for blinded_message in &swap_request.outputs {
-            if self
-                .localstore
-                .get_blinded_signature(&blinded_message.blinded_secret)
-                .await?
-                .is_some()
-            {
-                tracing::error!(
-                    "Output has already been signed: {}",
-                    blinded_message.blinded_secret
-                );
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
+        let blinded_messages: Vec<PublicKey> = swap_request
+            .outputs
+            .iter()
+            .map(|b| b.blinded_secret)
+            .collect();
+
+        if self
+            .localstore
+            .get_blind_signatures(&blinded_messages)
+            .await?
+            .iter()
+            .flatten()
+            .next()
+            .is_some()
+        {
+            tracing::info!("Output has already been signed",);
+
+            return Err(Error::BlindedMessageAlreadySigned);
         }
 
         let proofs_total = swap_request.input_amount();
@@ -605,15 +634,24 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let secrets: HashSet<[u8; 33]> = swap_request
+        let input_ys: Vec<PublicKey> = swap_request
             .inputs
             .iter()
             .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .map(|p| p.to_bytes())
             .collect();
 
+        self.localstore
+            .add_proofs(swap_request.inputs.clone())
+            .await?;
+        self.check_ys_spendable(&input_ys, State::Pending).await?;
+
         // Check that there are no duplicate proofs in request
-        if secrets.len().ne(&proof_count) {
+        if input_ys
+            .iter()
+            .collect::<HashSet<&PublicKey>>()
+            .len()
+            .ne(&proof_count)
+        {
             return Err(Error::DuplicateProofs);
         }
 
@@ -656,28 +694,40 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        let (sig_flag, pubkeys) = enforce_sig_flag(swap_request.inputs.clone());
+        let EnforceSigFlag {
+            sig_flag,
+            pubkeys,
+            sigs_required,
+        } = enforce_sig_flag(swap_request.inputs.clone());
 
         if sig_flag.eq(&SigFlag::SigAll) {
             let pubkeys = pubkeys.into_iter().collect();
-            for blinded_messaage in &swap_request.outputs {
-                blinded_messaage.verify_p2pk(&pubkeys, 1)?;
+            for blinded_message in &swap_request.outputs {
+                blinded_message.verify_p2pk(&pubkeys, sigs_required)?;
             }
         }
 
-        self.localstore
-            .add_spent_proofs(swap_request.inputs)
-            .await?;
-
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
 
-        for blinded_message in swap_request.outputs {
-            let blinded_signature = self.blind_sign(&blinded_message).await?;
-            self.localstore
-                .add_blinded_signature(blinded_message.blinded_secret, blinded_signature.clone())
-                .await?;
+        for blinded_message in swap_request.outputs.iter() {
+            let blinded_signature = self.blind_sign(blinded_message).await?;
             promises.push(blinded_signature);
         }
+
+        self.localstore
+            .update_proofs_states(&input_ys, State::Spent)
+            .await?;
+
+        self.localstore
+            .add_blind_signatures(
+                &swap_request
+                    .outputs
+                    .iter()
+                    .map(|o| o.blinded_secret)
+                    .collect::<Vec<PublicKey>>(),
+                &promises,
+            )
+            .await?;
 
         Ok(SwapResponse::new(promises))
     }
@@ -704,16 +754,6 @@ impl Mint {
             }
         }
 
-        let y: PublicKey = hash_to_curve(&proof.secret.to_bytes())?;
-
-        if self.localstore.get_spent_proof_by_y(&y).await?.is_some() {
-            return Err(Error::TokenAlreadySpent);
-        }
-
-        if self.localstore.get_pending_proof_by_y(&y).await?.is_some() {
-            return Err(Error::TokenPending);
-        }
-
         self.ensure_keyset_loaded(&proof.keyset_id).await?;
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
@@ -732,24 +772,51 @@ impl Mint {
         &self,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        let mut states = Vec::with_capacity(check_state.ys.len());
+        let states = self.localstore.get_proofs_states(&check_state.ys).await?;
 
-        for y in &check_state.ys {
-            let state = if self.localstore.get_spent_proof_by_y(y).await?.is_some() {
-                State::Spent
-            } else if self.localstore.get_pending_proof_by_y(y).await?.is_some() {
-                State::Pending
-            } else {
-                State::Unspent
-            };
+        let states = states
+            .iter()
+            .zip(&check_state.ys)
+            .map(|(state, y)| {
+                let state = match state {
+                    Some(state) => *state,
+                    None => State::Unspent,
+                };
 
-            states.push(ProofState {
-                y: *y,
-                state,
-                witness: None,
+                ProofState {
+                    y: *y,
+                    state,
+                    witness: None,
+                }
             })
-        }
+            .collect();
+
         Ok(CheckStateResponse { states })
+    }
+
+    /// Check Tokens are not spent or pending
+    #[instrument(skip_all)]
+    pub async fn check_ys_spendable(
+        &self,
+        ys: &[PublicKey],
+        proof_state: State,
+    ) -> Result<(), Error> {
+        let proofs_state = self
+            .localstore
+            .update_proofs_states(ys, proof_state)
+            .await?;
+
+        let proofs_state = proofs_state.iter().flatten().collect::<HashSet<&State>>();
+
+        if proofs_state.contains(&State::Pending) {
+            return Err(Error::TokenPending);
+        }
+
+        if proofs_state.contains(&State::Spent) {
+            return Err(Error::TokenAlreadySpent);
+        }
+
+        Ok(())
     }
 
     /// Verify melt request is valid
@@ -758,6 +825,22 @@ impl Mint {
         &self,
         melt_request: &MeltBolt11Request,
     ) -> Result<MeltQuote, Error> {
+        let ys: Vec<PublicKey> = melt_request
+            .inputs
+            .iter()
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect();
+
+        // Ensure proofs are unique and not being double spent
+        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
+            return Err(Error::DuplicateProofs);
+        }
+
+        self.localstore
+            .add_proofs(melt_request.inputs.clone())
+            .await?;
+        self.check_ys_spendable(&ys, State::Pending).await?;
+
         for proof in &melt_request.inputs {
             self.verify_proof(proof).await?;
         }
@@ -819,13 +902,10 @@ impl Mint {
         }
 
         if let Some(outputs) = &melt_request.outputs {
-            let (sig_flag, pubkeys) = enforce_sig_flag(melt_request.inputs.clone());
+            let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
 
             if sig_flag.eq(&SigFlag::SigAll) {
-                let pubkeys = pubkeys.into_iter().collect();
-                for blinded_messaage in outputs {
-                    blinded_messaage.verify_p2pk(&pubkeys, 1)?;
-                }
+                return Err(Error::SigAllUsedInMelt);
             }
 
             let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
@@ -856,23 +936,6 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        let secrets: HashSet<[u8; 33]> = melt_request
-            .inputs
-            .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .map(|p| p.to_bytes())
-            .collect();
-
-        // Ensure proofs are unique and not being double spent
-        if melt_request.inputs.len().ne(&secrets.len()) {
-            return Err(Error::DuplicateProofs);
-        }
-
-        // Add proofs to pending
-        self.localstore
-            .add_pending_proofs(melt_request.inputs.clone())
-            .await?;
-
         tracing::debug!("Verified melt quote: {}", melt_request.quote);
         Ok(quote)
     }
@@ -882,8 +945,14 @@ impl Mint {
     /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
+        let input_ys: Vec<PublicKey> = melt_request
+            .inputs
+            .iter()
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect();
+
         self.localstore
-            .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
+            .update_proofs_states(&input_ys, State::Unspent)
             .await?;
 
         self.localstore
@@ -910,25 +979,23 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?;
 
         if let Some(outputs) = &melt_request.outputs {
-            for blinded_message in outputs {
-                if self
-                    .localstore
-                    .get_blinded_signature(&blinded_message.blinded_secret)
-                    .await?
-                    .is_some()
-                {
-                    tracing::error!(
-                        "Output has already been signed: {}",
-                        blinded_message.blinded_secret
-                    );
-                    return Err(Error::BlindedMessageAlreadySigned);
-                }
+            let blinded_messages: Vec<PublicKey> =
+                outputs.iter().map(|b| b.blinded_secret).collect();
+
+            if self
+                .localstore
+                .get_blind_signatures(&blinded_messages)
+                .await?
+                .iter()
+                .flatten()
+                .next()
+                .is_some()
+            {
+                tracing::info!("Output has already been signed",);
+
+                return Err(Error::BlindedMessageAlreadySigned);
             }
         }
-
-        self.localstore
-            .add_spent_proofs(melt_request.inputs.clone())
-            .await?;
 
         let mut change = None;
 
@@ -950,19 +1017,24 @@ impl Mint {
                 amounts.sort_by(|a, b| b.cmp(a));
             }
 
-            for (amount, blinded_message) in amounts.iter().zip(outputs) {
-                let mut blinded_message = blinded_message;
+            let mut outputs = outputs;
+
+            for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
                 blinded_message.amount = *amount;
 
-                let blinded_signature = self.blind_sign(&blinded_message).await?;
-                self.localstore
-                    .add_blinded_signature(
-                        blinded_message.blinded_secret,
-                        blinded_signature.clone(),
-                    )
-                    .await?;
+                let blinded_signature = self.blind_sign(blinded_message).await?;
                 change_sigs.push(blinded_signature)
             }
+
+            self.localstore
+                .add_blind_signatures(
+                    &outputs[0..change_sigs.len()]
+                        .iter()
+                        .map(|o| o.blinded_secret)
+                        .collect::<Vec<PublicKey>>(),
+                    &change_sigs,
+                )
+                .await?;
 
             change = Some(change_sigs);
         } else {
@@ -972,8 +1044,14 @@ impl Mint {
             );
         }
 
+        let input_ys: Vec<PublicKey> = melt_request
+            .inputs
+            .iter()
+            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect();
+
         self.localstore
-            .remove_pending_proofs(melt_request.inputs.iter().map(|p| &p.secret).collect())
+            .update_proofs_states(&input_ys, State::Spent)
             .await?;
 
         self.localstore
@@ -1005,7 +1083,7 @@ impl Mint {
 
         let blinded_signatures = self
             .localstore
-            .get_blinded_signatures(blinded_message)
+            .get_blind_signatures(&blinded_message)
             .await?;
 
         assert_eq!(blinded_signatures.len(), output_len);
@@ -1049,6 +1127,52 @@ impl Mint {
     #[instrument(skip_all)]
     pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
         MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
+    }
+
+    /// Get the total amount issed by keyset
+    #[instrument(skip_all)]
+    pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
+        let keysets = self.localstore.get_keyset_infos().await?;
+
+        let mut total_issued = HashMap::new();
+
+        for keyset in keysets {
+            let blinded = self
+                .localstore
+                .get_blind_signatures_for_keyset(&keyset.id)
+                .await?;
+
+            let total = blinded.iter().map(|b| b.amount).sum();
+
+            total_issued.insert(keyset.id, total);
+        }
+
+        Ok(total_issued)
+    }
+
+    /// Total redeamed for keyset
+    #[instrument(skip_all)]
+    pub async fn total_redeamed(&self) -> Result<HashMap<Id, Amount>, Error> {
+        let keysets = self.localstore.get_keyset_infos().await?;
+
+        let mut total_redeamed = HashMap::new();
+
+        for keyset in keysets {
+            let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
+
+            let total_spent = proofs
+                .iter()
+                .zip(state)
+                .filter_map(|(p, s)| match s == Some(State::Spent) {
+                    true => Some(p.amount),
+                    false => None,
+                })
+                .sum();
+
+            total_redeamed.insert(keyset.id, total_spent);
+        }
+
+        Ok(total_redeamed)
     }
 }
 

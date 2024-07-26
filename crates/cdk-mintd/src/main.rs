@@ -12,21 +12,24 @@ use anyhow::{anyhow, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning::MintLightning;
+use cdk::cdk_lightning;
+use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
 use cdk::mint::{FeeReserve, Mint};
 use cdk::nuts::{
     nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
     MintVersion, MppMethodSettings, Nuts, PaymentMethod,
 };
-use cdk::{cdk_lightning, Amount};
 use cdk_axum::LnKey;
 use cdk_cln::Cln;
+use cdk_fake_wallet::FakeWallet;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
+use cdk_strike::Strike;
 use clap::Parser;
 use cli::CLIArgs;
 use config::{DatabaseEngine, LnBackend};
 use futures::StreamExt;
+use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -116,23 +119,73 @@ async fn main() -> anyhow::Result<()> {
         min_fee_reserve: absolute_ln_fee_reserve,
         percent_fee_reserve: relative_ln_fee,
     };
-    let ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync> =
-        match settings.ln.ln_backend {
-            LnBackend::Cln => {
-                let cln_socket = expand_path(
-                    settings
-                        .ln
-                        .cln_path
-                        .clone()
-                        .ok_or(anyhow!("cln socket not defined"))?
-                        .to_str()
-                        .ok_or(anyhow!("cln socket not defined"))?,
-                )
-                .ok_or(anyhow!("cln socket not defined"))?;
+    let (ln, ln_router): (
+        Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
+        Option<Router>,
+    ) = match settings.ln.ln_backend {
+        LnBackend::Cln => {
+            let cln_socket = expand_path(
+                settings
+                    .ln
+                    .cln_path
+                    .clone()
+                    .ok_or(anyhow!("cln socket not defined"))?
+                    .to_str()
+                    .ok_or(anyhow!("cln socket not defined"))?,
+            )
+            .ok_or(anyhow!("cln socket not defined"))?;
 
-                Arc::new(Cln::new(cln_socket, fee_reserve, 1000, 1000000, 1000, 100000).await?)
-            }
-        };
+            (
+                Arc::new(
+                    Cln::new(
+                        cln_socket,
+                        fee_reserve,
+                        MintMeltSettings::default(),
+                        MintMeltSettings::default(),
+                    )
+                    .await?,
+                ),
+                None,
+            )
+        }
+        LnBackend::Strike => {
+            let api_key = settings
+                .ln
+                .strike_api_key
+                .expect("Checked when validaing config");
+
+            // Channel used for strike web hook
+            let (sender, receiver) = tokio::sync::mpsc::channel(8);
+
+            let webhook_endpoint = "/webhook/invoice";
+
+            let webhook_url = format!("{}{}", settings.info.url, webhook_endpoint);
+
+            let strike = Strike::new(
+                api_key,
+                MintMeltSettings::default(),
+                MintMeltSettings::default(),
+                CurrencyUnit::Sat,
+                Arc::new(Mutex::new(Some(receiver))),
+                webhook_url,
+            )
+            .await?;
+
+            let router = strike
+                .create_invoice_webhook(webhook_endpoint, sender)
+                .await?;
+
+            (Arc::new(strike), Some(router))
+        }
+        LnBackend::FakeWallet => (
+            Arc::new(FakeWallet::new(
+                fee_reserve,
+                MintMeltSettings::default(),
+                MintMeltSettings::default(),
+            )),
+            None,
+        ),
+    };
 
     let mut ln_backends = HashMap::new();
 
@@ -163,15 +216,15 @@ async fn main() -> anyhow::Result<()> {
             let n4 = MintMethodSettings {
                 method: key.method.clone(),
                 unit: key.unit,
-                min_amount: Some(Amount::from(settings.min_mint_amount)),
-                max_amount: Some(Amount::from(settings.max_mint_amount)),
+                min_amount: Some(settings.mint_settings.min_amount),
+                max_amount: Some(settings.mint_settings.max_amount),
             };
 
             let n5 = MeltMethodSettings {
                 method: key.method.clone(),
                 unit: key.unit,
-                min_amount: Some(Amount::from(settings.min_melt_amount)),
-                max_amount: Some(Amount::from(settings.max_melt_amount)),
+                min_amount: Some(settings.melt_settings.min_amount),
+                max_amount: Some(settings.melt_settings.max_amount),
             };
 
             nut_04.methods.push(n4);
@@ -185,6 +238,13 @@ async fn main() -> anyhow::Result<()> {
     let nuts = Nuts::new()
         .nut04(nut04_settings)
         .nut05(nut05_settings)
+        .nut07(true)
+        .nut08(true)
+        .nut09(true)
+        .nut10(true)
+        .nut11(true)
+        .nut12(true)
+        .nut14(true)
         .nut15(mpp_settings);
 
     let mut mint_info = MintInfo::new()
@@ -249,6 +309,11 @@ async fn main() -> anyhow::Result<()> {
         .nest("/", v1_service)
         .layer(CorsLayer::permissive());
 
+    let mint_service = match ln_router {
+        Some(ln_router) => mint_service.nest("/", ln_router),
+        None => mint_service,
+    };
+
     // Spawn task to wait for invoces to be paid and update mint quotes
     tokio::spawn(async move {
         loop {
@@ -302,16 +367,30 @@ async fn check_pending_quotes(
     mint: Arc<Mint>,
     ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
 ) -> Result<()> {
-    let pending_quotes = mint.get_pending_mint_quotes().await?;
+    let mut pending_quotes = mint.get_pending_mint_quotes().await?;
+    tracing::trace!("There are {} pending mint quotes.", pending_quotes.len());
+    let mut unpaid_quotes = mint.get_unpaid_mint_quotes().await?;
+    tracing::trace!("There are {} unpaid mint quotes.", unpaid_quotes.len());
 
-    for quote in pending_quotes {
+    unpaid_quotes.append(&mut pending_quotes);
+
+    for quote in unpaid_quotes {
+        tracing::trace!("Checking status of mint quote: {}", quote.id);
         let lookup_id = quote.request_lookup_id;
-        let state = ln.check_invoice_status(&lookup_id).await?;
+        match ln.check_invoice_status(&lookup_id).await {
+            Ok(state) => {
+                if state != quote.state {
+                    tracing::trace!("Mintquote status changed: {}", quote.id);
+                    mint.localstore
+                        .update_mint_quote_state(&quote.id, state)
+                        .await?;
+                }
+            }
 
-        if state != quote.state {
-            mint.localstore
-                .update_mint_quote_state(&quote.id, state)
-                .await?;
+            Err(err) => {
+                tracing::warn!("Could not check state of pending invoice: {}", lookup_id);
+                tracing::error!("{}", err);
+            }
         }
     }
 

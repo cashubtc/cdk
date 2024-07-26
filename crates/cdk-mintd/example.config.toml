@@ -25,17 +25,13 @@ mnemonic = ""
 
 [ln]
 
-# Required ln backend `cln`
+# Required ln backend `cln`, `strike`, `fakewallet`
 ln_backend = "cln"
 
 # CLN
 # Required if using cln backend path to rpc
-cln_path = ""
+# cln_path = ""
 
-# Required to start greenlight for the first time
-# greenlight_invite_code = ""
-
-# Fee reserve for melting as a percent of payment amount
-fee_percent = 1.0
-# Fee reserve for melting as an absolute value
-reserve_fee_min = 1000
+# Strike
+# Required if using strike backed
+# strike_api_key=""

@@ -1,5 +1,8 @@
 //! CDK lightning backend for CLN
 
+#![warn(missing_docs)]
+#![warn(rustdoc::bare_urls)]
+
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -9,8 +12,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
-    Settings,
+    self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
+    PaymentQuoteResponse, Settings,
 };
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
@@ -31,27 +34,23 @@ use uuid::Uuid;
 
 pub mod error;
 
+/// CLN mint backend
 #[derive(Clone)]
 pub struct Cln {
     rpc_socket: PathBuf,
     cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
     fee_reserve: FeeReserve,
-    min_melt_amount: u64,
-    max_melt_amount: u64,
-    min_mint_amount: u64,
-    max_mint_amount: u64,
-    mint_enabled: bool,
-    melt_enabled: bool,
+    mint_settings: MintMeltSettings,
+    melt_settings: MintMeltSettings,
 }
 
 impl Cln {
+    /// Create new ['Cln]
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
-        min_melt_amount: u64,
-        max_melt_amount: u64,
-        min_mint_amount: u64,
-        max_mint_amount: u64,
+        mint_settings: MintMeltSettings,
+        melt_settings: MintMeltSettings,
     ) -> Result<Self, Error> {
         let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
 
@@ -59,12 +58,8 @@ impl Cln {
             rpc_socket,
             cln_client: Arc::new(Mutex::new(cln_client)),
             fee_reserve,
-            min_mint_amount,
-            max_mint_amount,
-            min_melt_amount,
-            max_melt_amount,
-            mint_enabled: true,
-            melt_enabled: true,
+            mint_settings,
+            melt_settings,
         })
     }
 }
@@ -76,13 +71,9 @@ impl MintLightning for Cln {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: true,
-            min_mint_amount: self.min_mint_amount.into(),
-            max_mint_amount: self.max_mint_amount.into(),
-            min_melt_amount: self.min_melt_amount.into(),
-            max_melt_amount: self.max_melt_amount.into(),
             unit: CurrencyUnit::Msat,
-            mint_enabled: self.mint_enabled,
-            melt_enabled: self.melt_enabled,
+            mint_settings: self.mint_settings,
+            melt_settings: self.melt_settings,
         }
     }
 
@@ -297,7 +288,7 @@ impl MintLightning for Cln {
             }
             _ => {
                 tracing::warn!("CLN returned wrong response kind");
-                return Err(Error::Custom("CLN returned wrong response kind".to_string()).into());
+                return Err(Error::WrongClnResponse.into());
             }
         };
 
@@ -306,6 +297,7 @@ impl MintLightning for Cln {
 }
 
 impl Cln {
+    /// Get last pay index for cln
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client
