@@ -12,10 +12,8 @@ description = "BDK on chain wallet for mint"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-bdk_chain = {version = "0.17.0", features = ["std"]}
-bdk_wallet = { version = "1.0.0-beta.1", default-features = false, features = ["keys-bip39", "std"] }
+bdk_wallet = { version = "1.0.0-beta.1", default-features = false, features = ["keys-bip39", "file_store", "std"] }
 bdk_esplora = { version = "0.16.0", default-features = false, features = ["std", "async-https"] }
-bdk_file_store = "0.14.0"
 cdk = { workspace = true, default-features = false, features = ["mint"] }
 payjoin.workspace = true
 reqwest.workspace = true

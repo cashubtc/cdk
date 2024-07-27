@@ -6,17 +6,17 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use async_trait::async_trait;
-use bdk_chain::{miniscript, BlockId, PersistWith};
 use bdk_esplora::{esplora_client, EsploraAsyncExt};
-use bdk_file_store::Store;
 use bdk_wallet::bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bdk_wallet::bitcoin::{Address, FeeRate, Network, Script};
+use bdk_wallet::chain::{miniscript, BlockId};
+use bdk_wallet::file_store::Store;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 use bdk_wallet::template::DescriptorTemplateOut;
-use bdk_wallet::{ChangeSet, CreateParams, KeychainKind, PersistedWallet, SignOptions, Wallet};
+use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, SignOptions, Wallet};
 use cdk::amount::Amount;
 use cdk::bitcoin::bech32::ToBase32;
 use cdk::cdk_onchain::{
@@ -30,13 +30,14 @@ use tokio::sync::Mutex;
 
 pub mod error;
 
-const DB_MAGIC: &str = "bdk_wallet_electrum_example";
 const STOP_GAP: usize = 50;
 const PARALLEL_REQUESTS: usize = 5;
 
+const NETWORK: Network = Network::Signet;
+
 #[derive(Clone)]
 pub struct BdkWallet {
-    wallet: Arc<Mutex<Wallet>>,
+    wallet: Arc<Mutex<PersistedWallet>>,
     client: esplora_client::AsyncClient,
     db: Arc<Mutex<Store<bdk_wallet::ChangeSet>>>,
     min_melt_amount: u64,
@@ -65,37 +66,26 @@ impl BdkWallet {
     ) -> Result<Self, Error> {
         let network = Network::Signet;
         let db_path = work_dir.join("bdk-mint");
-        let mut db = bdk_file_store::Store::<ChangeSet>::open_or_create_new(
-            b"magic_bytes",
-            "/tmp/my_wallet.db",
-        )
-        .expect("create store");
-
-        let changeset = db.aggregate_changesets()?;
+        let mut db =
+            Store::<ChangeSet>::open_or_create_new(b"magic_bytes", db_path).expect("create store");
 
         let xkey: ExtendedKey = mnemonic.into_extended_key().unwrap();
         // Get xprv from the extended key
         let xprv = xkey.into_xprv(network).unwrap();
 
-        let changeset = db
-            .aggregate_changesets()
-            .map_err(|e| anyhow!("load changes error: {}", e))
-            .unwrap();
-
         let (descriptor, change_descriptor) =
             get_wpkh_descriptors_for_extended_key(xprv, network, 0)?;
 
-        let network = Network::Signet;
-
-        let params = CreateParams::new(descriptor, change_descriptor).network(network);
-
-        let wallet_opt = Wallet::load().descriptors(descriptor, change_descriptor);
+        let wallet_opt = Wallet::load()
+            .descriptors(descriptor.clone(), change_descriptor.clone())
+            .network(NETWORK)
+            .load_wallet(&mut db)?;
 
         let mut wallet = match wallet_opt {
             Some(wallet) => wallet,
             None => Wallet::create(descriptor, change_descriptor)
-                .network(network)
-                .create_wallet(&mut db),
+                .network(NETWORK)
+                .create_wallet(&mut db)?,
         };
 
         let client = esplora_client::Builder::new("https://mutinynet.com/api").build_async()?;
@@ -326,7 +316,7 @@ impl BdkWallet {
     }
 
     pub async fn verify_proposal(
-        wallet: Arc<Mutex<Wallet>>,
+        wallet: Arc<Mutex<PersistedWallet>>,
         proposal: UncheckedProposal,
         seen_inputs: HashSet<payjoin::bitcoin::OutPoint>,
     ) -> Result<ProvisionalProposal, Error> {
@@ -637,7 +627,7 @@ fn get_wpkh_descriptors_for_extended_key(
     network: Network,
     account_number: u32,
 ) -> anyhow::Result<(DescriptorTemplateOut, DescriptorTemplateOut)> {
-    let coin_type = coin_type_from_network(network);
+    let coin_type = coin_type_from_network(network)?;
 
     let base_path = DerivationPath::from_str("m/86'")?;
     let derivation_path = base_path.extend([
@@ -660,12 +650,12 @@ fn get_wpkh_descriptors_for_extended_key(
     Ok((receive_descriptor_template, change_descriptor_template))
 }
 
-pub(crate) fn coin_type_from_network(network: Network) -> u32 {
+pub(crate) fn coin_type_from_network(network: Network) -> Result<u32> {
     match network {
-        Network::Bitcoin => 0,
-        Network::Testnet => 1,
-        Network::Signet => 1,
-        Network::Regtest => 1,
-        net => panic!("Got unknown network: {net}!"),
+        Network::Bitcoin => Ok(0),
+        Network::Testnet => Ok(1),
+        Network::Signet => Ok(1),
+        Network::Regtest => Ok(1),
+        net => bail!("Got unknown network: {net}!"),
     }
 }

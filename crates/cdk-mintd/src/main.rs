@@ -354,7 +354,7 @@ async fn main() -> anyhow::Result<()> {
     let v1_service = cdk_axum::create_mint_router(
         &mint_url,
         Arc::clone(&mint),
-        ln_backends,
+        ln_backends.clone(),
         onchain_backends,
         quote_ttl,
     )
