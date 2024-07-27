@@ -34,6 +34,7 @@ cdk-cln = { version = "0.1", path = "./crates/cdk-cln", default-features = false
 cdk-axum = { version = "0.1", path = "./crates/cdk-axum", default-features = false }
 cdk-fake-wallet = { version = "0.1", path = "./crates/cdk-fake-wallet", default-features = false }
 cdk-strike = { version = "0.1", path = "./crates/cdk-strike", default-features = false }
+clap = { version = "4.4.8", features = ["derive", "env", "default"] }
 tokio = { version = "1", default-features = false }
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
@@ -46,6 +47,7 @@ web-sys =  { version = "0.3.69", default-features = false, features = ["console"
 uuid = { version = "1", features = ["v4"] }
 lightning-invoice = { version = "0.31", features = ["serde"] }
 home = "0.5.9"
+rand = "0.8.5"
 
 [profile]
 
