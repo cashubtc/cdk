@@ -57,118 +57,98 @@ impl Mint {
         let mut active_keysets = HashMap::new();
         let keysets_infos = localstore.get_keyset_infos().await?;
 
-        match keysets_infos.is_empty() {
-            false => {
-                tracing::debug!("Setting all saved keysets to inactive");
-                for keyset in keysets_infos.clone() {
-                    // Set all to in active
-                    let mut keyset = keyset;
-                    keyset.active = false;
-                    localstore.add_keyset_info(keyset).await?;
-                }
+        let mut active_keyset_units = vec![];
 
-                let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
-                    keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
-                        acc.entry(ks.unit).or_default().push(ks.clone());
-                        acc
-                    });
-                let mut keyset_units = vec![];
-
-                for (unit, keysets) in keysets_by_unit {
-                    let mut keysets = keysets;
-                    keysets.sort_by(|a, b| b.derivation_path_index.cmp(&a.derivation_path_index));
-                    let highest_index_keyset = keysets
-                        .first()
-                        .cloned()
-                        .expect("unit will not be added to hashmap if empty");
-
-                    let keysets: Vec<MintKeySetInfo> = keysets
-                        .into_iter()
-                        .filter(|ks| ks.derivation_path_index.is_some())
-                        .collect();
-
-                    if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
-                        let derivation_path_index = if keysets.is_empty() {
-                            1
-                        } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
-                            && &highest_index_keyset.max_order == max_order
-                        {
-                            let id = highest_index_keyset.id;
-                            let keyset = MintKeySet::generate_from_xpriv(
-                                &secp_ctx,
-                                xpriv,
-                                highest_index_keyset.clone(),
-                            );
-                            active_keysets.insert(id, keyset);
-                            let mut keyset_info = highest_index_keyset;
-                            keyset_info.active = true;
-                            localstore.add_keyset_info(keyset_info).await?;
-                            localstore.set_active_keyset(unit, id).await?;
-                            continue;
-                        } else {
-                            highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
-                        };
-
-                        let derivation_path =
-                            derivation_path_from_unit(unit, derivation_path_index);
-
-                        let (keyset, keyset_info) = create_new_keyset(
-                            &secp_ctx,
-                            xpriv,
-                            derivation_path,
-                            Some(derivation_path_index),
-                            unit,
-                            *max_order,
-                            *input_fee_ppk,
-                        );
-
-                        let id = keyset_info.id;
-                        localstore.add_keyset_info(keyset_info).await?;
-                        localstore.set_active_keyset(unit, id).await?;
-                        active_keysets.insert(id, keyset);
-                        keyset_units.push(unit);
-                    }
-                }
-
-                for (unit, (fee, max_order)) in supported_units {
-                    if !keyset_units.contains(&unit) {
-                        let derivation_path = derivation_path_from_unit(unit, 0);
-
-                        let (keyset, keyset_info) = create_new_keyset(
-                            &secp_ctx,
-                            xpriv,
-                            derivation_path,
-                            Some(0),
-                            unit,
-                            max_order,
-                            fee,
-                        );
-
-                        let id = keyset_info.id;
-                        localstore.add_keyset_info(keyset_info).await?;
-                        localstore.set_active_keyset(unit, id).await?;
-                        active_keysets.insert(id, keyset);
-                    }
-                }
+        if !keysets_infos.is_empty() {
+            tracing::debug!("Setting all saved keysets to inactive");
+            for keyset in keysets_infos.clone() {
+                // Set all to in active
+                let mut keyset = keyset;
+                keyset.active = false;
+                localstore.add_keyset_info(keyset).await?;
             }
-            true => {
-                for (unit, (input_fee_ppk, max_order)) in supported_units {
-                    let derivation_path = derivation_path_from_unit(unit, 0);
-                    tracing::debug!("Der: {}", derivation_path);
+
+            let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
+                keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
+                    acc.entry(ks.unit).or_default().push(ks.clone());
+                    acc
+                });
+
+            for (unit, keysets) in keysets_by_unit {
+                let mut keysets = keysets;
+                keysets.sort_by(|a, b| b.derivation_path_index.cmp(&a.derivation_path_index));
+
+                let highest_index_keyset = keysets
+                    .first()
+                    .cloned()
+                    .expect("unit will not be added to hashmap if empty");
+
+                let keysets: Vec<MintKeySetInfo> = keysets
+                    .into_iter()
+                    .filter(|ks| ks.derivation_path_index.is_some())
+                    .collect();
+
+                if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
+                    let derivation_path_index = if keysets.is_empty() {
+                        1
+                    } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
+                        && &highest_index_keyset.max_order == max_order
+                    {
+                        let id = highest_index_keyset.id;
+                        let keyset = MintKeySet::generate_from_xpriv(
+                            &secp_ctx,
+                            xpriv,
+                            highest_index_keyset.clone(),
+                        );
+                        active_keysets.insert(id, keyset);
+                        let mut keyset_info = highest_index_keyset;
+                        keyset_info.active = true;
+                        localstore.add_keyset_info(keyset_info).await?;
+                        localstore.set_active_keyset(unit, id).await?;
+                        continue;
+                    } else {
+                        highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
+                    };
+
+                    let derivation_path = derivation_path_from_unit(unit, derivation_path_index);
+
                     let (keyset, keyset_info) = create_new_keyset(
                         &secp_ctx,
                         xpriv,
                         derivation_path,
-                        Some(0),
+                        Some(derivation_path_index),
                         unit,
-                        max_order,
-                        input_fee_ppk,
+                        *max_order,
+                        *input_fee_ppk,
                     );
+
                     let id = keyset_info.id;
                     localstore.add_keyset_info(keyset_info).await?;
-                    localstore.set_active_keyset(CurrencyUnit::Sat, id).await?;
+                    localstore.set_active_keyset(unit, id).await?;
                     active_keysets.insert(id, keyset);
+                    active_keyset_units.push(unit);
                 }
+            }
+        }
+
+        for (unit, (fee, max_order)) in supported_units {
+            if !active_keyset_units.contains(&unit) {
+                let derivation_path = derivation_path_from_unit(unit, 0);
+
+                let (keyset, keyset_info) = create_new_keyset(
+                    &secp_ctx,
+                    xpriv,
+                    derivation_path,
+                    Some(0),
+                    unit,
+                    max_order,
+                    fee,
+                );
+
+                let id = keyset_info.id;
+                localstore.add_keyset_info(keyset_info).await?;
+                localstore.set_active_keyset(unit, id).await?;
+                active_keysets.insert(id, keyset);
             }
         }
 
