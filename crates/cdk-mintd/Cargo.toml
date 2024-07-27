@@ -10,9 +10,8 @@ license.workspace = true
 description = "CDK mint binary"
 
 [dependencies]
-anyhow = "1.0.75"
-axum = "0.7.5"
-axum-macros = "0.4.1"
+anyhow.workspace = true
+axum.workspace = true
 cdk = { workspace = true, default-features = false, features = ["mint"] }
 cdk-redb = { workspace = true, default-features = false, features = ["mint"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["mint"] }
@@ -21,11 +20,11 @@ cdk-fake-wallet = { workspace = true, default-features = false }
 cdk-strike.workspace = true
 cdk-axum = { workspace = true, default-features = false }
 config = { version = "0.13.3", features = ["toml"] }
-clap = { version = "4.4.8", features = ["derive", "env", "default"] }
+clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-futures = "0.3.28"
+futures.workspace = true
 serde.workspace = true
 bip39.workspace = true
 tower-http = { version = "0.5.2", features = ["cors"] }
