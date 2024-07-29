@@ -214,18 +214,17 @@ impl BdkWallet {
 // TODO: Making this a payjoin trait
 impl BdkWallet {
     async fn start_payjoin(&self, address: &str) -> Result<String, Error> {
-        let ohttp_relay = self
-            .payjoin_settings
-            .ohttp_relay
-            .clone()
-            .ok_or(anyhow!("ohttp relay required"))?;
+        let ohttp_relay = self.payjoin_settings.ohttp_relay.clone();
+
         let payjoin_directory = self
             .payjoin_settings
             .payjoin_directory
             .clone()
-            .ok_or(anyhow!("payjoin directory required"))?;
+            .ok_or(anyhow!("pajoin directory required"))?;
 
-        let ohttp_relay: Url = ohttp_relay.parse()?;
+        let ohttp_relay: Url = ohttp_relay
+            .ok_or(anyhow!("Payjoing ohttp relay must be defined"))?
+            .parse()?;
         let payjoin_directory: Url = payjoin_directory.parse()?;
 
         // Fetch keys using HTTP CONNECT method

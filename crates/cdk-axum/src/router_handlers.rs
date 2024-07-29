@@ -142,14 +142,10 @@ pub async fn get_mint_onchain_quote(
     let settings = onchain.get_settings();
 
     let payjoin = match settings.payjoin_settings.receive_enabled {
-        true => match (settings.payjoin_settings.ohttp_relay, address.payjoin_url) {
-            (Some(ohttp_relay), Some(payjoin_directory)) => Some(PayjoinInfo {
-                origin: payjoin_directory,
-                ohttp_relay: Some(ohttp_relay),
-                pjos: false,
-            }),
-            _ => None,
-        },
+        true => address.payjoin_url.map(|payjoin_directory| PayjoinInfo {
+            origin: payjoin_directory,
+            pjos: false,
+        }),
         false => None,
     };
 
@@ -227,19 +223,14 @@ pub async fn get_check_mint_onchain_quote(
     let settings = onchain.get_settings();
 
     let payjoin = match settings.payjoin_settings.receive_enabled {
-        true => {
-            match (
-                settings.payjoin_settings.ohttp_relay,
-                settings.payjoin_settings.payjoin_directory,
-            ) {
-                (Some(ohttp_relay), Some(payjoin_directory)) => Some(PayjoinInfo {
-                    origin: payjoin_directory,
-                    ohttp_relay: Some(ohttp_relay),
-                    pjos: false,
-                }),
-                _ => None,
-            }
-        }
+        true => settings
+            .payjoin_settings
+            .payjoin_directory
+            .map(|payjoin_directory| PayjoinInfo {
+                origin: payjoin_directory,
+                pjos: false,
+            }),
+
         false => None,
     };
 

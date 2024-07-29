@@ -11,7 +11,7 @@ use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk::Amount;
 use clap::Args;
-use payjoin::{OhttpKeys, PjUriBuilder};
+use payjoin::PjUriBuilder;
 use tokio::time::sleep;
 
 #[derive(Args, Debug)]
@@ -25,6 +25,9 @@ pub struct MintSubCommand {
     unit: String,
     #[arg(long, default_value = "bolt11")]
     method: String,
+    /// Payjoin relay
+    #[arg(short, long, default_value = "https://pj.bobspacebkk.com")]
+    payjoin_relay: String,
 }
 
 pub async fn mint(
@@ -55,7 +58,6 @@ pub async fn mint(
         }
     };
 
-    println!("here");
     let quote_id;
 
     match method {
@@ -87,25 +89,18 @@ pub async fn mint(
 
             match quote.payjoin {
                 Some(payjoin_info) => {
-                    let ohttp_keys: Option<OhttpKeys> = match payjoin_info.ohttp_relay {
-                        Some(relay) => Some(
-                            payjoin::io::fetch_ohttp_keys(
-                                relay.clone().parse()?,
-                                payjoin_info.origin.parse()?,
-                            )
-                            .await?,
-                        ),
-                        None => None,
-                    };
-
-                    println!("ohttp keys: {:?}", ohttp_keys.clone().unwrap().to_string());
+                    let ohttp_keys = payjoin::io::fetch_ohttp_keys(
+                        sub_command_args.payjoin_relay.parse()?,
+                        payjoin_info.origin.parse()?,
+                    )
+                    .await?;
 
                     let address = payjoin::bitcoin::Address::from_str(&quote.address)?;
 
                     let uri = PjUriBuilder::new(
                         address.assume_checked(),
                         payjoin_info.origin.parse()?,
-                        ohttp_keys,
+                        Some(ohttp_keys),
                         None,
                     )
                     .amount(payjoin::bitcoin::Amount::from_sat(sub_command_args.amount))

@@ -34,8 +34,6 @@ pub struct MintQuoteBtcOnchainResponse {
 pub struct PayjoinInfo {
     /// Origin Directory in v2
     pub origin: String,
-    /// Ohttp keys
-    pub ohttp_relay: Option<String>,
     /// PJO
     pub pjos: bool,
 }
