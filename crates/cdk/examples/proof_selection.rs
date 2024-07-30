@@ -51,7 +51,7 @@ async fn main() {
     let proofs = wallet.get_proofs().await.unwrap();
 
     let selected = wallet
-        .select_proofs_to_send(Amount::from(65), proofs, false)
+        .select_proofs_to_send(Amount::from(64), proofs, false)
         .await
         .unwrap();
 
