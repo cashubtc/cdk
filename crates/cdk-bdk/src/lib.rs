@@ -105,6 +105,7 @@ impl BdkWallet {
             }
         }
 
+        // FIXME: shouldnt need to do full scan only sync
         let request = wallet
             .start_full_scan()
             .inspect_spks_for_all_keychains({
@@ -305,7 +306,6 @@ impl BdkWallet {
             };
 
             if let Some(proposal) = proposal {
-                tracing::debug!("Received Proposal");
                 if let Err(err) = sender.send(proposal).await {
                     tracing::error!("Could not send proposal on channel: {}", err);
                 }
@@ -320,6 +320,7 @@ impl BdkWallet {
         proposal: UncheckedProposal,
         seen_inputs: HashSet<payjoin::bitcoin::OutPoint>,
     ) -> Result<ProvisionalProposal, Error> {
+        tracing::debug!("Received Proposal");
         let wallet = wallet.lock().await;
         proposal
             // TODO: Check this can be broadcast
@@ -365,6 +366,8 @@ impl BdkWallet {
     }
 
     pub async fn handle_proposal(&self, proposal: UncheckedProposal) -> Result<(), Error> {
+        tracing::debug!("Received proposal");
+
         let mut seen_inputs = self.seen_inputs.lock().await;
 
         let tx = proposal.extract_tx_to_schedule_broadcast();

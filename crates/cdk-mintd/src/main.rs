@@ -45,7 +45,7 @@ const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;
 async fn main() -> anyhow::Result<()> {
     let default_filter = "debug";
 
-    let sqlx_filter = "sqlx=warn";
+    let sqlx_filter = "sqlx=warn,hyper=warn";
 
     let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
 
