@@ -6,16 +6,15 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use bdk_esplora::{esplora_client, EsploraAsyncExt};
-use bdk_wallet::bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bdk_wallet::bitcoin::{Address, FeeRate, Network, Script};
-use bdk_wallet::chain::{miniscript, BlockId};
+use bdk_wallet::chain::BlockId;
 use bdk_wallet::file_store::Store;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
-use bdk_wallet::template::DescriptorTemplateOut;
+use bdk_wallet::template::Bip84;
 use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, SignOptions, Wallet};
 use cdk::amount::Amount;
 use cdk::bitcoin::bech32::ToBase32;
@@ -73,8 +72,8 @@ impl BdkWallet {
         // Get xprv from the extended key
         let xprv = xkey.into_xprv(network).unwrap();
 
-        let (descriptor, change_descriptor) =
-            get_wpkh_descriptors_for_extended_key(xprv, network, 0)?;
+        let descriptor = Bip84(xprv, KeychainKind::External);
+        let change_descriptor = Bip84(xprv, KeychainKind::Internal);
 
         let wallet_opt = Wallet::load()
             .descriptors(descriptor.clone(), change_descriptor.clone())
@@ -617,44 +616,5 @@ impl MintOnChain for BdkWallet {
             amount: Amount::from(amount),
             max_block_height,
         })
-    }
-}
-
-// Copyright (c) 2022-2024 Mutiny Wallet Inc. (MIT)
-fn get_wpkh_descriptors_for_extended_key(
-    master_xprv: Xpriv,
-    network: Network,
-    account_number: u32,
-) -> anyhow::Result<(DescriptorTemplateOut, DescriptorTemplateOut)> {
-    let coin_type = coin_type_from_network(network)?;
-
-    let base_path = DerivationPath::from_str("m/86'")?;
-    let derivation_path = base_path.extend([
-        ChildNumber::from_hardened_idx(coin_type)?,
-        ChildNumber::from_hardened_idx(account_number)?,
-    ]);
-
-    let receive_descriptor_template = bdk_wallet::descriptor!(wpkh((
-        master_xprv,
-        derivation_path.extend([ChildNumber::Normal { index: 0 }])
-    )))
-    .map_err(|_| anyhow!("Could not generate derivation path"))?;
-
-    let change_descriptor_template = bdk_wallet::descriptor!(wpkh((
-        master_xprv,
-        derivation_path.extend([ChildNumber::Normal { index: 1 }])
-    )))
-    .map_err(|_| anyhow!("Could not generate derivation path"))?;
-
-    Ok((receive_descriptor_template, change_descriptor_template))
-}
-
-pub(crate) fn coin_type_from_network(network: Network) -> Result<u32> {
-    match network {
-        Network::Bitcoin => Ok(0),
-        Network::Testnet => Ok(1),
-        Network::Signet => Ok(1),
-        Network::Regtest => Ok(1),
-        net => bail!("Got unknown network: {net}!"),
     }
 }
