@@ -26,6 +26,7 @@ use cdk::nuts::CurrencyUnit;
 use payjoin::receive::v2::{PayjoinProposal, ProvisionalProposal, UncheckedProposal};
 use payjoin::Url;
 use tokio::sync::Mutex;
+use tracing::instrument;
 
 pub mod error;
 
@@ -158,6 +159,7 @@ impl BdkWallet {
         })
     }
 
+    #[instrument(skip_all)]
     async fn update_chain_tip(&self) -> Result<(), Error> {
         let mut wallet = self.wallet.lock().await;
         let latest_checkpoint = wallet.latest_checkpoint();
@@ -215,6 +217,7 @@ impl BdkWallet {
 
 // TODO: Making this a payjoin trait
 impl BdkWallet {
+    #[instrument(skip_all)]
     async fn start_payjoin(&self, address: &str) -> Result<String, Error> {
         let ohttp_relay = self.payjoin_settings.ohttp_relay.clone();
 
@@ -315,12 +318,14 @@ impl BdkWallet {
         Ok(pj_url)
     }
 
+    #[instrument(skip_all)]
     pub async fn verify_proposal(
         wallet: Arc<Mutex<PersistedWallet>>,
         proposal: UncheckedProposal,
         seen_inputs: HashSet<payjoin::bitcoin::OutPoint>,
     ) -> Result<ProvisionalProposal, Error> {
-        tracing::debug!("Received Proposal");
+        tracing::debug!("Verifying proposal");
+
         let wallet = wallet.lock().await;
         proposal
             // TODO: Check this can be broadcast
@@ -347,6 +352,7 @@ impl BdkWallet {
             .map_err(|_| anyhow!("Receiver outputs"))
     }
 
+    #[instrument(skip_all)]
     pub async fn wait_handle_proposal(&self) -> Result<(), Error> {
         let mut receiver = self.receiver.lock().await;
         tokio::select! {
@@ -365,6 +371,7 @@ impl BdkWallet {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub async fn handle_proposal(&self, proposal: UncheckedProposal) -> Result<(), Error> {
         tracing::debug!("Received proposal");
 
@@ -461,6 +468,7 @@ impl BdkWallet {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub async fn send_payjoin_proposal(&self, payjoin: PayjoinProposal) -> Result<(), Error> {
         let mut payjoin = payjoin;
         let (req, ctx) = payjoin.extract_v2_req().unwrap();
@@ -504,6 +512,7 @@ impl MintOnChain for BdkWallet {
     }
 
     /// New onchain address
+    #[instrument(skip_all)]
     async fn new_address(&self) -> Result<NewAddressResponse, Self::Err> {
         let mut wallet = self.wallet.lock().await;
         let address = wallet
@@ -532,6 +541,7 @@ impl MintOnChain for BdkWallet {
     }
 
     /// Pay Address
+    #[instrument(skip_all)]
     async fn pay_address(
         &self,
         melt_quote: mint::MeltQuote,
@@ -570,6 +580,7 @@ impl MintOnChain for BdkWallet {
     }
 
     /// Check if an address has been paid
+    #[instrument(skip_all)]
     async fn check_address_paid(&self, address: &str) -> Result<AddressPaidResponse, Self::Err> {
         let address: Address = Address::from_str(address).unwrap().assume_checked();
 
