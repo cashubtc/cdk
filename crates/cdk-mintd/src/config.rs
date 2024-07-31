@@ -35,6 +35,19 @@ pub struct Ln {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Onchain {
+    pub send_enabled: bool,
+    pub receive_enabled: bool,
+    pub mnemonic: String,
+    pub min_melt: u64,
+    pub max_melt: u64,
+    pub min_mint: u64,
+    pub max_mint: u64,
+    pub ohttp_relay: Option<String>,
+    pub payjoin_directory: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Strike {
     pub api_key: String,
     pub supported_units: Option<Vec<CurrencyUnit>>,
@@ -79,6 +92,7 @@ pub struct Settings {
     pub cln: Option<Cln>,
     pub strike: Option<Strike>,
     pub fake_wallet: Option<FakeWallet>,
+    pub onchain: Option<Onchain>,
     pub database: Database,
 }
 

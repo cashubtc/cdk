@@ -29,7 +29,7 @@ use cdk_sqlite::MintSqliteDatabase;
 use cdk_strike::Strike;
 use clap::Parser;
 use cli::CLIArgs;
-use config::{DatabaseEngine, LnBackend};
+use config::{DatabaseEngine, LnBackend, Onchain};
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
@@ -321,35 +321,56 @@ async fn main() -> anyhow::Result<()> {
         .seconds_quote_is_valid_for
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
 
-    let payjoing_settings = PayjoinSettings {
-        receive_enabled: true,
-        send_enabled: false,
-        ohttp_relay: Some("https://pj.bobspacebkk.com".to_string()),
-        payjoin_directory: Some("https://payjo.in".to_string()),
-    };
-
-    let onchain = BdkWallet::new(0, 0, 0, 0, Mnemonic::parse("promote actress hand galaxy metal buzz square general outside business hard mother keen sound various").unwrap(), &work_dir, payjoing_settings)
-        .await
-        .unwrap();
-
-    let onchain_clone = onchain.clone();
-    tokio::spawn(async move {
-        loop {
-            if let Err(err) = onchain_clone.wait_handle_proposal().await {
-                tracing::debug!("Handle proposal stopped: {}", err);
-            }
-        }
-    });
-
     let mut onchain_backends: HashMap<
         LnKey,
         Arc<dyn MintOnChain<Err = cdk_onchain::Error> + Sync + Send>,
     > = HashMap::new();
 
-    onchain_backends.insert(
-        LnKey::new(CurrencyUnit::Sat, PaymentMethod::BtcOnChain),
-        Arc::new(onchain),
-    );
+    if let Some(onchain) = settings.onchain {
+        let Onchain {
+            mnemonic,
+            min_melt,
+            max_melt,
+            min_mint,
+            max_mint,
+            ohttp_relay,
+            payjoin_directory,
+            send_enabled,
+            receive_enabled,
+        } = onchain;
+
+        let payjoing_settings = PayjoinSettings {
+            receive_enabled,
+            send_enabled,
+            ohttp_relay,
+            payjoin_directory,
+        };
+
+        let onchain = BdkWallet::new(
+            min_melt,
+            max_melt,
+            min_mint,
+            max_mint,
+            Mnemonic::parse(mnemonic)?,
+            &work_dir,
+            payjoing_settings,
+        )
+        .await?;
+
+        let onchain_clone = onchain.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(err) = onchain_clone.wait_handle_proposal().await {
+                    tracing::debug!("Handle proposal stopped: {}", err);
+                }
+            }
+        });
+
+        onchain_backends.insert(
+            LnKey::new(CurrencyUnit::Sat, PaymentMethod::BtcOnChain),
+            Arc::new(onchain),
+        );
+    }
 
     let v1_service = cdk_axum::create_mint_router(
         &mint_url,
