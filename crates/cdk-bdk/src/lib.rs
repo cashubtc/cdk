@@ -63,14 +63,16 @@ impl BdkWallet {
         work_dir: &Path,
         payjoin_settings: PayjoinSettings,
     ) -> Result<Self, Error> {
-        let network = Network::Signet;
         let db_path = work_dir.join("bdk-mint");
+        // FIXME: Updates bytes
         let mut db =
             Store::<ChangeSet>::open_or_create_new(b"magic_bytes", db_path).expect("create store");
 
-        let xkey: ExtendedKey = mnemonic.into_extended_key().unwrap();
+        let xkey: ExtendedKey = mnemonic.into_extended_key()?;
         // Get xprv from the extended key
-        let xprv = xkey.into_xprv(network).unwrap();
+        let xprv = xkey
+            .into_xprv(NETWORK)
+            .ok_or(anyhow!("Could not get expriv from network"))?;
 
         let descriptor = Bip84(xprv, KeychainKind::External);
         let change_descriptor = Bip84(xprv, KeychainKind::Internal);

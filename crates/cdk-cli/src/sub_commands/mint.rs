@@ -41,9 +41,7 @@ pub async fn mint(
     println!("{:?}", sub_command_args);
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
 
-    println!("unit");
     let method = PaymentMethod::from_str(&sub_command_args.method)?;
-    println!("heres");
 
     let wallet = match multi_mint_wallet
         .get_wallet(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
