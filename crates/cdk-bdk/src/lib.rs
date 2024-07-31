@@ -1,7 +1,6 @@
 //! CDK lightning backend for CLN
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::io::Write;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -10,6 +9,7 @@ use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use bdk_esplora::{esplora_client, EsploraAsyncExt};
 use bdk_wallet::bitcoin::{Address, FeeRate, Network, Script};
+use bdk_wallet::chain::spk_client::{SyncRequest, SyncResult};
 use bdk_wallet::chain::BlockId;
 use bdk_wallet::file_store::Store;
 use bdk_wallet::keys::bip39::Mnemonic;
@@ -30,7 +30,6 @@ use tracing::instrument;
 
 pub mod error;
 
-const STOP_GAP: usize = 50;
 const PARALLEL_REQUESTS: usize = 5;
 
 const NETWORK: Network = Network::Signet;
@@ -92,53 +91,15 @@ impl BdkWallet {
 
         let client = esplora_client::Builder::new("https://mutinynet.com/api").build_async()?;
 
-        fn generate_inspect(
-            kind: KeychainKind,
-        ) -> impl FnMut(u32, &Script) + Send + Sync + 'static {
-            let mut once = Some(());
-            let mut stdout = std::io::stdout();
-            move |spk_i, _| {
-                match once.take() {
-                    Some(_) => print!("\nScanning keychain [{:?}]", kind),
-                    None => print!(" {:<3}", spk_i),
-                };
-                stdout.flush().expect("must flush");
-            }
-        }
+        let sync_request: SyncRequest = wallet.start_sync_with_revealed_spks();
+        let update: SyncResult = client.sync(sync_request, PARALLEL_REQUESTS).await?;
 
-        // FIXME: shouldnt need to do full scan only sync
-        let request = wallet
-            .start_full_scan()
-            .inspect_spks_for_all_keychains({
-                let mut once = BTreeSet::<KeychainKind>::new();
-                move |keychain, spk_i, _| {
-                    match once.insert(keychain) {
-                        true => print!("\nScanning keychain [{:?}]", keychain),
-                        false => print!(" {:<3}", spk_i),
-                    }
-                    std::io::stdout().flush().expect("must flush")
-                }
-            })
-            .inspect_spks_for_keychain(
-                KeychainKind::External,
-                generate_inspect(KeychainKind::External),
-            )
-            .inspect_spks_for_keychain(
-                KeychainKind::Internal,
-                generate_inspect(KeychainKind::Internal),
-            );
-
-        tracing::debug!("Starting wallet full scan");
-
-        let mut update = client
-            .full_scan(request, STOP_GAP, PARALLEL_REQUESTS)
-            .await?;
-        let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
-        let _ = update.graph_update.update_last_seen_unconfirmed(now);
+        // Apply the update to the wallet
+        wallet.apply_update(update)?;
 
         wallet.persist(&mut db)?;
 
-        tracing::debug!("Completed wallet scan");
+        tracing::debug!("Completed wallet sync");
 
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
 
@@ -159,7 +120,6 @@ impl BdkWallet {
         })
     }
 
-    #[instrument(skip_all)]
     async fn update_chain_tip(&self) -> Result<(), Error> {
         let mut wallet = self.wallet.lock().await;
         let latest_checkpoint = wallet.latest_checkpoint();
@@ -172,7 +132,7 @@ impl BdkWallet {
         let mut last_fetched_height = None;
 
         while last_fetched_height.is_none()
-            || last_fetched_height.expect("Checked for none") > latest_checkpoint_height
+            || last_fetched_height.expect("Checked for none") < latest_checkpoint_height
         {
             let blocks = self.client.get_blocks(last_fetched_height).await?;
 
@@ -206,10 +166,11 @@ impl BdkWallet {
             wallet.insert_checkpoint(block_id)?;
         }
 
-        if let Some(changeset) = wallet.take_staged() {
-            let mut db = self.db.lock().await;
-            db.append_changeset(&changeset)?;
-        }
+        tracing::trace!("Locking wallet db");
+        let mut db = self.db.lock().await;
+        wallet.persist(&mut db)?;
+
+        tracing::trace!("Updated wallet chain tip");
 
         Ok(())
     }
