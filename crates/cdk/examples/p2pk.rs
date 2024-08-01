@@ -47,12 +47,16 @@ async fn main() -> Result<(), Error> {
 
     let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
 
+    let bal = wallet.total_balance().await.unwrap();
+
+    println!("{}", bal);
+
     let token = wallet
         .send(
             amount,
             None,
             Some(spending_conditions),
-            &SplitTarget::None,
+            &SplitTarget::default(),
             &SendKind::default(),
             false,
         )
@@ -67,7 +71,7 @@ async fn main() -> Result<(), Error> {
         .await
         .unwrap();
 
-    println!("Redeamed locked token worth: {}", u64::from(amount));
+    println!("Redeemed locked token worth: {}", u64::from(amount));
 
     Ok(())
 }
