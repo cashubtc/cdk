@@ -56,20 +56,19 @@ impl HttpClient {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Create new [`HttpClient`] with a proxy for NWS requests
     pub fn with_nws_proxy(proxy: Url) -> Result<Self, Error> {
         let client = reqwest::Client::builder()
             .proxy(reqwest::Proxy::custom(move |url| {
                 url.host_str()
-                    .map(|host| {
-                        println!("host: {}", host);
+                    .and_then(|host| {
                         if host.starts_with("nprofile") || host.ends_with(".nostr") {
                             Some(proxy.clone())
                         } else {
                             None
                         }
                     })
-                    .flatten()
             }))
             .danger_accept_invalid_certs(true) // Allow self-signed certs
             .build()?;
