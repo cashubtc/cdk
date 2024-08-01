@@ -56,6 +56,27 @@ impl HttpClient {
         }
     }
 
+    /// Create new [`HttpClient`] with a proxy for NWS requests
+    pub fn with_nws_proxy(proxy: Url) -> Result<Self, Error> {
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::custom(move |url| {
+                url.host_str()
+                    .map(|host| {
+                        println!("host: {}", host);
+                        if host.starts_with("nprofile") || host.ends_with(".nostr") {
+                            Some(proxy.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten()
+            }))
+            .danger_accept_invalid_certs(true) // Allow self-signed certs
+            .build()?;
+
+        Ok(Self { inner: client })
+    }
+
     /// Get Active Mint Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
