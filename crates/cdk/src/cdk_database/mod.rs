@@ -33,6 +33,8 @@ use crate::wallet::MintQuote as WalletMintQuote;
 pub mod mint_memory;
 #[cfg(feature = "wallet")]
 pub mod wallet_memory;
+#[cfg(feature = "nostr")]
+pub mod wallet_nostr;
 
 #[cfg(feature = "wallet")]
 pub use wallet_memory::WalletMemoryDatabase;

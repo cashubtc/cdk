@@ -48,6 +48,10 @@ uuid = { version = "1", features = ["v4"] }
 lightning-invoice = { version = "0.31", features = ["serde"] }
 home = "0.5.9"
 rand = "0.8.5"
+nostr-sdk = { version = "0.33.0", default-features = false, features = [
+    "nip04",
+    "nip44"
+]}
 
 [profile]
 
