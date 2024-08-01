@@ -53,6 +53,7 @@
 - cdk(mint): On `swap` verify correct number of sigs on outputs when `SigAll` ([thesimplekid]).
 - cdk(mint): Use amount in payment_quote response from ln backend ([thesimplekid]).
 - cdk(mint): Create new keysets for added supported units ([thesimplekid]).
+- cdk(mint): If there is an error in swap proofs should be reset to unspent ([thesimplekid]).
 
 ### Removed
 - cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).

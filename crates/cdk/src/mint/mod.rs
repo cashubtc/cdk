@@ -655,11 +655,20 @@ impl Mint {
             .len()
             .ne(&proof_count)
         {
+            self.localstore
+                .update_proofs_states(&input_ys, State::Unspent)
+                .await?;
             return Err(Error::DuplicateProofs);
         }
 
         for proof in &swap_request.inputs {
-            self.verify_proof(proof).await?
+            if let Err(err) = self.verify_proof(proof).await {
+                tracing::info!("Error verifying proof in swap");
+                self.localstore
+                    .update_proofs_states(&input_ys, State::Unspent)
+                    .await?;
+                return Err(err);
+            }
         }
 
         let input_keyset_ids: HashSet<Id> =
@@ -668,25 +677,34 @@ impl Mint {
         let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
 
         for id in input_keyset_ids {
-            let keyset = self
-                .localstore
-                .get_keyset_info(&id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
-            keyset_units.insert(keyset.unit);
+            match self.localstore.get_keyset_info(&id).await? {
+                Some(keyset) => {
+                    keyset_units.insert(keyset.unit);
+                }
+                None => {
+                    tracing::info!("Swap request with unknown keyset in inputs");
+                    self.localstore
+                        .update_proofs_states(&input_ys, State::Unspent)
+                        .await?;
+                }
+            }
         }
 
         let output_keyset_ids: HashSet<Id> =
             swap_request.outputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &output_keyset_ids {
-            let keyset = self
-                .localstore
-                .get_keyset_info(id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
-
-            keyset_units.insert(keyset.unit);
+            match self.localstore.get_keyset_info(id).await? {
+                Some(keyset) => {
+                    keyset_units.insert(keyset.unit);
+                }
+                None => {
+                    tracing::info!("Swap request with unknown keyset in outputs");
+                    self.localstore
+                        .update_proofs_states(&input_ys, State::Unspent)
+                        .await?;
+                }
+            }
         }
 
         // Check that all proofs are the same unit
@@ -694,6 +712,9 @@ impl Mint {
         // now
         if keyset_units.len().gt(&1) {
             tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
+            self.localstore
+                .update_proofs_states(&input_ys, State::Unspent)
+                .await?;
             return Err(Error::MultipleUnits);
         }
 
@@ -706,7 +727,13 @@ impl Mint {
         if sig_flag.eq(&SigFlag::SigAll) {
             let pubkeys = pubkeys.into_iter().collect();
             for blinded_message in &swap_request.outputs {
-                blinded_message.verify_p2pk(&pubkeys, sigs_required)?;
+                if let Err(err) = blinded_message.verify_p2pk(&pubkeys, sigs_required) {
+                    tracing::info!("Could not verify p2pk in swap request");
+                    self.localstore
+                        .update_proofs_states(&input_ys, State::Unspent)
+                        .await?;
+                    return Err(err.into());
+                }
             }
         }
 
