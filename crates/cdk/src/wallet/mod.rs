@@ -711,13 +711,13 @@ impl Wallet {
                     .unwrap()
                     .len();
 
-                let fee_to_redeam = self
+                let fee_to_redeem = self
                     .get_keyset_count_fee(&active_keyset_id, split_count as u64)
                     .await?;
 
                 (
-                    amount.map(|a| a + fee_to_redeam),
-                    change_amount - fee_to_redeam,
+                    amount.map(|a| a + fee_to_redeem),
+                    change_amount - fee_to_redeem,
                 )
             }
             false => (amount, change_amount),
