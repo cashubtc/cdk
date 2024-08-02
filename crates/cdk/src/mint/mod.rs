@@ -1180,12 +1180,12 @@ impl Mint {
         Ok(total_issued)
     }
 
-    /// Total redeamed for keyset
+    /// Total redeemed for keyset
     #[instrument(skip_all)]
-    pub async fn total_redeamed(&self) -> Result<HashMap<Id, Amount>, Error> {
+    pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
         let keysets = self.localstore.get_keyset_infos().await?;
 
-        let mut total_redeamed = HashMap::new();
+        let mut total_redeemed = HashMap::new();
 
         for keyset in keysets {
             let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
@@ -1199,10 +1199,10 @@ impl Mint {
                 })
                 .sum();
 
-            total_redeamed.insert(keyset.id, total_spent);
+            total_redeemed.insert(keyset.id, total_spent);
         }
 
-        Ok(total_redeamed)
+        Ok(total_redeemed)
     }
 }
 
