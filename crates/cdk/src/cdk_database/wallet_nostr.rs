@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use itertools::Itertools;
 use nostr_database::{DatabaseError, NostrDatabase};
 use nostr_sdk::{
-    client, nips::nip44, Client, Event, EventBuilder, Filter, Kind, SingleLetterTag, Tag, TagKind,
+    client, nips::nip44, Client, Event, EventBuilder, EventId, Filter, Kind, SingleLetterTag, Tag,
+    TagKind,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
@@ -150,6 +151,7 @@ impl WalletNostrDatabase {
                     id: self.id.clone(),
                     ..Default::default()
                 };
+                self.save_info_with_lock(&info).await?;
             }
         }
         Ok(info.clone())
@@ -165,6 +167,14 @@ impl WalletNostrDatabase {
         info: &MutexGuard<'a, WalletInfo>,
     ) -> Result<(), Error> {
         self.save_event(info.to_event(&self.keys)?).await
+    }
+
+    /// Get the latest [`TxInfo`]
+    pub async fn save_tx_info(&self, tx_info: TxInfo) -> Result<EventId, Error> {
+        let event = tx_info.to_event(&self.id, &self.keys)?;
+        let id = event.id();
+        self.save_event(event).await?;
+        Ok(id)
     }
 
     async fn get_events(&self, filters: Vec<Filter>) -> Result<Vec<Event>, Error> {

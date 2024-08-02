@@ -14,7 +14,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 bip39.workspace = true
-cdk = { workspace = true, default-features = false, features = ["wallet"] }
+cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
 cdk-redb = { workspace = true, default-features = false, features = ["wallet"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["wallet"] }
 clap.workspace = true
