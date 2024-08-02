@@ -5,8 +5,14 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::cdk_lightning::to_unit;
+use cdk::cdk_onchain::AddressPaidResponse;
 use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
+use cdk::nuts::nut17::{
+    MintBtcOnchainRequest, MintBtcOnchainResponse, MintQuoteBtcOnchainRequest,
+    MintQuoteBtcOnchainResponse, PayjoinInfo,
+};
+use cdk::nuts::nut18::{MeltQuoteBtcOnchainRequest, MeltQuoteBtcOnchainResponse};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeysResponse, KeysetResponse,
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
@@ -96,6 +102,63 @@ pub async fn get_mint_bolt11_quote(
     Ok(Json(quote.into()))
 }
 
+pub async fn get_mint_onchain_quote(
+    State(state): State<MintState>,
+    Json(payload): Json<MintQuoteBtcOnchainRequest>,
+) -> Result<Json<MintQuoteBtcOnchainResponse>, Response> {
+    tracing::debug!("Mint quote unit: {}", payload.unit);
+    let onchain = state
+        .onchain
+        .get(&LnKey::new(payload.unit, PaymentMethod::BtcOnChain))
+        .ok_or({
+            tracing::info!("Onchain mint request for unsupported unit");
+
+            into_response(Error::UnsupportedUnit)
+        })?;
+
+    let quote_expiry = unix_time() + state.quote_ttl;
+
+    let address = onchain.new_address().await.map_err(|err| {
+        tracing::error!("Could not get onchain address: {}", err);
+        into_response(Error::InvalidPaymentRequest)
+    })?;
+
+    let quote = state
+        .mint
+        .new_mint_quote(
+            state.mint_url.into(),
+            address.address.clone(),
+            payload.unit,
+            payload.amount,
+            quote_expiry,
+            address.address,
+        )
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not create new mint quote: {}", err);
+            into_response(err)
+        })?;
+
+    let settings = onchain.get_settings();
+
+    let payjoin = match settings.payjoin_settings.receive_enabled {
+        true => address.payjoin_url.map(|payjoin_directory| PayjoinInfo {
+            origin: payjoin_directory,
+            pjos: false,
+        }),
+        false => None,
+    };
+
+    let mint_quote_response = MintQuoteBtcOnchainResponse {
+        quote: quote.id,
+        address: quote.request,
+        state: quote.state,
+        payjoin,
+    };
+
+    Ok(Json(mint_quote_response))
+}
+
 pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<String>,
@@ -112,6 +175,75 @@ pub async fn get_check_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
+pub async fn get_check_mint_onchain_quote(
+    State(state): State<MintState>,
+    Path(quote_id): Path<String>,
+) -> Result<Json<MintQuoteBtcOnchainResponse>, Response> {
+    let quote = state
+        .mint
+        .localstore
+        .get_mint_quote(&quote_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let address = quote.request.clone();
+
+    tracing::debug!("{:?}", state.onchain.keys());
+
+    let onchain = state
+        .onchain
+        .get(&LnKey::new(CurrencyUnit::Sat, PaymentMethod::BtcOnChain));
+
+    let onchain = match onchain {
+        Some(onchain) => onchain,
+        None => {
+            tracing::info!("Checking quote for unsupported unit");
+
+            return Err(into_response(Error::UnsupportedUnit));
+        }
+    };
+
+    tracing::info!("Checking paid status for {}", quote_id);
+
+    let AddressPaidResponse {
+        amount,
+        max_block_height,
+    } = onchain.check_address_paid(&address).await.unwrap();
+
+    if amount > quote.amount && max_block_height.is_some() {
+        // TODO: Need to check quote not already pending
+        let mut quote = quote.clone();
+
+        quote.state = MintQuoteState::Paid;
+
+        state.mint.update_mint_quote(quote).await.unwrap();
+    }
+
+    let settings = onchain.get_settings();
+
+    let payjoin = match settings.payjoin_settings.receive_enabled {
+        true => settings
+            .payjoin_settings
+            .payjoin_directory
+            .map(|payjoin_directory| PayjoinInfo {
+                origin: payjoin_directory,
+                pjos: false,
+            }),
+
+        false => None,
+    };
+
+    let res = MintQuoteBtcOnchainResponse {
+        quote: quote.id,
+        address: quote.request,
+        state: quote.state,
+        payjoin,
+    };
+
+    Ok(Json(res))
+}
+
 pub async fn post_mint_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request>,
@@ -119,6 +251,22 @@ pub async fn post_mint_bolt11(
     let res = state
         .mint
         .process_mint_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process mint: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(res))
+}
+
+pub async fn post_mint_onchain(
+    State(state): State<MintState>,
+    Json(payload): Json<MintBtcOnchainRequest>,
+) -> Result<Json<MintBtcOnchainResponse>, Response> {
+    let res = state
+        .mint
+        .process_mint_onchain_request(payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process mint: {}", err);
@@ -170,7 +318,55 @@ pub async fn get_melt_bolt11_quote(
     Ok(Json(quote.into()))
 }
 
+pub async fn get_melt_onchain_quote(
+    State(state): State<MintState>,
+    Json(payload): Json<MeltQuoteBtcOnchainRequest>,
+) -> Result<Json<MeltQuoteBtcOnchainResponse>, Response> {
+    // Convert amount to quote unit
+    let amount = to_unit(payload.amount, &payload.unit, &payload.unit).map_err(|err| {
+        tracing::error!("Backed does not support unit: {}", err);
+        into_response(Error::UnsupportedUnit)
+    })?;
+
+    // TODO: Get real fee estimate
+    let fee = 3000;
+
+    let quote = state
+        .mint
+        .new_melt_quote(
+            payload.address.clone(),
+            payload.unit,
+            amount.into(),
+            fee.into(),
+            unix_time() + state.quote_ttl,
+            payload.address,
+        )
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not create melt quote: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(quote.into()))
+}
+
 pub async fn get_check_melt_bolt11_quote(
+    State(state): State<MintState>,
+    Path(quote_id): Path<String>,
+) -> Result<Json<MeltQuoteBolt11Response>, Response> {
+    let quote = state
+        .mint
+        .check_melt_quote(&quote_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not check melt quote: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(quote))
+}
+
+pub async fn get_check_melt_onchain_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<String>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {

@@ -8,6 +8,8 @@ pub mod amount;
 pub mod cdk_database;
 #[cfg(feature = "mint")]
 pub mod cdk_lightning;
+#[cfg(feature = "mint")]
+pub mod cdk_onchain;
 pub mod dhke;
 pub mod error;
 #[cfg(feature = "mint")]
@@ -20,6 +22,7 @@ pub mod util;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+pub use bitcoin;
 #[doc(hidden)]
 pub use bitcoin::secp256k1;
 #[doc(hidden)]

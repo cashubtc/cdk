@@ -1,0 +1,24 @@
+[package]
+name = "cdk-bdk"
+version = "0.1.0"
+edition = "2021"
+authors = ["CDK Developers"]
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true # MSRV
+license.workspace = true
+description = "BDK on chain wallet for mint"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bdk_wallet = { version = "1.0.0-beta.1", default-features = false, features = ["keys-bip39", "file_store", "std"] }
+bdk_esplora = { version = "0.16.0", default-features = false, features = ["std", "async-https"] }
+cdk = { workspace = true, default-features = false, features = ["mint"] }
+payjoin.workspace = true
+reqwest.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

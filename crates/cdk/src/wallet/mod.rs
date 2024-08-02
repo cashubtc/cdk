@@ -18,6 +18,7 @@ use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::nut00::token::Token;
+use crate::nuts::nut17::MintQuoteBtcOnchainResponse;
 use crate::nuts::{
     nut10, nut12, Conditions, CurrencyUnit, Id, KeySetInfo, Keys, Kind, MeltQuoteBolt11Response,
     MeltQuoteState, MintInfo, MintQuoteBolt11Response, MintQuoteState, PreMintSecrets, PreSwap,
@@ -463,12 +464,66 @@ impl Wallet {
         Ok(quote)
     }
 
+    /// Mint Quote
+    #[instrument(skip(self))]
+    pub async fn mint_onchain_quote(
+        &self,
+        amount: Amount,
+    ) -> Result<MintQuoteBtcOnchainResponse, Error> {
+        let mint_url = self.mint_url.clone();
+        let unit = self.unit;
+        let quote_res = self
+            .client
+            .post_mint_onchain_quote(mint_url.clone().try_into()?, amount, unit)
+            .await?;
+
+        let quote = MintQuote {
+            mint_url,
+            id: quote_res.quote.clone(),
+            amount,
+            unit,
+            request: quote_res.address.clone(),
+            state: quote_res.state,
+            expiry: 0,
+        };
+
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote_res)
+    }
+
     /// Mint quote status
     #[instrument(skip(self, quote_id))]
     pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
         let response = self
             .client
             .get_mint_quote_status(self.mint_url.clone().try_into()?, quote_id)
+            .await?;
+
+        match self.localstore.get_mint_quote(quote_id).await? {
+            Some(quote) => {
+                let mut quote = quote;
+
+                quote.state = response.state;
+                self.localstore.add_mint_quote(quote).await?;
+            }
+            None => {
+                tracing::info!("Quote mint {} unknown", quote_id);
+            }
+        }
+
+        Ok(response)
+    }
+
+    /// Mint quote status
+    #[instrument(skip(self, quote_id))]
+    pub async fn mint_onchain_quote_state(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBtcOnchainResponse, Error> {
+        let response = self
+            .client
+            .get_mint_onchain_quote_status(self.mint_url.clone().try_into()?, quote_id)
             .await?;
 
         match self.localstore.get_mint_quote(quote_id).await? {
