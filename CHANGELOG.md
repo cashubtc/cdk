@@ -36,6 +36,7 @@
 - cdk-cli: Receive will add wallet when receiving if mint is unknown ([thesimplekid]).
 - cdk(cdk-database/mint): Rename `get_blinded_signatures` to `get_blind_signatures` ([thesimplekid]).
 - cdk(cdk-database/mint):rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
+- cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
@@ -105,3 +106,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 <!-- Contributors -->
 [thesimplekid]: https://github.com/thesimplekid
 [davidcaseria]: https://github.com/davidcaseria
+[vnprc]: https://github.com/vnprc
