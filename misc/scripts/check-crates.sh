@@ -33,6 +33,7 @@ buildargs=(
     "-p cdk-sqlite --no-default-features --features mint"
     "-p cdk-sqlite --no-default-features --features wallet"
     "-p cdk-cln"
+    "-p cdk-greenlight"
     "-p cdk-axum"
     "-p cdk-fake-wallet"
     "-p cdk-strike"

@@ -1,0 +1,23 @@
+[package]
+name = "cdk-greenlight"
+version = "0.1.0"
+edition = "2021"
+authors = ["CDK Developers"]
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true # MSRV
+license.workspace = true
+description = "CDK ln backend for greenlight"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+bitcoin.workspace = true
+cdk = { workspace = true, default-features = false, features = ["mint"] }
+gl-client = "0.2.0"
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
