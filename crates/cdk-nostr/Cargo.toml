@@ -1,0 +1,22 @@
+[package]
+name = "cdk-nostr"
+version = "0.2.0"
+edition = "2021"
+authors = ["CDK Developers"]
+description = "Core Cashu Development Kit library implementing the Cashu protocol"
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true                                                      # MSRV
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cdk = { workspace = true, default-features = false }
+itertools = "0.13"
+nostr-sdk.workspace = true
+nostr-database = "0.33"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true

@@ -6,6 +6,16 @@ use std::{
 };
 
 use async_trait::async_trait;
+use cdk::{
+    cdk_database::{self, WalletDatabase},
+    nuts::{
+        CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, Proofs, PublicKey, SecretKey,
+        SpendingConditions, State,
+    },
+    types::ProofInfo,
+    wallet::{MeltQuote, MintQuote},
+    Amount, UncheckedUrl,
+};
 use itertools::Itertools;
 use nostr_database::{DatabaseError, NostrDatabase};
 use nostr_sdk::{
@@ -15,18 +25,6 @@ use nostr_sdk::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
 use url::Url;
-
-use crate::{
-    nuts::{
-        CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, Proofs, PublicKey, SecretKey,
-        SpendingConditions, State,
-    },
-    types::ProofInfo,
-    wallet::{MeltQuote, MintQuote},
-    Amount, UncheckedUrl,
-};
-
-use super::WalletDatabase;
 
 const TX_KIND: Kind = Kind::Custom(7375);
 const WALLET_INFO_KIND: Kind = Kind::Custom(37375);
@@ -60,7 +58,7 @@ pub struct WalletNostrDatabase {
 
     // Local disk storage
     nostr_db: Arc<Option<Box<dyn NostrDatabase<Err = DatabaseError>>>>,
-    wallet_db: Arc<Box<dyn WalletDatabase<Err = super::Error> + Sync + Send>>,
+    wallet_db: Arc<Box<dyn WalletDatabase<Err = cdk_database::Error> + Sync + Send>>,
 }
 
 impl WalletNostrDatabase {
@@ -74,7 +72,7 @@ impl WalletNostrDatabase {
     ) -> Result<Self, Error>
     where
         E: NostrDatabase<Err = DatabaseError> + 'static,
-        W: WalletDatabase<Err = super::Error> + Sync + Send + 'static,
+        W: WalletDatabase<Err = cdk_database::Error> + Sync + Send + 'static,
     {
         let client = Self::connect_client(&keys, relays).await?;
         let self_ = Self {
@@ -100,7 +98,7 @@ impl WalletNostrDatabase {
         wallet_db: W,
     ) -> Result<Self, Error>
     where
-        W: WalletDatabase<Err = super::Error> + Sync + Send + 'static,
+        W: WalletDatabase<Err = cdk_database::Error> + Sync + Send + 'static,
     {
         let client = Self::connect_client(&keys, relays).await?;
         let self_ = Self {
@@ -195,7 +193,7 @@ impl WalletNostrDatabase {
 
 #[async_trait]
 impl WalletDatabase for WalletNostrDatabase {
-    type Err = super::Error;
+    type Err = cdk_database::Error;
 
     async fn add_mint(
         &self,
@@ -348,8 +346,8 @@ impl WalletDatabase for WalletNostrDatabase {
     }
 }
 
-fn map_err(e: Error) -> super::Error {
-    super::Error::Database(Box::new(e))
+fn map_err(e: Error) -> cdk_database::Error {
+    cdk_database::Error::Database(Box::new(e))
 }
 
 /// Wallet info
@@ -632,13 +630,13 @@ pub enum Error {
     NostrDatabase(#[from] DatabaseError),
     /// NUT-00 error
     #[error(transparent)]
-    Nut00(#[from] crate::nuts::nut00::Error),
+    Nut00(#[from] cdk::nuts::nut00::Error),
     /// NUT-01 error
     #[error(transparent)]
-    Nut01(#[from] crate::nuts::nut01::Error),
+    Nut01(#[from] cdk::nuts::nut01::Error),
     /// NUT-02 error
     #[error(transparent)]
-    Nut02(#[from] crate::nuts::nut02::Error),
+    Nut02(#[from] cdk::nuts::nut02::Error),
     /// Parse int error
     #[error(transparent)]
     ParseInt(#[from] std::num::ParseIntError),
@@ -650,8 +648,8 @@ pub enum Error {
     TagNotFound(String),
     /// Url parse error
     #[error(transparent)]
-    UrlParse(#[from] crate::url::Error),
+    UrlParse(#[from] cdk::url::Error),
     /// Wallet database error
     #[error(transparent)]
-    WalletDatabase(#[from] super::Error),
+    WalletDatabase(#[from] cdk_database::Error),
 }

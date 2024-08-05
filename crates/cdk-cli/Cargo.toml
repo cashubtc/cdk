@@ -6,7 +6,7 @@ authors = ["CDK Developers"]
 description = "Cashu cli wallet built on CDK"
 homepage.workspace = true
 repository.workspace = true
-rust-version.workspace = true # MSRV
+rust-version.workspace = true                 # MSRV
 license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -14,7 +14,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 bip39.workspace = true
-cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
+cdk = { workspace = true, default-features = false, features = ["wallet"] }
+cdk-nostr = { workspace = true, default-features = false }
 cdk-redb = { workspace = true, default-features = false, features = ["wallet"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["wallet"] }
 clap.workspace = true

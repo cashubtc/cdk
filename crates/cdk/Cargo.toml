@@ -12,7 +12,6 @@ license.workspace = true
 
 [features]
 default = ["mint", "wallet"]
-nostr = ["wallet", "dep:nostr-sdk", "dep:nostr-database"]
 mint = ["dep:futures"]
 wallet = ["dep:reqwest"]
 
@@ -41,11 +40,8 @@ serde_with = "3.4"
 tracing.workspace = true
 thiserror.workspace = true
 futures = { workspace = true, optional = true }
-url = "2.3"
+url.workspace = true
 uuid.workspace = true
-itertools = "0.13"
-nostr-sdk = { workspace = true, optional = true }
-nostr-database = { version = "0.33", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [
