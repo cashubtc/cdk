@@ -1,4 +1,8 @@
-//! Wallet based on Nostr
+//! Wallet based on Nostr [NIP-60](https://github.com/nostr-protocol/nips/pull/1369)
+
+#![warn(missing_docs)]
+#![warn(rustdoc::bare_urls)]
+
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -20,7 +24,7 @@ use itertools::Itertools;
 use nostr_database::{DatabaseError, NostrDatabase};
 use nostr_sdk::{
     client, nips::nip44, Client, Event, EventBuilder, EventId, Filter, Kind, SingleLetterTag, Tag,
-    TagKind,
+    TagKind, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
@@ -128,6 +132,29 @@ impl WalletNostrDatabase {
         self.info.lock().await.clone()
     }
 
+    /// Get tx infos
+    pub async fn get_txs(
+        &self,
+        until: Option<Timestamp>,
+        limit: Option<usize>,
+    ) -> Result<Vec<TxInfo>, Error> {
+        let filters = vec![Filter {
+            authors: filter_value!(self.keys.public_key()),
+            kinds: filter_value!(TX_KIND),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
+            ),
+            until,
+            limit,
+            ..Default::default()
+        }];
+        let events = self.get_events(filters).await?;
+        Ok(events
+            .into_iter()
+            .map(|event| TxInfo::from_event(&event, &self.keys))
+            .collect::<Result<Vec<TxInfo>, Error>>()?)
+    }
+
     /// Refresh the latest [`WalletInfo`]
     pub async fn refresh_info(&self) -> Result<WalletInfo, Error> {
         let filters = vec![Filter {
@@ -140,7 +167,7 @@ impl WalletNostrDatabase {
         }];
         let events = self.get_events(filters).await?;
         let mut info = self.info.lock().await;
-        match events.last() {
+        match events.first() {
             Some(event) => {
                 *info = WalletInfo::from_event(event, &self.keys)?;
             }
@@ -167,17 +194,36 @@ impl WalletNostrDatabase {
         self.save_event(info.to_event(&self.keys)?).await
     }
 
-    /// Get the latest [`TxInfo`]
-    pub async fn save_tx_info(&self, tx_info: TxInfo) -> Result<EventId, Error> {
+    /// Save a [`TxInfo`]
+    pub async fn save_tx(&self, tx_info: TxInfo) -> Result<EventId, Error> {
         let event = tx_info.to_event(&self.id, &self.keys)?;
         let id = event.id();
         self.save_event(event).await?;
+        let mut info = self.info.lock().await;
+        tx_info.update_balance(info.balance.get_or_insert(Amount::ZERO));
+        self.save_info_with_lock(&info).await?;
         Ok(id)
+    }
+
+    /// Update the name or description of the [`WalletInfo`]
+    pub async fn update_info(
+        &self,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<(), Error> {
+        let mut info = self.info.lock().await;
+        if let Some(name) = name {
+            info.name = Some(name);
+        }
+        if let Some(description) = description {
+            info.description = Some(description);
+        }
+        self.save_info_with_lock(&info).await
     }
 
     async fn get_events(&self, filters: Vec<Filter>) -> Result<Vec<Event>, Error> {
         if let Some(db) = self.nostr_db.as_ref() {
-            return Ok(db.query(filters, nostr_database::Order::Asc).await?);
+            return Ok(db.query(filters, nostr_database::Order::Desc).await?);
         }
         Ok(self.client.get_events_of(filters, None).await?)
     }
@@ -528,8 +574,10 @@ impl WalletInfo {
 /// Tx info
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TxInfo {
-    inputs: Vec<TxInfoProofs>,
-    outputs: Vec<TxInfoProofs>,
+    /// Inputs
+    pub inputs: Vec<TxInfoProofs>,
+    /// Outputs
+    pub outputs: Vec<TxInfoProofs>,
 }
 
 impl TxInfo {
@@ -582,12 +630,29 @@ impl TxInfo {
         );
         Ok(event.to_event(keys)?)
     }
+
+    /// Update the provided balance [`Amount`]
+    pub fn update_balance(&self, balance: &mut Amount) {
+        for input in &self.inputs {
+            for proof in &input.proofs {
+                *balance -= proof.amount;
+            }
+        }
+        for output in &self.outputs {
+            for proof in &output.proofs {
+                *balance += proof.amount;
+            }
+        }
+    }
 }
 
+/// Tx info proofs
 #[derive(Debug, Serialize, Deserialize)]
-struct TxInfoProofs {
-    mint_url: UncheckedUrl,
-    proofs: Vec<Proof>,
+pub struct TxInfoProofs {
+    /// Mint url
+    pub mint_url: UncheckedUrl,
+    /// Proofs
+    pub proofs: Vec<Proof>,
 }
 
 fn wallet_link_tag(wallet_id: &str, keys: &nostr_sdk::Keys) -> Result<Tag, Error> {
