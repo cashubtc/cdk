@@ -98,12 +98,14 @@ impl Greenlight {
         let creds = match fs::metadata(&device_creds_path) {
             Ok(_) => {
                 tracing::info!("Node has already been regeisted.");
-                tracing::info!("Authicating from device file");
+                tracing::info!("Authenticating from device file.");
                 let bytes = fs::read(device_creds_path)?;
                 Device::from_bytes(bytes)
             }
             Err(_) => {
                 tracing::info!("Node has not been registered");
+                tracing::info!("Registering Node ...");
+
                 let auth_response = scheduler_unauth.register(&signer, None).await?;
                 let creds = Device::from_bytes(auth_response.creds);
                 fs::write(device_creds_path, creds.to_bytes())?;
@@ -114,17 +116,18 @@ impl Greenlight {
 
         let scheduler_auth = scheduler_unauth.authenticate(creds.clone()).await?;
 
-        let signer = Signer::new(seed.to_vec(), network, creds.clone()).unwrap();
+        let signer = Signer::new(seed.to_vec(), network, creds.clone())?;
 
         let mut node: gl_client::node::ClnClient = scheduler_auth.node().await?;
         let info = node
             .getinfo(GetinfoRequest::default())
             .await
             .map_err(|x| anyhow!(x.to_string()))?;
+
+        tracing::info!("Greenlight node started.");
         tracing::debug!("Info {:?}", info);
 
         let node = Arc::new(Mutex::new(node));
-        tracing::warn!("Node up");
 
         Ok(Self {
             signer,
@@ -174,6 +177,34 @@ impl Greenlight {
             Some(last_invoice) => Ok(last_invoice.pay_index),
             None => Ok(None),
         }
+    }
+
+    async fn check_pay_invoice_status(
+        &self,
+        bolt11: String,
+    ) -> Result<MeltQuoteState, cdk_lightning::Error> {
+        let mut cln_client = self.node.lock().await;
+        let cln_response = cln_client
+            .list_pays(ListpaysRequest {
+                bolt11: Some(bolt11),
+                payment_hash: None,
+                status: None,
+            })
+            .await
+            .map_err(|err| anyhow!("Could not list invoices: {}", err))?;
+
+        let pay = cln_response.into_inner().pays;
+
+        let state = match pay.first() {
+            Some(pay) => match pay.status() {
+                ListpaysPaysStatus::Complete => MeltQuoteState::Paid,
+                ListpaysPaysStatus::Pending => MeltQuoteState::Pending,
+                ListpaysPaysStatus::Failed => MeltQuoteState::Unpaid,
+            },
+            None => MeltQuoteState::Unpaid,
+        };
+
+        Ok(state)
     }
 }
 
@@ -268,14 +299,15 @@ impl MintLightning for Greenlight {
         partial_msats: Option<u64>,
         max_fee_msats: Option<u64>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let pay_state = self
+            .check_pay_invoice_status(melt_quote.request.to_string())
+            .await?;
+
         let mut cln_client = self.node.lock().await;
 
         let maxfee = max_fee_msats.map(|amount| Amount { msat: amount });
 
         let invoice = melt_quote.request.clone();
-
-        let pay_state =
-            check_pay_invoice_status(&mut cln_client, melt_quote.request.to_string()).await?;
 
         match pay_state {
             MeltQuoteState::Paid => {
@@ -398,31 +430,4 @@ fn cln_invoice_status_to_mint_state(status: ListinvoicesInvoicesStatus) -> MintQ
         ListinvoicesInvoicesStatus::Paid => MintQuoteState::Paid,
         ListinvoicesInvoicesStatus::Expired => MintQuoteState::Unpaid,
     }
-}
-
-async fn check_pay_invoice_status(
-    cln_client: &mut ClnClient,
-    bolt11: String,
-) -> Result<MeltQuoteState, cdk_lightning::Error> {
-    let cln_response = cln_client
-        .list_pays(ListpaysRequest {
-            bolt11: Some(bolt11),
-            payment_hash: None,
-            status: None,
-        })
-        .await
-        .map_err(|err| anyhow!("Could not list invoices: {}", err))?;
-
-    let pay = cln_response.into_inner().pays;
-
-    let state = match pay.first() {
-        Some(pay) => match pay.status() {
-            ListpaysPaysStatus::Complete => MeltQuoteState::Paid,
-            ListpaysPaysStatus::Pending => MeltQuoteState::Pending,
-            ListpaysPaysStatus::Failed => MeltQuoteState::Unpaid,
-        },
-        None => MeltQuoteState::Unpaid,
-    };
-
-    Ok(state)
 }

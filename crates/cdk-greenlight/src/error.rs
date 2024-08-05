@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// CLN Error
+/// Greenlight Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Invoice amount not defined
@@ -14,17 +14,9 @@ pub enum Error {
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
-    /// AnyHow Error
+    /// Anyhow Error
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
-    /*
-    /// Cln Error
-    #[error(transparent)]
-    Cln(#[from] cln_rpc::Error),
-    /// Cln Rpc Error
-    #[error(transparent)]
-    ClnRpc(#[from] cln_rpc::RpcError),
-    */
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {

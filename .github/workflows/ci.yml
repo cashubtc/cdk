@@ -34,6 +34,7 @@ jobs:
             -p cdk-sqlite,
             -p cdk-axum,
             -p cdk-cln,
+            -p cdk-greenlight,
             -p cdk-fake-wallet,
             -p cdk-strike,
             --bin cdk-cli,
