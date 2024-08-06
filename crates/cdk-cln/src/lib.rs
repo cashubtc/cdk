@@ -45,7 +45,7 @@ pub struct Cln {
 }
 
 impl Cln {
-    /// Create new ['Cln]
+    /// Create new [`Cln`]
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
@@ -144,7 +144,8 @@ impl MintLightning for Cln {
         Ok(PaymentQuoteResponse {
             request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
             amount,
-            fee,
+            fee: fee.into(),
+            state: MeltQuoteState::Unpaid,
         })
     }
 

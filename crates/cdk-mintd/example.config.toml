@@ -43,3 +43,7 @@ ln_backend = "cln"
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
+
+# [phoenixd]
+# api_password = ""
+# api_url = ""

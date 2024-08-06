@@ -380,7 +380,15 @@ impl Mint {
             amount,
             fee_reserve,
             expiry,
-            request_lookup_id,
+            request_lookup_id.clone(),
+        );
+
+        tracing::debug!(
+            "New melt quote {} for {} {} with request id {}",
+            quote.id,
+            amount,
+            unit,
+            request_lookup_id
         );
 
         self.localstore.add_melt_quote(quote.clone()).await?;

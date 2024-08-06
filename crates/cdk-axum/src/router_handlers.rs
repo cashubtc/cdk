@@ -158,7 +158,7 @@ pub async fn get_melt_bolt11_quote(
             payload.request.to_string(),
             payload.unit,
             payment_quote.amount,
-            payment_quote.fee.into(),
+            payment_quote.fee,
             unix_time() + state.quote_ttl,
             payment_quote.request_lookup_id,
         )
