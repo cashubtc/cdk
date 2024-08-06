@@ -98,7 +98,9 @@ impl Mint {
                         let keyset = MintKeySet::generate_from_xpriv(
                             &secp_ctx,
                             xpriv,
-                            highest_index_keyset.clone(),
+                            highest_index_keyset.max_order,
+                            highest_index_keyset.unit,
+                            highest_index_keyset.derivation_path.clone(),
                         );
                         active_keysets.insert(id, keyset);
                         let mut keyset_info = highest_index_keyset;
@@ -1156,7 +1158,13 @@ impl Mint {
     /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
     #[instrument(skip_all)]
     pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
-        MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
+        MintKeySet::generate_from_xpriv(
+            &self.secp_ctx,
+            self.xpriv,
+            keyset_info.max_order,
+            keyset_info.unit,
+            keyset_info.derivation_path,
+        )
     }
 
     /// Get the total amount issed by keyset
@@ -1295,4 +1303,165 @@ fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> DerivationPath {
         ChildNumber::from_hardened_idx(unit.derivation_index()).expect("0 is a valid index"),
         ChildNumber::from_hardened_idx(index).expect("0 is a valid index"),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::Network;
+    use secp256k1::Secp256k1;
+
+    use super::*;
+
+    #[test]
+    fn mint_mod_generate_keyset_from_seed() {
+        let seed = "test_seed".as_bytes();
+        let keyset = MintKeySet::generate_from_seed(
+            &Secp256k1::new(),
+            seed,
+            2,
+            CurrencyUnit::Sat,
+            derivation_path_from_unit(CurrencyUnit::Sat, 0),
+        );
+
+        assert_eq!(keyset.unit, CurrencyUnit::Sat);
+        assert_eq!(keyset.keys.len(), 2);
+
+        let expected_amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = vec![
+            (
+                Amount::from(1),
+                PublicKey::from_hex(
+                    "0257aed43bf2c1cdbe3e7ae2db2b27a723c6746fc7415e09748f6847916c09176e",
+                )
+                .unwrap(),
+            ),
+            (
+                Amount::from(2),
+                PublicKey::from_hex(
+                    "03ad95811e51adb6231613f9b54ba2ba31e4442c9db9d69f8df42c2b26fbfed26e",
+                )
+                .unwrap(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = keyset
+            .keys
+            .iter()
+            .map(|(amount, pair)| (*amount, pair.public_key))
+            .collect();
+
+        assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
+    }
+
+    #[test]
+    fn mint_mod_generate_keyset_from_xpriv() {
+        let seed = "test_seed".as_bytes();
+        let network = Network::Bitcoin;
+        let xpriv = ExtendedPrivKey::new_master(network, seed).expect("Failed to create xpriv");
+        let keyset = MintKeySet::generate_from_xpriv(
+            &Secp256k1::new(),
+            xpriv,
+            2,
+            CurrencyUnit::Sat,
+            derivation_path_from_unit(CurrencyUnit::Sat, 0),
+        );
+
+        assert_eq!(keyset.unit, CurrencyUnit::Sat);
+        assert_eq!(keyset.keys.len(), 2);
+
+        let expected_amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = vec![
+            (
+                Amount::from(1),
+                PublicKey::from_hex(
+                    "0257aed43bf2c1cdbe3e7ae2db2b27a723c6746fc7415e09748f6847916c09176e",
+                )
+                .unwrap(),
+            ),
+            (
+                Amount::from(2),
+                PublicKey::from_hex(
+                    "03ad95811e51adb6231613f9b54ba2ba31e4442c9db9d69f8df42c2b26fbfed26e",
+                )
+                .unwrap(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = keyset
+            .keys
+            .iter()
+            .map(|(amount, pair)| (*amount, pair.public_key))
+            .collect();
+
+        assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
+    }
+
+    use cdk_database::mint_memory::MintMemoryDatabase;
+
+    #[tokio::test]
+    async fn mint_mod_new_mint() {
+        // mock DB settings
+        let active_keysets: HashMap<CurrencyUnit, Id> = HashMap::new();
+        let keysets: Vec<MintKeySetInfo> = Vec::new();
+        let mint_quotes: Vec<MintQuote> = Vec::new();
+        let melt_quotes: Vec<MeltQuote> = Vec::new();
+        let pending_proofs: Proofs = Proofs::new();
+        let spent_proofs: Proofs = Proofs::new();
+        let blinded_signatures: HashMap<[u8; 33], BlindSignature> = HashMap::new();
+
+        // Mock data
+        let mint_url = "http://example.com";
+        let seed = b"some_random_seed";
+        let mint_info = MintInfo::default();
+        let localstore = Arc::new(
+            MintMemoryDatabase::new(
+                active_keysets,
+                keysets,
+                mint_quotes,
+                melt_quotes,
+                pending_proofs,
+                spent_proofs,
+                blinded_signatures,
+            )
+            .unwrap(),
+        );
+        let supported_units: HashMap<CurrencyUnit, (u64, u8)> = HashMap::new();
+
+        // Instantiate a new Mint
+        let mint = Mint::new(mint_url, seed, mint_info, localstore, supported_units).await;
+
+        // Assert the mint was created successfully
+        assert!(mint.is_ok());
+        let mint = mint.unwrap();
+
+        assert_eq!(mint.get_mint_url().to_string(), "http://example.com");
+        let info = mint.mint_info();
+        assert!(info.name.is_none());
+        assert!(info.pubkey.is_none());
+        assert_eq!(
+            mint.pubkeys().await.unwrap(),
+            KeysResponse {
+                keysets: Vec::new()
+            }
+        );
+
+        assert_eq!(
+            mint.keysets().await.unwrap(),
+            KeysetResponse {
+                keysets: Vec::new()
+            }
+        );
+
+        assert_eq!(
+            mint.total_issued().await.unwrap(),
+            HashMap::<nut02::Id, Amount>::new()
+        );
+
+        assert_eq!(
+            mint.total_redeemed().await.unwrap(),
+            HashMap::<nut02::Id, Amount>::new()
+        );
+    }
 }
