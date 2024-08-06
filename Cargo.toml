@@ -34,6 +34,7 @@ cdk-sqlite = { version = "0.3", path = "./crates/cdk-sqlite", default-features =
 cdk-redb = { version = "0.3", path = "./crates/cdk-redb", default-features = false }
 cdk-cln = { version = "0.3", path = "./crates/cdk-cln", default-features = false }
 cdk-lnbits = { version = "0.3", path = "./crates/cdk-lnbits", default-features = false }
+cdk-phoenixd = { version = "0.3", path = "./crates/cdk-phoenixd", default-features = false }
 cdk-axum = { version = "0.3", path = "./crates/cdk-axum", default-features = false }
 cdk-fake-wallet = { version = "0.3", path = "./crates/cdk-fake-wallet", default-features = false }
 cdk-strike = { version = "0.3", path = "./crates/cdk-strike", default-features = false }

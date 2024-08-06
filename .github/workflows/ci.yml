@@ -34,10 +34,11 @@ jobs:
             -p cdk-sqlite,
             -p cdk-axum,
             -p cdk-cln,
-            -p cdk-fake-wallet,
+            -p cdk-phoenixd,
             -p cdk-strike,
             -p cdk-lnbits
             -p cdk-integration-tests,
+            -p cdk-fake-wallet,
             --bin cdk-cli,
             --bin cdk-mintd,
           ]
