@@ -5,6 +5,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     str::FromStr,
     sync::Arc,
 };
@@ -13,7 +14,7 @@ use async_trait::async_trait;
 use cdk::{
     cdk_database::{self, WalletDatabase},
     nuts::{
-        CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, Proofs, PublicKey, SecretKey,
+        CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SecretKey,
         SpendingConditions, State,
     },
     types::ProofInfo,
@@ -30,10 +31,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
 use url::Url;
 
-const TX_KIND: Kind = Kind::Custom(7375);
+const PROOFS_KIND: Kind = Kind::Custom(7375);
+const TX_HISTORY_KIND: Kind = Kind::Custom(7376);
 const WALLET_INFO_KIND: Kind = Kind::Custom(37375);
 const ID_TAG: char = 'd';
 const ID_LINK_TAG: char = 'a';
+const EVENT_TAG: char = 'e';
 const MINT_TAG: &str = "mint";
 const NAME_TAG: &str = "name";
 const UNIT_TAG: &str = "unit";
@@ -42,6 +45,8 @@ const RELAY_TAG: &str = "relay";
 const BALANCE_TAG: &str = "balance";
 const PRIVKEY_TAG: &str = "privkey";
 const COUNTER_TAG: &str = "counter";
+const DIRECTION_TAG: &str = "direction";
+const AMOUNT_TAG: &str = "amount";
 
 macro_rules! filter_value {
     ($($value:expr),*) => {
@@ -132,15 +137,15 @@ impl WalletNostrDatabase {
         self.info.lock().await.clone()
     }
 
-    /// Get tx infos
-    pub async fn get_txs(
+    /// Get [`TransactionEvent`]s
+    pub async fn get_transactions(
         &self,
         until: Option<Timestamp>,
         limit: Option<usize>,
-    ) -> Result<Vec<TxInfo>, Error> {
+    ) -> Result<Vec<TransactionEvent>, Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
-            kinds: filter_value!(TX_KIND),
+            kinds: filter_value!(TX_HISTORY_KIND),
             generic_tags: filter_value!(
                 SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
             ),
@@ -151,8 +156,8 @@ impl WalletNostrDatabase {
         let events = self.get_events(filters).await?;
         Ok(events
             .into_iter()
-            .map(|event| TxInfo::from_event(&event, &self.keys))
-            .collect::<Result<Vec<TxInfo>, Error>>()?)
+            .map(|event| TransactionEvent::from_event(&event, &self.keys))
+            .collect::<Result<Vec<TransactionEvent>, Error>>()?)
     }
 
     /// Refresh the latest [`WalletInfo`]
@@ -194,13 +199,13 @@ impl WalletNostrDatabase {
         self.save_event(info.to_event(&self.keys)?).await
     }
 
-    /// Save a [`TxInfo`]
-    pub async fn save_tx(&self, tx_info: TxInfo) -> Result<EventId, Error> {
-        let event = tx_info.to_event(&self.id, &self.keys)?;
+    /// Save a [`Transaction`]
+    pub async fn save_transaction(&self, tx: Transaction) -> Result<EventId, Error> {
+        let event = tx.to_event(&self.id, &self.keys)?;
         let id = event.id();
         self.save_event(event).await?;
         let mut info = self.info.lock().await;
-        tx_info.update_balance(info.balance.get_or_insert(Amount::ZERO));
+        tx.update_balance(info.balance.get_or_insert(Amount::ZERO));
         self.save_info_with_lock(&info).await?;
         Ok(id)
     }
@@ -341,6 +346,21 @@ impl WalletDatabase for WalletNostrDatabase {
     }
 
     async fn add_proofs(&self, proof_info: Vec<ProofInfo>) -> Result<(), Self::Err> {
+        let proofs = proof_info
+            .iter()
+            .into_group_map_by(|info| info.mint_url.clone());
+        for (mint_url, proofs) in proofs {
+            let event = ProofsEvent {
+                url: mint_url.clone(),
+                added: proofs.iter().map(|info| info.proof.clone()).collect(),
+                deleted: vec![],
+                reserved: vec![],
+            };
+            self.client
+                .send_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
+                .await
+                .map_err(|e| map_err(e.into()))?;
+        }
         self.wallet_db.add_proofs(proof_info).await
     }
 
@@ -571,40 +591,24 @@ impl WalletInfo {
     }
 }
 
-/// Tx info
+/// Proofs event
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TxInfo {
-    /// Inputs
-    pub inputs: Vec<TxInfoProofs>,
-    /// Outputs
-    pub outputs: Vec<TxInfoProofs>,
+pub struct ProofsEvent {
+    /// Mint url
+    pub url: UncheckedUrl,
+    /// Added proofs
+    #[serde(rename = "a")]
+    pub added: Proofs,
+    /// Deleted proofs
+    #[serde(rename = "d")]
+    pub deleted: Proofs,
+    /// Updated proofs
+    #[serde(rename = "u")]
+    pub reserved: Proofs,
 }
 
-impl TxInfo {
-    /// Create a new [`TxInfo`] from inputs and outputs of [`ProofInfo`]
-    pub fn new(inputs: Vec<ProofInfo>, outputs: Vec<ProofInfo>) -> Self {
-        let inputs = inputs
-            .into_iter()
-            .chunk_by(|proof| proof.mint_url.clone())
-            .into_iter()
-            .map(|(mint_url, chunk)| TxInfoProofs {
-                mint_url,
-                proofs: chunk.into_iter().map(|proof| proof.proof).collect(),
-            })
-            .collect();
-        let outputs = outputs
-            .into_iter()
-            .chunk_by(|proof| proof.mint_url.clone())
-            .into_iter()
-            .map(|(mint_url, chunk)| TxInfoProofs {
-                mint_url,
-                proofs: chunk.into_iter().map(|proof| proof.proof).collect(),
-            })
-            .collect();
-        Self { inputs, outputs }
-    }
-
-    /// Parses a [`TxInfo`] from an [`Event`]
+impl ProofsEvent {
+    /// Parses a [`ProofsEvent`] from an [`Event`]
     pub fn from_event(event: &Event, keys: &nostr_sdk::Keys) -> Result<Self, Error> {
         Ok(serde_json::from_str(&nip44::decrypt(
             keys.secret_key()?,
@@ -613,13 +617,13 @@ impl TxInfo {
         )?)?)
     }
 
-    /// Converts a [`TxInfo`] to an [`Event`]
+    /// Parses a [`ProofsEvent`] from an [`Event`]
     pub fn to_event(&self, wallet_id: &str, keys: &nostr_sdk::Keys) -> Result<Event, Error> {
         let mut tags = Vec::new();
         tags.push(wallet_link_tag(wallet_id, keys)?);
 
         let event = EventBuilder::new(
-            TX_KIND,
+            PROOFS_KIND,
             nip44::encrypt(
                 keys.secret_key()?,
                 &keys.public_key(),
@@ -630,29 +634,171 @@ impl TxInfo {
         );
         Ok(event.to_event(keys)?)
     }
+}
 
-    /// Update the provided balance [`Amount`]
-    pub fn update_balance(&self, balance: &mut Amount) {
-        for input in &self.inputs {
-            for proof in &input.proofs {
-                *balance -= proof.amount;
+/// Tx history
+pub struct Transaction {
+    /// Direction (in for received, out for sent)
+    pub direction: Direction,
+    /// Amount
+    pub amount: Amount,
+    /// Event ID of proofs update
+    pub event_id: Option<EventId>,
+    /// Relay URL
+    pub relay: Option<Url>,
+}
+
+impl Transaction {
+    /// Parses a [`TxHistory`] from an [`Event`]
+    pub fn from_event(event: &Event, keys: &nostr_sdk::Keys) -> Result<Self, Error> {
+        let mut direction: Option<Direction> = None;
+        let mut amount: Option<Amount> = None;
+        let mut event_id: Option<EventId> = None;
+        let mut relay: Option<Url> = None;
+
+        let content: Vec<Tag> = serde_json::from_str(&nip44::decrypt(
+            keys.secret_key()?,
+            &keys.public_key(),
+            &event.content,
+        )?)?;
+        let mut tags = Vec::new();
+        tags.extend(event.tags().to_vec());
+        tags.extend(content);
+        for tag in tags {
+            match tag.kind().to_string().as_str() {
+                DIRECTION_TAG => {
+                    direction = Some(Direction::from_str(
+                        tag.content()
+                            .ok_or(Error::EmptyTag(DIRECTION_TAG.to_string()))?,
+                    )?);
+                }
+                AMOUNT_TAG => {
+                    amount = Some(Amount::from(
+                        tag.content()
+                            .ok_or(Error::EmptyTag(AMOUNT_TAG.to_string()))?
+                            .parse::<u64>()?,
+                    ));
+                }
+                t => {
+                    if t == EVENT_TAG.to_string().as_str() {
+                        let mut parts = tag.as_vec().into_iter();
+                        event_id = Some(EventId::from_str(
+                            parts.next().ok_or(Error::EmptyTag(EVENT_TAG.to_string()))?,
+                        )?);
+                        relay = match parts.next() {
+                            Some(relay) => {
+                                Some(Url::from_str(relay).map_err(cdk::url::Error::Url)?)
+                            }
+                            None => None,
+                        };
+                    }
+                }
             }
         }
-        for output in &self.outputs {
-            for proof in &output.proofs {
-                *balance += proof.amount;
+
+        Ok(Self {
+            direction: direction.ok_or(Error::MissingTag(DIRECTION_TAG.to_string()))?,
+            amount: amount.ok_or(Error::MissingTag(AMOUNT_TAG.to_string()))?,
+            event_id,
+            relay,
+        })
+    }
+
+    /// Converts a [`TxHistory`] to an [`Event`]
+    pub fn to_event(&self, wallet_id: &str, keys: &nostr_sdk::Keys) -> Result<Event, Error> {
+        let mut content = Vec::new();
+        content.push(Tag::parse(&[DIRECTION_TAG, &self.direction.to_string()])?);
+        content.push(Tag::parse(&[AMOUNT_TAG, &self.amount.to_string()])?);
+        if let Some(event_id) = &self.event_id {
+            match self.relay.as_ref() {
+                Some(relay) => {
+                    content.push(Tag::parse(&[
+                        &EVENT_TAG.to_string(),
+                        &event_id.to_string(),
+                        &relay.to_string(),
+                    ])?);
+                }
+                None => {
+                    content.push(Tag::parse(&[
+                        &EVENT_TAG.to_string(),
+                        &event_id.to_string(),
+                    ])?);
+                }
             }
+        }
+
+        let mut tags = Vec::new();
+        tags.push(wallet_link_tag(wallet_id, keys)?);
+
+        let event = EventBuilder::new(
+            TX_HISTORY_KIND,
+            nip44::encrypt(
+                keys.secret_key()?,
+                &keys.public_key(),
+                serde_json::to_string(&content)?,
+                nip44::Version::V2,
+            )?,
+            tags,
+        );
+        Ok(event.to_event(keys)?)
+    }
+
+    fn update_balance(&self, balance: &mut Amount) {
+        match self.direction {
+            Direction::Incoming => *balance += self.amount,
+            Direction::Outgoing => *balance -= self.amount,
         }
     }
 }
 
-/// Tx info proofs
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TxInfoProofs {
-    /// Mint url
-    pub mint_url: UncheckedUrl,
-    /// Proofs
-    pub proofs: Vec<Proof>,
+/// Direction of the transaction
+pub enum Direction {
+    /// Incoming (received)
+    Incoming,
+    /// Outgoing (sent)
+    Outgoing,
+}
+
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Direction::Incoming => write!(f, "in"),
+            Direction::Outgoing => write!(f, "out"),
+        }
+    }
+}
+
+impl FromStr for Direction {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "in" => Ok(Direction::Incoming),
+            "out" => Ok(Direction::Outgoing),
+            _ => Err(Error::TagParse("direction".to_string())),
+        }
+    }
+}
+
+/// Transaction event
+pub struct TransactionEvent {
+    /// Event ID
+    pub event_id: EventId,
+    /// Created at
+    pub created_at: Timestamp,
+    /// Transaction
+    pub tx: Transaction,
+}
+
+impl TransactionEvent {
+    /// Parses a [`TransactionEvent`] from an [`Event`]
+    pub fn from_event(event: &Event, keys: &nostr_sdk::Keys) -> Result<Self, Error> {
+        Ok(Self {
+            event_id: event.id(),
+            created_at: event.created_at(),
+            tx: Transaction::from_event(event, keys)?,
+        })
+    }
 }
 
 fn wallet_link_tag(wallet_id: &str, keys: &nostr_sdk::Keys) -> Result<Tag, Error> {
@@ -681,6 +827,9 @@ pub enum Error {
     /// Event builder error
     #[error(transparent)]
     EventBuilder(#[from] nostr_sdk::event::builder::Error),
+    /// Event id error
+    #[error(transparent)]
+    EventId(#[from] nostr_sdk::event::id::Error),
     /// Json error
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -711,6 +860,9 @@ pub enum Error {
     /// Tag not found error
     #[error("Tag not found: {0}")]
     TagNotFound(String),
+    /// Tag parse error
+    #[error("Tag parse error: {0}")]
+    TagParse(String),
     /// Url parse error
     #[error(transparent)]
     UrlParse(#[from] cdk::url::Error),
