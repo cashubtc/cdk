@@ -65,7 +65,7 @@ impl HttpClient {
         accept_invalid_certs: bool,
     ) -> Result<Self, Error> {
         let regex = host_matcher
-            .map(|host| regex::Regex::new(&host))
+            .map(|host| regex::Regex::new(host))
             .transpose()
             .map_err(|e| Error::Custom(e.to_string()))?;
         let client = reqwest::Client::builder()
