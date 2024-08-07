@@ -52,6 +52,8 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml','**/Cargo.lock') }}
+    - name: Install protobuf
+      run: sudo apt-get install -y protobuf-compiler
     - name: Set default toolchain
       run: rustup default ${{ matrix.rust.version }}
     - name: Set profile
