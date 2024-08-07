@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
             None,
         );
         if let Some(proxy_url) = args.nws_proxy.as_ref() {
-            wallet.set_client(HttpClient::with_nws_proxy(proxy_url.clone())?);
+            wallet.set_client(HttpClient::with_proxy(proxy_url.clone(), None, true)?);
         }
 
         wallets.push(wallet);

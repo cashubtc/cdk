@@ -12,7 +12,7 @@ pub struct MintInfoSubcommand {
 
 pub async fn mint_info(proxy: Option<Url>, sub_command_args: &MintInfoSubcommand) -> Result<()> {
     let client = match proxy {
-        Some(proxy) => HttpClient::with_nws_proxy(proxy)?,
+        Some(proxy) => HttpClient::with_proxy(proxy, None, true)?,
         None => HttpClient::new(),
     };
 
