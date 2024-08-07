@@ -36,6 +36,7 @@
 - cdk-cli: Receive will add wallet when receiving if mint is unknown ([thesimplekid]).
 - cdk(cdk-database/mint): Rename `get_blinded_signatures` to `get_blind_signatures` ([thesimplekid]).
 - cdk(cdk-database/mint):rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
+- cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
@@ -53,6 +54,7 @@
 - cdk(mint): On `swap` verify correct number of sigs on outputs when `SigAll` ([thesimplekid]).
 - cdk(mint): Use amount in payment_quote response from ln backend ([thesimplekid]).
 - cdk(mint): Create new keysets for added supported units ([thesimplekid]).
+- cdk(mint): If there is an error in swap proofs should be reset to unspent ([thesimplekid]).
 
 ### Removed
 - cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).
@@ -104,3 +106,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 <!-- Contributors -->
 [thesimplekid]: https://github.com/thesimplekid
 [davidcaseria]: https://github.com/davidcaseria
+[vnprc]: https://github.com/vnprc

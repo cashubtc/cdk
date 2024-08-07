@@ -75,6 +75,11 @@ impl Wallet {
         }
     }
 
+    /// Change HTTP client
+    pub fn set_client(&mut self, client: HttpClient) {
+        self.client = client;
+    }
+
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
@@ -711,13 +716,13 @@ impl Wallet {
                     .unwrap()
                     .len();
 
-                let fee_to_redeam = self
+                let fee_to_redeem = self
                     .get_keyset_count_fee(&active_keyset_id, split_count as u64)
                     .await?;
 
                 (
-                    amount.map(|a| a + fee_to_redeam),
-                    change_amount - fee_to_redeam,
+                    amount.map(|a| a + fee_to_redeem),
+                    change_amount - fee_to_redeem,
                 )
             }
             false => (amount, change_amount),
@@ -1029,10 +1034,42 @@ impl Wallet {
                 (acc1, acc2)
             },
         );
+        let available_proofs = if proofs_sum < amount {
+            match &conditions {
+                Some(conditions) => {
+                    let available_proofs = self
+                        .localstore
+                        .get_proofs(
+                            Some(mint_url.clone()),
+                            Some(*unit),
+                            Some(vec![State::Unspent]),
+                            None,
+                        )
+                        .await?;
 
-        if proofs_sum < amount {
-            return Err(Error::InsufficientFunds);
-        }
+                    let available_proofs = available_proofs.into_iter().map(|p| p.proof).collect();
+
+                    let proofs_to_swap =
+                        self.select_proofs_to_swap(amount, available_proofs).await?;
+
+                    let proofs_with_conditions = self
+                        .swap(
+                            Some(amount),
+                            SplitTarget::default(),
+                            proofs_to_swap,
+                            Some(conditions.clone()),
+                            include_fees,
+                        )
+                        .await?;
+                    proofs_with_conditions.ok_or(Error::InsufficientFunds)?
+                }
+                None => {
+                    return Err(Error::InsufficientFunds);
+                }
+            }
+        } else {
+            available_proofs
+        };
 
         let selected = self
             .select_proofs_to_send(amount, available_proofs, include_fees)

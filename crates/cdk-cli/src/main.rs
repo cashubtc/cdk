@@ -7,6 +7,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
+use cdk::wallet::client::HttpClient;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk_nostr::WalletNostrDatabase;
 use cdk_redb::WalletRedbDatabase;
@@ -16,6 +17,7 @@ use nostr_sdk::{Keys, SecretKey, Url};
 use rand::Rng;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
 mod sub_commands;
 
@@ -43,6 +45,9 @@ struct Cli {
     /// Logging level
     #[arg(short, long, default_value = "error")]
     log_level: Level,
+    /// NWS Proxy
+    #[arg(short, long)]
+    proxy: Option<Url>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -172,13 +177,16 @@ async fn main() -> Result<()> {
     let mints = localstore.get_mints().await?;
 
     for (mint, _) in mints {
-        let wallet = Wallet::new(
+        let mut wallet = Wallet::new(
             &mint.to_string(),
             cdk::nuts::CurrencyUnit::Sat,
             localstore.clone(),
             &mnemonic.to_seed_normalized(""),
             None,
         );
+        if let Some(proxy_url) = args.proxy.as_ref() {
+            wallet.set_client(HttpClient::with_proxy(proxy_url.clone(), None, true)?);
+        }
 
         wallets.push(wallet);
     }
@@ -209,7 +217,7 @@ async fn main() -> Result<()> {
             sub_commands::check_spent::check_spent(&multi_mint_wallet).await
         }
         Commands::MintInfo(sub_command_args) => {
-            sub_commands::mint_info::mint_info(sub_command_args).await
+            sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
             sub_commands::mint::mint(

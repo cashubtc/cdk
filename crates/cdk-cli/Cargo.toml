@@ -27,3 +27,4 @@ tracing-subscriber.workspace = true
 rand.workspace = true
 home.workspace = true
 nostr-sdk.workspace = true
+url.workspace = true
