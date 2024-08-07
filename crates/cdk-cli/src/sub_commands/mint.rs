@@ -7,11 +7,13 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::url::UncheckedUrl;
+use cdk::wallet::client::HttpClient;
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk::Amount;
 use clap::Args;
 use tokio::time::sleep;
+use url::Url;
 
 #[derive(Args)]
 pub struct MintSubCommand {
@@ -28,12 +30,13 @@ pub async fn mint(
     multi_mint_wallet: &MultiMintWallet,
     seed: &[u8],
     localstore: Arc<dyn WalletDatabase<Err = Error> + Sync + Send>,
+    proxy: Option<Url>,
     sub_command_args: &MintSubCommand,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
 
-    let wallet = match multi_mint_wallet
+    let mut wallet = match multi_mint_wallet
         .get_wallet(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
         .await
     {
@@ -45,6 +48,9 @@ pub async fn mint(
             wallet
         }
     };
+    if let Some(proxy) = proxy {
+        wallet.set_client(HttpClient::with_proxy(proxy, None, true)?);
+    }
 
     let quote = wallet
         .mint_quote(Amount::from(sub_command_args.amount))

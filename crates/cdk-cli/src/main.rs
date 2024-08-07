@@ -223,6 +223,7 @@ async fn main() -> Result<()> {
                 &multi_mint_wallet,
                 &mnemonic.to_seed_normalized(""),
                 localstore,
+                args.proxy,
                 sub_command_args,
             )
             .await
