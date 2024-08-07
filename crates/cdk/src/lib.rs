@@ -21,6 +21,8 @@ pub mod util;
 pub mod wallet;
 
 #[doc(hidden)]
+pub use bitcoin;
+#[doc(hidden)]
 pub use bitcoin::secp256k1;
 #[doc(hidden)]
 pub use lightning_invoice::{self, Bolt11Invoice};

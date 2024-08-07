@@ -68,8 +68,8 @@ impl Greenlight {
             _ => bail!("Unsupported network"),
         };
 
-        let device_cert_path = work_dir.join("device_cert");
-        let device_key_path = work_dir.join("device_key");
+        let device_cert_path = work_dir.join("client.crt");
+        let device_key_path = work_dir.join("client-key.pem");
 
         let device_creds_path = work_dir.join("device_creds");
 
@@ -97,7 +97,7 @@ impl Greenlight {
 
         let creds = match fs::metadata(&device_creds_path) {
             Ok(_) => {
-                tracing::info!("Node has already been regeisted.");
+                tracing::info!("Node has already been registered.");
                 tracing::info!("Authenticating from device file.");
                 let bytes = fs::read(device_creds_path)?;
                 Device::from_bytes(bytes)
