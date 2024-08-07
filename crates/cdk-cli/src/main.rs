@@ -17,7 +17,6 @@ use nostr_sdk::{Keys, SecretKey, Url};
 use rand::Rng;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-use url::Url;
 
 mod sub_commands;
 
