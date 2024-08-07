@@ -44,7 +44,7 @@ struct Cli {
     /// Logging level
     #[arg(short, long, default_value = "error")]
     log_level: Level,
-    /// NWS Proxy
+    /// Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
     #[command(subcommand)]

@@ -68,17 +68,19 @@ impl HttpClient {
             .map(regex::Regex::new)
             .transpose()
             .map_err(|e| Error::Custom(e.to_string()))?;
-        let client = reqwest::Client::builder()
-            .proxy(reqwest::Proxy::custom(move |url| {
-                if let Some(matcher) = regex.as_ref() {
-                    if let Some(host) = url.host_str() {
-                        if matcher.is_match(host) {
-                            return Some(proxy.clone());
-                        }
-                    }
-                }
-                None
-            }))
+        let mut builder = reqwest::Client::builder();
+        match regex {
+            Some(matcher) => {
+                builder = builder.proxy(reqwest::Proxy::custom(move |url| match url.host_str() {
+                    Some(host) if matcher.is_match(host) => Some(proxy.clone()),
+                    _ => None,
+                }));
+            }
+            None => {
+                builder = builder.proxy(reqwest::Proxy::all(proxy.clone())?);
+            }
+        }
+        let client = builder
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
             .build()?;
 
