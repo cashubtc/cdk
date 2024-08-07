@@ -48,6 +48,7 @@ uuid = { version = "1", features = ["v4"] }
 lightning-invoice = { version = "0.31", features = ["serde"] }
 home = "0.5.9"
 rand = "0.8.5"
+url = "2.3"
 
 [profile]
 

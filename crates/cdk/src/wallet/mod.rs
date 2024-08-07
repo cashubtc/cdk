@@ -75,6 +75,11 @@ impl Wallet {
         }
     }
 
+    /// Change HTTP client
+    pub fn set_client(&mut self, client: HttpClient) {
+        self.client = client;
+    }
+
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {

@@ -56,6 +56,35 @@ impl HttpClient {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Create new [`HttpClient`] with a proxy for specific TLDs.
+    /// Specifying `None` for `host_matcher` will use the proxy for all requests.
+    pub fn with_proxy(
+        proxy: Url,
+        host_matcher: Option<&str>,
+        accept_invalid_certs: bool,
+    ) -> Result<Self, Error> {
+        let regex = host_matcher
+            .map(regex::Regex::new)
+            .transpose()
+            .map_err(|e| Error::Custom(e.to_string()))?;
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::custom(move |url| {
+                if let Some(matcher) = regex.as_ref() {
+                    if let Some(host) = url.host_str() {
+                        if matcher.is_match(host) {
+                            return Some(proxy.clone());
+                        }
+                    }
+                }
+                None
+            }))
+            .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
+            .build()?;
+
+        Ok(Self { inner: client })
+    }
+
     /// Get Active Mint Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
