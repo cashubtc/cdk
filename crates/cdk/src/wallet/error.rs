@@ -7,6 +7,8 @@ use thiserror::Error;
 use crate::cdk_database;
 use crate::error::{ErrorCode, ErrorResponse};
 
+use super::multi_mint_wallet::WalletKey;
+
 /// Wallet Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -76,9 +78,9 @@ pub enum Error {
     UnknownErrorResponse(String),
     /// Unknown Wallet
     #[error("Unknown Wallet: `{0}`")]
-    UnknownWallet(String),
-    /// Unknown Wallet
-    #[error("Unknown Wallet: `{0}`")]
+    UnknownWallet(WalletKey),
+    /// Incorrect Wallet
+    #[error("Incorrect Wallet: `{0}`")]
     IncorrectWallet(String),
     /// Max Fee Ecxeded
     #[error("Max fee exceeded")]
