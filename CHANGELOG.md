@@ -35,8 +35,10 @@
 - cdk(cdk-database/wallet): Change `get_proofs` to return `Vec<ProofInfo>` instead of `Option<Vec<ProofInfo>>` ([thesimplekid]).
 - cdk-cli: Receive will add wallet when receiving if mint is unknown ([thesimplekid]).
 - cdk(cdk-database/mint): Rename `get_blinded_signatures` to `get_blind_signatures` ([thesimplekid]).
-- cdk(cdk-database/mint):rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
+- cdk(cdk-database/mint): Rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
 - cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
+- cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnrpc]).
+- cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
