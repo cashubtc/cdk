@@ -129,7 +129,7 @@ impl MultiMintWallet {
         let wallet = self
             .get_wallet(wallet_key)
             .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         wallet
             .send(
@@ -153,7 +153,7 @@ impl MultiMintWallet {
         let wallet = self
             .get_wallet(wallet_key)
             .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         wallet.mint_quote(amount).await
     }
@@ -171,7 +171,7 @@ impl MultiMintWallet {
                 let wallet = self
                     .get_wallet(&wallet_key)
                     .await
-                    .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+                    .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
                 let amount = wallet.check_all_mint_quotes().await?;
                 amount_minted.insert(wallet.unit, amount);
@@ -202,7 +202,7 @@ impl MultiMintWallet {
         let wallet = self
             .get_wallet(wallet_key)
             .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
         wallet
             .mint(quote_id, SplitTarget::default(), conditions)
             .await
@@ -228,14 +228,14 @@ impl MultiMintWallet {
         for (mint_url, proofs) in mint_proofs {
             let wallet_key = WalletKey::new(mint_url.clone(), unit);
             if !self.has(&wallet_key).await {
-                return Err(Error::UnknownWallet(wallet_key.to_string()));
+                return Err(Error::UnknownWallet(wallet_key.clone()));
             }
 
             let wallet_key = WalletKey::new(mint_url, unit);
             let wallet = self
                 .get_wallet(&wallet_key)
                 .await
-                .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+                .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
             let amount = wallet
                 .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
@@ -258,7 +258,7 @@ impl MultiMintWallet {
         let wallet = self
             .get_wallet(wallet_key)
             .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         let quote = wallet.melt_quote(bolt11.to_string(), None).await?;
         if let Some(max_fee) = max_fee {
@@ -276,7 +276,7 @@ impl MultiMintWallet {
         let wallet = self
             .get_wallet(wallet_key)
             .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         wallet.restore().await
     }
@@ -292,7 +292,7 @@ impl MultiMintWallet {
         let wallet = self
             .get_wallet(wallet_key)
             .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         wallet.verify_token_p2pk(token, conditions)
     }
@@ -307,7 +307,7 @@ impl MultiMintWallet {
         let wallet = self
             .get_wallet(wallet_key)
             .await
-            .ok_or(Error::UnknownWallet(wallet_key.to_string()))?;
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         wallet.verify_token_dleq(token).await
     }
