@@ -9,6 +9,8 @@ use std::array::TryFromSliceError;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "mint")]
+use bitcoin::bip32::DerivationPath;
+#[cfg(feature = "mint")]
 use bitcoin::bip32::{ChildNumber, ExtendedPrivKey};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -23,8 +25,6 @@ use thiserror::Error;
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
-#[cfg(feature = "mint")]
-use crate::mint::MintKeySetInfo;
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
 #[cfg(feature = "mint")]
@@ -324,18 +324,18 @@ impl MintKeySet {
     pub fn generate_from_seed<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         seed: &[u8],
-        info: MintKeySetInfo,
+        max_order: u8,
+        currency_unit: CurrencyUnit,
+        derivation_path: DerivationPath,
     ) -> Self {
         let xpriv =
             ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
-        let max_order = info.max_order;
-        let unit = info.unit;
         Self::generate(
             secp,
             xpriv
-                .derive_priv(secp, &info.derivation_path)
+                .derive_priv(secp, &derivation_path)
                 .expect("RNG busted"),
-            unit,
+            currency_unit,
             max_order,
         )
     }
@@ -344,16 +344,16 @@ impl MintKeySet {
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: ExtendedPrivKey,
-        info: MintKeySetInfo,
+        max_order: u8,
+        currency_unit: CurrencyUnit,
+        derivation_path: DerivationPath,
     ) -> Self {
-        let max_order = info.max_order;
-        let unit = info.unit;
         Self::generate(
             secp,
             xpriv
-                .derive_priv(secp, &info.derivation_path)
+                .derive_priv(secp, &derivation_path)
                 .expect("RNG busted"),
-            unit,
+            currency_unit,
             max_order,
         )
     }
