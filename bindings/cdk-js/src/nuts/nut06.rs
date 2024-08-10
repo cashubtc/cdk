@@ -77,6 +77,7 @@ impl JsMintInfo {
         description_long: Option<String>,
         contact: Option<Vec<JsContactInfo>>,
         nuts: JsValue,
+        mint_icon_url: Option<String>,
         motd: Option<String>,
     ) -> Result<JsMintInfo> {
         Ok(JsMintInfo {
@@ -89,6 +90,7 @@ impl JsMintInfo {
                 contact: contact
                     .map(|contacts| contacts.iter().map(|c| c.deref().clone()).collect()),
                 nuts: serde_wasm_bindgen::from_value(nuts).map_err(into_err)?,
+                mint_icon_url,
                 motd,
             },
         })
@@ -137,6 +139,12 @@ impl JsMintInfo {
     #[wasm_bindgen(getter)]
     pub fn nuts(&self) -> Result<JsValue> {
         serde_wasm_bindgen::to_value(&self.inner.nuts).map_err(into_err)
+    }
+
+    /// Get mint icon url
+    #[wasm_bindgen(getter)]
+    pub fn mint_icon_url(&self) -> Option<String> {
+        self.inner.mint_icon_url.clone()
     }
 
     /// Get motd
