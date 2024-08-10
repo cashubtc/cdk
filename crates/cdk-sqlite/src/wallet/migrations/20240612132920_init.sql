@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS mint (
     description_long TEXT,
     contact TEXT,
     nuts TEXT,
-    mint_icon_url TEXT,
     motd TEXT
 );
 
