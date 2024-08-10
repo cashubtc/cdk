@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
-use cdk::{Amount, UncheckedUrl};
+use cdk::Amount;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +16,7 @@ const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mel
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct V0MintQuote {
     pub id: String,
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     pub amount: Amount,
     pub unit: CurrencyUnit,
     pub request: String,
@@ -27,7 +28,7 @@ pub struct V0MintQuote {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct V1MintQuote {
     pub id: String,
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     pub amount: Amount,
     pub unit: CurrencyUnit,
     pub request: String,

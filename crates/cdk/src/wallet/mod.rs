@@ -17,6 +17,7 @@ use tracing::instrument;
 use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::{
     nut10, nut12, Conditions, CurrencyUnit, Id, KeySetInfo, Keys, Kind, MeltQuoteBolt11Response,
@@ -25,7 +26,6 @@ use crate::nuts::{
     State, SwapRequest,
 };
 use crate::types::{Melted, ProofInfo};
-use crate::url::UncheckedUrl;
 use crate::util::{hex, unix_time};
 use crate::{Amount, Bolt11Invoice, HttpClient, SECP256K1};
 
@@ -42,7 +42,7 @@ pub use types::{MeltQuote, MintQuote, SendKind};
 #[derive(Debug, Clone)]
 pub struct Wallet {
     /// Mint Url
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Unit
     pub unit: CurrencyUnit,
     /// Storage backend
@@ -66,7 +66,7 @@ impl Wallet {
             .expect("Could not create master key");
 
         Self {
-            mint_url: UncheckedUrl::from(mint_url),
+            mint_url: MintUrl::from(mint_url),
             unit,
             client: HttpClient::new(),
             localstore,
@@ -176,7 +176,7 @@ impl Wallet {
 
     /// Update Mint information and related entries in the event a mint changes its URL
     #[instrument(skip(self))]
-    pub async fn update_mint_url(&mut self, new_mint_url: UncheckedUrl) -> Result<(), Error> {
+    pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
         self.mint_url = new_mint_url.clone();
         // Where the mint_url is in the database it must be updated
         self.localstore
@@ -1506,7 +1506,7 @@ impl Wallet {
         p2pk_signing_keys: &[SecretKey],
         preimages: &[String],
     ) -> Result<Amount, Error> {
-        let mut received_proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
+        let mut received_proofs: HashMap<MintUrl, Proofs> = HashMap::new();
         let mint_url = &self.mint_url;
         // Add mint if it does not exist in the store
         if self

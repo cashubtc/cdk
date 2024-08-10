@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk::cdk_database::WalletDatabase;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
 };
 use cdk::types::ProofInfo;
-use cdk::url::UncheckedUrl;
 use cdk::util::unix_time;
 use cdk::wallet::MintQuote;
 use cdk::{cdk_database, wallet};
@@ -22,7 +22,11 @@ use tracing::instrument;
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
+use crate::wallet::migrations::migrate_01_to_02;
 
+mod migrations;
+
+// <Mint_url, Info>
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
 // <Mint_Url, Keyset_id>
 const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &[u8]> =
@@ -40,7 +44,7 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 
-const DATABASE_VERSION: u32 = 1;
+const DATABASE_VERSION: u32 = 2;
 
 /// Wallet Redb Database
 #[derive(Debug, Clone)]
@@ -82,6 +86,10 @@ impl WalletRedbDatabase {
                                 current_file_version = migrate_00_to_01(Arc::clone(&db))?;
                             }
 
+                            if current_file_version == 1 {
+                                current_file_version = migrate_01_to_02(Arc::clone(&db))?;
+                            }
+
                             if current_file_version != DATABASE_VERSION {
                                 tracing::warn!(
                                     "Database upgrade did not complete at {} current is {}",
@@ -90,6 +98,16 @@ impl WalletRedbDatabase {
                                 );
                                 return Err(Error::UnknownDatabaseVersion);
                             }
+
+                            let write_txn = db.begin_write()?;
+                            {
+                                let mut table = write_txn.open_table(CONFIG_TABLE)?;
+
+                                table
+                                    .insert("db_version", DATABASE_VERSION.to_string().as_str())?;
+                            }
+
+                            write_txn.commit()?;
                         }
                         Ordering::Equal => {
                             tracing::info!("Database is at current version {}", DATABASE_VERSION);
@@ -142,7 +160,7 @@ impl WalletDatabase for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn add_mint(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
@@ -166,7 +184,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -183,7 +201,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
@@ -199,7 +217,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
@@ -209,7 +227,7 @@ impl WalletDatabase for WalletRedbDatabase {
             .flatten()
             .map(|(mint, mint_info)| {
                 (
-                    UncheckedUrl::from_str(mint.value()).unwrap(),
+                    MintUrl::from_str(mint.value()).unwrap(),
                     serde_json::from_str(mint_info.value()).ok(),
                 )
             })
@@ -221,8 +239,8 @@ impl WalletDatabase for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn update_mint_url(
         &self,
-        old_mint_url: UncheckedUrl,
-        new_mint_url: UncheckedUrl,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
         // Update proofs table
         {
@@ -275,7 +293,7 @@ impl WalletDatabase for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn add_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
@@ -314,7 +332,7 @@ impl WalletDatabase for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
         let db = self.db.lock().await;
         let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
@@ -576,7 +594,7 @@ impl WalletDatabase for WalletRedbDatabase {
     #[instrument(skip_all)]
     async fn get_proofs(
         &self,
-        mint_url: Option<UncheckedUrl>,
+        mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
