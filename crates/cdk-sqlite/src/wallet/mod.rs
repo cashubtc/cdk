@@ -65,7 +65,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         mint_url: UncheckedUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
-        let (name, pubkey, version, description, description_long, contact, nuts, motd) =
+        let (name, pubkey, version, description, description_long, contact, nuts, mint_icon_url, motd) =
             match mint_info {
                 Some(mint_info) => {
                     let MintInfo {
@@ -76,6 +76,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                         description_long,
                         contact,
                         nuts,
+                        mint_icon_url,
                         motd,
                     } = mint_info;
 
@@ -87,17 +88,18 @@ impl WalletDatabase for WalletSqliteDatabase {
                         description_long,
                         contact.map(|c| serde_json::to_string(&c).ok()),
                         serde_json::to_string(&nuts).ok(),
+                        mint_icon_url,
                         motd,
                     )
                 }
-                None => (None, None, None, None, None, None, None, None),
+                None => (None, None, None, None, None, None, None, None, None),
             };
 
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint
-(mint_url, name, pubkey, version, description, description_long, contact, nuts, motd)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+(mint_url, name, pubkey, version, description, description_long, contact, nuts, mint_icon_url, motd)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(mint_url.to_string())
@@ -108,6 +110,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(description_long)
         .bind(contact)
         .bind(nuts)
+        .bind(mint_icon_url)
         .bind(motd)
         .execute(&self.pool)
         .await
@@ -727,6 +730,7 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
     let description_long: Option<String> = row.try_get("description_long").map_err(Error::from)?;
     let row_contact: Option<String> = row.try_get("contact").map_err(Error::from)?;
     let row_nuts: Option<String> = row.try_get("nuts").map_err(Error::from)?;
+    let mint_icon_url: Option<String> = row.try_get("mint_icon_url").map_err(Error::from)?;
     let motd: Option<String> = row.try_get("motd").map_err(Error::from)?;
 
     Ok(MintInfo {
@@ -739,6 +743,7 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
         nuts: row_nuts
             .and_then(|n| serde_json::from_str(&n).ok())
             .unwrap_or_default(),
+        mint_icon_url,
         motd,
     })
 }

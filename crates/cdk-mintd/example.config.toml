@@ -14,6 +14,7 @@ mnemonic = ""
 # description = "These are not real sats for testing only"
 # description_long = "A longer mint for testing"
 # motd = "Hello world"
+# mint_icon_url = "https://this-is-a-mint-icon-url.com/icon.png"
 # contact_email = "hello@cashu.me"
 # Nostr pubkey of mint (Hex)
 # contact_nostr_public_key = ""
