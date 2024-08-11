@@ -4,10 +4,9 @@ use std::num::ParseIntError;
 
 use thiserror::Error;
 
+use super::multi_mint_wallet::WalletKey;
 use crate::cdk_database;
 use crate::error::{ErrorCode, ErrorResponse};
-
-use super::multi_mint_wallet::WalletKey;
 
 /// Wallet Error
 #[derive(Debug, Error)]
