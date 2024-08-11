@@ -50,6 +50,7 @@
 - cdk(cdk-database/mint): Add `get_blinded_signatures_for_keyset` to get all blind signatures for a `keyset_id` ([thesimplekid]).
 - cdk(mint): Add `total_issued` and `total_redeamed` ([thesimplekid]).
 - cdk(cdk-database/mint) Add `get_proofs_by_keyset_id` ([thesimplekid]).
+- cdk(wallet/mint): Add `mint_icon_url` ([cjbeery24])
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
@@ -109,3 +110,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [thesimplekid]: https://github.com/thesimplekid
 [davidcaseria]: https://github.com/davidcaseria
 [vnprc]: https://github.com/vnprc
+[cjberry24]: https://github.com/cjbeery24

@@ -65,35 +65,44 @@ impl WalletDatabase for WalletSqliteDatabase {
         mint_url: UncheckedUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
-        let (name, pubkey, version, description, description_long, contact, nuts, mint_icon_url, motd) =
-            match mint_info {
-                Some(mint_info) => {
-                    let MintInfo {
-                        name,
-                        pubkey,
-                        version,
-                        description,
-                        description_long,
-                        contact,
-                        nuts,
-                        mint_icon_url,
-                        motd,
-                    } = mint_info;
+        let (
+            name,
+            pubkey,
+            version,
+            description,
+            description_long,
+            contact,
+            nuts,
+            mint_icon_url,
+            motd,
+        ) = match mint_info {
+            Some(mint_info) => {
+                let MintInfo {
+                    name,
+                    pubkey,
+                    version,
+                    description,
+                    description_long,
+                    contact,
+                    nuts,
+                    mint_icon_url,
+                    motd,
+                } = mint_info;
 
-                    (
-                        name,
-                        pubkey.map(|p| p.to_bytes().to_vec()),
-                        version.map(|v| serde_json::to_string(&v).ok()),
-                        description,
-                        description_long,
-                        contact.map(|c| serde_json::to_string(&c).ok()),
-                        serde_json::to_string(&nuts).ok(),
-                        mint_icon_url,
-                        motd,
-                    )
-                }
-                None => (None, None, None, None, None, None, None, None, None),
-            };
+                (
+                    name,
+                    pubkey.map(|p| p.to_bytes().to_vec()),
+                    version.map(|v| serde_json::to_string(&v).ok()),
+                    description,
+                    description_long,
+                    contact.map(|c| serde_json::to_string(&c).ok()),
+                    serde_json::to_string(&nuts).ok(),
+                    mint_icon_url,
+                    motd,
+                )
+            }
+            None => (None, None, None, None, None, None, None, None, None),
+        };
 
         sqlx::query(
             r#"
