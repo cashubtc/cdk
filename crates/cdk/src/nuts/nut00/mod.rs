@@ -8,6 +8,7 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
+use bitcoin::hashes::{sha256, Hash as _, HashEngine as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
@@ -21,6 +22,7 @@ use crate::nuts::nut12::BlindSignatureDleq;
 use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
+use crate::util::hex;
 use crate::Amount;
 
 pub mod token;
@@ -65,6 +67,9 @@ pub enum Error {
     /// NUT11 error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    /// Hex error
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
 }
 
 /// Blinded Message (also called `output`)
@@ -675,10 +680,51 @@ impl PartialOrd for PreMintSecrets {
     }
 }
 
+/// Transaction ID
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TransactionId([u8; 32]);
+
+impl TransactionId {
+    /// Create new [`TransactionId`]
+    pub fn new(proofs: Proofs) -> Result<Self, Error> {
+        let mut ys = proofs
+            .iter()
+            .map(|proof| proof.y())
+            .collect::<Result<Vec<PublicKey>, Error>>()?;
+        ys.sort();
+        let mut hasher = sha256::Hash::engine();
+        for y in ys {
+            hasher.input(&y.to_bytes());
+        }
+        let hash = sha256::Hash::from_engine(hasher);
+        Ok(Self(hash.to_byte_array()))
+    }
+
+    /// Get inner value
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for TransactionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", hex::encode(&self.0))
+    }
+}
+
+impl FromStr for TransactionId {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let bytes = hex::decode(value)?;
+        let mut array = [0u8; 32];
+        array.copy_from_slice(&bytes);
+        Ok(Self(array))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
 
     #[test]
@@ -692,6 +738,12 @@ mod tests {
         );
 
         assert_eq!(proof.len(), 2);
+
+        let transaction_id = TransactionId::new(proof).unwrap();
+        assert_eq!(
+            transaction_id.to_string(),
+            "dac0748828d855ac4bc0e0a008cbc4b02e7d4238af06d730461cc559a5ae24b1"
+        );
     }
 
     #[test]
