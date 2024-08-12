@@ -37,7 +37,7 @@
 - cdk(cdk-database/mint): Rename `get_blinded_signatures` to `get_blind_signatures` ([thesimplekid]).
 - cdk(cdk-database/mint): Rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
 - cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
-- cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnrpc]).
+- cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnprc]).
 - cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
 
 ### Added
@@ -113,4 +113,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [thesimplekid]: https://github.com/thesimplekid
 [davidcaseria]: https://github.com/davidcaseria
 [vnprc]: https://github.com/vnprc
-[cjberry24]: https://github.com/cjbeery24
+[cjbeery24]: https://github.com/cjbeery24
