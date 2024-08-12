@@ -335,4 +335,27 @@ mod tests {
             .unwrap()
         );
     }
+
+    #[test]
+    fn test_full_bhke() {
+        let message =
+            hex::decode("d341ee4871f1f889041e63cf0d3823c713eea6aff01e80f1719f08f9e5be98f6")
+                .unwrap();
+        let alice_sec: SecretKey =
+            SecretKey::from_hex("99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a")
+                .unwrap();
+
+        let (b, r) = blind_message(&message, Some(alice_sec.clone())).unwrap();
+
+        let bob_sec =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+
+        // C_
+        let signed = sign_message(&bob_sec, &b).unwrap();
+
+        let unblinded = unblind_message(&signed, &r, &bob_sec.public_key()).unwrap();
+
+        assert!(verify_message(&bob_sec, unblinded, &message).is_ok());
+    }
 }

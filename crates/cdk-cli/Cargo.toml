@@ -1,6 +1,6 @@
 [package]
 name = "cdk-cli"
-version = "0.2.0"
+version = { workspace = true }
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Cashu cli wallet built on CDK"

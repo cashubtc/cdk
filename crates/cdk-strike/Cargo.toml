@@ -1,6 +1,6 @@
 [package]
 name = "cdk-strike"
-version = "0.1.0"
+version = { workspace = true }
 edition = "2021"
 authors = ["CDK Developers"]
 homepage.workspace = true

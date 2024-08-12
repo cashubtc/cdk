@@ -1,6 +1,6 @@
 [package]
 name = "cdk"
-version = "0.2.0"
+version = { workspace = true }
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
@@ -77,6 +77,11 @@ required-features = ["wallet"]
 rand.workspace = true
 bip39.workspace = true
 anyhow.workspace = true
+criterion = "0.5.1"
+
+[[bench]]
+name = "dhke_benchmarks"
+harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bench)'] }
