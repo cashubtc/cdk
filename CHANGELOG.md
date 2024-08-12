@@ -50,7 +50,9 @@
 - cdk(cdk-database/mint): Add `get_blinded_signatures_for_keyset` to get all blind signatures for a `keyset_id` ([thesimplekid]).
 - cdk(mint): Add `total_issued` and `total_redeamed` ([thesimplekid]).
 - cdk(cdk-database/mint) Add `get_proofs_by_keyset_id` ([thesimplekid]).
-- cdk(wallet/mint): Add `mint_icon_url` ([cjbeery24])
+- cdk(wallet/mint): Add `mint_icon_url` ([cjbeery24]).
+- cdk: Add `MintUrl` that sanatizes mint url by removing trailing `/` ([cjbeery24]).
+
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
@@ -62,6 +64,7 @@
 ### Removed
 - cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).
 - cdk(cdk-database/mint): Remove `get_spent_proofs`, `get_spent_proofs_by_ys`,`get_pending_proofs`, `get_pending_proofs_by_ys`, and `remove_pending_proofs` ([thesimplekid]).
+- cdk: Remove `UncheckedUrl` in favor of `MintUrl` ([cjbeery24]).
 
 ## [v0.2.0]
 
