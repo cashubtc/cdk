@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Ok, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
@@ -370,20 +370,7 @@ async fn main() -> anyhow::Result<()> {
 /// Update mint quote when called for a paid invoice
 async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result<()> {
     tracing::debug!("Invoice with lookup id paid: {}", request_lookup_id);
-    if let Ok(Some(mint_quote)) = mint
-        .localstore
-        .get_mint_quote_by_request_lookup_id(request_lookup_id)
-        .await
-    {
-        tracing::debug!(
-            "Quote {} paid by lookup id {}",
-            mint_quote.id,
-            request_lookup_id
-        );
-        mint.localstore
-            .update_mint_quote_state(&mint_quote.id, cdk::nuts::MintQuoteState::Paid)
-            .await?;
-    }
+    mint.pay_mint_quote_for_request_id(request_lookup_id).await?;
     Ok(())
 }
 

@@ -286,6 +286,26 @@ impl Mint {
         Ok(())
     }
 
+    /// Flag mint quote as paid
+    #[instrument(skip_all)]
+    pub async fn pay_mint_quote_for_request_id(&self, request_lookup_id: &str) -> Result<(), Error>{
+        if let Ok(Some(mint_quote)) = self
+            .localstore
+            .get_mint_quote_by_request_lookup_id(request_lookup_id)
+            .await
+        {
+            tracing::debug!(
+                "Quote {} paid by lookup id {}",
+                mint_quote.id,
+                request_lookup_id
+            );
+            self.localstore
+                .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// New melt quote
     #[instrument(skip_all)]
     pub async fn new_melt_quote(
