@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::{Error, Proof, ProofV4, Proofs};
+use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, Id};
-use crate::url::UncheckedUrl;
 use crate::Amount;
 
 /// Token Enum
@@ -40,7 +40,7 @@ impl fmt::Display for Token {
 impl Token {
     /// Create new [`Token`]
     pub fn new(
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         proofs: Proofs,
         memo: Option<String>,
         unit: Option<CurrencyUnit>,
@@ -66,7 +66,7 @@ impl Token {
     }
 
     /// Proofs in [`Token`]
-    pub fn proofs(&self) -> HashMap<UncheckedUrl, Proofs> {
+    pub fn proofs(&self) -> HashMap<MintUrl, Proofs> {
         match self {
             Self::TokenV3(token) => token.proofs(),
             Self::TokenV4(token) => token.proofs(),
@@ -140,14 +140,14 @@ impl FromStr for Token {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenV3Token {
     /// Url of mint
-    pub mint: UncheckedUrl,
+    pub mint: MintUrl,
     /// [`Proofs`]
     pub proofs: Proofs,
 }
 
 impl TokenV3Token {
     /// Create new [`TokenV3Token`]
-    pub fn new(mint_url: UncheckedUrl, proofs: Proofs) -> Self {
+    pub fn new(mint_url: MintUrl, proofs: Proofs) -> Self {
         Self {
             mint: mint_url,
             proofs,
@@ -171,7 +171,7 @@ pub struct TokenV3 {
 impl TokenV3 {
     /// Create new [`Token`]
     pub fn new(
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         proofs: Proofs,
         memo: Option<String>,
         unit: Option<CurrencyUnit>,
@@ -190,8 +190,8 @@ impl TokenV3 {
         })
     }
 
-    fn proofs(&self) -> HashMap<UncheckedUrl, Proofs> {
-        let mut proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
+    fn proofs(&self) -> HashMap<MintUrl, Proofs> {
+        let mut proofs: HashMap<MintUrl, Proofs> = HashMap::new();
 
         for token in self.token.clone() {
             let mint_url = token.mint;
@@ -268,7 +268,7 @@ impl From<TokenV4> for TokenV3 {
 pub struct TokenV4 {
     /// Mint Url
     #[serde(rename = "m")]
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Token Unit
     #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
     pub unit: Option<CurrencyUnit>,
@@ -284,9 +284,9 @@ pub struct TokenV4 {
 
 impl TokenV4 {
     /// Proofs from token
-    pub fn proofs(&self) -> HashMap<UncheckedUrl, Proofs> {
+    pub fn proofs(&self) -> HashMap<MintUrl, Proofs> {
         let mint_url = &self.mint_url;
-        let mut proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
+        let mut proofs: HashMap<MintUrl, Proofs> = HashMap::new();
 
         for token in self.token.clone() {
             let mut mint_proofs = token
@@ -423,7 +423,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::UncheckedUrl;
+    use crate::mint_url::MintUrl;
 
     #[test]
     fn test_token_padding() {
@@ -445,7 +445,7 @@ mod tests {
 
         assert_eq!(
             token.mint_url,
-            UncheckedUrl::from_str("http://localhost:3338").unwrap()
+            MintUrl::from_str("http://localhost:3338").unwrap()
         );
         assert_eq!(
             token.token[0].keyset_id,
@@ -500,7 +500,7 @@ mod tests {
         let token = TokenV3::from_str(token_str).unwrap();
         assert_eq!(
             token.token[0].mint,
-            UncheckedUrl::from_str("https://8333.space:3338").unwrap()
+            MintUrl::from_str("https://8333.space:3338").unwrap()
         );
         assert_eq!(
             token.token[0].proofs[0].clone().keyset_id,

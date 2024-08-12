@@ -89,7 +89,7 @@ pub enum Error {
     Cashu(#[from] crate::error::Error),
     /// Cashu Url Error
     #[error(transparent)]
-    CashuUrl(#[from] crate::url::Error),
+    CashuUrl(#[from] crate::mint_url::Error),
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::cdk_database::Error),

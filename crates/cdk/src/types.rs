@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteState, Proof, Proofs, PublicKey, SpendingConditions, State,
 };
-use crate::url::UncheckedUrl;
 
 /// Melt response with proofs
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -27,7 +27,7 @@ pub struct ProofInfo {
     /// y
     pub y: PublicKey,
     /// Mint Url
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Proof State
     pub state: State,
     /// Proof Spending Conditions
@@ -40,7 +40,7 @@ impl ProofInfo {
     /// Create new [`ProofInfo`]
     pub fn new(
         proof: Proof,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         state: State,
         unit: CurrencyUnit,
     ) -> Result<Self, Error> {
@@ -63,7 +63,7 @@ impl ProofInfo {
     /// Check if [`Proof`] matches conditions
     pub fn matches_conditions(
         &self,
-        mint_url: &Option<UncheckedUrl>,
+        mint_url: &Option<MintUrl>,
         unit: &Option<CurrencyUnit>,
         state: &Option<Vec<State>>,
         spending_conditions: &Option<Vec<SpendingConditions>>,
