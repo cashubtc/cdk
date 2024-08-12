@@ -34,6 +34,9 @@ pub enum Error {
     /// CDK Database Error
     #[error(transparent)]
     CDKDatabase(#[from] cdk::cdk_database::Error),
+    /// CDK Mint Url Error
+    #[error(transparent)]
+    CDKMintUrl(#[from] cdk::mint_url::Error),
     /// CDK Error
     #[error(transparent)]
     CDK(#[from] cdk::error::Error),

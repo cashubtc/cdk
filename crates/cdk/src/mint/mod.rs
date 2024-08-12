@@ -14,9 +14,9 @@ use self::nut05::QuoteState;
 use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
+use crate::mint_url::MintUrl;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
-use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::Amount;
 
@@ -29,7 +29,7 @@ pub use types::{MeltQuote, MintQuote};
 #[derive(Clone)]
 pub struct Mint {
     /// Mint Url
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Mint Info
     pub mint_info: MintInfo,
     /// Mint Storage backend
@@ -154,7 +154,7 @@ impl Mint {
             }
         }
 
-        let mint_url = UncheckedUrl::from(mint_url);
+        let mint_url = MintUrl::from(mint_url);
 
         Ok(Self {
             mint_url,
@@ -168,13 +168,13 @@ impl Mint {
 
     /// Set Mint Url
     #[instrument(skip_all)]
-    pub fn set_mint_url(&mut self, mint_url: UncheckedUrl) {
+    pub fn set_mint_url(&mut self, mint_url: MintUrl) {
         self.mint_url = mint_url;
     }
 
     /// Get Mint Url
     #[instrument(skip_all)]
-    pub fn get_mint_url(&self) -> &UncheckedUrl {
+    pub fn get_mint_url(&self) -> &MintUrl {
         &self.mint_url
     }
 
@@ -194,7 +194,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn new_mint_quote(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         request: String,
         unit: CurrencyUnit,
         amount: Amount,

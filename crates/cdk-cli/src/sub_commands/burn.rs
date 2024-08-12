@@ -1,16 +1,17 @@
 use std::str::FromStr;
 
 use anyhow::Result;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::MultiMintWallet;
-use cdk::{Amount, UncheckedUrl};
+use cdk::Amount;
 use clap::Args;
 
 #[derive(Args)]
 pub struct BurnSubCommand {
     /// Mint Url
-    mint_url: Option<UncheckedUrl>,
+    mint_url: Option<MintUrl>,
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,

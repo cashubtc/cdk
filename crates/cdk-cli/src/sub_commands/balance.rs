@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::url::UncheckedUrl;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::Amount;
 
@@ -14,8 +14,8 @@ pub async fn balance(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
 pub async fn mint_balances(
     multi_mint_wallet: &MultiMintWallet,
     unit: &CurrencyUnit,
-) -> Result<Vec<(UncheckedUrl, Amount)>> {
-    let wallets: HashMap<UncheckedUrl, Amount> = multi_mint_wallet.get_balances(unit).await?;
+) -> Result<Vec<(MintUrl, Amount)>> {
+    let wallets: HashMap<MintUrl, Amount> = multi_mint_wallet.get_balances(unit).await?;
 
     let mut wallets_vec = Vec::with_capacity(wallets.capacity());
 

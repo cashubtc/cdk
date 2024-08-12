@@ -2,8 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
-use crate::{Amount, UncheckedUrl};
+use crate::Amount;
 
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,7 +12,7 @@ pub struct MintQuote {
     /// Quote id
     pub id: String,
     /// Mint Url
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Amount of quote
     pub amount: Amount,
     /// Unit of quote

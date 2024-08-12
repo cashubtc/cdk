@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::url::UncheckedUrl;
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::MultiMintWallet;
 use clap::Args;
@@ -10,7 +10,7 @@ use clap::Args;
 #[derive(Args)]
 pub struct RestoreSubCommand {
     /// Mint Url
-    mint_url: UncheckedUrl,
+    mint_url: MintUrl,
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,

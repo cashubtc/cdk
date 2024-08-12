@@ -6,11 +6,11 @@ use std::result::Result;
 
 use async_trait::async_trait;
 use cdk::cdk_database::WalletDatabase;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
 };
 use cdk::types::ProofInfo;
-use cdk::url::UncheckedUrl;
 use cdk::util::unix_time;
 use cdk::wallet::{MeltQuote, MintQuote};
 use rexie::*;
@@ -117,7 +117,7 @@ impl WalletDatabase for WalletRexieDatabase {
 
     async fn add_mint(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
@@ -141,7 +141,7 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
-    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -159,7 +159,7 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -178,7 +178,7 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(mint_info)
     }
 
-    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -192,7 +192,7 @@ impl WalletDatabase for WalletRexieDatabase {
             .await
             .map_err(Error::from)?;
 
-        let mints: HashMap<UncheckedUrl, Option<MintInfo>> = mints
+        let mints: HashMap<MintUrl, Option<MintInfo>> = mints
             .into_iter()
             .map(|(url, info)| {
                 (
@@ -207,8 +207,8 @@ impl WalletDatabase for WalletRexieDatabase {
 
     async fn update_mint_url(
         &self,
-        old_mint_url: UncheckedUrl,
-        new_mint_url: UncheckedUrl,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
         let proofs = self
             .get_proofs(Some(old_mint_url), None, None, None)
@@ -255,7 +255,7 @@ impl WalletDatabase for WalletRexieDatabase {
 
     async fn add_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
@@ -306,7 +306,7 @@ impl WalletDatabase for WalletRexieDatabase {
 
     async fn get_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
         let rexie = self.db.lock().await;
 
@@ -593,7 +593,7 @@ impl WalletDatabase for WalletRexieDatabase {
 
     async fn get_proofs(
         &self,
-        mint_url: Option<UncheckedUrl>,
+        mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,

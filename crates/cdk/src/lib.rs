@@ -12,10 +12,10 @@ pub mod dhke;
 pub mod error;
 #[cfg(feature = "mint")]
 pub mod mint;
+pub mod mint_url;
 pub mod nuts;
 pub mod secret;
 pub mod types;
-pub mod url;
 pub mod util;
 #[cfg(feature = "wallet")]
 pub mod wallet;
@@ -33,8 +33,6 @@ pub use wallet::Wallet;
 
 #[doc(hidden)]
 pub use self::amount::Amount;
-#[doc(hidden)]
-pub use self::url::UncheckedUrl;
 #[doc(hidden)]
 pub use self::util::SECP256K1;
 #[cfg(feature = "wallet")]

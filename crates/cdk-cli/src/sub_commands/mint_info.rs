@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cdk::url::UncheckedUrl;
+use cdk::mint_url::MintUrl;
 use cdk::HttpClient;
 use clap::Args;
 use url::Url;
@@ -7,7 +7,7 @@ use url::Url;
 #[derive(Args)]
 pub struct MintInfoSubcommand {
     /// Cashu Token
-    mint_url: UncheckedUrl,
+    mint_url: MintUrl,
 }
 
 pub async fn mint_info(proxy: Option<Url>, sub_command_args: &MintInfoSubcommand) -> Result<()> {
