@@ -1400,41 +1400,52 @@ mod tests {
 
     use cdk_database::mint_memory::MintMemoryDatabase;
 
-    #[tokio::test]
-    async fn mint_mod_new_mint() {
-        // mock DB settings
-        let active_keysets: HashMap<CurrencyUnit, Id> = HashMap::new();
-        let keysets: Vec<MintKeySetInfo> = Vec::new();
-        let mint_quotes: Vec<MintQuote> = Vec::new();
-        let melt_quotes: Vec<MeltQuote> = Vec::new();
-        let pending_proofs: Proofs = Proofs::new();
-        let spent_proofs: Proofs = Proofs::new();
-        let blinded_signatures: HashMap<[u8; 33], BlindSignature> = HashMap::new();
+    #[derive(Default)]
+    struct MintConfig<'a> {
+        active_keysets: HashMap<CurrencyUnit, Id>,
+        keysets: Vec<MintKeySetInfo>,
+        mint_quotes: Vec<MintQuote>,
+        melt_quotes: Vec<MeltQuote>,
+        pending_proofs: Proofs,
+        spent_proofs: Proofs,
+        blinded_signatures: HashMap<[u8; 33], BlindSignature>,
+        mint_url: &'a str,
+        seed: &'a [u8],
+        mint_info: MintInfo,
+        supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    }
 
-        // Mock data
-        let mint_url = "http://example.com";
-        let seed = b"some_random_seed";
-        let mint_info = MintInfo::default();
+    async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
         let localstore = Arc::new(
             MintMemoryDatabase::new(
-                active_keysets,
-                keysets,
-                mint_quotes,
-                melt_quotes,
-                pending_proofs,
-                spent_proofs,
-                blinded_signatures,
+                config.active_keysets,
+                config.keysets,
+                config.mint_quotes,
+                config.melt_quotes,
+                config.pending_proofs,
+                config.spent_proofs,
+                config.blinded_signatures,
             )
             .unwrap(),
         );
-        let supported_units: HashMap<CurrencyUnit, (u64, u8)> = HashMap::new();
 
-        // Instantiate a new Mint
-        let mint = Mint::new(mint_url, seed, mint_info, localstore, supported_units).await;
+        Mint::new(
+            config.mint_url,
+            config.seed,
+            config.mint_info,
+            localstore,
+            config.supported_units,
+        )
+        .await
+    }
 
-        // Assert the mint was created successfully
-        assert!(mint.is_ok());
-        let mint = mint.unwrap();
+    #[tokio::test]
+    async fn mint_mod_new_mint() -> Result<(), Error> {
+        let config = MintConfig::<'_> {
+            mint_url: "http://example.com",
+            ..Default::default()
+        };
+        let mint = create_mint(config).await?;
 
         assert_eq!(mint.get_mint_url().to_string(), "http://example.com");
         let info = mint.mint_info();
@@ -1463,5 +1474,7 @@ mod tests {
             mint.total_redeemed().await.unwrap(),
             HashMap::<nut02::Id, Amount>::new()
         );
+
+        Ok(())
     }
 }
