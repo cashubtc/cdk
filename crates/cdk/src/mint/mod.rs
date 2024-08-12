@@ -1004,83 +1004,18 @@ impl Mint {
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         tracing::debug!("Processing melt quote: {}", melt_request.quote);
+
         let quote = self
             .localstore
             .get_melt_quote(&melt_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if let Some(outputs) = &melt_request.outputs {
-            let blinded_messages: Vec<PublicKey> =
-                outputs.iter().map(|b| b.blinded_secret).collect();
-
-            if self
-                .localstore
-                .get_blind_signatures(&blinded_messages)
-                .await?
-                .iter()
-                .flatten()
-                .next()
-                .is_some()
-            {
-                tracing::info!("Output has already been signed",);
-
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
-        }
-
-        let mut change = None;
-
-        if let Some(outputs) = melt_request.outputs.clone() {
-            let change_target = melt_request.proofs_amount() - total_spent;
-            let mut amounts = change_target.split();
-            let mut change_sigs = Vec::with_capacity(amounts.len());
-
-            if outputs.len().lt(&amounts.len()) {
-                tracing::debug!(
-                    "Providing change requires {} blinded messages, but only {} provided",
-                    amounts.len(),
-                    outputs.len()
-                );
-
-                // In the case that not enough outputs are provided to return all change
-                // Reverse sort the amounts so that the most amount of change possible is
-                // returned. The rest is burnt
-                amounts.sort_by(|a, b| b.cmp(a));
-            }
-
-            let mut outputs = outputs;
-
-            for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
-                blinded_message.amount = *amount;
-
-                let blinded_signature = self.blind_sign(blinded_message).await?;
-                change_sigs.push(blinded_signature)
-            }
-
-            self.localstore
-                .add_blind_signatures(
-                    &outputs[0..change_sigs.len()]
-                        .iter()
-                        .map(|o| o.blinded_secret)
-                        .collect::<Vec<PublicKey>>(),
-                    &change_sigs,
-                )
-                .await?;
-
-            change = Some(change_sigs);
-        } else {
-            tracing::info!(
-                "No change outputs provided. Burnt: {:?} sats",
-                (melt_request.proofs_amount() - total_spent)
-            );
-        }
-
-        let input_ys: Vec<PublicKey> = melt_request
+        let input_ys = melt_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Spent)
@@ -1089,6 +1024,69 @@ impl Mint {
         self.localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
             .await?;
+
+        let mut change = None;
+
+        // Check if there is change to return
+        if melt_request.proofs_amount() > total_spent {
+            // Check if wallet provided change outputs
+            if let Some(outputs) = melt_request.outputs.clone() {
+                let blinded_messages: Vec<PublicKey> =
+                    outputs.iter().map(|b| b.blinded_secret).collect();
+
+                if self
+                    .localstore
+                    .get_blind_signatures(&blinded_messages)
+                    .await?
+                    .iter()
+                    .flatten()
+                    .next()
+                    .is_some()
+                {
+                    tracing::info!("Output has already been signed");
+
+                    return Err(Error::BlindedMessageAlreadySigned);
+                }
+
+                let change_target = melt_request.proofs_amount() - total_spent;
+                let mut amounts = change_target.split();
+                let mut change_sigs = Vec::with_capacity(amounts.len());
+
+                if outputs.len().lt(&amounts.len()) {
+                    tracing::debug!(
+                        "Providing change requires {} blinded messages, but only {} provided",
+                        amounts.len(),
+                        outputs.len()
+                    );
+
+                    // In the case that not enough outputs are provided to return all change
+                    // Reverse sort the amounts so that the most amount of change possible is
+                    // returned. The rest is burnt
+                    amounts.sort_by(|a, b| b.cmp(a));
+                }
+
+                let mut outputs = outputs;
+
+                for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
+                    blinded_message.amount = *amount;
+
+                    let blinded_signature = self.blind_sign(blinded_message).await?;
+                    change_sigs.push(blinded_signature)
+                }
+
+                self.localstore
+                    .add_blind_signatures(
+                        &outputs[0..change_sigs.len()]
+                            .iter()
+                            .map(|o| o.blinded_secret)
+                            .collect::<Vec<PublicKey>>(),
+                        &change_sigs,
+                    )
+                    .await?;
+
+                change = Some(change_sigs);
+            }
+        }
 
         Ok(MeltQuoteBolt11Response {
             amount: quote.amount,
