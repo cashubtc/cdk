@@ -40,6 +40,8 @@
 - cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnprc]).
 - cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
 - cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimeplkid]).
+- cdk(cdk-lightning): Use `Amount` type instead of `u64` ([thesimplekid]).
+- cdk(cdk-lightning): `CreateInvoice` requires unit argument ([thesimplekid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).

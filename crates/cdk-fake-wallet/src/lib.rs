@@ -11,6 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use cdk::amount::Amount;
 use cdk::cdk_lightning::{
     self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
     PaymentQuoteResponse, Settings,
@@ -96,7 +97,8 @@ impl MintLightning for FakeWallet {
             &melt_quote_request.unit,
         )?;
 
-        let relative_fee_reserve = (self.fee_reserve.percent_fee_reserve * amount as f32) as u64;
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
 
         let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -115,20 +117,21 @@ impl MintLightning for FakeWallet {
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
-        _partial_msats: Option<u64>,
-        _max_fee_msats: Option<u64>,
+        _partial_msats: Option<Amount>,
+        _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         Ok(PayInvoiceResponse {
             payment_preimage: Some("".to_string()),
             payment_hash: "".to_string(),
             status: MeltQuoteState::Paid,
-            total_spent_msats: melt_quote.amount.into(),
+            total_spent: melt_quote.amount,
         })
     }
 
     async fn create_invoice(
         &self,
-        amount_msats: u64,
+        amount: Amount,
+        unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -149,11 +152,13 @@ impl MintLightning for FakeWallet {
         let payment_hash = sha256::Hash::from_slice(&[0; 32][..]).unwrap();
         let payment_secret = PaymentSecret([42u8; 32]);
 
+        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+
         let invoice = InvoiceBuilder::new(Currency::Bitcoin)
             .description(description)
             .payment_hash(payment_hash)
             .payment_secret(payment_secret)
-            .amount_milli_satoshis(amount_msats)
+            .amount_milli_satoshis(amount.into())
             .current_timestamp()
             .min_final_cltv_expiry_delta(144)
             .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
