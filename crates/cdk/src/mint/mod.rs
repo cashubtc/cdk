@@ -857,26 +857,6 @@ impl Mint {
         &self,
         melt_request: &MeltBolt11Request,
     ) -> Result<MeltQuote, Error> {
-        let ys: Vec<PublicKey> = melt_request
-            .inputs
-            .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
-
-        // Ensure proofs are unique and not being double spent
-        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
-            return Err(Error::DuplicateProofs);
-        }
-
-        self.localstore
-            .add_proofs(melt_request.inputs.clone())
-            .await?;
-        self.check_ys_spendable(&ys, State::Pending).await?;
-
-        for proof in &melt_request.inputs {
-            self.verify_proof(proof).await?;
-        }
-
         let state = self
             .localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Pending)
@@ -890,6 +870,26 @@ impl Mint {
             MeltQuoteState::Paid => {
                 return Err(Error::PaidQuote);
             }
+        }
+
+        let ys = melt_request
+            .inputs
+            .iter()
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+
+        // Ensure proofs are unique and not being double spent
+        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
+            return Err(Error::DuplicateProofs);
+        }
+
+        self.localstore
+            .add_proofs(melt_request.inputs.clone())
+            .await?;
+        self.check_ys_spendable(&ys, State::Pending).await?;
+
+        for proof in &melt_request.inputs {
+            self.verify_proof(proof).await?;
         }
 
         let quote = self
@@ -933,13 +933,13 @@ impl Mint {
             keyset_units.insert(keyset.unit);
         }
 
+        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
+
+        if sig_flag.eq(&SigFlag::SigAll) {
+            return Err(Error::SigAllUsedInMelt);
+        }
+
         if let Some(outputs) = &melt_request.outputs {
-            let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
-
-            if sig_flag.eq(&SigFlag::SigAll) {
-                return Err(Error::SigAllUsedInMelt);
-            }
-
             let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
             for id in output_keysets_ids {
                 let keyset = self
