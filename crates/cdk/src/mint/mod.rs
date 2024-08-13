@@ -1498,4 +1498,37 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn mint_mod_rotate_keyset() -> Result<(), Error> {
+        let config: MintConfig = Default::default();
+        let mint = create_mint(config).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+        assert!(keysets.keysets.is_empty());
+
+        // generate the first keyset and set it to active
+        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+        assert!(keysets.keysets.len().eq(&1));
+        assert!(keysets.keysets[0].active);
+        let first_keyset_id = keysets.keysets[0].id;
+
+        // set the first keyset to inactive and generate a new keyset
+        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+
+        assert!(keysets.keysets.len().eq(&2));
+        for keyset in &keysets.keysets {
+            if keyset.id == first_keyset_id {
+                assert!(!keyset.active);
+            } else {
+                assert!(keyset.active);
+            }
+        }
+
+        Ok(())
+    }
 }
