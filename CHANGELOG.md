@@ -39,6 +39,7 @@
 - cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
 - cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnprc]).
 - cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
+- cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimeplkid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
