@@ -84,7 +84,7 @@ pub async fn get_mint_bolt11_quote(
             create_invoice_response.request.to_string(),
             payload.unit,
             payload.amount,
-            quote_expiry,
+            create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id,
         )
         .await

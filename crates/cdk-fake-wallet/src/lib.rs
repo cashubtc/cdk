@@ -176,9 +176,12 @@ impl MintLightning for FakeWallet {
             }
         });
 
+        let expiry = invoice.expires_at().map(|t| t.as_secs());
+
         Ok(CreateInvoiceResponse {
             request_lookup_id: label,
             request: invoice,
+            expiry,
         })
     }
 

@@ -89,6 +89,8 @@ pub struct CreateInvoiceResponse {
     pub request_lookup_id: String,
     /// Bolt11 payment request
     pub request: Bolt11Invoice,
+    /// Unix Expiry of Invoice
+    pub expiry: Option<u64>,
 }
 
 /// Pay invoice response
