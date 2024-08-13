@@ -240,10 +240,16 @@ impl MintLightning for Cln {
             .map_err(Error::from)?;
 
         match cln_response {
-            cln_rpc::Response::Invoice(invoice_res) => Ok(CreateInvoiceResponse {
-                request_lookup_id: label,
-                request: Bolt11Invoice::from_str(&invoice_res.bolt11)?,
-            }),
+            cln_rpc::Response::Invoice(invoice_res) => {
+                let request = Bolt11Invoice::from_str(&invoice_res.bolt11)?;
+                let expiry = request.expires_at().map(|t| t.as_secs());
+
+                Ok(CreateInvoiceResponse {
+                    request_lookup_id: label,
+                    request,
+                    expiry,
+                })
+            }
             _ => {
                 tracing::warn!("CLN returned wrong response kind");
                 Err(Error::WrongClnResponse.into())

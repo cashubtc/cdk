@@ -199,9 +199,13 @@ impl MintLightning for Strike {
             .invoice_quote(&create_invoice_response.invoice_id)
             .await?;
 
+        let request: Bolt11Invoice = quote.ln_invoice.parse()?;
+        let expiry = request.expires_at().map(|t| t.as_secs());
+
         Ok(CreateInvoiceResponse {
             request_lookup_id: create_invoice_response.invoice_id,
             request: quote.ln_invoice.parse()?,
+            expiry,
         })
     }
 
