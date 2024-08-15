@@ -20,7 +20,7 @@ use cdk::cdk_lightning::{
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::unix_time;
-use cdk::{mint, Bolt11Invoice};
+use cdk::{mint, Amount as CDKAmount, Bolt11Invoice};
 use error::Error;
 use futures::{Stream, StreamExt};
 use gl_client::credentials::{self, Device};
@@ -28,8 +28,9 @@ use gl_client::node::ClnClient;
 use gl_client::pb::cln::listinvoices_invoices::ListinvoicesInvoicesStatus;
 use gl_client::pb::cln::listpays_pays::ListpaysPaysStatus;
 use gl_client::pb::cln::{
-    amount_or_any, Amount, AmountOrAny, GetinfoRequest, InvoiceRequest, ListinvoicesRequest,
-    ListpaysRequest, PayRequest, PayResponse, WaitanyinvoiceRequest, WaitanyinvoiceResponse,
+    amount_or_any, Amount as CLNAmount, AmountOrAny, GetinfoRequest, InvoiceRequest,
+    ListinvoicesRequest, ListpaysRequest, PayRequest, PayResponse, WaitanyinvoiceRequest,
+    WaitanyinvoiceResponse,
 };
 use gl_client::scheduler::Scheduler;
 use gl_client::signer::Signer;
@@ -277,7 +278,8 @@ impl MintLightning for Greenlight {
             &melt_quote_request.unit,
         )?;
 
-        let relative_fee_reserve = (self.fee_reserve.percent_fee_reserve * amount as f32) as u64;
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
 
         let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -296,8 +298,8 @@ impl MintLightning for Greenlight {
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
-        partial_msats: Option<u64>,
-        max_fee_msats: Option<u64>,
+        partial_amount: Option<CDKAmount>,
+        max_fee_amount: Option<CDKAmount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let pay_state = self
             .check_pay_invoice_status(melt_quote.request.to_string())
@@ -305,7 +307,14 @@ impl MintLightning for Greenlight {
 
         let mut cln_client = self.node.lock().await;
 
-        let maxfee = max_fee_msats.map(|amount| Amount { msat: amount });
+        let maxfee = max_fee_amount
+            .map(|amount| {
+                let max_fee_msat = to_unit(amount, &melt_quote.unit, &CurrencyUnit::Msat)?;
+                Ok::<CLNAmount, Self::Err>(CLNAmount {
+                    msat: max_fee_msat.into(),
+                })
+            })
+            .transpose()?;
 
         let invoice = melt_quote.request.clone();
 
@@ -321,11 +330,20 @@ impl MintLightning for Greenlight {
             MeltQuoteState::Unpaid => (),
         }
 
+        let partial_amount = partial_amount
+            .map(|amount| {
+                let max_fee_msat = to_unit(amount, &melt_quote.unit, &CurrencyUnit::Msat)?;
+                Ok::<CLNAmount, Self::Err>(CLNAmount {
+                    msat: max_fee_msat.into(),
+                })
+            })
+            .transpose()?;
+
         let cln_response = cln_client
             .pay(PayRequest {
                 bolt11: invoice,
                 maxfee,
-                amount_msat: partial_msats.map(|a| Amount { msat: a }),
+                amount_msat: partial_amount,
                 ..Default::default()
             })
             .await
@@ -339,13 +357,15 @@ impl MintLightning for Greenlight {
         } = cln_response.into_inner();
         let amount_sent_msat = amount_sent_msat.map(|x| x.msat).unwrap_or_default();
 
+        let total_spent = to_unit(amount_sent_msat, &CurrencyUnit::Msat, &melt_quote.unit)?;
+
         let response = PayInvoiceResponse {
             payment_hash: String::from_utf8(payment_hash).map_err(|_| anyhow!("Utf8 error"))?,
             payment_preimage: Some(
                 String::from_utf8(payment_preimage).map_err(|_| anyhow!("Utf8 Error"))?,
             ),
             status: MeltQuoteState::Paid,
-            total_spent_msats: amount_sent_msat,
+            total_spent,
         };
 
         Ok(response)
@@ -353,7 +373,8 @@ impl MintLightning for Greenlight {
 
     async fn create_invoice(
         &self,
-        amount_msats: u64,
+        amount: CDKAmount,
+        unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -361,8 +382,12 @@ impl MintLightning for Greenlight {
         assert!(unix_expiry > time_now);
         let mut node = self.node.lock().await;
 
+        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+
         let amount_msat = AmountOrAny {
-            value: Some(amount_or_any::Value::Amount(Amount { msat: amount_msats })),
+            value: Some(amount_or_any::Value::Amount(CLNAmount {
+                msat: amount_msat.into(),
+            })),
         };
 
         let label = Uuid::new_v4().to_string();
@@ -384,9 +409,12 @@ impl MintLightning for Greenlight {
 
         let request = response.bolt11;
 
+        let bolt11 = Bolt11Invoice::from_str(&request)?;
+
         Ok(CreateInvoiceResponse {
             request: Bolt11Invoice::from_str(&request)?,
             request_lookup_id: label,
+            expiry: bolt11.expires_at().map(|a| a.as_secs()),
         })
     }
 
