@@ -1,5 +1,5 @@
 
-# Cashu Development Kit Redb Storage Backend
+# Cashu Development Kit Rexie Storage Backend
 
 **ALPHA** This library is in early development, the api will change and should be used with caution.
 

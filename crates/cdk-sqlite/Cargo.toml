@@ -3,7 +3,7 @@ name = "cdk-sqlite"
 version = { workspace = true }
 edition = "2021"
 authors = ["CDK Developers"]
-description = "Sqlite storage backend for CDK"
+description = "SQLite storage backend for CDK"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
