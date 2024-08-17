@@ -287,7 +287,10 @@ FROM mint_quote
         .await
         .map_err(Error::from)?;
 
-        let mint_quotes = rec.into_iter().flat_map(sqlite_row_to_mint_quote).collect();
+        let mint_quotes = rec
+            .into_iter()
+            .map(sqlite_row_to_mint_quote)
+            .collect::<Result<Vec<MintQuote>, _>>()?;
 
         Ok(mint_quotes)
     }
@@ -362,7 +365,10 @@ FROM melt_quote
         .await
         .map_err(Error::from)?;
 
-        let melt_quotes = rec.into_iter().flat_map(sqlite_row_to_melt_quote).collect();
+        let melt_quotes = rec
+            .into_iter()
+            .map(sqlite_row_to_melt_quote)
+            .collect::<Result<Vec<mint::MeltQuote>, _>>()?;
 
         Ok(melt_quotes)
     }
@@ -477,8 +483,8 @@ FROM keyset;
 
         Ok(recs
             .into_iter()
-            .flat_map(sqlite_row_to_keyset_info)
-            .collect())
+            .map(sqlite_row_to_keyset_info)
+            .collect::<Result<_, _>>()?)
     }
 
     async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
@@ -733,8 +739,8 @@ WHERE keyset_id=?;
         let signatures = rec
             .map_err(Error::from)?
             .into_iter()
-            .flat_map(sqlite_row_to_blind_signature)
-            .collect();
+            .map(sqlite_row_to_blind_signature)
+            .collect::<Result<_, _>>()?;
 
         Ok(signatures)
     }

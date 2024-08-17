@@ -429,8 +429,9 @@ impl WalletDatabase for WalletRexieDatabase {
 
         Ok(quotes
             .into_iter()
-            .flat_map(|(_id, q)| serde_wasm_bindgen::from_value(q))
-            .collect())
+            .map(|(_id, q)| serde_wasm_bindgen::from_value(q))
+            .collect::<Result<Vec<MintQuote>, serde_wasm_bindgen::Error>>()
+            .map_err(<serde_wasm_bindgen::Error as Into<Error>>::into)?)
     }
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {

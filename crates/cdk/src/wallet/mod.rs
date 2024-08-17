@@ -357,8 +357,8 @@ impl Wallet {
         let proof_ys = proofs
             .iter()
             // Find Y for the secret
-            .flat_map(|p| hash_to_curve(p.secret.as_bytes()))
-            .collect::<Vec<PublicKey>>();
+            .map(|p| hash_to_curve(p.secret.as_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         let spendable = self
             .client
@@ -388,8 +388,8 @@ impl Wallet {
                 proofs
                     .iter()
                     // Find Y for the secret
-                    .flat_map(|p| hash_to_curve(p.secret.as_bytes()))
-                    .collect::<Vec<PublicKey>>(),
+                    .map(|p| hash_to_curve(p.secret.as_bytes()))
+                    .collect::<Result<Vec<PublicKey>, _>>()?,
             )
             .await?;
 
@@ -611,7 +611,7 @@ impl Wallet {
 
         let proofs = proofs
             .into_iter()
-            .flat_map(|proof| {
+            .map(|proof| {
                 ProofInfo::new(
                     proof,
                     self.mint_url.clone(),
@@ -619,7 +619,7 @@ impl Wallet {
                     quote_info.unit,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
         self.localstore.add_proofs(proofs).await?;
@@ -901,10 +901,8 @@ impl Wallet {
                 let send_proofs_info = proofs_to_send
                     .clone()
                     .into_iter()
-                    .flat_map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, *unit)
-                    })
-                    .collect();
+                    .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Reserved, *unit))
+                    .collect::<Result<Vec<ProofInfo>, _>>()?;
 
                 self.localstore.add_proofs(send_proofs_info).await?;
 
@@ -919,8 +917,8 @@ impl Wallet {
 
         let keep_proofs = change_proofs
             .into_iter()
-            .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, *unit))
-            .collect();
+            .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, *unit))
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         self.localstore.add_proofs(keep_proofs).await?;
 
@@ -1342,7 +1340,7 @@ impl Wallet {
 
             let change_proofs_info = change_proofs
                 .into_iter()
-                .flat_map(|proof| {
+                .map(|proof| {
                     ProofInfo::new(
                         proof,
                         self.mint_url.clone(),
@@ -1350,7 +1348,7 @@ impl Wallet {
                         quote_info.unit,
                     )
                 })
-                .collect();
+                .collect::<Result<Vec<ProofInfo>, _>>()?;
 
             self.localstore.add_proofs(change_proofs_info).await?;
         }
@@ -1535,11 +1533,11 @@ impl Wallet {
         // Map hash of preimage to preimage
         let hashed_to_preimage: HashMap<String, &String> = preimages
             .iter()
-            .flat_map(|p| match hex::decode(p) {
-                Ok(hex_bytes) => Some((Sha256Hash::hash(&hex_bytes).to_string(), p)),
-                Err(_) => None,
+            .map(|p| {
+                let hex_bytes = hex::decode(p)?;
+                Ok::<(String, &String), Error>((Sha256Hash::hash(&hex_bytes).to_string(), p))
             })
-            .collect();
+            .collect::<Result<HashMap<String, &String>, _>>()?;
 
         let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = p2pk_signing_keys
             .iter()
@@ -1628,8 +1626,8 @@ impl Wallet {
             total_amount += proofs.iter().map(|p| p.amount).sum();
             let proofs = proofs
                 .into_iter()
-                .flat_map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
-                .collect();
+                .map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
+                .collect::<Result<Vec<ProofInfo>, _>>()?;
             self.localstore.add_proofs(proofs).await?;
         }
 
@@ -1766,10 +1764,10 @@ impl Wallet {
 
                 let unspent_proofs = unspent_proofs
                     .into_iter()
-                    .flat_map(|proof| {
+                    .map(|proof| {
                         ProofInfo::new(proof, self.mint_url.clone(), State::Unspent, keyset.unit)
                     })
-                    .collect();
+                    .collect::<Result<Vec<ProofInfo>, _>>()?;
 
                 self.localstore.add_proofs(unspent_proofs).await?;
 

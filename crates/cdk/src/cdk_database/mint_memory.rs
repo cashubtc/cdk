@@ -288,7 +288,11 @@ impl MintDatabase for MintMemoryDatabase {
             .cloned()
             .collect();
 
-        let proof_ys: Vec<PublicKey> = proofs_for_id.iter().flat_map(|p| p.y()).collect();
+        let proof_ys = proofs_for_id
+            .iter()
+            .map(|p| p.y())
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+
         assert_eq!(proofs_for_id.len(), proof_ys.len());
 
         let states = self.get_proofs_states(&proof_ys).await?;

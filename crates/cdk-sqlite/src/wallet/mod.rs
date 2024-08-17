@@ -272,7 +272,10 @@ WHERE mint_url=?
             },
         };
 
-        let keysets: Vec<KeySetInfo> = recs.iter().flat_map(sqlite_row_to_keyset).collect();
+        let keysets = recs
+            .iter()
+            .map(sqlite_row_to_keyset)
+            .collect::<Result<Vec<KeySetInfo>, _>>()?;
 
         match keysets.is_empty() {
             false => Ok(Some(keysets)),
@@ -363,7 +366,10 @@ FROM mint_quote
         .await
         .map_err(Error::from)?;
 
-        let mint_quotes = rec.iter().flat_map(sqlite_row_to_mint_quote).collect();
+        let mint_quotes = rec
+            .iter()
+            .map(sqlite_row_to_mint_quote)
+            .collect::<Result<_, _>>()?;
 
         Ok(mint_quotes)
     }

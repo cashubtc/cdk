@@ -662,11 +662,11 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let input_ys: Vec<PublicKey> = swap_request
+        let input_ys = swap_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .add_proofs(swap_request.inputs.clone())
@@ -1000,11 +1000,11 @@ impl Mint {
     /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let input_ys: Vec<PublicKey> = melt_request
+        let input_ys = melt_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Unspent)

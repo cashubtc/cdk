@@ -7,6 +7,7 @@ use thiserror::Error;
 use super::multi_mint_wallet::WalletKey;
 use crate::cdk_database;
 use crate::error::{ErrorCode, ErrorResponse};
+use crate::util::hex;
 
 /// Wallet Error
 #[derive(Debug, Error)]
@@ -75,6 +76,9 @@ pub enum Error {
     ///  Unknown error response
     #[error("Unknown Error response: `{0}`")]
     UnknownErrorResponse(String),
+    /// Hex Error
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
     /// Unknown Wallet
     #[error("Unknown Wallet: `{0}`")]
     UnknownWallet(WalletKey),
