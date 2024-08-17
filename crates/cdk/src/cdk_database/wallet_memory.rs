@@ -18,7 +18,7 @@ use crate::wallet;
 use crate::wallet::types::MintQuote;
 
 /// Wallet in Memory Database
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WalletMemoryDatabase {
     mints: Arc<RwLock<HashMap<MintUrl, Option<MintInfo>>>>,
     mint_keysets: Arc<RwLock<HashMap<MintUrl, HashSet<Id>>>>,
