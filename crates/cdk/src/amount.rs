@@ -190,7 +190,7 @@ pub enum SplitTarget {
     None,
     /// Target amount for wallet to have most proofs that add up to value
     Value(Amount),
-    /// Specific amounts to split into **must** equal amount being split
+    /// Specific amounts to split into **MUST** equal amount being split
     Values(Vec<Amount>),
 }
 

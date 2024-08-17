@@ -48,6 +48,7 @@ impl MintUrl {
         Self(self.to_string().trim_end_matches('/').to_string())
     }
 }
+
 impl<'de> Deserialize<'de> for MintUrl {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -57,6 +58,7 @@ impl<'de> Deserialize<'de> for MintUrl {
         MintUrl::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
+
 impl<S> From<S> for MintUrl
 where
     S: Into<String>,
