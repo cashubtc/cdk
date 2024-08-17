@@ -46,9 +46,15 @@ pub enum Error {
     /// CDK Error
     #[error(transparent)]
     Cdk(#[from] crate::error::Error),
-    /// NUT01 Error
+    /// NUT00 Error
     #[error(transparent)]
-    NUT01(#[from] crate::nuts::nut00::Error),
+    NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    NUT02(#[from] crate::nuts::nut02::Error),
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,

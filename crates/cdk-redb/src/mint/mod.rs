@@ -580,15 +580,21 @@ impl MintDatabase for MintRedbDatabase {
         let read_txn = db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-        let proofs_for_id: Proofs = table
+        let proofs_for_id = table
             .iter()
             .map_err(Error::from)?
             .flatten()
-            .flat_map(|(_, p)| serde_json::from_str::<Proof>(p.value()))
+            .map(|(_, p)| serde_json::from_str::<Proof>(p.value()))
+            .collect::<Result<Proofs, _>>()?
+            .into_iter()
             .filter(|p| &p.keyset_id == keyset_id)
-            .collect();
+            .collect::<Proofs>();
 
-        let proof_ys: Vec<PublicKey> = proofs_for_id.iter().flat_map(|p| p.y()).collect();
+        let proof_ys = proofs_for_id
+            .iter()
+            .map(|p| p.y())
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+
         assert_eq!(proofs_for_id.len(), proof_ys.len());
 
         let states = self.get_proofs_states(&proof_ys).await?;

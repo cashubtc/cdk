@@ -39,6 +39,9 @@ pub enum Error {
     /// Witness Signatures not provided
     #[error("Witness did not provide signatures")]
     SignaturesNotProvided,
+    /// Secp256k1 error
+    #[error(transparent)]
+    Secp256k1(#[from] bitcoin::secp256k1::Error),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] super::nut11::Error),
@@ -81,12 +84,12 @@ impl Proof {
                 if let (Some(refund_key), Some(signatures)) =
                     (conditions.refund_keys, &self.witness)
                 {
-                    let signatures: Vec<Signature> = signatures
+                    let signatures = signatures
                         .signatures()
                         .ok_or(Error::SignaturesNotProvided)?
                         .iter()
-                        .flat_map(|s| Signature::from_str(s))
-                        .collect();
+                        .map(|s| Signature::from_str(s))
+                        .collect::<Result<Vec<Signature>, _>>()?;
 
                     // If secret includes refund keys check that there is a valid signature
                     if valid_signatures(self.secret.as_bytes(), &refund_key, &signatures).ge(&1) {
@@ -103,10 +106,10 @@ impl Proof {
                     .as_ref()
                     .ok_or(Error::SignaturesNotProvided)?;
 
-                let signatures: Vec<Signature> = signatures
+                let signatures = signatures
                     .iter()
-                    .flat_map(|s| Signature::from_str(s))
-                    .collect();
+                    .map(|s| Signature::from_str(s))
+                    .collect::<Result<Vec<Signature>, _>>()?;
 
                 if valid_signatures(self.secret.as_bytes(), &pubkey, &signatures).lt(&req_sigs) {
                     return Err(Error::IncorrectSecretKind);

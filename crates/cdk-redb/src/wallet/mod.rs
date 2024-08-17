@@ -340,12 +340,12 @@ impl WalletDatabase for WalletRedbDatabase {
             .open_multimap_table(MINT_KEYSETS_TABLE)
             .map_err(Error::from)?;
 
-        let keyset_ids: Vec<Id> = table
+        let keyset_ids = table
             .get(mint_url.to_string().as_str())
             .map_err(Error::from)?
             .flatten()
-            .flat_map(|k| Id::from_bytes(k.value()))
-            .collect();
+            .map(|k| Id::from_bytes(k.value()))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut keysets = vec![];
 

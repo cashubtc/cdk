@@ -720,8 +720,8 @@ where
                 let pubkeys = tag
                     .iter()
                     .skip(1)
-                    .flat_map(|p| PublicKey::from_str(p.as_ref()))
-                    .collect();
+                    .map(|p| PublicKey::from_str(p.as_ref()))
+                    .collect::<Result<Vec<PublicKey>, _>>()?;
 
                 Ok(Self::Refund(pubkeys))
             }
@@ -729,8 +729,8 @@ where
                 let pubkeys = tag
                     .iter()
                     .skip(1)
-                    .flat_map(|p| PublicKey::from_str(p.as_ref()))
-                    .collect();
+                    .map(|p| PublicKey::from_str(p.as_ref()))
+                    .collect::<Result<Vec<PublicKey>, _>>()?;
 
                 Ok(Self::PubKeys(pubkeys))
             }
