@@ -16,7 +16,7 @@ use crate::nuts::{
 };
 
 /// Mint Memory Database
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MintMemoryDatabase {
     active_keysets: Arc<RwLock<HashMap<CurrencyUnit, Id>>>,
     keysets: Arc<RwLock<HashMap<Id, MintKeySetInfo>>>,
