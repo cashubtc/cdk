@@ -69,8 +69,10 @@ impl Greenlight {
             _ => bail!("Unsupported network"),
         };
 
-        let device_cert_path = work_dir.join("client.crt");
-        let device_key_path = work_dir.join("client-key.pem");
+        let greenlight_dir = work_dir.join("greenlight");
+
+        let device_cert_path = greenlight_dir.join("client.crt");
+        let device_key_path = greenlight_dir.join("client-key.pem");
 
         let device_creds_path = work_dir.join("device_creds");
 
@@ -83,6 +85,9 @@ impl Greenlight {
                 fs::read_to_string(device_key_path)?,
             )
         } else {
+            tracing::error!("Could not find device cert and/or key");
+            tracing::debug!("Device cert path: {:?}", device_cert_path);
+            tracing::debug!("Device key path: {:?}", device_key_path);
             bail!("Device cert and/or key unknown");
         };
 
@@ -107,7 +112,17 @@ impl Greenlight {
                 tracing::info!("Node has not been registered");
                 tracing::info!("Registering Node ...");
 
-                let auth_response = scheduler_unauth.register(&signer, None).await?;
+                let auth_response =
+                    scheduler_unauth
+                        .register(&signer, None)
+                        .await
+                        .map_err(|err| {
+                            tracing::error!("Could not register node");
+                            err
+                        })?;
+
+                tracing::info!("Greenlight node registered");
+
                 let creds = Device::from_bytes(auth_response.creds);
                 fs::write(device_creds_path, creds.to_bytes())?;
 
@@ -227,10 +242,10 @@ impl MintLightning for Greenlight {
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
         let last_pay_index = self.get_last_pay_index().await?;
 
-        let scheduler = Scheduler::new(self.network, self.creds.clone())
-            .await
-            .unwrap();
-        let cln_client: ClnClient = scheduler.node().await.unwrap();
+        let scheduler = Scheduler::new(self.network, self.creds.clone()).await?;
+
+        let cln_client: ClnClient = scheduler.node().await?;
+
         Ok(futures::stream::unfold(
             (cln_client, last_pay_index),
             |(mut cln_client, mut last_pay_idx)| async move {
