@@ -23,7 +23,7 @@
             name = "cdk";
             path = ./.;
           };
-          paths = [ "crates/cashu" "crates/cashu-sdk" ];
+          paths = [ "crates/*" ];
         };
 
         targetsStd = flakeboxLib.mkStdTargets { };
