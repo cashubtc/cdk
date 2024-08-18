@@ -70,7 +70,7 @@ name = "wallet"
 required-features = ["wallet"]
 
 [[example]]
-name = "proof_selection"
+name = "proof-selection"
 required-features = ["wallet"]
 
 [dev-dependencies]

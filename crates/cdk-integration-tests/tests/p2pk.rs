@@ -22,7 +22,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
     let mnemonic = Mnemonic::generate(12)?;
 
     let wallet = Wallet::new(
-        &MINT_URL,
+        MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &mnemonic.to_seed_normalized(""),
