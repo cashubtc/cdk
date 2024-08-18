@@ -59,12 +59,12 @@ impl Wallet {
     /// Create new [`Wallet`]
     /// # Synopsis
     /// ```rust
-    /// # use std::sync::Arc;
+    /// use std::sync::Arc;
     ///
-    /// # use cdk::cdk_database::WalletMemoryDatabase;
-    /// # use cdk::nuts::CurrencyUnit;
-    /// # use cdk::wallet::Wallet;
-    /// # use rand::Rng;
+    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::nuts::CurrencyUnit;
+    /// use cdk::wallet::Wallet;
+    /// use rand::Rng;
     ///
     /// let seed = rand::thread_rng().gen::<[u8; 32]>();
     /// let mint_url = "https://testnut.cashu.space";
@@ -472,21 +472,21 @@ impl Wallet {
     /// Mint Quote
     /// # Synopsis
     /// ```rust
-    /// # use std::sync::Arc;
+    /// use std::sync::Arc;
     ///
-    /// # use cdk::amount::Amount;
-    /// # use cdk::cdk_database::WalletMemoryDatabase;
-    /// # use cdk::nuts::CurrencyUnit;
-    /// # use cdk::wallet::Wallet;
-    /// # use rand::Rng;
+    /// use cdk::amount::Amount;
+    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::nuts::CurrencyUnit;
+    /// use cdk::wallet::Wallet;
+    /// use rand::Rng;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///   # let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///   # let mint_url = "https://testnut.cashu.space";
-    ///   # let unit = CurrencyUnit::Sat;
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
     ///
-    ///   # let localstore = WalletMemoryDatabase::default();
+    ///     let localstore = WalletMemoryDatabase::default();
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
     ///     let amount = Amount::from(100);
     ///
@@ -565,22 +565,22 @@ impl Wallet {
     /// Mint
     /// # Synopsis
     /// ```rust
-    /// # use std::sync::Arc;
+    /// use std::sync::Arc;
     ///
-    /// # use anyhow::Result;
-    /// # use cdk::amount::{Amount, SplitTarget};
-    /// # use cdk::cdk_database::WalletMemoryDatabase;
-    /// # use cdk::nuts::CurrencyUnit;
-    /// # use cdk::wallet::Wallet;
-    /// # use rand::Rng;
+    /// use anyhow::Result;
+    /// use cdk::amount::{Amount, SplitTarget};
+    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::nuts::CurrencyUnit;
+    /// use cdk::wallet::Wallet;
+    /// use rand::Rng;
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
-    ///   # let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///   # let mint_url = "https://testnut.cashu.space";
-    ///   # let unit = CurrencyUnit::Sat;
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
     ///
-    ///   # let localstore = WalletMemoryDatabase::default();
+    ///     let localstore = WalletMemoryDatabase::default();
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
     ///     let amount = Amount::from(100);
     ///
@@ -1254,25 +1254,25 @@ impl Wallet {
     /// Melt Quote
     /// # Synopsis
     /// ```rust
-    /// # use std::sync::Arc;
+    ///  use std::sync::Arc;
     ///
-    /// # use cdk::cdk_database::WalletMemoryDatabase;
-    /// # use cdk::nuts::CurrencyUnit;
-    /// # use cdk::wallet::Wallet;
-    /// # use rand::Rng;
+    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::nuts::CurrencyUnit;
+    ///  use cdk::wallet::Wallet;
+    ///  use rand::Rng;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    /// # let seed = rand::thread_rng().gen::<[u8; 32]>();
-    /// # let mint_url = "https://testnut.cashu.space";
-    /// # let unit = CurrencyUnit::Sat;
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
     ///
-    /// # let localstore = WalletMemoryDatabase::default();
-    /// let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
-    /// let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
-    /// let quote = wallet.melt_quote(bolt11, None).await?;
+    ///     let localstore = WalletMemoryDatabase::default();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
+    ///     let quote = wallet.melt_quote(bolt11, None).await?;
     ///
-    /// Ok(())
+    ///     Ok(())
     /// }
     /// ```
     #[instrument(skip(self))]
@@ -1465,28 +1465,28 @@ impl Wallet {
     /// Melt
     /// # Synopsis
     /// ```rust, no_run
-    /// # use std::sync::Arc;
+    ///  use std::sync::Arc;
     ///
-    /// # use cdk::cdk_database::WalletMemoryDatabase;
-    /// # use cdk::nuts::CurrencyUnit;
-    /// # use cdk::wallet::Wallet;
-    /// # use rand::Rng;
+    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::nuts::CurrencyUnit;
+    ///  use cdk::wallet::Wallet;
+    ///  use rand::Rng;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    /// # let seed = rand::thread_rng().gen::<[u8; 32]>();
-    /// # let mint_url = "https://testnut.cashu.space";
-    /// # let unit = CurrencyUnit::Sat;
+    ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///  let mint_url = "https://testnut.cashu.space";
+    ///  let unit = CurrencyUnit::Sat;
     ///
-    /// # let localstore = WalletMemoryDatabase::default();
-    /// # let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
-    /// # let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
-    /// let quote = wallet.melt_quote(bolt11, None).await?;
-    /// let quote_id = quote.id;
+    ///  let localstore = WalletMemoryDatabase::default();
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
+    ///  let quote = wallet.melt_quote(bolt11, None).await?;
+    ///  let quote_id = quote.id;
     ///
-    /// let _ = wallet.melt(&quote_id).await?;
+    ///  let _ = wallet.melt(&quote_id).await?;
     ///
-    /// Ok(())
+    ///  Ok(())
     /// }
     #[instrument(skip(self))]
     pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
@@ -1764,25 +1764,25 @@ impl Wallet {
     /// Receive
     /// # Synopsis
     /// ```rust, no_run
-    /// # use std::sync::Arc;
+    ///  use std::sync::Arc;
     ///
-    /// # use cdk::amount::SplitTarget;
-    /// # use cdk::cdk_database::WalletMemoryDatabase;
-    /// # use cdk::nuts::CurrencyUnit;
-    /// # use cdk::wallet::Wallet;
-    /// # use rand::Rng;
+    ///  use cdk::amount::SplitTarget;
+    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::nuts::CurrencyUnit;
+    ///  use cdk::wallet::Wallet;
+    ///  use rand::Rng;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    /// # let seed = rand::thread_rng().gen::<[u8; 32]>();
-    /// # let mint_url = "https://testnut.cashu.space";
-    /// # let unit = CurrencyUnit::Sat;
+    ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///  let mint_url = "https://testnut.cashu.space";
+    ///  let unit = CurrencyUnit::Sat;
     ///
-    /// # let localstore = WalletMemoryDatabase::default();
-    /// let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
-    /// let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjEsInNlY3JldCI6ImI0ZjVlNDAxMDJhMzhiYjg3NDNiOTkwMzU5MTU1MGYyZGEzZTQxNWEzMzU0OTUyN2M2MmM5ZDc5MGVmYjM3MDUiLCJDIjoiMDIzYmU1M2U4YzYwNTMwZWVhOWIzOTQzZmRhMWEyY2U3MWM3YjNmMGNmMGRjNmQ4NDZmYTc2NWFhZjc3OWZhODFkIiwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
-    /// let amount_receive = wallet.receive(token, SplitTarget::default(), &[], &[]).await?;
-    /// Ok(())
+    ///  let localstore = WalletMemoryDatabase::default();
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjEsInNlY3JldCI6ImI0ZjVlNDAxMDJhMzhiYjg3NDNiOTkwMzU5MTU1MGYyZGEzZTQxNWEzMzU0OTUyN2M2MmM5ZDc5MGVmYjM3MDUiLCJDIjoiMDIzYmU1M2U4YzYwNTMwZWVhOWIzOTQzZmRhMWEyY2U3MWM3YjNmMGNmMGRjNmQ4NDZmYTc2NWFhZjc3OWZhODFkIiwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
+    ///  let amount_receive = wallet.receive(token, SplitTarget::default(), &[], &[]).await?;
+    ///  Ok(())
     /// }
     /// ```
     #[instrument(skip_all)]
