@@ -42,7 +42,7 @@ pub enum Error {
     #[error("Unsupported unit")]
     UnsupportedUnit,
     /// Invalid Url
-    #[error("Invalid Url")]
+    #[error("Invalid URL")]
     InvalidUrl,
     /// Serde Json error
     #[error(transparent)]

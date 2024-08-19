@@ -32,8 +32,8 @@ pub enum Error {
     /// BIP32 Error
     #[error(transparent)]
     BIP32(#[from] bitcoin::bip32::Error),
-    /// Could Not Initialize Db
-    #[error("Could not initialize Db")]
+    /// Could Not Initialize Database
+    #[error("Could not initialize database")]
     CouldNotInitialize,
     /// Invalid Database Path
     #[error("Invalid database path")]

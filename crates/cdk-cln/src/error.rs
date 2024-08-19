@@ -9,7 +9,7 @@ pub enum Error {
     #[error("Unknown invoice amount")]
     UnknownInvoiceAmount,
     /// Wrong CLN response
-    #[error("Wrong cln response")]
+    #[error("Wrong CLN response")]
     WrongClnResponse,
     /// Unknown invoice
     #[error("Unknown invoice")]

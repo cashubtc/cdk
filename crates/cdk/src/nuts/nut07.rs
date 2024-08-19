@@ -14,7 +14,7 @@ use super::nut01::PublicKey;
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
     /// Unknown State error
-    #[error("Unknown State")]
+    #[error("Unknown state")]
     UnknownState,
 }
 

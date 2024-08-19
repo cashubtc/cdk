@@ -43,25 +43,25 @@ pub enum Error {
     #[error("Invalid signature")]
     InvalidSignature,
     /// Unknown tag in P2PK secret
-    #[error("Unknown Tag P2PK secret")]
+    #[error("Unknown tag P2PK secret")]
     UnknownTag,
     /// Unknown Sigflag
-    #[error("Unknown Sigflag")]
+    #[error("Unknown sigflag")]
     UnknownSigFlag,
     /// P2PK Spend conditions not meet
-    #[error("P2PK Spend conditions are not met")]
+    #[error("P2PK spend conditions are not met")]
     SpendConditionsNotMet,
     /// Pubkey must be in data field of P2PK
-    #[error("P2PK Required in secret data")]
+    #[error("P2PK required in secret data")]
     P2PKPubkeyRequired,
     /// Unknown Kind
     #[error("Kind not found")]
     KindNotFound,
     /// HTLC hash invalid
-    #[error("Invalid Hash")]
+    #[error("Invalid hash")]
     InvalidHash,
     /// Witness Signatures not provided
-    #[error("Witness Signatures not provided")]
+    #[error("Witness signatures not provided")]
     SignaturesNotProvided,
     /// Parse Url Error
     #[error(transparent)]

@@ -17,14 +17,14 @@ use crate::{Amount, SECP256K1};
 /// NUT12 Error
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Missing Dleq Proof
-    #[error("No Dleq Proof provided")]
+    /// Missing DLEQ Proof
+    #[error("No DLEQ proof provided")]
     MissingDleqProof,
-    /// Incomplete Dleq Proof
-    #[error("Incomplete DLEQ Proof")]
+    /// Incomplete DLEQ Proof
+    #[error("Incomplete DLEQ proof")]
     IncompleteDleqProof,
-    /// Invalid Dleq Proof
-    #[error("Invalid Dleq Prood")]
+    /// Invalid DLEQ Proof
+    #[error("Invalid DLEQ proof")]
     InvalidDleqProof,
     /// Cashu Error
     #[error(transparent)]
