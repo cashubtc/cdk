@@ -13,55 +13,55 @@ use crate::util::hex;
 #[derive(Debug, Error)]
 pub enum Error {
     /// Insufficient Funds
-    #[error("Insufficient Funds")]
+    #[error("Insufficient funds")]
     InsufficientFunds,
     /// Quote Expired
-    #[error("Quote Expired")]
+    #[error("Quote expired")]
     QuoteExpired,
     /// Unknown Quote
-    #[error("Quote Unknown")]
+    #[error("Quote unknown")]
     QuoteUnknown,
     /// Not active keyset
     #[error("No active keyset")]
     NoActiveKeyset,
-    /// Invalid DLEQ prood
-    #[error("Could not verify Dleq")]
+    /// Invalid DLEQ proof
+    #[error("Could not verify DLEQ proof")]
     CouldNotVerifyDleq,
     /// P2PK spending conditions not met
-    #[error("P2PK Condition Not met `{0}`")]
+    #[error("P2PK condition not met `{0}`")]
     P2PKConditionsNotMet(String),
     /// Invalid Spending Conditions
-    #[error("Invalid Spending Conditions: `{0}`")]
+    #[error("Invalid spending conditions: `{0}`")]
     InvalidSpendConditions(String),
     /// Preimage not provided
     #[error("Preimage not provided")]
     PreimageNotProvided,
     /// Unknown Key
-    #[error("Unknown Key")]
+    #[error("Unknown key")]
     UnknownKey,
     /// Spending Locktime not provided
     #[error("Spending condition locktime not provided")]
     LocktimeNotProvided,
-    /// Unknown Keyset
-    #[error("Url Path segments could not be joined")]
+    /// Url path segments could not be joined
+    #[error("Url path segments could not be joined")]
     UrlPathSegments,
     /// Quote not paid
     #[error("Quote not paid")]
     QuoteNotePaid,
-    /// Token Already spent error
-    #[error("Token Already Spent Error")]
+    /// Token Already Spent
+    #[error("Token already spent")]
     TokenAlreadySpent,
     /// Unit Not supported
     #[error("Unit not supported for method")]
     UnitNotSupported,
     /// Bolt11 invoice does not have amount
-    #[error("Invoice Amount undefined")]
+    #[error("Invoice amount undefined")]
     InvoiceAmountUndefined,
     /// Incorrect quote amount
     #[error("Incorrect quote amount")]
     IncorrectQuoteAmount,
     /// Keyset Not Found
-    #[error("Keyset Not Found")]
+    #[error("Keyset not found")]
     KeysetNotFound,
     /// Receive can only be used with tokens from single mint
     #[error("Multiple mint tokens not supported by receive. Please deconstruct the token and use receive with_proof")]
@@ -74,16 +74,16 @@ pub enum Error {
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
     ///  Unknown error response
-    #[error("Unknown Error response: `{0}`")]
+    #[error("Unknown error response: `{0}`")]
     UnknownErrorResponse(String),
     /// Hex Error
     #[error(transparent)]
     HexError(#[from] hex::Error),
     /// Unknown Wallet
-    #[error("Unknown Wallet: `{0}`")]
+    #[error("Unknown wallet: `{0}`")]
     UnknownWallet(WalletKey),
     /// Incorrect Wallet
-    #[error("Incorrect Wallet: `{0}`")]
+    #[error("Incorrect wallet: `{0}`")]
     IncorrectWallet(String),
     /// Max Fee Ecxeded
     #[error("Max fee exceeded")]

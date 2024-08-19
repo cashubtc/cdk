@@ -19,7 +19,7 @@ use crate::{Amount, Bolt11Invoice};
 #[derive(Debug, Error)]
 pub enum Error {
     /// Unknown Quote State
-    #[error("Unknown Quote State")]
+    #[error("Unknown quote state")]
     UnknownState,
 }
 

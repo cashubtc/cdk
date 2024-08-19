@@ -28,7 +28,7 @@ pub enum Error {
     #[error("Locktime in past")]
     LocktimeInPast,
     /// Hash Required
-    #[error("Hash Required")]
+    #[error("Hash required")]
     HashRequired,
     /// Hash is not valid
     #[error("Hash is not valid")]

@@ -47,13 +47,13 @@ pub enum Error {
     #[error(transparent)]
     CDKNUT00(#[from] cdk::nuts::nut00::Error),
     /// Unknown Mint Info
-    #[error("Unknown Mint Info")]
+    #[error("Unknown mint info")]
     UnknownMintInfo,
     /// Unknown Proof Y
-    #[error("Unknown Proof Y")]
+    #[error("Unknown proof Y")]
     UnknownY,
     /// Unknown Database Version
-    #[error("Unknown Database Version")]
+    #[error("Unknown database version")]
     UnknownDatabaseVersion,
 }
 
