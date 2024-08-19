@@ -4,11 +4,12 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
@@ -22,6 +23,7 @@ use cdk::nuts::{
 use cdk_axum::LnKey;
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
+use cdk_greenlight::Greenlight;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use cdk_strike::Strike;
@@ -151,6 +153,39 @@ async fn main() -> anyhow::Result<()> {
 
             ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11), cln);
             supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+            vec![]
+        }
+        LnBackend::Greenlight => {
+            let network = settings.ln.network;
+            let greenlight_work_dir = work_dir.join("greenlight");
+
+            let seed_path = greenlight_work_dir.join("seed");
+
+            let mnemonic = if fs::metadata(&seed_path).is_ok() {
+                let seed_string = fs::read_to_string(seed_path)?;
+                Mnemonic::from_str(&seed_string)?
+            } else {
+                bail!("Device cert and/or key unknown");
+            };
+
+            let seed = mnemonic.to_seed_normalized("");
+
+            let greenlight = Greenlight::new(
+                &seed,
+                work_dir,
+                network.into(),
+                fee_reserve,
+                MintMeltSettings::default(),
+                MintMeltSettings::default(),
+            )
+            .await?;
+
+            let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11);
+
+            ln_backends.insert(ln_key, Arc::new(greenlight));
+
+            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+
             vec![]
         }
         LnBackend::Strike => {

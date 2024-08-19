@@ -22,7 +22,7 @@ pub enum LnBackend {
     Cln,
     Strike,
     FakeWallet,
-    //  Greenlight,
+    Greenlight,
     //  Ldk,
 }
 
@@ -32,6 +32,27 @@ pub struct Ln {
     pub invoice_description: Option<String>,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+    pub network: Network,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Network {
+    #[default]
+    Bitcoin,
+    Testnet,
+    Regtest,
+    Signet,
+}
+
+impl From<Network> for cdk::bitcoin::Network {
+    fn from(network: Network) -> cdk::bitcoin::Network {
+        match network {
+            Network::Bitcoin => cdk::bitcoin::Network::Bitcoin,
+            Network::Testnet => cdk::bitcoin::Network::Testnet,
+            Network::Regtest => cdk::bitcoin::Network::Regtest,
+            Network::Signet => cdk::bitcoin::Network::Signet,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -141,8 +162,9 @@ impl Settings {
 
         match settings.ln.ln_backend {
             LnBackend::Cln => assert!(settings.cln.is_some()),
-            LnBackend::FakeWallet => (),
+            LnBackend::Greenlight => (),
             LnBackend::Strike => assert!(settings.strike.is_some()),
+            LnBackend::FakeWallet => (),
         }
 
         Ok(settings)
