@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "mint")]
 use bitcoin::bip32::DerivationPath;
 #[cfg(feature = "mint")]
-use bitcoin::bip32::{ChildNumber, ExtendedPrivKey};
+use bitcoin::bip32::{ChildNumber, Xpriv};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 #[cfg(feature = "mint")]
@@ -288,7 +288,7 @@ impl MintKeySet {
     /// Generate new [`MintKeySet`]
     pub fn generate<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
-        xpriv: ExtendedPrivKey,
+        xpriv: Xpriv,
         unit: CurrencyUnit,
         max_order: u8,
     ) -> Self {
@@ -328,8 +328,7 @@ impl MintKeySet {
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
     ) -> Self {
-        let xpriv =
-            ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
+        let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
         Self::generate(
             secp,
             xpriv
@@ -343,7 +342,7 @@ impl MintKeySet {
     /// Generate new [`MintKeySet`] from xpriv
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
-        xpriv: ExtendedPrivKey,
+        xpriv: Xpriv,
         max_order: u8,
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
