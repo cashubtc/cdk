@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use bitcoin::bip32::ExtendedPrivKey;
+use bitcoin::bip32::Xpriv;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::key::XOnlyPublicKey;
@@ -51,7 +51,7 @@ pub struct Wallet {
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    xpriv: ExtendedPrivKey,
+    xpriv: Xpriv,
     client: HttpClient,
 }
 
@@ -80,8 +80,7 @@ impl Wallet {
         seed: &[u8],
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {
-        let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, seed)
-            .expect("Could not create master key");
+        let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
 
         Ok(Self {
             mint_url: MintUrl::from_str(mint_url)?,

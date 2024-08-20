@@ -88,7 +88,7 @@ impl PublicKey {
     /// Verify schnorr signature
     pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), Error> {
         let hash: Sha256Hash = Sha256Hash::hash(msg);
-        let msg = Message::from_slice(hash.as_ref())?;
+        let msg = Message::from_digest_slice(hash.as_ref())?;
         SECP256K1.verify_schnorr(sig, &msg, &self.inner.x_only_public_key().0)?;
         Ok(())
     }

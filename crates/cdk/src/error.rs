@@ -176,7 +176,7 @@ pub enum Error {
     SerdeJsonError(#[from] serde_json::Error),
     /// Base64 error
     #[error(transparent)]
-    Base64Error(#[from] base64::DecodeError),
+    Base64Error(#[from] bitcoin::base64::DecodeError),
     /// From hex error
     #[error(transparent)]
     HexError(#[from] hex::Error),
