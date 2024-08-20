@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -38,7 +38,7 @@ pub struct Mint {
     /// Active Mint Keysets
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
-    xpriv: ExtendedPrivKey,
+    xpriv: Xpriv,
 }
 
 impl Mint {
@@ -52,8 +52,7 @@ impl Mint {
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
-        let xpriv =
-            ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
+        let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
         let mut active_keysets = HashMap::new();
         let keysets_infos = localstore.get_keyset_infos().await?;
@@ -1396,7 +1395,7 @@ impl From<MintKeySetInfo> for KeySetInfo {
 #[instrument(skip_all)]
 fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
-    xpriv: ExtendedPrivKey,
+    xpriv: Xpriv,
     derivation_path: DerivationPath,
     derivation_path_index: Option<u32>,
     unit: CurrencyUnit,
@@ -1486,7 +1485,7 @@ mod tests {
     fn mint_mod_generate_keyset_from_xpriv() {
         let seed = "test_seed".as_bytes();
         let network = Network::Bitcoin;
-        let xpriv = ExtendedPrivKey::new_master(network, seed).expect("Failed to create xpriv");
+        let xpriv = Xpriv::new_master(network, seed).expect("Failed to create xpriv");
         let keyset = MintKeySet::generate_from_xpriv(
             &Secp256k1::new(),
             xpriv,

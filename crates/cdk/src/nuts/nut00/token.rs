@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-use base64::engine::{general_purpose, GeneralPurpose};
-use base64::{alphabet, Engine as _};
+use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
+use bitcoin::base64::{alphabet, Engine as _};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -119,7 +119,7 @@ impl FromStr for Token {
         };
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
 
         match is_v3 {
@@ -234,7 +234,7 @@ impl FromStr for TokenV3 {
         let s = s.strip_prefix("cashuA").ok_or(Error::UnsupportedToken)?;
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
         let decoded_str = String::from_utf8(decoded)?;
         let token: TokenV3 = serde_json::from_str(&decoded_str)?;
@@ -344,7 +344,7 @@ impl FromStr for TokenV4 {
         let s = s.strip_prefix("cashuB").ok_or(Error::UnsupportedToken)?;
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
         let token: TokenV4 = ciborium::from_reader(&decoded[..])?;
         Ok(token)

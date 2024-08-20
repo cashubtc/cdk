@@ -52,7 +52,7 @@ pub enum Error {
     Utf8ParseError(#[from] FromUtf8Error),
     /// Base64 error
     #[error(transparent)]
-    Base64Error(#[from] base64::DecodeError),
+    Base64Error(#[from] bitcoin::base64::DecodeError),
     /// Parse Url Error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
