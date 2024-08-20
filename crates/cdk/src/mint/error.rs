@@ -62,6 +62,24 @@ pub enum Error {
     /// Sig all cannot be used in melt
     #[error("Sig all cannot be used in melt")]
     SigAllUsedInMelt,
+    /// Minting is disabled
+    #[error("Minting is disabled")]
+    MintingDisabled,
+    /// Minting request is over mint limit
+    #[error("Mint request is over mint limit")]
+    MintOverLimit,
+    /// Mint request is uver mint limit
+    #[error("Mint request is under mint limit")]
+    MintUnderLimit,
+    /// Melting is disabled
+    #[error("Minting is disabled")]
+    MeltingDisabled,
+    /// Melting request is over mint limit
+    #[error("Mint request is over mint limit")]
+    MeltOverLimit,
+    /// Melt request is uver mint limit
+    #[error("Mint request is under mint limit")]
+    MeltUnderLimit,
     /// Cashu Error
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),

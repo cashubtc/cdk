@@ -201,6 +201,33 @@ impl Mint {
         expiry: u64,
         ln_lookup: String,
     ) -> Result<MintQuote, Error> {
+        let nut04 = &self.mint_info.nuts.nut04;
+
+        if nut04.disabled {
+            return Err(Error::MintingDisabled);
+        }
+
+        match nut04.get_settings(&unit, &PaymentMethod::Bolt11) {
+            Some(settings) => {
+                if settings
+                    .max_amount
+                    .map_or(false, |max_amount| amount > max_amount)
+                {
+                    return Err(Error::MintOverLimit);
+                }
+
+                if settings
+                    .min_amount
+                    .map_or(false, |min_amount| amount < min_amount)
+                {
+                    return Err(Error::MintUnderLimit);
+                }
+            }
+            None => {
+                return Err(Error::UnsupportedUnit);
+            }
+        }
+
         let quote = MintQuote::new(mint_url, request, unit, amount, expiry, ln_lookup.clone());
         tracing::debug!(
             "New mint quote {} for {} {} with request id {}",
@@ -320,6 +347,33 @@ impl Mint {
         expiry: u64,
         request_lookup_id: String,
     ) -> Result<MeltQuote, Error> {
+        let nut05 = &self.mint_info.nuts.nut05;
+
+        if nut05.disabled {
+            return Err(Error::MeltingDisabled);
+        }
+
+        match nut05.get_settings(&unit, &PaymentMethod::Bolt11) {
+            Some(settings) => {
+                if settings
+                    .max_amount
+                    .map_or(false, |max_amount| amount > max_amount)
+                {
+                    return Err(Error::MeltOverLimit);
+                }
+
+                if settings
+                    .min_amount
+                    .map_or(false, |min_amount| amount < min_amount)
+                {
+                    return Err(Error::MeltUnderLimit);
+                }
+            }
+            None => {
+                return Err(Error::UnsupportedUnit);
+            }
+        }
+
         let quote = MeltQuote::new(
             request,
             unit,
