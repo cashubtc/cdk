@@ -259,11 +259,7 @@ impl Wallet {
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
     pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        for y in ys {
-            self.localstore.set_proof_state(y, State::Unspent).await?;
-        }
-
-        Ok(())
+        Ok(self.localstore.set_unspent_proofs(ys).await?)
     }
 
     /// Qeury mint for current mint information
@@ -461,7 +457,10 @@ impl Wallet {
         let amount = pending_proofs.iter().map(|p| p.proof.amount).sum();
 
         self.localstore
-            .remove_proofs(&non_pending_proofs.into_iter().map(|p| p.proof).collect())
+            .update_proofs(
+                vec![],
+                non_pending_proofs.into_iter().map(|p| p.y).collect(),
+            )
             .await?;
 
         balance += amount;
@@ -701,7 +700,7 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.add_proofs(proofs).await?;
+        self.localstore.update_proofs(proofs, vec![]).await?;
 
         Ok(minted_amount)
     }
@@ -776,12 +775,8 @@ impl Wallet {
         // Desired amount is either amount passed or value of all proof
         let proofs_total: Amount = proofs.iter().map(|p| p.amount).sum();
 
-        for proof in proofs.iter() {
-            self.localstore
-                .set_proof_state(proof.y()?, State::Pending)
-                .await
-                .ok();
-        }
+        let ys: Vec<PublicKey> = proofs.iter().map(|p| p.y()).collect::<Result<_, _>>()?;
+        self.localstore.set_pending_proofs(ys).await?;
 
         let fee = self.get_proofs_fee(&proofs).await?;
 
@@ -932,9 +927,9 @@ impl Wallet {
             .increment_keyset_counter(&active_keyset_id, pre_swap.derived_secret_count)
             .await?;
 
+        let mut added_proofs = Vec::new();
         let change_proofs;
         let send_proofs;
-
         match amount {
             Some(amount) => {
                 let (proofs_with_condition, proofs_without_condition): (Proofs, Proofs) =
@@ -982,8 +977,7 @@ impl Wallet {
                     .into_iter()
                     .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Reserved, *unit))
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
-
-                self.localstore.add_proofs(send_proofs_info).await?;
+                added_proofs = send_proofs_info;
 
                 change_proofs = proofs_to_keep;
                 send_proofs = Some(proofs_to_send);
@@ -998,12 +992,17 @@ impl Wallet {
             .into_iter()
             .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, *unit))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
-
-        self.localstore.add_proofs(keep_proofs).await?;
+        added_proofs.extend(keep_proofs);
 
         // Remove spent proofs used as inputs
-        self.localstore.remove_proofs(&input_proofs).await?;
+        let deleted_ys = input_proofs
+            .into_iter()
+            .map(|proof| proof.y())
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
+        self.localstore
+            .update_proofs(added_proofs, deleted_ys)
+            .await?;
         Ok(send_proofs)
     }
 
@@ -1053,11 +1052,11 @@ impl Wallet {
     /// Send specific proofs
     #[instrument(skip(self))]
     pub async fn send_proofs(&self, memo: Option<String>, proofs: Proofs) -> Result<Token, Error> {
-        for proof in proofs.iter() {
-            self.localstore
-                .set_proof_state(proof.y()?, State::Reserved)
-                .await?;
-        }
+        let ys = proofs
+            .iter()
+            .map(|p| p.y())
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+        self.localstore.reserve_proofs(ys).await?;
 
         Ok(Token::new(
             self.mint_url.clone(),
@@ -1358,11 +1357,11 @@ impl Wallet {
             return Err(Error::QuoteUnknown);
         };
 
-        for proof in proofs.iter() {
-            self.localstore
-                .set_proof_state(proof.y()?, State::Pending)
-                .await?;
-        }
+        let ys = proofs
+            .iter()
+            .map(|p| p.y())
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+        self.localstore.set_pending_proofs(ys).await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
@@ -1429,35 +1428,42 @@ impl Wallet {
             change: change_proofs.clone(),
         };
 
-        if let Some(change_proofs) = change_proofs {
-            tracing::debug!(
-                "Change amount returned from melt: {}",
-                change_proofs.iter().map(|p| p.amount).sum::<Amount>()
-            );
+        let change_proof_infos = match change_proofs {
+            Some(change_proofs) => {
+                tracing::debug!(
+                    "Change amount returned from melt: {}",
+                    change_proofs.iter().map(|p| p.amount).sum::<Amount>()
+                );
 
-            // Update counter for keyset
-            self.localstore
-                .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
-                .await?;
+                // Update counter for keyset
+                self.localstore
+                    .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
+                    .await?;
 
-            let change_proofs_info = change_proofs
-                .into_iter()
-                .map(|proof| {
-                    ProofInfo::new(
-                        proof,
-                        self.mint_url.clone(),
-                        State::Unspent,
-                        quote_info.unit,
-                    )
-                })
-                .collect::<Result<Vec<ProofInfo>, _>>()?;
-
-            self.localstore.add_proofs(change_proofs_info).await?;
-        }
+                change_proofs
+                    .into_iter()
+                    .map(|proof| {
+                        ProofInfo::new(
+                            proof,
+                            self.mint_url.clone(),
+                            State::Unspent,
+                            quote_info.unit,
+                        )
+                    })
+                    .collect::<Result<Vec<ProofInfo>, _>>()?
+            }
+            None => Vec::new(),
+        };
 
         self.localstore.remove_melt_quote(&quote_info.id).await?;
 
-        self.localstore.remove_proofs(&proofs).await?;
+        let deleted_ys = proofs
+            .iter()
+            .map(|p| p.y())
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+        self.localstore
+            .update_proofs(change_proof_infos, deleted_ys)
+            .await?;
 
         Ok(melted)
     }
@@ -1716,6 +1722,14 @@ impl Wallet {
             }
         }
 
+        // Since the proofs are unknown they need to be added to the database
+        let proofs_info = proofs
+            .clone()
+            .into_iter()
+            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit))
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
+        self.localstore.update_proofs(proofs_info, vec![]).await?;
+
         let mut pre_swap = self
             .create_swap(None, amount_split_target, proofs, None, false)
             .await?;
@@ -1755,7 +1769,7 @@ impl Wallet {
                 .into_iter()
                 .map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
                 .collect::<Result<Vec<ProofInfo>, _>>()?;
-            self.localstore.add_proofs(proofs).await?;
+            self.localstore.update_proofs(proofs, vec![]).await?;
         }
 
         Ok(total_amount)
@@ -1919,7 +1933,9 @@ impl Wallet {
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-                self.localstore.add_proofs(unspent_proofs).await?;
+                self.localstore
+                    .update_proofs(unspent_proofs, vec![])
+                    .await?;
 
                 empty_batch = 0;
                 start_counter += 100;
