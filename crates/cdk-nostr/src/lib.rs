@@ -19,7 +19,7 @@ use cdk::{
         SpendingConditions, State,
     },
     types::ProofInfo,
-    wallet::{self, MeltQuote, MintQuote},
+    wallet::{MeltQuote, MintQuote},
     Amount,
 };
 use itertools::Itertools;
