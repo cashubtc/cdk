@@ -82,8 +82,7 @@ impl WalletNostrDatabase {
     {
         let client = Client::builder().signer(&keys).database(nostr_db).build();
         Self::connect_client(&client, relays).await?;
-        let wallet_db = Self::load_db(id.clone(), &client, &keys).await?;
-        let self_ = Self {
+        let mut self_ = Self {
             client,
             keys,
             id: id.clone(),
@@ -91,9 +90,12 @@ impl WalletNostrDatabase {
                 id,
                 ..Default::default()
             })),
-            wallet_db,
+            wallet_db: WalletMemoryDatabase::default(),
         };
-        self_.refresh_info().await?;
+        let info = self_.refresh_info().await?;
+        self_.wallet_db =
+            WalletMemoryDatabase::new(vec![], vec![], vec![], info.counters, HashMap::new());
+        self_.sync_proofs().await?;
         Ok(self_)
     }
 
@@ -111,8 +113,7 @@ impl WalletNostrDatabase {
             }))
             .build();
         Self::connect_client(&client, relays).await?;
-        let wallet_db = Self::load_db(id.clone(), &client, &keys).await?;
-        let self_ = Self {
+        let mut self_ = Self {
             client,
             keys,
             id: id.clone(),
@@ -120,9 +121,12 @@ impl WalletNostrDatabase {
                 id,
                 ..Default::default()
             })),
-            wallet_db,
+            wallet_db: WalletMemoryDatabase::default(),
         };
-        self_.refresh_info().await?;
+        let info = self_.refresh_info().await?;
+        self_.wallet_db =
+            WalletMemoryDatabase::new(vec![], vec![], vec![], info.counters, HashMap::new());
+        self_.sync_proofs().await?;
         Ok(self_)
     }
 
@@ -130,41 +134,6 @@ impl WalletNostrDatabase {
         client.add_relays(relays).await?;
         client.connect().await;
         Ok(())
-    }
-
-    async fn load_db(
-        id: String,
-        client: &Client,
-        keys: &nostr_sdk::Keys,
-    ) -> Result<WalletMemoryDatabase, Error> {
-        let filters = vec![Filter {
-            authors: filter_value!(keys.public_key()),
-            kinds: filter_value!(WALLET_INFO_KIND),
-            generic_tags: filter_value!(
-                SingleLetterTag::from_char(ID_TAG).expect("ID_TAG is not a single letter tag") => id,
-            ),
-            ..Default::default()
-        }];
-        let events = client
-            .get_events_of(
-                filters,
-                EventSource::Both {
-                    timeout: None,
-                    specific_relays: None,
-                },
-            )
-            .await?;
-        let keyset_counter = match events.first() {
-            Some(event) => WalletInfo::from_event(event, keys)?.counters,
-            None => HashMap::new(),
-        };
-        Ok(WalletMemoryDatabase::new(
-            vec![],
-            vec![],
-            vec![],
-            keyset_counter,
-            HashMap::new(),
-        ))
     }
 
     /// Get the latest [`WalletInfo`]
@@ -257,6 +226,38 @@ impl WalletNostrDatabase {
         tx.update_balance(info.balance.get_or_insert(Amount::ZERO));
         self.save_info_with_lock(&info).await?;
         Ok(id)
+    }
+
+    /// Sync proofs from Nostr
+    async fn sync_proofs(&self) -> Result<(), Error> {
+        let filters = vec![Filter {
+            authors: filter_value!(self.keys.public_key()),
+            kinds: filter_value!(PROOFS_KIND),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
+            ),
+            ..Default::default()
+        }];
+        let events = self.get_events(filters).await?;
+        for event in events {
+            let event = ProofsEvent::from_event(&event, &self.keys)?;
+            self.wallet_db.add_mint(event.url.clone(), None).await?;
+            self.wallet_db
+                .update_proofs(
+                    event
+                        .added
+                        .into_iter()
+                        .flat_map(|p| {
+                            ProofInfo::new(p, event.url.clone(), State::Unspent, CurrencyUnit::Sat)
+                                .ok()
+                        })
+                        .collect(),
+                    event.deleted,
+                )
+                .await?;
+            self.wallet_db.reserve_proofs(event.reserved).await?;
+        }
+        Ok(())
     }
 
     /// Update the name or description of the [`WalletInfo`]
