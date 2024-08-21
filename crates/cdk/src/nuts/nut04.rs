@@ -222,6 +222,21 @@ impl Settings {
     pub fn new(methods: Vec<MintMethodSettings>, disabled: bool) -> Self {
         Self { methods, disabled }
     }
+
+    /// Get [`MintMethodSettings`] for unit method pair
+    pub fn get_settings(
+        &self,
+        unit: &CurrencyUnit,
+        method: &PaymentMethod,
+    ) -> Option<MintMethodSettings> {
+        for method_settings in self.methods.iter() {
+            if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
+                return Some(method_settings.clone());
+            }
+        }
+
+        None
+    }
 }
 
 impl Default for Settings {

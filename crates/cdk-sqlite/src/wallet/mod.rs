@@ -7,13 +7,13 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use cdk::amount::Amount;
 use cdk::cdk_database::{self, WalletDatabase};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, Proofs,
     PublicKey, SpendingConditions, State,
 };
 use cdk::secret::Secret;
 use cdk::types::ProofInfo;
-use cdk::url::UncheckedUrl;
 use cdk::wallet;
 use cdk::wallet::MintQuote;
 use error::Error;
@@ -62,7 +62,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
         let (
@@ -129,7 +129,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
 DELETE FROM mint
@@ -145,7 +145,7 @@ WHERE mint_url=?
     }
 
     #[instrument(skip(self))]
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -169,7 +169,7 @@ WHERE mint_url=?;
     }
 
     #[instrument(skip(self))]
-    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -197,8 +197,8 @@ FROM mint
     #[instrument(skip(self))]
     async fn update_mint_url(
         &self,
-        old_mint_url: UncheckedUrl,
-        new_mint_url: UncheckedUrl,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
         let tables = ["mint_quote", "proof"];
         for table in &tables {
@@ -224,7 +224,7 @@ FROM mint
     #[instrument(skip(self, keysets))]
     async fn add_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err> {
         for keyset in keysets {
@@ -251,7 +251,7 @@ VALUES (?, ?, ?, ?, ?);
     #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
         let recs = sqlx::query(
             r#"
@@ -272,7 +272,10 @@ WHERE mint_url=?
             },
         };
 
-        let keysets: Vec<KeySetInfo> = recs.iter().flat_map(sqlite_row_to_keyset).collect();
+        let keysets = recs
+            .iter()
+            .map(sqlite_row_to_keyset)
+            .collect::<Result<Vec<KeySetInfo>, _>>()?;
 
         match keysets.is_empty() {
             false => Ok(Some(keysets)),
@@ -363,7 +366,10 @@ FROM mint_quote
         .await
         .map_err(Error::from)?;
 
-        let mint_quotes = rec.iter().flat_map(sqlite_row_to_mint_quote).collect();
+        let mint_quotes = rec
+            .iter()
+            .map(sqlite_row_to_mint_quote)
+            .collect::<Result<_, _>>()?;
 
         Ok(mint_quotes)
     }
@@ -547,7 +553,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     #[instrument(skip(self, state, spending_conditions))]
     async fn get_proofs(
         &self,
-        mint_url: Option<UncheckedUrl>,
+        mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,

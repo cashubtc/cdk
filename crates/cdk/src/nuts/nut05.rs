@@ -19,7 +19,7 @@ use crate::{Amount, Bolt11Invoice};
 #[derive(Debug, Error)]
 pub enum Error {
     /// Unknown Quote State
-    #[error("Unknown Quote State")]
+    #[error("Unknown quote state")]
     UnknownState,
 }
 
@@ -256,6 +256,21 @@ impl Settings {
     /// Create new [`Settings`]
     pub fn new(methods: Vec<MeltMethodSettings>, disabled: bool) -> Self {
         Self { methods, disabled }
+    }
+
+    /// Get [`MeltMethodSettings`] for unit method pair
+    pub fn get_settings(
+        &self,
+        unit: &CurrencyUnit,
+        method: &PaymentMethod,
+    ) -> Option<MeltMethodSettings> {
+        for method_settings in self.methods.iter() {
+            if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
+                return Some(method_settings.clone());
+            }
+        }
+
+        None
     }
 }
 

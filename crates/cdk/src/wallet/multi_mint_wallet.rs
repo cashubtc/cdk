@@ -14,10 +14,11 @@ use tracing::instrument;
 use super::types::SendKind;
 use super::Error;
 use crate::amount::SplitTarget;
+use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, SecretKey, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
-use crate::{Amount, UncheckedUrl, Wallet};
+use crate::{Amount, Wallet};
 
 /// Multi Mint Wallet
 #[derive(Debug, Clone)]
@@ -29,7 +30,7 @@ pub struct MultiMintWallet {
 /// Wallet Key
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalletKey {
-    mint_url: UncheckedUrl,
+    mint_url: MintUrl,
     unit: CurrencyUnit,
 }
 
@@ -41,7 +42,7 @@ impl fmt::Display for WalletKey {
 
 impl WalletKey {
     /// Create new [`WalletKey`]
-    pub fn new(mint_url: UncheckedUrl, unit: CurrencyUnit) -> Self {
+    pub fn new(mint_url: MintUrl, unit: CurrencyUnit) -> Self {
         Self { mint_url, unit }
     }
 }
@@ -102,7 +103,7 @@ impl MultiMintWallet {
     pub async fn get_balances(
         &self,
         unit: &CurrencyUnit,
-    ) -> Result<HashMap<UncheckedUrl, Amount>, Error> {
+    ) -> Result<HashMap<MintUrl, Amount>, Error> {
         let mut balances = HashMap::new();
 
         for (WalletKey { mint_url, unit: u }, wallet) in self.wallets.lock().await.iter() {

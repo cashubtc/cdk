@@ -19,6 +19,7 @@ jobs:
         build-args:
           [
             -p cdk,
+            -p cdk-integration-tests,
           ]
     steps:
     - name: Checkout Crate

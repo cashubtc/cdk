@@ -8,20 +8,20 @@ use tokio::sync::RwLock;
 
 use super::WalletDatabase;
 use crate::cdk_database::Error;
+use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
-use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::wallet;
 use crate::wallet::types::MintQuote;
 
 /// Wallet in Memory Database
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WalletMemoryDatabase {
-    mints: Arc<RwLock<HashMap<UncheckedUrl, Option<MintInfo>>>>,
-    mint_keysets: Arc<RwLock<HashMap<UncheckedUrl, HashSet<Id>>>>,
+    mints: Arc<RwLock<HashMap<MintUrl, Option<MintInfo>>>>,
+    mint_keysets: Arc<RwLock<HashMap<MintUrl, HashSet<Id>>>>,
     keysets: Arc<RwLock<HashMap<Id, KeySetInfo>>>,
     mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
     melt_quotes: Arc<RwLock<HashMap<String, wallet::MeltQuote>>>,
@@ -67,32 +67,32 @@ impl WalletDatabase for WalletMemoryDatabase {
 
     async fn add_mint(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
         self.mints.write().await.insert(mint_url, mint_info);
         Ok(())
     }
 
-    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         let mut mints = self.mints.write().await;
         mints.remove(&mint_url);
 
         Ok(())
     }
 
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
         Ok(self.mints.read().await.get(&mint_url).cloned().flatten())
     }
 
-    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Error> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Error> {
         Ok(self.mints.read().await.clone())
     }
 
     async fn update_mint_url(
         &self,
-        old_mint_url: UncheckedUrl,
-        new_mint_url: UncheckedUrl,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
         let proofs = self
             .get_proofs(Some(old_mint_url), None, None, None)
@@ -140,7 +140,7 @@ impl WalletDatabase for WalletMemoryDatabase {
 
     async fn add_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Error> {
         let mut current_mint_keysets = self.mint_keysets.write().await;
@@ -160,10 +160,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn get_mint_keysets(
-        &self,
-        mint_url: UncheckedUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Error> {
+    async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Option<Vec<KeySetInfo>>, Error> {
         match self.mint_keysets.read().await.get(&mint_url) {
             Some(keyset_ids) => {
                 let mut keysets = vec![];
@@ -253,7 +250,7 @@ impl WalletDatabase for WalletMemoryDatabase {
 
     async fn get_proofs(
         &self,
-        mint_url: Option<UncheckedUrl>,
+        mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,

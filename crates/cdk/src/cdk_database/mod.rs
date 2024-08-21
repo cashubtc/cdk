@@ -14,6 +14,8 @@ use crate::mint;
 use crate::mint::MintKeySetInfo;
 #[cfg(feature = "mint")]
 use crate::mint::MintQuote as MintMintQuote;
+#[cfg(feature = "wallet")]
+use crate::mint_url::MintUrl;
 #[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof};
 #[cfg(any(feature = "wallet", feature = "mint"))]
@@ -22,8 +24,6 @@ use crate::nuts::{CurrencyUnit, Id, Proofs, PublicKey, State};
 use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
 #[cfg(feature = "wallet")]
 use crate::types::ProofInfo;
-#[cfg(feature = "wallet")]
-use crate::url::UncheckedUrl;
 #[cfg(feature = "wallet")]
 use crate::wallet;
 #[cfg(feature = "wallet")]
@@ -46,9 +46,15 @@ pub enum Error {
     /// CDK Error
     #[error(transparent)]
     Cdk(#[from] crate::error::Error),
-    /// NUT01 Error
+    /// NUT00 Error
     #[error(transparent)]
-    NUT01(#[from] crate::nuts::nut00::Error),
+    NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    NUT02(#[from] crate::nuts::nut02::Error),
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,
@@ -65,32 +71,32 @@ pub trait WalletDatabase: Debug {
     /// Add Mint to storage
     async fn add_mint(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err>;
     /// Remove Mint from storage
-    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err>;
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err>;
     /// Get mint from storage
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err>;
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err>;
     /// Get all mints from storage
-    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err>;
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err>;
     /// Update mint url
     async fn update_mint_url(
         &self,
-        old_mint_url: UncheckedUrl,
-        new_mint_url: UncheckedUrl,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
     ) -> Result<(), Self::Err>;
 
     /// Add mint keyset to storage
     async fn add_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err>;
     /// Get mint keysets for mint url
     async fn get_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err>;
     /// Get mint keyset by id
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
@@ -123,7 +129,7 @@ pub trait WalletDatabase: Debug {
     /// Get proofs from storage
     async fn get_proofs(
         &self,
-        mint_url: Option<UncheckedUrl>,
+        mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,

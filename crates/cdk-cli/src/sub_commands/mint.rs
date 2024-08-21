@@ -5,8 +5,8 @@ use std::time::Duration;
 use anyhow::Result;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
-use cdk::url::UncheckedUrl;
 use cdk::wallet::client::HttpClient;
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
@@ -18,7 +18,7 @@ use url::Url;
 #[derive(Args)]
 pub struct MintSubCommand {
     /// Mint url
-    mint_url: UncheckedUrl,
+    mint_url: MintUrl,
     /// Amount
     amount: u64,
     /// Currency unit e.g. sat

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::url::UncheckedUrl;
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::MultiMintWallet;
 use clap::Args;
@@ -8,9 +8,9 @@ use clap::Args;
 #[derive(Args)]
 pub struct UpdateMintUrlSubCommand {
     /// Old Mint Url
-    old_mint_url: UncheckedUrl,
+    old_mint_url: MintUrl,
     /// New Mint Url
-    new_mint_url: UncheckedUrl,
+    new_mint_url: MintUrl,
 }
 
 pub async fn update_mint_url(

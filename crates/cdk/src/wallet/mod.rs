@@ -1,6 +1,4 @@
-//! Cashu Wallet
-//!
-//! Each wallet is single mint and single unit
+#![doc = include_str!("./README.md")]
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -17,6 +15,7 @@ use tracing::instrument;
 use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::{
     nut10, nut12, Conditions, CurrencyUnit, Id, KeySetInfo, Keys, Kind, MeltQuoteBolt11Response,
@@ -25,7 +24,6 @@ use crate::nuts::{
     State, SwapRequest,
 };
 use crate::types::{Melted, ProofInfo};
-use crate::url::UncheckedUrl;
 use crate::util::{hex, unix_time};
 use crate::{Amount, Bolt11Invoice, HttpClient, SECP256K1};
 
@@ -39,10 +37,14 @@ pub use multi_mint_wallet::MultiMintWallet;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
 /// CDK Wallet
+///
+/// The CDK [`Wallet`] is a high level cashu wallet.
+///
+/// A [`Wallet`] is for a single mint and single unit.
 #[derive(Debug, Clone)]
 pub struct Wallet {
     /// Mint Url
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Unit
     pub unit: CurrencyUnit,
     /// Storage backend
@@ -55,6 +57,22 @@ pub struct Wallet {
 
 impl Wallet {
     /// Create new [`Wallet`]
+    /// # Synopsis
+    /// ```rust
+    /// use std::sync::Arc;
+    ///
+    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::nuts::CurrencyUnit;
+    /// use cdk::wallet::Wallet;
+    /// use rand::Rng;
+    ///
+    /// let seed = rand::thread_rng().gen::<[u8; 32]>();
+    /// let mint_url = "https://testnut.cashu.space";
+    /// let unit = CurrencyUnit::Sat;
+    ///
+    /// let localstore = WalletMemoryDatabase::default();
+    /// let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    /// ```
     pub fn new(
         mint_url: &str,
         unit: CurrencyUnit,
@@ -66,7 +84,7 @@ impl Wallet {
             .expect("Could not create master key");
 
         Self {
-            mint_url: UncheckedUrl::from(mint_url),
+            mint_url: MintUrl::from(mint_url),
             unit,
             client: HttpClient::new(),
             localstore,
@@ -176,7 +194,7 @@ impl Wallet {
 
     /// Update Mint information and related entries in the event a mint changes its URL
     #[instrument(skip(self))]
-    pub async fn update_mint_url(&mut self, new_mint_url: UncheckedUrl) -> Result<(), Error> {
+    pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
         self.mint_url = new_mint_url.clone();
         // Where the mint_url is in the database it must be updated
         self.localstore
@@ -248,7 +266,7 @@ impl Wallet {
         Ok(())
     }
 
-    /// Add mint to wallet
+    /// Qeury mint for current mint information
     #[instrument(skip(self))]
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
         let mint_info = match self
@@ -267,12 +285,15 @@ impl Wallet {
             .add_mint(self.mint_url.clone(), mint_info.clone())
             .await?;
 
-        tracing::trace!("Mint info fetched for {}", self.mint_url);
+        tracing::trace!("Mint info updated for {}", self.mint_url);
 
         Ok(mint_info)
     }
 
     /// Get keys for mint keyset
+    ///
+    /// Selected keys from localstore if they are already known
+    /// If they are not known queries mint for keyset id and stores the [`Keys`]
     #[instrument(skip(self))]
     pub async fn get_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
@@ -292,6 +313,8 @@ impl Wallet {
     }
 
     /// Get keysets for mint
+    ///
+    /// Queries mint for all keysets
     #[instrument(skip(self))]
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
@@ -307,7 +330,8 @@ impl Wallet {
     }
 
     /// Get active keyset for mint
-    /// Quieries mint for current keysets then gets Keys for any unknown keysets
+    ///
+    /// Quieries mint for current keysets then gets [`Keys`] for any unknown keysets
     #[instrument(skip(self))]
     pub async fn get_active_mint_keyset(&self) -> Result<KeySetInfo, Error> {
         let keysets = self
@@ -352,13 +376,15 @@ impl Wallet {
     }
 
     /// Reclaim unspent proofs
+    ///
+    /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
     #[instrument(skip(self, proofs))]
     pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
         let proof_ys = proofs
             .iter()
             // Find Y for the secret
-            .flat_map(|p| hash_to_curve(p.secret.as_bytes()))
-            .collect::<Vec<PublicKey>>();
+            .map(|p| hash_to_curve(p.secret.as_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         let spendable = self
             .client
@@ -378,7 +404,7 @@ impl Wallet {
         Ok(())
     }
 
-    /// Check if a proof is spent
+    /// NUT-07 Check the state of a [`Proof`] with the mint
     #[instrument(skip(self, proofs))]
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
         let spendable = self
@@ -388,8 +414,8 @@ impl Wallet {
                 proofs
                     .iter()
                     // Find Y for the secret
-                    .flat_map(|p| hash_to_curve(p.secret.as_bytes()))
-                    .collect::<Vec<PublicKey>>(),
+                    .map(|p| hash_to_curve(p.secret.as_bytes()))
+                    .collect::<Result<Vec<PublicKey>, _>>()?,
             )
             .await?;
 
@@ -444,6 +470,30 @@ impl Wallet {
     }
 
     /// Mint Quote
+    /// # Synopsis
+    /// ```rust
+    /// use std::sync::Arc;
+    ///
+    /// use cdk::amount::Amount;
+    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::nuts::CurrencyUnit;
+    /// use cdk::wallet::Wallet;
+    /// use rand::Rng;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> anyhow::Result<()> {
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
+    ///
+    ///     let localstore = WalletMemoryDatabase::default();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let amount = Amount::from(100);
+    ///
+    ///     let quote = wallet.mint_quote(amount).await?;
+    ///     Ok(())
+    /// }
+    /// ```
     #[instrument(skip(self))]
     pub async fn mint_quote(&self, amount: Amount) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
@@ -468,7 +518,7 @@ impl Wallet {
         Ok(quote)
     }
 
-    /// Mint quote status
+    /// Check mint quote status
     #[instrument(skip(self, quote_id))]
     pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
         let response = self
@@ -513,6 +563,35 @@ impl Wallet {
     }
 
     /// Mint
+    /// # Synopsis
+    /// ```rust
+    /// use std::sync::Arc;
+    ///
+    /// use anyhow::Result;
+    /// use cdk::amount::{Amount, SplitTarget};
+    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::nuts::CurrencyUnit;
+    /// use cdk::wallet::Wallet;
+    /// use rand::Rng;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
+    ///
+    ///     let localstore = WalletMemoryDatabase::default();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let amount = Amount::from(100);
+    ///
+    ///     let quote = wallet.mint_quote(amount).await?;
+    ///     let quote_id = quote.id;
+    ///     // To be called after quote request is paid
+    ///     let amount_minted = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     #[instrument(skip(self))]
     pub async fn mint(
         &self,
@@ -611,7 +690,7 @@ impl Wallet {
 
         let proofs = proofs
             .into_iter()
-            .flat_map(|proof| {
+            .map(|proof| {
                 ProofInfo::new(
                     proof,
                     self.mint_url.clone(),
@@ -619,7 +698,7 @@ impl Wallet {
                     quote_info.unit,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
         self.localstore.add_proofs(proofs).await?;
@@ -901,10 +980,8 @@ impl Wallet {
                 let send_proofs_info = proofs_to_send
                     .clone()
                     .into_iter()
-                    .flat_map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, *unit)
-                    })
-                    .collect();
+                    .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Reserved, *unit))
+                    .collect::<Result<Vec<ProofInfo>, _>>()?;
 
                 self.localstore.add_proofs(send_proofs_info).await?;
 
@@ -919,8 +996,8 @@ impl Wallet {
 
         let keep_proofs = change_proofs
             .into_iter()
-            .flat_map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, *unit))
-            .collect();
+            .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, *unit))
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         self.localstore.add_proofs(keep_proofs).await?;
 
@@ -1175,6 +1252,29 @@ impl Wallet {
     }
 
     /// Melt Quote
+    /// # Synopsis
+    /// ```rust
+    ///  use std::sync::Arc;
+    ///
+    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::nuts::CurrencyUnit;
+    ///  use cdk::wallet::Wallet;
+    ///  use rand::Rng;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> anyhow::Result<()> {
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
+    ///
+    ///     let localstore = WalletMemoryDatabase::default();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
+    ///     let quote = wallet.melt_quote(bolt11, None).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     #[instrument(skip(self))]
     pub async fn melt_quote(
         &self,
@@ -1342,7 +1442,7 @@ impl Wallet {
 
             let change_proofs_info = change_proofs
                 .into_iter()
-                .flat_map(|proof| {
+                .map(|proof| {
                     ProofInfo::new(
                         proof,
                         self.mint_url.clone(),
@@ -1350,7 +1450,7 @@ impl Wallet {
                         quote_info.unit,
                     )
                 })
-                .collect();
+                .collect::<Result<Vec<ProofInfo>, _>>()?;
 
             self.localstore.add_proofs(change_proofs_info).await?;
         }
@@ -1363,6 +1463,31 @@ impl Wallet {
     }
 
     /// Melt
+    /// # Synopsis
+    /// ```rust, no_run
+    ///  use std::sync::Arc;
+    ///
+    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::nuts::CurrencyUnit;
+    ///  use cdk::wallet::Wallet;
+    ///  use rand::Rng;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> anyhow::Result<()> {
+    ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///  let mint_url = "https://testnut.cashu.space";
+    ///  let unit = CurrencyUnit::Sat;
+    ///
+    ///  let localstore = WalletMemoryDatabase::default();
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
+    ///  let quote = wallet.melt_quote(bolt11, None).await?;
+    ///  let quote_id = quote.id;
+    ///
+    ///  let _ = wallet.melt(&quote_id).await?;
+    ///
+    ///  Ok(())
+    /// }
     #[instrument(skip(self))]
     pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
@@ -1506,7 +1631,7 @@ impl Wallet {
         p2pk_signing_keys: &[SecretKey],
         preimages: &[String],
     ) -> Result<Amount, Error> {
-        let mut received_proofs: HashMap<UncheckedUrl, Proofs> = HashMap::new();
+        let mut received_proofs: HashMap<MintUrl, Proofs> = HashMap::new();
         let mint_url = &self.mint_url;
         // Add mint if it does not exist in the store
         if self
@@ -1535,11 +1660,11 @@ impl Wallet {
         // Map hash of preimage to preimage
         let hashed_to_preimage: HashMap<String, &String> = preimages
             .iter()
-            .flat_map(|p| match hex::decode(p) {
-                Ok(hex_bytes) => Some((Sha256Hash::hash(&hex_bytes).to_string(), p)),
-                Err(_) => None,
+            .map(|p| {
+                let hex_bytes = hex::decode(p)?;
+                Ok::<(String, &String), Error>((Sha256Hash::hash(&hex_bytes).to_string(), p))
             })
-            .collect();
+            .collect::<Result<HashMap<String, &String>, _>>()?;
 
         let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = p2pk_signing_keys
             .iter()
@@ -1628,8 +1753,8 @@ impl Wallet {
             total_amount += proofs.iter().map(|p| p.amount).sum();
             let proofs = proofs
                 .into_iter()
-                .flat_map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
-                .collect();
+                .map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
+                .collect::<Result<Vec<ProofInfo>, _>>()?;
             self.localstore.add_proofs(proofs).await?;
         }
 
@@ -1637,6 +1762,29 @@ impl Wallet {
     }
 
     /// Receive
+    /// # Synopsis
+    /// ```rust, no_run
+    ///  use std::sync::Arc;
+    ///
+    ///  use cdk::amount::SplitTarget;
+    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::nuts::CurrencyUnit;
+    ///  use cdk::wallet::Wallet;
+    ///  use rand::Rng;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> anyhow::Result<()> {
+    ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///  let mint_url = "https://testnut.cashu.space";
+    ///  let unit = CurrencyUnit::Sat;
+    ///
+    ///  let localstore = WalletMemoryDatabase::default();
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjEsInNlY3JldCI6ImI0ZjVlNDAxMDJhMzhiYjg3NDNiOTkwMzU5MTU1MGYyZGEzZTQxNWEzMzU0OTUyN2M2MmM5ZDc5MGVmYjM3MDUiLCJDIjoiMDIzYmU1M2U4YzYwNTMwZWVhOWIzOTQzZmRhMWEyY2U3MWM3YjNmMGNmMGRjNmQ4NDZmYTc2NWFhZjc3OWZhODFkIiwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
+    ///  let amount_receive = wallet.receive(token, SplitTarget::default(), &[], &[]).await?;
+    ///  Ok(())
+    /// }
+    /// ```
     #[instrument(skip_all)]
     pub async fn receive(
         &self,
@@ -1766,10 +1914,10 @@ impl Wallet {
 
                 let unspent_proofs = unspent_proofs
                     .into_iter()
-                    .flat_map(|proof| {
+                    .map(|proof| {
                         ProofInfo::new(proof, self.mint_url.clone(), State::Unspent, keyset.unit)
                     })
-                    .collect();
+                    .collect::<Result<Vec<ProofInfo>, _>>()?;
 
                 self.localstore.add_proofs(unspent_proofs).await?;
 

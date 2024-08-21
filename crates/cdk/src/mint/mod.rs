@@ -14,9 +14,9 @@ use self::nut05::QuoteState;
 use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
+use crate::mint_url::MintUrl;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
-use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::Amount;
 
@@ -29,7 +29,7 @@ pub use types::{MeltQuote, MintQuote};
 #[derive(Clone)]
 pub struct Mint {
     /// Mint Url
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Mint Info
     pub mint_info: MintInfo,
     /// Mint Storage backend
@@ -154,7 +154,7 @@ impl Mint {
             }
         }
 
-        let mint_url = UncheckedUrl::from(mint_url);
+        let mint_url = MintUrl::from(mint_url);
 
         Ok(Self {
             mint_url,
@@ -168,13 +168,13 @@ impl Mint {
 
     /// Set Mint Url
     #[instrument(skip_all)]
-    pub fn set_mint_url(&mut self, mint_url: UncheckedUrl) {
+    pub fn set_mint_url(&mut self, mint_url: MintUrl) {
         self.mint_url = mint_url;
     }
 
     /// Get Mint Url
     #[instrument(skip_all)]
-    pub fn get_mint_url(&self) -> &UncheckedUrl {
+    pub fn get_mint_url(&self) -> &MintUrl {
         &self.mint_url
     }
 
@@ -194,13 +194,40 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn new_mint_quote(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         request: String,
         unit: CurrencyUnit,
         amount: Amount,
         expiry: u64,
         ln_lookup: String,
     ) -> Result<MintQuote, Error> {
+        let nut04 = &self.mint_info.nuts.nut04;
+
+        if nut04.disabled {
+            return Err(Error::MintingDisabled);
+        }
+
+        match nut04.get_settings(&unit, &PaymentMethod::Bolt11) {
+            Some(settings) => {
+                if settings
+                    .max_amount
+                    .map_or(false, |max_amount| amount > max_amount)
+                {
+                    return Err(Error::MintOverLimit);
+                }
+
+                if settings
+                    .min_amount
+                    .map_or(false, |min_amount| amount < min_amount)
+                {
+                    return Err(Error::MintUnderLimit);
+                }
+            }
+            None => {
+                return Err(Error::UnsupportedUnit);
+            }
+        }
+
         let quote = MintQuote::new(mint_url, request, unit, amount, expiry, ln_lookup.clone());
         tracing::debug!(
             "New mint quote {} for {} {} with request id {}",
@@ -286,6 +313,29 @@ impl Mint {
         Ok(())
     }
 
+    /// Flag mint quote as paid
+    #[instrument(skip_all)]
+    pub async fn pay_mint_quote_for_request_id(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<(), Error> {
+        if let Ok(Some(mint_quote)) = self
+            .localstore
+            .get_mint_quote_by_request_lookup_id(request_lookup_id)
+            .await
+        {
+            tracing::debug!(
+                "Quote {} paid by lookup id {}",
+                mint_quote.id,
+                request_lookup_id
+            );
+            self.localstore
+                .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// New melt quote
     #[instrument(skip_all)]
     pub async fn new_melt_quote(
@@ -297,6 +347,33 @@ impl Mint {
         expiry: u64,
         request_lookup_id: String,
     ) -> Result<MeltQuote, Error> {
+        let nut05 = &self.mint_info.nuts.nut05;
+
+        if nut05.disabled {
+            return Err(Error::MeltingDisabled);
+        }
+
+        match nut05.get_settings(&unit, &PaymentMethod::Bolt11) {
+            Some(settings) => {
+                if settings
+                    .max_amount
+                    .map_or(false, |max_amount| amount > max_amount)
+                {
+                    return Err(Error::MeltOverLimit);
+                }
+
+                if settings
+                    .min_amount
+                    .map_or(false, |min_amount| amount < min_amount)
+                {
+                    return Err(Error::MeltUnderLimit);
+                }
+            }
+            None => {
+                return Err(Error::UnsupportedUnit);
+            }
+        }
+
         let quote = MeltQuote::new(
             request,
             unit,
@@ -639,11 +716,11 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let input_ys: Vec<PublicKey> = swap_request
+        let input_ys = swap_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .add_proofs(swap_request.inputs.clone())
@@ -857,26 +934,6 @@ impl Mint {
         &self,
         melt_request: &MeltBolt11Request,
     ) -> Result<MeltQuote, Error> {
-        let ys: Vec<PublicKey> = melt_request
-            .inputs
-            .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
-
-        // Ensure proofs are unique and not being double spent
-        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
-            return Err(Error::DuplicateProofs);
-        }
-
-        self.localstore
-            .add_proofs(melt_request.inputs.clone())
-            .await?;
-        self.check_ys_spendable(&ys, State::Pending).await?;
-
-        for proof in &melt_request.inputs {
-            self.verify_proof(proof).await?;
-        }
-
         let state = self
             .localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Pending)
@@ -890,6 +947,26 @@ impl Mint {
             MeltQuoteState::Paid => {
                 return Err(Error::PaidQuote);
             }
+        }
+
+        let ys = melt_request
+            .inputs
+            .iter()
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+
+        // Ensure proofs are unique and not being double spent
+        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
+            return Err(Error::DuplicateProofs);
+        }
+
+        self.localstore
+            .add_proofs(melt_request.inputs.clone())
+            .await?;
+        self.check_ys_spendable(&ys, State::Pending).await?;
+
+        for proof in &melt_request.inputs {
+            self.verify_proof(proof).await?;
         }
 
         let quote = self
@@ -933,13 +1010,13 @@ impl Mint {
             keyset_units.insert(keyset.unit);
         }
 
+        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
+
+        if sig_flag.eq(&SigFlag::SigAll) {
+            return Err(Error::SigAllUsedInMelt);
+        }
+
         if let Some(outputs) = &melt_request.outputs {
-            let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
-
-            if sig_flag.eq(&SigFlag::SigAll) {
-                return Err(Error::SigAllUsedInMelt);
-            }
-
             let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
             for id in output_keysets_ids {
                 let keyset = self
@@ -977,11 +1054,11 @@ impl Mint {
     /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let input_ys: Vec<PublicKey> = melt_request
+        let input_ys = melt_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Unspent)
@@ -1004,83 +1081,18 @@ impl Mint {
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         tracing::debug!("Processing melt quote: {}", melt_request.quote);
+
         let quote = self
             .localstore
             .get_melt_quote(&melt_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if let Some(outputs) = &melt_request.outputs {
-            let blinded_messages: Vec<PublicKey> =
-                outputs.iter().map(|b| b.blinded_secret).collect();
-
-            if self
-                .localstore
-                .get_blind_signatures(&blinded_messages)
-                .await?
-                .iter()
-                .flatten()
-                .next()
-                .is_some()
-            {
-                tracing::info!("Output has already been signed",);
-
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
-        }
-
-        let mut change = None;
-
-        if let Some(outputs) = melt_request.outputs.clone() {
-            let change_target = melt_request.proofs_amount() - total_spent;
-            let mut amounts = change_target.split();
-            let mut change_sigs = Vec::with_capacity(amounts.len());
-
-            if outputs.len().lt(&amounts.len()) {
-                tracing::debug!(
-                    "Providing change requires {} blinded messages, but only {} provided",
-                    amounts.len(),
-                    outputs.len()
-                );
-
-                // In the case that not enough outputs are provided to return all change
-                // Reverse sort the amounts so that the most amount of change possible is
-                // returned. The rest is burnt
-                amounts.sort_by(|a, b| b.cmp(a));
-            }
-
-            let mut outputs = outputs;
-
-            for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
-                blinded_message.amount = *amount;
-
-                let blinded_signature = self.blind_sign(blinded_message).await?;
-                change_sigs.push(blinded_signature)
-            }
-
-            self.localstore
-                .add_blind_signatures(
-                    &outputs[0..change_sigs.len()]
-                        .iter()
-                        .map(|o| o.blinded_secret)
-                        .collect::<Vec<PublicKey>>(),
-                    &change_sigs,
-                )
-                .await?;
-
-            change = Some(change_sigs);
-        } else {
-            tracing::info!(
-                "No change outputs provided. Burnt: {:?} sats",
-                (melt_request.proofs_amount() - total_spent)
-            );
-        }
-
-        let input_ys: Vec<PublicKey> = melt_request
+        let input_ys = melt_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Spent)
@@ -1089,6 +1101,69 @@ impl Mint {
         self.localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
             .await?;
+
+        let mut change = None;
+
+        // Check if there is change to return
+        if melt_request.proofs_amount() > total_spent {
+            // Check if wallet provided change outputs
+            if let Some(outputs) = melt_request.outputs.clone() {
+                let blinded_messages: Vec<PublicKey> =
+                    outputs.iter().map(|b| b.blinded_secret).collect();
+
+                if self
+                    .localstore
+                    .get_blind_signatures(&blinded_messages)
+                    .await?
+                    .iter()
+                    .flatten()
+                    .next()
+                    .is_some()
+                {
+                    tracing::info!("Output has already been signed");
+
+                    return Err(Error::BlindedMessageAlreadySigned);
+                }
+
+                let change_target = melt_request.proofs_amount() - total_spent;
+                let mut amounts = change_target.split();
+                let mut change_sigs = Vec::with_capacity(amounts.len());
+
+                if outputs.len().lt(&amounts.len()) {
+                    tracing::debug!(
+                        "Providing change requires {} blinded messages, but only {} provided",
+                        amounts.len(),
+                        outputs.len()
+                    );
+
+                    // In the case that not enough outputs are provided to return all change
+                    // Reverse sort the amounts so that the most amount of change possible is
+                    // returned. The rest is burnt
+                    amounts.sort_by(|a, b| b.cmp(a));
+                }
+
+                let mut outputs = outputs;
+
+                for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
+                    blinded_message.amount = *amount;
+
+                    let blinded_signature = self.blind_sign(blinded_message).await?;
+                    change_sigs.push(blinded_signature)
+                }
+
+                self.localstore
+                    .add_blind_signatures(
+                        &outputs[0..change_sigs.len()]
+                            .iter()
+                            .map(|o| o.blinded_secret)
+                            .collect::<Vec<PublicKey>>(),
+                        &change_sigs,
+                    )
+                    .await?;
+
+                change = Some(change_sigs);
+            }
+        }
 
         Ok(MeltQuoteBolt11Response {
             amount: quote.amount,
@@ -1400,41 +1475,52 @@ mod tests {
 
     use cdk_database::mint_memory::MintMemoryDatabase;
 
-    #[tokio::test]
-    async fn mint_mod_new_mint() {
-        // mock DB settings
-        let active_keysets: HashMap<CurrencyUnit, Id> = HashMap::new();
-        let keysets: Vec<MintKeySetInfo> = Vec::new();
-        let mint_quotes: Vec<MintQuote> = Vec::new();
-        let melt_quotes: Vec<MeltQuote> = Vec::new();
-        let pending_proofs: Proofs = Proofs::new();
-        let spent_proofs: Proofs = Proofs::new();
-        let blinded_signatures: HashMap<[u8; 33], BlindSignature> = HashMap::new();
+    #[derive(Default)]
+    struct MintConfig<'a> {
+        active_keysets: HashMap<CurrencyUnit, Id>,
+        keysets: Vec<MintKeySetInfo>,
+        mint_quotes: Vec<MintQuote>,
+        melt_quotes: Vec<MeltQuote>,
+        pending_proofs: Proofs,
+        spent_proofs: Proofs,
+        blinded_signatures: HashMap<[u8; 33], BlindSignature>,
+        mint_url: &'a str,
+        seed: &'a [u8],
+        mint_info: MintInfo,
+        supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    }
 
-        // Mock data
-        let mint_url = "http://example.com";
-        let seed = b"some_random_seed";
-        let mint_info = MintInfo::default();
+    async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
         let localstore = Arc::new(
             MintMemoryDatabase::new(
-                active_keysets,
-                keysets,
-                mint_quotes,
-                melt_quotes,
-                pending_proofs,
-                spent_proofs,
-                blinded_signatures,
+                config.active_keysets,
+                config.keysets,
+                config.mint_quotes,
+                config.melt_quotes,
+                config.pending_proofs,
+                config.spent_proofs,
+                config.blinded_signatures,
             )
             .unwrap(),
         );
-        let supported_units: HashMap<CurrencyUnit, (u64, u8)> = HashMap::new();
 
-        // Instantiate a new Mint
-        let mint = Mint::new(mint_url, seed, mint_info, localstore, supported_units).await;
+        Mint::new(
+            config.mint_url,
+            config.seed,
+            config.mint_info,
+            localstore,
+            config.supported_units,
+        )
+        .await
+    }
 
-        // Assert the mint was created successfully
-        assert!(mint.is_ok());
-        let mint = mint.unwrap();
+    #[tokio::test]
+    async fn mint_mod_new_mint() -> Result<(), Error> {
+        let config = MintConfig::<'_> {
+            mint_url: "http://example.com",
+            ..Default::default()
+        };
+        let mint = create_mint(config).await?;
 
         assert_eq!(mint.get_mint_url().to_string(), "http://example.com");
         let info = mint.mint_info();
@@ -1463,5 +1549,40 @@ mod tests {
             mint.total_redeemed().await.unwrap(),
             HashMap::<nut02::Id, Amount>::new()
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mint_mod_rotate_keyset() -> Result<(), Error> {
+        let config: MintConfig = Default::default();
+        let mint = create_mint(config).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+        assert!(keysets.keysets.is_empty());
+
+        // generate the first keyset and set it to active
+        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+        assert!(keysets.keysets.len().eq(&1));
+        assert!(keysets.keysets[0].active);
+        let first_keyset_id = keysets.keysets[0].id;
+
+        // set the first keyset to inactive and generate a new keyset
+        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+
+        assert!(keysets.keysets.len().eq(&2));
+        for keyset in &keysets.keysets {
+            if keyset.id == first_keyset_id {
+                assert!(!keyset.active);
+            } else {
+                assert!(keyset.active);
+            }
+        }
+
+        Ok(())
     }
 }

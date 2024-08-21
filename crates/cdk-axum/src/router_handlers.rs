@@ -4,6 +4,7 @@ use anyhow::Result;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use cdk::amount::Amount;
 use cdk::cdk_lightning::to_unit;
 use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
@@ -70,7 +71,7 @@ pub async fn get_mint_bolt11_quote(
     let quote_expiry = unix_time() + state.quote_ttl;
 
     let create_invoice_response = ln
-        .create_invoice(amount, "".to_string(), quote_expiry)
+        .create_invoice(amount, &payload.unit, "".to_string(), quote_expiry)
         .await
         .map_err(|err| {
             tracing::error!("Could not create invoice: {}", err);
@@ -84,7 +85,7 @@ pub async fn get_mint_bolt11_quote(
             create_invoice_response.request.to_string(),
             payload.unit,
             payload.amount,
-            quote_expiry,
+            create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id,
         )
         .await
@@ -156,7 +157,7 @@ pub async fn get_melt_bolt11_quote(
         .new_melt_quote(
             payload.request.to_string(),
             payload.unit,
-            payment_quote.amount.into(),
+            payment_quote.amount,
             payment_quote.fee.into(),
             unix_time() + state.quote_ttl,
             payment_quote.request_lookup_id,
@@ -270,8 +271,7 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            let mut partial_msats = None;
-            let mut max_fee_msats = None;
+            let mut partial_amount = None;
 
             // If the quote unit is SAT or MSAT we can check that the expected fees are provided.
             // We also check if the quote is less then the invoice amount in the case that it is a mmp
@@ -283,8 +283,8 @@ pub async fn post_melt_bolt11(
                 let quote_msats = to_unit(quote.amount, &quote.unit, &CurrencyUnit::Msat)
                     .expect("Quote unit is checked above that it can convert to msat");
 
-                let invoice_amount_msats = match invoice.amount_milli_satoshis() {
-                    Some(amount) => amount,
+                let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
+                    Some(amount) => amount.into(),
                     None => {
                         if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                             tracing::error!("Could not reset melt quote state: {}", err);
@@ -293,30 +293,29 @@ pub async fn post_melt_bolt11(
                     }
                 };
 
-                partial_msats = match invoice_amount_msats > quote_msats {
-                    true => Some(invoice_amount_msats - quote_msats),
+                partial_amount = match invoice_amount_msats > quote_msats {
+                    true => {
+                        let partial_msats = invoice_amount_msats - quote_msats;
+
+                        Some(
+                            to_unit(partial_msats, &CurrencyUnit::Msat, &quote.unit)
+                                .map_err(|_| into_response(Error::UnsupportedUnit))?,
+                        )
+                    }
                     false => None,
                 };
 
-                let max_fee = to_unit(quote.fee_reserve, &quote.unit, &CurrencyUnit::Msat)
-                    .expect("Quote unit is checked above that it can convert to msat");
-
-                max_fee_msats = Some(max_fee);
-
-                let amount_to_pay_msats = match partial_msats {
+                let amount_to_pay = match partial_amount {
                     Some(amount_to_pay) => amount_to_pay,
-                    None => invoice_amount_msats,
+                    None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &quote.unit)
+                        .map_err(|_| into_response(Error::UnsupportedUnit))?,
                 };
 
-                let input_amount_msats =
-                    to_unit(inputs_amount_quote_unit, &quote.unit, &CurrencyUnit::Msat)
-                        .expect("Quote unit is checked above that it can convert to msat");
-
-                if amount_to_pay_msats + max_fee > input_amount_msats {
+                if amount_to_pay + quote.fee_reserve > inputs_amount_quote_unit {
                     tracing::debug!(
                         "Not enough inuts provided: {} msats needed {} msats",
-                        input_amount_msats,
-                        amount_to_pay_msats
+                        inputs_amount_quote_unit,
+                        amount_to_pay
                     );
 
                     if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
@@ -339,7 +338,7 @@ pub async fn post_melt_bolt11(
             };
 
             let pre = match ln
-                .pay_invoice(quote.clone(), partial_msats, max_fee_msats)
+                .pay_invoice(quote.clone(), partial_amount, Some(quote.fee_reserve))
                 .await
             {
                 Ok(pay) => pay,
@@ -358,10 +357,10 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            let amount_spent = to_unit(pre.total_spent_msats, &ln.get_settings().unit, &quote.unit)
+            let amount_spent = to_unit(pre.total_spent, &ln.get_settings().unit, &quote.unit)
                 .map_err(|_| into_response(Error::UnsupportedUnit))?;
 
-            (pre.payment_preimage, amount_spent.into())
+            (pre.payment_preimage, amount_spent)
         }
     };
 

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use axum::Router;
+use cdk::amount::Amount;
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
     PaymentQuoteResponse, Settings,
@@ -141,7 +142,7 @@ impl MintLightning for Strike {
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: quote.payment_quote_id,
-            amount: from_strike_amount(quote.amount, &melt_quote_request.unit)?,
+            amount: from_strike_amount(quote.amount, &melt_quote_request.unit)?.into(),
             fee,
         })
     }
@@ -149,8 +150,8 @@ impl MintLightning for Strike {
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
-        _partial_msats: Option<u64>,
-        _max_fee_msats: Option<u64>,
+        _partial_msats: Option<Amount>,
+        _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let pay_response = self
             .strike_api
@@ -164,7 +165,7 @@ impl MintLightning for Strike {
             InvoiceState::Pending => MeltQuoteState::Pending,
         };
 
-        let total_spent_msats = from_strike_amount(pay_response.total_amount, &melt_quote.unit)?;
+        let total_spent = from_strike_amount(pay_response.total_amount, &melt_quote.unit)?.into();
 
         let bolt11: Bolt11Invoice = melt_quote.request.parse()?;
 
@@ -172,13 +173,14 @@ impl MintLightning for Strike {
             payment_hash: bolt11.payment_hash().to_string(),
             payment_preimage: None,
             status: state,
-            total_spent_msats,
+            total_spent,
         })
     }
 
     async fn create_invoice(
         &self,
-        amount: u64,
+        amount: Amount,
+        _unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -199,9 +201,13 @@ impl MintLightning for Strike {
             .invoice_quote(&create_invoice_response.invoice_id)
             .await?;
 
+        let request: Bolt11Invoice = quote.ln_invoice.parse()?;
+        let expiry = request.expires_at().map(|t| t.as_secs());
+
         Ok(CreateInvoiceResponse {
             request_lookup_id: create_invoice_response.invoice_id,
             request: quote.ln_invoice.parse()?,
+            expiry,
         })
     }
 
