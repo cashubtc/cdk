@@ -9,8 +9,8 @@ use cdk::amount::Amount;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, Proofs,
-    PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, PublicKey,
+    SpendingConditions, State,
 };
 use cdk::secret::Secret;
 use cdk::types::ProofInfo;
@@ -52,6 +52,23 @@ impl WalletSqliteDatabase {
             .run(&self.pool)
             .await
             .expect("Could not run migrations");
+    }
+
+    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), cdk_database::Error> {
+        sqlx::query(
+            r#"
+    UPDATE proof
+    SET state=?
+    WHERE y IS ?;
+            "#,
+        )
+        .bind(state.to_string())
+        .bind(y.to_bytes().to_vec())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
     }
 }
 
@@ -513,15 +530,18 @@ WHERE id=?
         Ok(())
     }
 
-    #[instrument(skip_all)]
-    async fn add_proofs(&self, proof_info: Vec<ProofInfo>) -> Result<(), Self::Err> {
-        for proof in proof_info {
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Self::Err> {
+        for proof in added {
             sqlx::query(
                 r#"
-INSERT OR REPLACE INTO proof
-(y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        "#,
+    INSERT OR REPLACE INTO proof
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            "#,
             )
             .bind(proof.y.to_bytes().to_vec())
             .bind(proof.mint_url.to_string())
@@ -545,6 +565,44 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             .execute(&self.pool)
             .await
             .map_err(Error::from)?;
+        }
+
+        // TODO: Generate a IN clause
+        for y in removed_ys {
+            sqlx::query(
+                r#"
+    DELETE FROM proof
+    WHERE y = ?
+            "#,
+            )
+            .bind(y.to_bytes().to_vec())
+            .execute(&self.pool)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        Ok(())
+    }
+
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        for y in ys {
+            self.set_proof_state(y, State::Pending).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        for y in ys {
+            self.set_proof_state(y, State::Reserved).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        for y in ys {
+            self.set_proof_state(y, State::Unspent).await?;
         }
 
         Ok(())
@@ -600,43 +658,6 @@ FROM proof;
             false => Ok(proofs),
             true => return Ok(vec![]),
         }
-    }
-
-    #[instrument(skip_all)]
-    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
-        // TODO: Generate a IN clause
-        for proof in proofs {
-            sqlx::query(
-                r#"
-DELETE FROM proof
-WHERE y = ?
-        "#,
-            )
-            .bind(proof.y()?.to_bytes().to_vec())
-            .execute(&self.pool)
-            .await
-            .map_err(Error::from)?;
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self, y))]
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
-UPDATE proof
-SET state=?
-WHERE y IS ?;
-        "#,
-        )
-        .bind(state.to_string())
-        .bind(y.to_bytes().to_vec())
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]

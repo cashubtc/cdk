@@ -5,10 +5,10 @@ use std::rc::Rc;
 use std::result::Result;
 
 use async_trait::async_trait;
-use cdk::cdk_database::WalletDatabase;
+use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use cdk::types::ProofInfo;
 use cdk::util::unix_time;
@@ -107,6 +107,44 @@ impl WalletRexieDatabase {
         Ok(Self {
             db: Rc::new(Mutex::new(rexie)),
         })
+    }
+
+    async fn set_proof_states(
+        &self,
+        ys: Vec<PublicKey>,
+        state: State,
+    ) -> Result<(), cdk_database::Error> {
+        let rexie = self.db.lock().await;
+
+        let transaction = rexie
+            .transaction(&[PROOFS], TransactionMode::ReadWrite)
+            .map_err(Error::from)?;
+
+        let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
+
+        for y in ys {
+            let y = serde_wasm_bindgen::to_value(&y).map_err(Error::from)?;
+
+            let mut proof: ProofInfo = proofs_store
+                .get(y.clone())
+                .await
+                .map_err(Error::from)?
+                .and_then(|p| serde_wasm_bindgen::from_value(p).ok())
+                .ok_or(Error::NotFound)?;
+
+            proof.state = state;
+
+            let proof = serde_wasm_bindgen::to_value(&proof).map_err(Error::from)?;
+
+            proofs_store
+                .put(&proof, Some(&y))
+                .await
+                .map_err(Error::from)?;
+        }
+
+        transaction.done().await.map_err(Error::from)?;
+
+        Ok(())
     }
 }
 
@@ -224,7 +262,7 @@ impl WalletDatabase for WalletRexieDatabase {
             .collect();
 
         if !updated_proofs.is_empty() {
-            self.add_proofs(updated_proofs).await?;
+            self.update_proofs(updated_proofs, vec![]).await?;
         }
 
         // Update mint quotes
@@ -567,7 +605,11 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, proofs: Vec<ProofInfo>) -> Result<(), Self::Err> {
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -576,9 +618,8 @@ impl WalletDatabase for WalletRexieDatabase {
 
         let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
 
-        for proof in proofs {
-            let y = proof.y;
-            let y = serde_wasm_bindgen::to_value(&y).map_err(Error::from)?;
+        for proof in added {
+            let y = serde_wasm_bindgen::to_value(&proof.y).map_err(Error::from)?;
             let proof = serde_wasm_bindgen::to_value(&proof).map_err(Error::from)?;
 
             proofs_store
@@ -587,9 +628,27 @@ impl WalletDatabase for WalletRexieDatabase {
                 .map_err(Error::from)?;
         }
 
+        for y in removed_ys {
+            let y = serde_wasm_bindgen::to_value(&y).map_err(Error::from)?;
+
+            proofs_store.delete(y).await.map_err(Error::from)?;
+        }
+
         transaction.done().await.map_err(Error::from)?;
 
         Ok(())
+    }
+
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.set_proof_states(ys, State::Pending).await
+    }
+
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.set_proof_states(ys, State::Reserved).await
+    }
+
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.set_proof_states(ys, State::Unspent).await
     }
 
     async fn get_proofs(
@@ -636,58 +695,6 @@ impl WalletDatabase for WalletRexieDatabase {
         transaction.done().await.map_err(Error::from)?;
 
         Ok(proofs)
-    }
-
-    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
-        let rexie = self.db.lock().await;
-
-        let transaction = rexie
-            .transaction(&[PROOFS], TransactionMode::ReadWrite)
-            .map_err(Error::from)?;
-
-        let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
-
-        for proof in proofs {
-            let y = serde_wasm_bindgen::to_value(&proof.y()?).map_err(Error::from)?;
-
-            proofs_store.delete(y).await.map_err(Error::from)?;
-        }
-
-        transaction.done().await.map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
-        let rexie = self.db.lock().await;
-
-        let transaction = rexie
-            .transaction(&[PROOFS], TransactionMode::ReadWrite)
-            .map_err(Error::from)?;
-
-        let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
-
-        let y = serde_wasm_bindgen::to_value(&y).map_err(Error::from)?;
-
-        let mut proof: ProofInfo = proofs_store
-            .get(y.clone())
-            .await
-            .map_err(Error::from)?
-            .and_then(|p| serde_wasm_bindgen::from_value(p).ok())
-            .ok_or(Error::NotFound)?;
-
-        proof.state = state;
-
-        let proof = serde_wasm_bindgen::to_value(&proof).map_err(Error::from)?;
-
-        proofs_store
-            .put(&proof, Some(&y))
-            .await
-            .map_err(Error::from)?;
-
-        transaction.done().await.map_err(Error::from)?;
-
-        Ok(())
     }
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
