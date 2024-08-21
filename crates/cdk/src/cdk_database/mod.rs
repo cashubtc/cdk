@@ -17,9 +17,9 @@ use crate::mint::MintQuote as MintMintQuote;
 #[cfg(feature = "wallet")]
 use crate::mint_url::MintUrl;
 #[cfg(feature = "mint")]
-use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof};
+use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof, Proofs};
 #[cfg(any(feature = "wallet", feature = "mint"))]
-use crate::nuts::{CurrencyUnit, Id, Proofs, PublicKey, State};
+use crate::nuts::{CurrencyUnit, Id, PublicKey, State};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
 #[cfg(feature = "wallet")]
@@ -124,8 +124,18 @@ pub trait WalletDatabase: Debug {
     /// Remove [`Keys`] from storage
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err>;
 
-    /// Add [`Proofs`] to storage
-    async fn add_proofs(&self, proof_info: Vec<ProofInfo>) -> Result<(), Self::Err>;
+    /// Update the proofs in storage by adding new proofs or removing proofs by their Y value.
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Self::Err>;
+    /// Set proofs as pending in storage. Proofs are identified by their Y value.
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Reserve proofs in storage. Proofs are identified by their Y value.
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Unreserve proofs in storage. Proofs are identified by their Y value.
+    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Get proofs from storage
     async fn get_proofs(
         &self,
@@ -134,11 +144,6 @@ pub trait WalletDatabase: Debug {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err>;
-    /// Remove proofs from storage
-    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err>;
-
-    /// Set Proof state
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err>;
 
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;

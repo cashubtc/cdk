@@ -10,7 +10,7 @@ use super::WalletDatabase;
 use crate::cdk_database::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -109,7 +109,7 @@ impl WalletDatabase for WalletMemoryDatabase {
                 })
                 .collect();
 
-            self.add_proofs(updated_proofs).await?;
+            self.update_proofs(updated_proofs, vec![]).await?;
         }
 
         // Update mint quotes
@@ -238,11 +238,55 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, proofs_info: Vec<ProofInfo>) -> Result<(), Error> {
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Error> {
         let mut all_proofs = self.proofs.write().await;
 
-        for proof_info in proofs_info.into_iter() {
+        for proof_info in added.into_iter() {
             all_proofs.insert(proof_info.y, proof_info);
+        }
+
+        for y in removed_ys.into_iter() {
+            all_proofs.remove(&y);
+        }
+
+        Ok(())
+    }
+
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
+        let mut all_proofs = self.proofs.write().await;
+
+        for y in ys.into_iter() {
+            if let Some(proof_info) = all_proofs.get_mut(&y) {
+                proof_info.state = State::Pending;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
+        let mut all_proofs = self.proofs.write().await;
+
+        for y in ys.into_iter() {
+            if let Some(proof_info) = all_proofs.get_mut(&y) {
+                proof_info.state = State::Reserved;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
+        let mut all_proofs = self.proofs.write().await;
+
+        for y in ys.into_iter() {
+            if let Some(proof_info) = all_proofs.get_mut(&y) {
+                proof_info.state = State::Unspent;
+            }
         }
 
         Ok(())
@@ -270,34 +314,6 @@ impl WalletDatabase for WalletMemoryDatabase {
             .collect();
 
         Ok(proofs)
-    }
-
-    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
-        let mut mint_proofs = self.proofs.write().await;
-
-        for proof in proofs {
-            mint_proofs.remove(&proof.y().map_err(Error::from)?);
-        }
-
-        Ok(())
-    }
-
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
-        let mint_proofs = self.proofs.read().await;
-
-        let mint_proof = mint_proofs.get(&y).cloned();
-        drop(mint_proofs);
-
-        let mut mint_proofs = self.proofs.write().await;
-
-        if let Some(proof_info) = mint_proof {
-            let mut proof_info = proof_info.clone();
-
-            proof_info.state = state;
-            mint_proofs.insert(y, proof_info);
-        }
-
-        Ok(())
     }
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error> {

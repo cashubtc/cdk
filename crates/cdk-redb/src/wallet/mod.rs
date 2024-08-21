@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use cdk::cdk_database::WalletDatabase;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use cdk::types::ProofInfo;
 use cdk::util::unix_time;
@@ -151,6 +151,47 @@ impl WalletRedbDatabase {
             db: Arc::new(Mutex::new(db)),
         })
     }
+
+    async fn update_proof_states(
+        &self,
+        ys: Vec<PublicKey>,
+        state: State,
+    ) -> Result<(), cdk_database::Error> {
+        let db = self.db.lock().await;
+        let read_txn = db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+        let write_txn = db.begin_write().map_err(Error::from)?;
+
+        for y in ys {
+            let y_slice = y.to_bytes();
+            let proof = table
+                .get(y_slice.as_slice())
+                .map_err(Error::from)?
+                .ok_or(Error::UnknownY)?;
+
+            let mut proof_info =
+                serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
+
+            proof_info.state = state;
+
+            {
+                let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+                table
+                    .insert(
+                        y_slice.as_slice(),
+                        serde_json::to_string(&proof_info)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -260,7 +301,7 @@ impl WalletDatabase for WalletRedbDatabase {
                 .collect();
 
             if !updated_proofs.is_empty() {
-                self.add_proofs(updated_proofs).await?;
+                self.update_proofs(updated_proofs, vec![]).await?;
             }
         }
 
@@ -566,8 +607,12 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self, proofs_info))]
-    async fn add_proofs(&self, proofs_info: Vec<ProofInfo>) -> Result<(), Self::Err> {
+    #[instrument(skip(self, added, deleted_ys))]
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        deleted_ys: Vec<PublicKey>,
+    ) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
 
         let write_txn = db.begin_write().map_err(Error::from)?;
@@ -575,7 +620,7 @@ impl WalletDatabase for WalletRedbDatabase {
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-            for proof_info in proofs_info.iter() {
+            for proof_info in added.iter() {
                 table
                     .insert(
                         proof_info.y.to_bytes().as_slice(),
@@ -585,10 +630,29 @@ impl WalletDatabase for WalletRedbDatabase {
                     )
                     .map_err(Error::from)?;
             }
+
+            for y in deleted_ys.iter() {
+                table.remove(y.to_bytes().as_slice()).map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
+    }
+
+    #[instrument(skip(self, ys))]
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.update_proof_states(ys, State::Pending).await
+    }
+
+    #[instrument(skip(self, ys))]
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.update_proof_states(ys, State::Reserved).await
+    }
+
+    #[instrument(skip(self, ys))]
+    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.update_proof_states(ys, State::Unspent).await
     }
 
     #[instrument(skip_all)]
@@ -628,61 +692,6 @@ impl WalletDatabase for WalletRedbDatabase {
             .collect();
 
         Ok(proofs)
-    }
-
-    #[instrument(skip(self, proofs))]
-    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-            for proof in proofs {
-                let y_slice = proof.y().map_err(Error::from)?.to_bytes();
-                table.remove(y_slice.as_slice()).map_err(Error::from)?;
-            }
-        }
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self, y))]
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-        let y_slice = y.to_bytes();
-        let proof = table
-            .get(y_slice.as_slice())
-            .map_err(Error::from)?
-            .ok_or(Error::UnknownY)?;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
-
-        let mut proof_info =
-            serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
-
-        proof_info.state = state;
-
-        {
-            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-            table
-                .insert(
-                    y_slice.as_slice(),
-                    serde_json::to_string(&proof_info)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
