@@ -23,7 +23,7 @@ use cdk::{
     Amount,
 };
 use itertools::Itertools;
-use nostr_database::{DatabaseError, NostrDatabase};
+use nostr_database::{DatabaseError, MemoryDatabase, MemoryDatabaseOptions, NostrDatabase};
 use nostr_sdk::{
     client, nips::nip44, Client, Event, EventBuilder, EventId, EventSource, Filter, Kind,
     SingleLetterTag, Tag, TagKind, Timestamp,
@@ -103,7 +103,13 @@ impl WalletNostrDatabase {
         keys: nostr_sdk::Keys,
         relays: Vec<Url>,
     ) -> Result<Self, Error> {
-        let client = Client::builder().signer(&keys).build();
+        let client = Client::builder()
+            .signer(&keys)
+            .database(MemoryDatabase::with_opts(MemoryDatabaseOptions {
+                events: true,
+                max_events: None,
+            }))
+            .build();
         Self::connect_client(&client, relays).await?;
         let wallet_db = Self::load_db(id.clone(), &client, &keys).await?;
         let self_ = Self {
