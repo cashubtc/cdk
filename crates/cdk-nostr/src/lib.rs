@@ -202,6 +202,9 @@ impl WalletNostrDatabase {
                 self.save_info_with_lock(&info).await?;
             }
         }
+        for url in info.mints.iter() {
+            self.wallet_db.add_mint(url.clone(), None).await?;
+        }
         Ok(info.clone())
     }
 
