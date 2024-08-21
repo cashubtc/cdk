@@ -19,7 +19,7 @@ use cdk::{
         SpendingConditions, State,
     },
     types::ProofInfo,
-    wallet::{MeltQuote, MintQuote},
+    wallet::{self, MeltQuote, MintQuote},
     Amount,
 };
 use itertools::Itertools;
@@ -93,8 +93,7 @@ impl WalletNostrDatabase {
             wallet_db: WalletMemoryDatabase::default(),
         };
         let info = self_.refresh_info().await?;
-        self_.wallet_db =
-            WalletMemoryDatabase::new(vec![], vec![], vec![], info.counters, HashMap::new());
+        self_.load_db(info).await?;
         self_.sync_proofs().await?;
         Ok(self_)
     }
@@ -124,8 +123,7 @@ impl WalletNostrDatabase {
             wallet_db: WalletMemoryDatabase::default(),
         };
         let info = self_.refresh_info().await?;
-        self_.wallet_db =
-            WalletMemoryDatabase::new(vec![], vec![], vec![], info.counters, HashMap::new());
+        self_.load_db(info).await?;
         self_.sync_proofs().await?;
         Ok(self_)
     }
@@ -133,6 +131,16 @@ impl WalletNostrDatabase {
     async fn connect_client(client: &Client, relays: Vec<Url>) -> Result<(), Error> {
         client.add_relays(relays).await?;
         client.connect().await;
+        Ok(())
+    }
+
+    async fn load_db(&mut self, info: WalletInfo) -> Result<(), Error> {
+        let wallet_db =
+            WalletMemoryDatabase::new(vec![], vec![], vec![], info.counters, HashMap::new());
+        for mint_url in info.mints.iter() {
+            wallet_db.add_mint(mint_url.clone(), None).await?;
+        }
+        self.wallet_db = wallet_db;
         Ok(())
     }
 
@@ -232,7 +240,7 @@ impl WalletNostrDatabase {
     }
 
     /// Sync proofs from Nostr
-    async fn sync_proofs(&self) -> Result<(), Error> {
+    pub async fn sync_proofs(&self) -> Result<(), Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(PROOFS_KIND),
