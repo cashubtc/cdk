@@ -605,31 +605,6 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
-    // async fn add_proofs(&self, proofs: Vec<ProofInfo>) -> Result<(), Self::Err> {
-    //     let rexie = self.db.lock().await;
-
-    //     let transaction = rexie
-    //         .transaction(&[PROOFS], TransactionMode::ReadWrite)
-    //         .map_err(Error::from)?;
-
-    //     let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
-
-    //     for proof in proofs {
-    //         let y = proof.y;
-    //         let y = serde_wasm_bindgen::to_value(&y).map_err(Error::from)?;
-    //         let proof = serde_wasm_bindgen::to_value(&proof).map_err(Error::from)?;
-
-    //         proofs_store
-    //             .put(&proof, Some(&y))
-    //             .await
-    //             .map_err(Error::from)?;
-    //     }
-
-    //     transaction.done().await.map_err(Error::from)?;
-
-    //     Ok(())
-    // }
-
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
@@ -721,26 +696,6 @@ impl WalletDatabase for WalletRexieDatabase {
 
         Ok(proofs)
     }
-
-    // async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
-    //     let rexie = self.db.lock().await;
-
-    //     let transaction = rexie
-    //         .transaction(&[PROOFS], TransactionMode::ReadWrite)
-    //         .map_err(Error::from)?;
-
-    //     let proofs_store = transaction.store(PROOFS).map_err(Error::from)?;
-
-    //     for proof in proofs {
-    //         let y = serde_wasm_bindgen::to_value(&proof.y()?).map_err(Error::from)?;
-
-    //         proofs_store.delete(y).await.map_err(Error::from)?;
-    //     }
-
-    //     transaction.done().await.map_err(Error::from)?;
-
-    //     Ok(())
-    // }
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
