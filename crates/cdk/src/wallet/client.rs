@@ -81,6 +81,7 @@ impl HttpClient {
             }
         }
         let client = builder
+            .pool_idle_timeout(None) // NWS issue
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
             .build()?;
 
