@@ -188,7 +188,15 @@ async fn nostr_receive(
 
     client.connect().await;
 
-    let events = client.get_events_of(vec![filter], None).await?;
+    let events = client
+        .get_events_of(
+            vec![filter],
+            nostr_sdk::EventSource::Both {
+                timeout: None,
+                specific_relays: None,
+            },
+        )
+        .await?;
 
     let mut tokens: HashSet<String> = HashSet::new();
 
@@ -196,8 +204,7 @@ async fn nostr_receive(
 
     for event in events {
         if event.kind() == Kind::EncryptedDirectMessage {
-            if let Ok(msg) = nip04::decrypt(keys.secret_key()?, event.author_ref(), event.content())
-            {
+            if let Ok(msg) = nip04::decrypt(keys.secret_key()?, &event.author(), event.content()) {
                 if let Some(token) = cdk::wallet::util::token_from_text(&msg) {
                     tokens.insert(token.to_string());
                 }

@@ -12,20 +12,21 @@ use std::{
 
 use async_trait::async_trait;
 use cdk::{
-    cdk_database::{self, WalletDatabase},
+    cdk_database::{self, WalletDatabase, WalletMemoryDatabase},
+    mint_url::MintUrl,
     nuts::{
         CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proofs, PublicKey, SecretKey,
         SpendingConditions, State,
     },
     types::ProofInfo,
     wallet::{MeltQuote, MintQuote},
-    Amount, UncheckedUrl,
+    Amount,
 };
 use itertools::Itertools;
 use nostr_database::{DatabaseError, NostrDatabase};
 use nostr_sdk::{
-    client, nips::nip44, Client, Event, EventBuilder, EventId, Filter, Kind, SingleLetterTag, Tag,
-    TagKind, Timestamp,
+    client, nips::nip44, Client, Event, EventBuilder, EventId, EventSource, Filter, Kind,
+    SingleLetterTag, Tag, TagKind, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
@@ -64,26 +65,24 @@ pub struct WalletNostrDatabase {
     keys: nostr_sdk::Keys,
     id: String,
     info: Arc<Mutex<WalletInfo>>,
-
-    // Local disk storage
-    nostr_db: Arc<Option<Box<dyn NostrDatabase<Err = DatabaseError>>>>,
-    wallet_db: Arc<Box<dyn WalletDatabase<Err = cdk_database::Error> + Sync + Send>>,
+    // In-memory cache
+    wallet_db: WalletMemoryDatabase,
 }
 
 impl WalletNostrDatabase {
     /// Create a new [`WalletNostrDatabase`] with a local event database
-    pub async fn local<E, W>(
+    pub async fn local<D>(
         id: String,
         keys: nostr_sdk::Keys,
         relays: Vec<Url>,
-        nostr_db: E,
-        wallet_db: W,
+        nostr_db: D,
     ) -> Result<Self, Error>
     where
-        E: NostrDatabase<Err = DatabaseError> + 'static,
-        W: WalletDatabase<Err = cdk_database::Error> + Sync + Send + 'static,
+        D: NostrDatabase<Err = DatabaseError> + 'static,
     {
-        let client = Self::connect_client(&keys, relays).await?;
+        let client = Client::builder().signer(&keys).database(nostr_db).build();
+        Self::connect_client(&client, relays).await?;
+        let wallet_db = Self::load_db(id.clone(), &client, &keys).await?;
         let self_ = Self {
             client,
             keys,
@@ -92,24 +91,21 @@ impl WalletNostrDatabase {
                 id,
                 ..Default::default()
             })),
-            nostr_db: Arc::new(Some(Box::new(nostr_db))),
-            wallet_db: Arc::new(Box::new(wallet_db)),
+            wallet_db,
         };
         self_.refresh_info().await?;
         Ok(self_)
     }
 
     /// Create a new [`WalletNostrDatabase`] from remote relays
-    pub async fn remote<W>(
+    pub async fn remote(
         id: String,
         keys: nostr_sdk::Keys,
         relays: Vec<Url>,
-        wallet_db: W,
-    ) -> Result<Self, Error>
-    where
-        W: WalletDatabase<Err = cdk_database::Error> + Sync + Send + 'static,
-    {
-        let client = Self::connect_client(&keys, relays).await?;
+    ) -> Result<Self, Error> {
+        let client = Client::builder().signer(&keys).build();
+        Self::connect_client(&client, relays).await?;
+        let wallet_db = Self::load_db(id.clone(), &client, &keys).await?;
         let self_ = Self {
             client,
             keys,
@@ -118,18 +114,51 @@ impl WalletNostrDatabase {
                 id,
                 ..Default::default()
             })),
-            nostr_db: Arc::new(None),
-            wallet_db: Arc::new(Box::new(wallet_db)),
+            wallet_db,
         };
         self_.refresh_info().await?;
         Ok(self_)
     }
 
-    async fn connect_client(keys: &nostr_sdk::Keys, relays: Vec<Url>) -> Result<Client, Error> {
-        let client = Client::new(keys);
+    async fn connect_client(client: &Client, relays: Vec<Url>) -> Result<(), Error> {
         client.add_relays(relays).await?;
         client.connect().await;
-        Ok(client)
+        Ok(())
+    }
+
+    async fn load_db(
+        id: String,
+        client: &Client,
+        keys: &nostr_sdk::Keys,
+    ) -> Result<WalletMemoryDatabase, Error> {
+        let filters = vec![Filter {
+            authors: filter_value!(keys.public_key()),
+            kinds: filter_value!(WALLET_INFO_KIND),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_TAG).expect("ID_TAG is not a single letter tag") => id,
+            ),
+            ..Default::default()
+        }];
+        let events = client
+            .get_events_of(
+                filters,
+                EventSource::Both {
+                    timeout: None,
+                    specific_relays: None,
+                },
+            )
+            .await?;
+        let keyset_counter = match events.first() {
+            Some(event) => WalletInfo::from_event(event, keys)?.counters,
+            None => HashMap::new(),
+        };
+        Ok(WalletMemoryDatabase::new(
+            vec![],
+            vec![],
+            vec![],
+            keyset_counter,
+            HashMap::new(),
+        ))
     }
 
     /// Get the latest [`WalletInfo`]
@@ -158,6 +187,20 @@ impl WalletNostrDatabase {
             .into_iter()
             .map(|event| TransactionEvent::from_event(&event, &self.keys))
             .collect::<Result<Vec<TransactionEvent>, Error>>()?)
+    }
+
+    /// Refresh all events
+    pub async fn refresh_events(&self) -> Result<(), Error> {
+        let filters = vec![Filter {
+            authors: filter_value!(self.keys.public_key()),
+            kinds: filter_value!(PROOFS_KIND, TX_HISTORY_KIND, WALLET_INFO_KIND),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
+            ),
+            ..Default::default()
+        }];
+        self.get_events(filters).await?;
+        Ok(())
     }
 
     /// Refresh the latest [`WalletInfo`]
@@ -227,16 +270,19 @@ impl WalletNostrDatabase {
     }
 
     async fn get_events(&self, filters: Vec<Filter>) -> Result<Vec<Event>, Error> {
-        if let Some(db) = self.nostr_db.as_ref() {
-            return Ok(db.query(filters, nostr_database::Order::Desc).await?);
-        }
-        Ok(self.client.get_events_of(filters, None).await?)
+        Ok(self
+            .client
+            .get_events_of(
+                filters,
+                EventSource::Both {
+                    timeout: None,
+                    specific_relays: None,
+                },
+            )
+            .await?)
     }
 
     async fn save_event(&self, event: Event) -> Result<(), Error> {
-        if let Some(db) = self.nostr_db.as_ref() {
-            db.save_event(&event).await?;
-        }
         self.client.send_event(event).await?;
         Ok(())
     }
@@ -248,7 +294,7 @@ impl WalletDatabase for WalletNostrDatabase {
 
     async fn add_mint(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
@@ -257,25 +303,25 @@ impl WalletDatabase for WalletNostrDatabase {
         self.wallet_db.add_mint(mint_url, mint_info).await
     }
 
-    async fn remove_mint(&self, mint_url: UncheckedUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
         info.mints.remove(&mint_url);
         self.save_info_with_lock(&info).await.map_err(map_err)?;
         self.wallet_db.remove_mint(mint_url).await
     }
 
-    async fn get_mint(&self, mint_url: UncheckedUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
         self.wallet_db.get_mint(mint_url).await
     }
 
-    async fn get_mints(&self) -> Result<HashMap<UncheckedUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
         self.wallet_db.get_mints().await
     }
 
     async fn update_mint_url(
         &self,
-        old_mint_url: UncheckedUrl,
-        new_mint_url: UncheckedUrl,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
         info.mints.remove(&old_mint_url);
@@ -288,7 +334,7 @@ impl WalletDatabase for WalletNostrDatabase {
 
     async fn add_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err> {
         self.wallet_db.add_mint_keysets(mint_url, keysets).await
@@ -296,7 +342,7 @@ impl WalletDatabase for WalletNostrDatabase {
 
     async fn get_mint_keysets(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
         self.wallet_db.get_mint_keysets(mint_url).await
     }
@@ -345,15 +391,17 @@ impl WalletDatabase for WalletNostrDatabase {
         self.wallet_db.remove_keys(id).await
     }
 
-    async fn add_proofs(&self, proof_info: Vec<ProofInfo>) -> Result<(), Self::Err> {
-        let proofs = proof_info
-            .iter()
-            .into_group_map_by(|info| info.mint_url.clone());
-        for (mint_url, proofs) in proofs {
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Self::Err> {
+        let added_proofs_by_url = added.iter().into_group_map_by(|info| info.mint_url.clone());
+        for (mint_url, proofs) in added_proofs_by_url {
             let event = ProofsEvent {
                 url: mint_url.clone(),
                 added: proofs.iter().map(|info| info.proof.clone()).collect(),
-                deleted: vec![],
+                deleted: removed_ys.clone(),
                 reserved: vec![],
             };
             self.client
@@ -361,12 +409,56 @@ impl WalletDatabase for WalletNostrDatabase {
                 .await
                 .map_err(|e| map_err(e.into()))?;
         }
-        self.wallet_db.add_proofs(proof_info).await
+        self.wallet_db.update_proofs(added, removed_ys).await
+    }
+
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.wallet_db.set_pending_proofs(ys).await
+    }
+
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        let proofs = self.get_proofs(None, None, None, None).await?;
+        let mint_url = proofs.into_iter().find_map(|info| {
+            if info.proof.y().ok() == ys.first().cloned() {
+                Some(info.mint_url)
+            } else {
+                None
+            }
+        });
+        if let Some(mint_url) = mint_url {
+            let event = ProofsEvent {
+                url: mint_url.clone(),
+                added: vec![],
+                deleted: vec![],
+                reserved: ys.clone(),
+            };
+            self.client
+                .send_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
+                .await
+                .map_err(|e| map_err(e.into()))?;
+        }
+        self.wallet_db.reserve_proofs(ys).await
+    }
+
+    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        let proof_infos = self
+            .get_proofs(None, None, None, None)
+            .await?
+            .into_iter()
+            .filter(|info| {
+                if let Ok(y) = info.proof.y() {
+                    ys.contains(&y)
+                } else {
+                    false
+                }
+            })
+            .collect::<Vec<_>>();
+        self.update_proofs(proof_infos, vec![]).await
     }
 
     async fn get_proofs(
         &self,
-        mint_url: Option<UncheckedUrl>,
+        mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
@@ -374,14 +466,6 @@ impl WalletDatabase for WalletNostrDatabase {
         self.wallet_db
             .get_proofs(mint_url, unit, state, spending_conditions)
             .await
-    }
-
-    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
-        self.wallet_db.remove_proofs(proofs).await
-    }
-
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
-        self.wallet_db.set_proof_state(y, state).await
     }
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
@@ -424,7 +508,7 @@ pub struct WalletInfo {
     /// Saved balance
     pub balance: Option<Amount>,
     /// List of mints
-    pub mints: HashSet<UncheckedUrl>,
+    pub mints: HashSet<MintUrl>,
     /// Name
     pub name: Option<String>,
     /// Currency unit
@@ -432,7 +516,7 @@ pub struct WalletInfo {
     /// Description
     pub description: Option<String>,
     /// List of relays
-    pub relays: HashSet<UncheckedUrl>,
+    pub relays: HashSet<MintUrl>,
     /// NIP-61 private key
     pub p2pk_priv_key: Option<SecretKey>,
     /// Key index counter
@@ -483,12 +567,12 @@ impl WalletInfo {
         for tag in tags {
             match tag.kind().to_string().as_str() {
                 MINT_TAG => {
-                    info.mints.insert(UncheckedUrl::from_str(
+                    info.mints.insert(MintUrl::from_str(
                         tag.content().ok_or(Error::EmptyTag(MINT_TAG.to_string()))?,
                     )?);
                 }
                 RELAY_TAG => {
-                    info.relays.insert(UncheckedUrl::from_str(
+                    info.relays.insert(MintUrl::from_str(
                         tag.content()
                             .ok_or(Error::EmptyTag(RELAY_TAG.to_string()))?,
                     )?);
@@ -595,16 +679,16 @@ impl WalletInfo {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProofsEvent {
     /// Mint url
-    pub url: UncheckedUrl,
+    pub url: MintUrl,
     /// Added proofs
     #[serde(rename = "a")]
     pub added: Proofs,
     /// Deleted proofs
     #[serde(rename = "d")]
-    pub deleted: Proofs,
+    pub deleted: Vec<PublicKey>,
     /// Updated proofs
     #[serde(rename = "u")]
-    pub reserved: Proofs,
+    pub reserved: Vec<PublicKey>,
 }
 
 impl ProofsEvent {
@@ -687,7 +771,7 @@ impl Transaction {
                         )?);
                         relay = match parts.next() {
                             Some(relay) => {
-                                Some(Url::from_str(relay).map_err(cdk::url::Error::Url)?)
+                                Some(Url::from_str(relay).map_err(cdk::mint_url::Error::Url)?)
                             }
                             None => None,
                         };
@@ -865,7 +949,7 @@ pub enum Error {
     TagParse(String),
     /// Url parse error
     #[error(transparent)]
-    UrlParse(#[from] cdk::url::Error),
+    UrlParse(#[from] cdk::mint_url::Error),
     /// Wallet database error
     #[error(transparent)]
     WalletDatabase(#[from] cdk_database::Error),

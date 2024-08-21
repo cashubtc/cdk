@@ -106,33 +106,7 @@ async fn main() -> Result<()> {
             (Some(nsec), Some(relay)) => {
                 let keys = Keys::new(nsec);
                 let relays = vec![relay];
-                match args.engine.as_str() {
-                    "sqlite" => {
-                        let sql_path = work_dir.join("cdk-cli.sqlite");
-                        let sql = WalletSqliteDatabase::new(&sql_path).await?;
-
-                        sql.migrate().await;
-
-                        Arc::new(
-                            WalletNostrDatabase::remote("cdk-cli".to_string(), keys, relays, sql)
-                                .await?,
-                        )
-                    }
-                    "redb" => {
-                        let redb_path = work_dir.join("cdk-cli.redb");
-
-                        Arc::new(
-                            WalletNostrDatabase::remote(
-                                "cdk-cli".to_string(),
-                                keys,
-                                relays,
-                                WalletRedbDatabase::new(&redb_path)?,
-                            )
-                            .await?,
-                        )
-                    }
-                    _ => bail!("Unknown DB engine"),
-                }
+                Arc::new(WalletNostrDatabase::remote("cdk-cli".to_string(), keys, relays).await?)
             }
             (None, None) => match args.engine.as_str() {
                 "sqlite" => {
