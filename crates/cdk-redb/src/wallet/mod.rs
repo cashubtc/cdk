@@ -694,61 +694,6 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(proofs)
     }
 
-    // #[instrument(skip(self, proofs))]
-    // async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
-    //     let db = self.db.lock().await;
-
-    //     let write_txn = db.begin_write().map_err(Error::from)?;
-
-    //     {
-    //         let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-    //         for proof in proofs {
-    //             let y_slice = proof.y().map_err(Error::from)?.to_bytes();
-    //             table.remove(y_slice.as_slice()).map_err(Error::from)?;
-    //         }
-    //     }
-    //     write_txn.commit().map_err(Error::from)?;
-
-    //     Ok(())
-    // }
-
-    // #[instrument(skip(self, y))]
-    // async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
-    //     let db = self.db.lock().await;
-    //     let read_txn = db.begin_read().map_err(Error::from)?;
-    //     let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-    //     let y_slice = y.to_bytes();
-    //     let proof = table
-    //         .get(y_slice.as_slice())
-    //         .map_err(Error::from)?
-    //         .ok_or(Error::UnknownY)?;
-
-    //     let write_txn = db.begin_write().map_err(Error::from)?;
-
-    //     let mut proof_info =
-    //         serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
-
-    //     proof_info.state = state;
-
-    //     {
-    //         let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-    //         table
-    //             .insert(
-    //                 y_slice.as_slice(),
-    //                 serde_json::to_string(&proof_info)
-    //                     .map_err(Error::from)?
-    //                     .as_str(),
-    //             )
-    //             .map_err(Error::from)?;
-    //     }
-
-    //     write_txn.commit().map_err(Error::from)?;
-
-    //     Ok(())
-    // }
-
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         let db = self.db.lock().await;
