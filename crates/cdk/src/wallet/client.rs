@@ -64,8 +64,6 @@ impl HttpClient {
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
     ) -> Result<Self, Error> {
-        use std::time::Duration;
-
         let regex = host_matcher
             .map(regex::Regex::new)
             .transpose()
@@ -84,7 +82,6 @@ impl HttpClient {
         }
         let client = builder
             .pool_max_idle_per_host(0) // NWS doesn't support keep-alive
-            .read_timeout(Duration::from_millis(600)) // NWS doesn't end connections for invalid urls
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
             .build()?;
 

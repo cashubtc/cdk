@@ -150,6 +150,7 @@ impl WalletNostrDatabase {
     }
 
     /// Get [`TransactionEvent`]s
+    #[tracing::instrument(skip(self))]
     pub async fn get_transactions(
         &self,
         until: Option<Timestamp>,
@@ -173,10 +174,11 @@ impl WalletNostrDatabase {
     }
 
     /// Refresh all events
+    #[tracing::instrument(skip(self))]
     pub async fn refresh_events(&self) -> Result<(), Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
-            kinds: filter_value!(PROOFS_KIND, TX_HISTORY_KIND, WALLET_INFO_KIND),
+            kinds: filter_value!(PROOFS_KIND, TX_HISTORY_KIND),
             generic_tags: filter_value!(
                 SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
             ),
@@ -187,6 +189,7 @@ impl WalletNostrDatabase {
     }
 
     /// Refresh the latest [`WalletInfo`]
+    #[tracing::instrument(skip(self))]
     pub async fn refresh_info(&self) -> Result<WalletInfo, Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
@@ -213,10 +216,12 @@ impl WalletNostrDatabase {
         for url in info.mints.iter() {
             self.wallet_db.add_mint(url.clone(), None).await?;
         }
+        tracing::debug!("Refreshed wallet info: {:?}", info);
         Ok(info.clone())
     }
 
     /// Save the latest [`WalletInfo`]
+    #[tracing::instrument(skip(self))]
     pub async fn save_info(&self) -> Result<(), Error> {
         self.save_info_with_lock(&self.info.lock().await).await
     }
@@ -225,10 +230,12 @@ impl WalletNostrDatabase {
         &self,
         info: &MutexGuard<'a, WalletInfo>,
     ) -> Result<(), Error> {
+        tracing::debug!("Saving wallet info: {:?}", info);
         self.save_event(info.to_event(&self.keys)?).await
     }
 
     /// Save a [`Transaction`]
+    #[tracing::instrument(skip(self))]
     pub async fn save_transaction(&self, tx: Transaction) -> Result<EventId, Error> {
         let event = tx.to_event(&self.id, &self.keys)?;
         let id = event.id();
@@ -240,6 +247,7 @@ impl WalletNostrDatabase {
     }
 
     /// Sync proofs from Nostr
+    #[tracing::instrument(skip(self))]
     pub async fn sync_proofs(&self) -> Result<(), Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
@@ -272,6 +280,7 @@ impl WalletNostrDatabase {
     }
 
     /// Update the name or description of the [`WalletInfo`]
+    #[tracing::instrument(skip(self))]
     pub async fn update_info(
         &self,
         name: Option<String>,
@@ -739,6 +748,7 @@ impl ProofsEvent {
 }
 
 /// Tx history
+#[derive(Debug)]
 pub struct Transaction {
     /// Direction (in for received, out for sent)
     pub direction: Direction,
@@ -854,6 +864,7 @@ impl Transaction {
 }
 
 /// Direction of the transaction
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Incoming (received)
     Incoming,
