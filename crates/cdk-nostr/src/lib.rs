@@ -325,15 +325,17 @@ impl WalletDatabase for WalletNostrDatabase {
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
-        info.mints.insert(mint_url.clone());
-        self.save_info_with_lock(&info).await.map_err(map_err)?;
+        if info.mints.insert(mint_url.clone()) {
+            self.save_info_with_lock(&info).await.map_err(map_err)?;
+        }
         self.wallet_db.add_mint(mint_url, mint_info).await
     }
 
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
-        info.mints.remove(&mint_url);
-        self.save_info_with_lock(&info).await.map_err(map_err)?;
+        if info.mints.remove(&mint_url) {
+            self.save_info_with_lock(&info).await.map_err(map_err)?;
+        }
         self.wallet_db.remove_mint(mint_url).await
     }
 
@@ -351,9 +353,10 @@ impl WalletDatabase for WalletNostrDatabase {
         new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
-        info.mints.remove(&old_mint_url);
-        info.mints.insert(new_mint_url.clone());
-        self.save_info_with_lock(&info).await.map_err(map_err)?;
+        let removed = info.mints.remove(&old_mint_url);
+        if info.mints.insert(new_mint_url.clone()) || removed {
+            self.save_info_with_lock(&info).await.map_err(map_err)?;
+        }
         self.wallet_db
             .update_mint_url(old_mint_url, new_mint_url)
             .await
