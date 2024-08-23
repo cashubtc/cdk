@@ -470,7 +470,7 @@ impl WalletDatabase for WalletNostrDatabase {
         self.wallet_db.reserve_proofs(ys).await
     }
 
-    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
         let proof_infos = self
             .get_proofs(None, None, None, None)
             .await?
