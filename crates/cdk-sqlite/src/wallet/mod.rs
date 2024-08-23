@@ -600,7 +600,7 @@ WHERE id=?
         Ok(())
     }
 
-    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
         for y in ys {
             self.set_proof_state(y, State::Unspent).await?;
         }

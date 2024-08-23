@@ -134,8 +134,8 @@ pub trait WalletDatabase: Debug {
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Reserve proofs in storage. Proofs are identified by their Y value.
     async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
-    /// Unreserve proofs in storage. Proofs are identified by their Y value.
-    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Set proofs as unspent in storage. Proofs are identified by their Y value.
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Get proofs from storage
     async fn get_proofs(
         &self,
