@@ -499,6 +499,12 @@ impl WalletDatabase for WalletNostrDatabase {
     }
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+        let mut info = self.info.lock().await;
+        info.counters
+            .entry(keyset_id.clone())
+            .and_modify(|c| *c += count)
+            .or_insert(count);
+        self.save_info_with_lock(&info).await.map_err(map_err)?;
         self.wallet_db
             .increment_keyset_counter(keyset_id, count)
             .await
