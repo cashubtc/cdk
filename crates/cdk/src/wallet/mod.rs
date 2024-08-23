@@ -259,7 +259,7 @@ impl Wallet {
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
     pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        Ok(self.localstore.unreserve_proofs(ys).await?)
+        Ok(self.localstore.set_unspent_proofs(ys).await?)
     }
 
     /// Qeury mint for current mint information

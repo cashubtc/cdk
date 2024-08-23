@@ -651,7 +651,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self, ys))]
-    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
         self.update_proof_states(ys, State::Unspent).await
     }
 

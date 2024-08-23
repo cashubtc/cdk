@@ -280,7 +280,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
         let mut all_proofs = self.proofs.write().await;
 
         for y in ys.into_iter() {
