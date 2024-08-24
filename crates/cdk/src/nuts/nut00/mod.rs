@@ -312,7 +312,7 @@ where
 }
 
 /// Currency Unit
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum CurrencyUnit {
     /// Sat
     #[default]
