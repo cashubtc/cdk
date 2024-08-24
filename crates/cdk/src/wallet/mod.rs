@@ -1722,6 +1722,14 @@ impl Wallet {
             }
         }
 
+        // Since the proofs are unknown they need to be added to the database
+        let proofs_info = proofs
+            .clone()
+            .into_iter()
+            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit))
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
+        self.localstore.update_proofs(proofs_info, vec![]).await?;
+
         let mut pre_swap = self
             .create_swap(None, amount_split_target, proofs, None, false)
             .await?;

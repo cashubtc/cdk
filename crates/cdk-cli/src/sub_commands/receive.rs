@@ -60,17 +60,16 @@ pub async fn receive(
     }
 
     let amount = match &sub_command_args.token {
-        Some(token_str) => {
-            receive_token(
-                multi_mint_wallet,
-                localstore,
-                seed,
-                token_str,
-                &signing_keys,
-                &sub_command_args.preimage,
-            )
-            .await?
-        }
+        Some(token_str) => receive_token(
+            multi_mint_wallet,
+            localstore,
+            seed,
+            token_str,
+            &signing_keys,
+            &sub_command_args.preimage,
+        )
+        .await
+        .unwrap(),
         None => {
             //wallet.add_p2pk_signing_key(nostr_signing_key).await;
             let nostr_key = match sub_command_args.nostr_key.as_ref() {
