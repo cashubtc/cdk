@@ -2,7 +2,7 @@
 //!
 //! Wrapper around core [`Wallet`] that enables the use of multiple mint unit pairs
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -24,11 +24,11 @@ use crate::{Amount, Wallet};
 #[derive(Debug, Clone)]
 pub struct MultiMintWallet {
     /// Wallets
-    pub wallets: Arc<Mutex<HashMap<WalletKey, Wallet>>>,
+    pub wallets: Arc<Mutex<BTreeMap<WalletKey, Wallet>>>,
 }
 
 /// Wallet Key
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WalletKey {
     mint_url: MintUrl,
     unit: CurrencyUnit,
@@ -103,8 +103,8 @@ impl MultiMintWallet {
     pub async fn get_balances(
         &self,
         unit: &CurrencyUnit,
-    ) -> Result<HashMap<MintUrl, Amount>, Error> {
-        let mut balances = HashMap::new();
+    ) -> Result<BTreeMap<MintUrl, Amount>, Error> {
+        let mut balances = BTreeMap::new();
 
         for (WalletKey { mint_url, unit: u }, wallet) in self.wallets.lock().await.iter() {
             if unit == u {
