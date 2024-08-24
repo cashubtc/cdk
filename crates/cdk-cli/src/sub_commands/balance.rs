@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
@@ -15,9 +15,9 @@ pub async fn mint_balances(
     multi_mint_wallet: &MultiMintWallet,
     unit: &CurrencyUnit,
 ) -> Result<Vec<(MintUrl, Amount)>> {
-    let wallets: HashMap<MintUrl, Amount> = multi_mint_wallet.get_balances(unit).await?;
+    let wallets: BTreeMap<MintUrl, Amount> = multi_mint_wallet.get_balances(unit).await?;
 
-    let mut wallets_vec = Vec::with_capacity(wallets.capacity());
+    let mut wallets_vec = Vec::with_capacity(wallets.len());
 
     for (i, (mint_url, amount)) in wallets.iter().enumerate() {
         let mint_url = mint_url.clone();
