@@ -39,9 +39,10 @@
 - cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
 - cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnprc]).
 - cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
-- cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimeplkid]).
+- cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimplekid]).
 - cdk(cdk-lightning): Use `Amount` type instead of `u64` ([thesimplekid]).
 - cdk(cdk-lightning): `CreateInvoice` requires unit argument ([thesimplekid]).
+- cdk(cdk/multi_mint_wallet): `get_balances` returns a `BTreeMap` instead of `HashMap` ([thesimplekid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
@@ -55,6 +56,8 @@
 - cdk(cdk-database/mint) Add `get_proofs_by_keyset_id` ([thesimplekid]).
 - cdk(wallet/mint): Add `mint_icon_url` ([cjbeery24]).
 - cdk: Add `MintUrl` that sanatizes mint url by removing trailing `/` ([cjbeery24]).
+- cdk(cdk-database/mint): Add `update_proofs` that both adds new `ProofInfo`s to the db and deletes ([davidcaseria]).
+- cdk(cdk-database/mint): Add `set_pending_proofs`, `reserve_proofs`, and `set_unspent_proofs` ([davidcaseria]).
 
 
 ### Fixed
@@ -68,6 +71,7 @@
 - cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).
 - cdk(cdk-database/mint): Remove `get_spent_proofs`, `get_spent_proofs_by_ys`,`get_pending_proofs`, `get_pending_proofs_by_ys`, and `remove_pending_proofs` ([thesimplekid]).
 - cdk: Remove `UncheckedUrl` in favor of `MintUrl` ([cjbeery24]).
+- cdk(cdk-database/mint): Remove `set_proof_state`, `remove_proofs` and `add_proofs` ([davidcaseria]).
 
 ## [v0.2.0]
 
