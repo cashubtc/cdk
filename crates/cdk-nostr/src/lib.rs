@@ -64,7 +64,7 @@ pub struct WalletNostrDatabase {
     client: Client,
     keys: nostr_sdk::Keys,
     id: String,
-    info: Arc<Mutex<WalletInfo>>,
+    info: Arc<Mutex<(Timestamp, WalletInfo)>>,
     // In-memory cache
     wallet_db: WalletMemoryDatabase,
 }
@@ -86,10 +86,13 @@ impl WalletNostrDatabase {
             client,
             keys,
             id: id.clone(),
-            info: Arc::new(Mutex::new(WalletInfo {
-                id,
-                ..Default::default()
-            })),
+            info: Arc::new(Mutex::new((
+                Timestamp::now(),
+                WalletInfo {
+                    id,
+                    ..Default::default()
+                },
+            ))),
             wallet_db: WalletMemoryDatabase::default(),
         };
         let info = self_.refresh_info().await?;
@@ -116,10 +119,13 @@ impl WalletNostrDatabase {
             client,
             keys,
             id: id.clone(),
-            info: Arc::new(Mutex::new(WalletInfo {
-                id,
-                ..Default::default()
-            })),
+            info: Arc::new(Mutex::new((
+                Timestamp::now(),
+                WalletInfo {
+                    id,
+                    ..Default::default()
+                },
+            ))),
             wallet_db: WalletMemoryDatabase::default(),
         };
         let info = self_.refresh_info().await?;
@@ -146,7 +152,7 @@ impl WalletNostrDatabase {
 
     /// Get the latest [`WalletInfo`]
     pub async fn get_info(&self) -> WalletInfo {
-        self.info.lock().await.clone()
+        self.info.lock().await.1.clone()
     }
 
     /// Get [`TransactionEvent`]s
@@ -203,21 +209,24 @@ impl WalletNostrDatabase {
         let mut info = self.info.lock().await;
         match events.first() {
             Some(event) => {
-                *info = WalletInfo::from_event(event, &self.keys)?;
+                *info = (event.created_at, WalletInfo::from_event(event, &self.keys)?);
             }
             None => {
-                *info = WalletInfo {
-                    id: self.id.clone(),
-                    ..Default::default()
-                };
+                *info = (
+                    Timestamp::now(),
+                    WalletInfo {
+                        id: self.id.clone(),
+                        ..Default::default()
+                    },
+                );
                 self.save_info_with_lock(&info).await?;
             }
         }
-        for url in info.mints.iter() {
+        for url in info.1.mints.iter() {
             self.wallet_db.add_mint(url.clone(), None).await?;
         }
         tracing::debug!("Refreshed wallet info: {:?}", info);
-        Ok(info.clone())
+        Ok(info.1.clone())
     }
 
     /// Save the latest [`WalletInfo`]
@@ -228,10 +237,16 @@ impl WalletNostrDatabase {
 
     async fn save_info_with_lock<'a>(
         &self,
-        info: &MutexGuard<'a, WalletInfo>,
+        info: &MutexGuard<'a, (Timestamp, WalletInfo)>,
     ) -> Result<(), Error> {
         tracing::debug!("Saving wallet info: {:?}", info);
-        self.save_event(info.to_event(&self.keys)?).await
+        let mut timestamp = Timestamp::now();
+        if timestamp <= info.0 {
+            timestamp = info.0 + 1;
+            tracing::debug!("Incrementing timestamp to {}", timestamp);
+        }
+        let event = info.1.to_event(&self.keys, timestamp)?;
+        self.save_event(event).await
     }
 
     /// Save a [`Transaction`]
@@ -241,7 +256,7 @@ impl WalletNostrDatabase {
         let id = event.id();
         self.save_event(event).await?;
         let mut info = self.info.lock().await;
-        tx.update_balance(info.balance.get_or_insert(Amount::ZERO));
+        tx.update_balance(info.1.balance.get_or_insert(Amount::ZERO));
         self.save_info_with_lock(&info).await?;
         Ok(id)
     }
@@ -288,10 +303,10 @@ impl WalletNostrDatabase {
     ) -> Result<(), Error> {
         let mut info = self.info.lock().await;
         if let Some(name) = name {
-            info.name = Some(name);
+            info.1.name = Some(name);
         }
         if let Some(description) = description {
-            info.description = Some(description);
+            info.1.description = Some(description);
         }
         self.save_info_with_lock(&info).await
     }
@@ -325,7 +340,7 @@ impl WalletDatabase for WalletNostrDatabase {
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
-        if info.mints.insert(mint_url.clone()) {
+        if info.1.mints.insert(mint_url.clone()) {
             self.save_info_with_lock(&info).await.map_err(map_err)?;
         }
         self.wallet_db.add_mint(mint_url, mint_info).await
@@ -333,7 +348,7 @@ impl WalletDatabase for WalletNostrDatabase {
 
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
-        if info.mints.remove(&mint_url) {
+        if info.1.mints.remove(&mint_url) {
             self.save_info_with_lock(&info).await.map_err(map_err)?;
         }
         self.wallet_db.remove_mint(mint_url).await
@@ -353,8 +368,8 @@ impl WalletDatabase for WalletNostrDatabase {
         new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
-        let removed = info.mints.remove(&old_mint_url);
-        if info.mints.insert(new_mint_url.clone()) || removed {
+        let removed = info.1.mints.remove(&old_mint_url);
+        if info.1.mints.insert(new_mint_url.clone()) || removed {
             self.save_info_with_lock(&info).await.map_err(map_err)?;
         }
         self.wallet_db
@@ -500,7 +515,8 @@ impl WalletDatabase for WalletNostrDatabase {
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
-        info.counters
+        info.1
+            .counters
             .entry(keyset_id.clone())
             .and_modify(|c| *c += count)
             .or_insert(count);
@@ -663,7 +679,7 @@ impl WalletInfo {
     }
 
     /// Converts a [`WalletInfo`] to an [`Event`]
-    pub fn to_event(&self, keys: &nostr_sdk::Keys) -> Result<Event, Error> {
+    pub fn to_event(&self, keys: &nostr_sdk::Keys, timestamp: Timestamp) -> Result<Event, Error> {
         let mut content = Vec::new();
         let tags = vec![Tag::parse(&[&ID_TAG.to_string(), &self.id])?];
         if let Some(balance) = &self.balance {
@@ -706,7 +722,8 @@ impl WalletInfo {
                 nip44::Version::V2,
             )?,
             tags,
-        );
+        )
+        .custom_created_at(timestamp);
         Ok(event.to_event(keys)?)
     }
 }
