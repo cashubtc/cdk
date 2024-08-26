@@ -801,6 +801,37 @@ impl Node {
             .into_iter()
             .map(|b| Amount::from(b.claimable_amount_satoshis()))
             .sum();
+        let next_claimable_height = self
+            .chain_monitor
+            .get_claimable_balances(
+                &self
+                    .channel_manager
+                    .list_channels()
+                    .iter()
+                    .filter(|c| c.is_usable)
+                    .collect::<Vec<_>>(),
+            )
+            .into_iter()
+            .filter_map(|b| match b {
+                lightning::chain::channelmonitor::Balance::ClaimableAwaitingConfirmations {
+                    confirmation_height,
+                    ..
+                } => Some(confirmation_height),
+                lightning::chain::channelmonitor::Balance::ContentiousClaimable {
+                    timeout_height,
+                    ..
+                } => Some(timeout_height),
+                lightning::chain::channelmonitor::Balance::MaybeTimeoutClaimableHTLC {
+                    claimable_height,
+                    ..
+                } => Some(claimable_height),
+                lightning::chain::channelmonitor::Balance::MaybePreimageClaimableHTLC {
+                    expiry_height,
+                    ..
+                } => Some(expiry_height),
+                _ => None,
+            })
+            .min();
 
         let read_only_graph = self.gossip_sync.network_graph().read_only();
         let network_nodes = read_only_graph.nodes().len();
@@ -812,6 +843,7 @@ impl Node {
             peers,
             spendable_balance,
             claimable_balance,
+            next_claimable_height,
             inbound_liquidity,
             network_nodes,
             network_channels,
@@ -1076,6 +1108,7 @@ pub struct NodeInfo {
     pub peers: HashMap<PublicKey, SocketAddr>,
     pub spendable_balance: Amount,
     pub claimable_balance: Amount,
+    pub next_claimable_height: Option<u32>,
     pub inbound_liquidity: Amount,
     pub network_nodes: usize,
     pub network_channels: usize,
