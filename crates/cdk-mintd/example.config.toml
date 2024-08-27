@@ -37,3 +37,9 @@ ln_backend = "cln"
 # api_key=""
 # Optional default sats
 # supported_units=[""]
+
+
+# [lnbits]
+# admin_api_key = ""
+# invoice_api_key = ""
+# lnbits_api = ""

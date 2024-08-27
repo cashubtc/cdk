@@ -15,6 +15,7 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
 use cdk::mint::{FeeReserve, Mint};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{
     nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
     MintVersion, MppMethodSettings, Nuts, PaymentMethod,
@@ -22,6 +23,7 @@ use cdk::nuts::{
 use cdk_axum::LnKey;
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
+use cdk_lnbits::LNBits;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use cdk_strike::Strike;
@@ -128,6 +130,8 @@ async fn main() -> anyhow::Result<()> {
     let mut supported_units = HashMap::new();
     let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
 
+    let mint_url: MintUrl = settings.info.url.parse()?;
+
     let ln_routers: Vec<Router> = match settings.ln.ln_backend {
         LnBackend::Cln => {
             let cln_socket = expand_path(
@@ -168,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
                 let (sender, receiver) = tokio::sync::mpsc::channel(8);
                 let webhook_endpoint = format!("/webhook/{}/invoice", unit);
 
-                let webhook_url = format!("{}{}", settings.info.url, webhook_endpoint);
+                let webhook_url = mint_url.join(&webhook_endpoint)?;
 
                 let strike = Strike::new(
                     api_key.clone(),
@@ -176,7 +180,7 @@ async fn main() -> anyhow::Result<()> {
                     MintMeltSettings::default(),
                     unit,
                     Arc::new(Mutex::new(Some(receiver))),
-                    webhook_url,
+                    webhook_url.to_string(),
                 )
                 .await?;
 
@@ -193,6 +197,43 @@ async fn main() -> anyhow::Result<()> {
             }
 
             routers
+        }
+        LnBackend::LNBits => {
+            let lnbits_settings = settings.lnbits.expect("Checked on config load");
+            let admin_api_key = lnbits_settings.admin_api_key;
+            let invoice_api_key = lnbits_settings.invoice_api_key;
+
+            // Channel used for lnbits web hook
+            let (sender, receiver) = tokio::sync::mpsc::channel(8);
+            let webhook_endpoint = "/webhook/lnbits/sat/invoice";
+
+            let webhook_url = mint_url.join(webhook_endpoint)?;
+
+            let lnbits = LNBits::new(
+                admin_api_key,
+                invoice_api_key,
+                lnbits_settings.lnbits_api,
+                MintMeltSettings::default(),
+                MintMeltSettings::default(),
+                fee_reserve,
+                Arc::new(Mutex::new(Some(receiver))),
+                webhook_url.to_string(),
+            )
+            .await?;
+
+            let router = lnbits
+                .create_invoice_webhook_router(webhook_endpoint, sender)
+                .await?;
+
+            let unit = CurrencyUnit::Sat;
+
+            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
+
+            ln_backends.insert(ln_key, Arc::new(lnbits));
+
+            supported_units.insert(unit, (input_fee_ppk, 64));
+
+            vec![router]
         }
         LnBackend::FakeWallet => {
             let units = settings.fake_wallet.unwrap_or_default().supported_units;

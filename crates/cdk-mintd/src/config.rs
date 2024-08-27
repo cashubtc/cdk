@@ -21,6 +21,7 @@ pub enum LnBackend {
     #[default]
     Cln,
     Strike,
+    LNBits,
     FakeWallet,
     //  Greenlight,
     //  Ldk,
@@ -38,6 +39,13 @@ pub struct Ln {
 pub struct Strike {
     pub api_key: String,
     pub supported_units: Option<Vec<CurrencyUnit>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LNBits {
+    pub admin_api_key: String,
+    pub invoice_api_key: String,
+    pub lnbits_api: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -78,6 +86,7 @@ pub struct Settings {
     pub ln: Ln,
     pub cln: Option<Cln>,
     pub strike: Option<Strike>,
+    pub lnbits: Option<LNBits>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
 }
@@ -141,8 +150,9 @@ impl Settings {
 
         match settings.ln.ln_backend {
             LnBackend::Cln => assert!(settings.cln.is_some()),
-            LnBackend::FakeWallet => (),
             LnBackend::Strike => assert!(settings.strike.is_some()),
+            LnBackend::LNBits => assert!(settings.lnbits.is_some()),
+            LnBackend::FakeWallet => (),
         }
 
         Ok(settings)
