@@ -54,7 +54,8 @@ pub enum SendKind {
     OnlineExact,
     /// Prefer offline send if difference is less then tolerance
     OnlineTolerance(Amount),
-    /// Wallet cannot do an online swap and selectedp proof must be exactly send amount
+    /// Wallet cannot do an online swap and selectedp proof must be exactly send
+    /// amount
     OfflineExact,
     /// Wallet must remain offline but can over pay if below tolerance
     OfflineTolerance(Amount),

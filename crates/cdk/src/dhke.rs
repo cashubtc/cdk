@@ -18,7 +18,8 @@ use crate::SECP256K1;
 
 const DOMAIN_SEPARATOR: &[u8; 28] = b"Secp256k1_HashToCurve_Cashu_";
 
-/// Deterministically maps a message to a public key point on the secp256k1 curve, utilizing a domain separator to ensure uniqueness.
+/// Deterministically maps a message to a public key point on the secp256k1
+/// curve, utilizing a domain separator to ensure uniqueness.
 ///
 /// For definationn in NUT see [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
 pub fn hash_to_curve(message: &[u8]) -> Result<PublicKey, Error> {

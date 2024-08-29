@@ -5,7 +5,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 
 fn bench_dhke(c: &mut Criterion) {
     // *************************************************************
-    // *     PREPARE DATA FOR BENCHMARKS                           *
+    // * PREPARE DATA FOR BENCHMARKS                           *
     // *************************************************************
     let message =
         hex::decode("d341ee4871f1f889041e63cf0d3823c713eea6aff01e80f1719f08f9e5be98f6").unwrap();
@@ -29,7 +29,7 @@ fn bench_dhke(c: &mut Criterion) {
         dhke::blind_message("test_message".as_bytes(), Some(bob_sec.clone())).unwrap();
 
     // *************************************************************
-    // *     RUN INDIVIDUAL STEPS                                  *
+    // * RUN INDIVIDUAL STEPS                                  *
     // *************************************************************
     c.bench_function("hash_to_curve", |b| {
         b.iter(|| {
@@ -56,7 +56,7 @@ fn bench_dhke(c: &mut Criterion) {
     });
 
     // *************************************************************
-    // *     RUN END TO END BDHKE                                 *
+    // * RUN END TO END BDHKE                                 *
     // *************************************************************
     c.bench_function("End-to-End BDHKE", |b| {
         b.iter(|| {

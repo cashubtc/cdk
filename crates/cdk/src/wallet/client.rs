@@ -58,7 +58,8 @@ impl HttpClient {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Create new [`HttpClient`] with a proxy for specific TLDs.
-    /// Specifying `None` for `host_matcher` will use the proxy for all requests.
+    /// Specifying `None` for `host_matcher` will use the proxy for all
+    /// requests.
     pub fn with_proxy(
         proxy: Url,
         host_matcher: Option<&str>,

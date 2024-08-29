@@ -117,7 +117,8 @@ impl PreMintSecrets {
         Ok(pre_mint_secrets)
     }
 
-    /// Generate blinded messages from predetermined secrets and blindings factor
+    /// Generate blinded messages from predetermined secrets and blindings
+    /// factor
     pub fn restore_batch(
         keyset_id: Id,
         xpriv: ExtendedPrivKey,
