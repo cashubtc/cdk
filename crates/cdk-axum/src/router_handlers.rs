@@ -204,7 +204,8 @@ pub async fn post_melt_bolt11(
     };
 
     // Check to see if there is a corresponding mint quote for a melt.
-    // In this case the mint can settle the payment internally and no ln payment is needed
+    // In this case the mint can settle the payment internally and no ln payment is
+    // needed
     let mint_quote = match state
         .mint
         .localstore
@@ -273,12 +274,14 @@ pub async fn post_melt_bolt11(
 
             let mut partial_amount = None;
 
-            // If the quote unit is SAT or MSAT we can check that the expected fees are provided.
-            // We also check if the quote is less then the invoice amount in the case that it is a mmp
-            // However, if the quote id not of a bitcoin unit we cannot do these checks as the mint
-            // is unaware of a conversion rate. In this case it is assumed that the quote is correct
-            // and the mint should pay the full invoice amount if inputs > then quote.amount are included.
-            // This is checked in the verify_melt method.
+            // If the quote unit is SAT or MSAT we can check that the expected fees are
+            // provided. We also check if the quote is less then the invoice
+            // amount in the case that it is a mmp However, if the quote id not
+            // of a bitcoin unit we cannot do these checks as the mint
+            // is unaware of a conversion rate. In this case it is assumed that the quote is
+            // correct and the mint should pay the full invoice amount if inputs
+            // > then quote.amount are included. This is checked in the
+            // verify_melt method.
             if quote.unit == CurrencyUnit::Msat || quote.unit == CurrencyUnit::Sat {
                 let quote_msats = to_unit(quote.amount, &quote.unit, &CurrencyUnit::Msat)
                     .expect("Quote unit is checked above that it can convert to msat");

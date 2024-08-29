@@ -64,7 +64,8 @@ struct MintState {
     quote_ttl: u64,
 }
 
-/// Key used in hashmap of ln backends to identify what unit and payment method it is for
+/// Key used in hashmap of ln backends to identify what unit and payment method
+/// it is for
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct LnKey {
     /// Unit of Payment backend

@@ -124,17 +124,20 @@ pub trait WalletDatabase: Debug {
     /// Remove [`Keys`] from storage
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err>;
 
-    /// Update the proofs in storage by adding new proofs or removing proofs by their Y value.
+    /// Update the proofs in storage by adding new proofs or removing proofs by
+    /// their Y value.
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err>;
-    /// Set proofs as pending in storage. Proofs are identified by their Y value.
+    /// Set proofs as pending in storage. Proofs are identified by their Y
+    /// value.
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Reserve proofs in storage. Proofs are identified by their Y value.
     async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
-    /// Set proofs as unspent in storage. Proofs are identified by their Y value.
+    /// Set proofs as unspent in storage. Proofs are identified by their Y
+    /// value.
     async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Get proofs from storage
     async fn get_proofs(

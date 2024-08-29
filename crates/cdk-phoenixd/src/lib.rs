@@ -235,7 +235,8 @@ impl MintLightning for Phoenixd {
 
 impl Phoenixd {
     /// Check the status of an outgooing invoice
-    // TODO: This should likely bee added to the trait. Both CLN and PhD use a form of it
+    // TODO: This should likely bee added to the trait. Both CLN and PhD use a form
+    // of it
     async fn check_outgoing_invoice(
         &self,
         payment_hash: &str,

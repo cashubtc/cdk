@@ -1,6 +1,7 @@
 //! MultiMint Wallet
 //!
-//! Wrapper around core [`Wallet`] that enables the use of multiple mint unit pairs
+//! Wrapper around core [`Wallet`] that enables the use of multiple mint unit
+//! pairs
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;

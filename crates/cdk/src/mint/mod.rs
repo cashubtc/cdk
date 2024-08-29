@@ -253,8 +253,9 @@ impl Mint {
 
         let paid = quote.state == MintQuoteState::Paid;
 
-        // Since the pending state is not part of the NUT it should not be part of the response.
-        // In practice the wallet should not be checking the state of a quote while waiting for the mint response.
+        // Since the pending state is not part of the NUT it should not be part of the
+        // response. In practice the wallet should not be checking the state of
+        // a quote while waiting for the mint response.
         let state = match quote.state {
             MintQuoteState::Pending => MintQuoteState::Paid,
             s => s,
@@ -459,7 +460,8 @@ impl Mint {
         Ok(())
     }
 
-    /// Retrieve the public keys of the active keyset for distribution to wallet clients
+    /// Retrieve the public keys of the active keyset for distribution to wallet
+    /// clients
     #[instrument(skip(self))]
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         self.ensure_keyset_loaded(keyset_id).await?;
@@ -470,7 +472,8 @@ impl Mint {
         })
     }
 
-    /// Retrieve the public keys of the active keyset for distribution to wallet clients
+    /// Retrieve the public keys of the active keyset for distribution to wallet
+    /// clients
     #[instrument(skip_all)]
     pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
         let keyset_infos = self.localstore.get_keyset_infos().await?;
@@ -859,8 +862,9 @@ impl Mint {
             // Checks and verifes known secret kinds.
             // If it is an unknown secret kind it will be treated as a normal secret.
             // Spending conditions will **not** be check. It is up to the wallet to ensure
-            // only supported secret kinds are used as there is no way for the mint to enforce
-            // only signing supported secrets as they are blinded at that point.
+            // only supported secret kinds are used as there is no way for the mint to
+            // enforce only signing supported secrets as they are blinded at
+            // that point.
             match secret.kind {
                 Kind::P2PK => {
                     proof.verify_p2pk()?;
@@ -1058,8 +1062,9 @@ impl Mint {
     }
 
     /// Process unpaid melt request
-    /// In the event that a melt request fails and the lighthing payment is not made
-    /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
+    /// In the event that a melt request fails and the lighthing payment is not
+    /// made The [`Proofs`] should be returned to an unspent state and the
+    /// quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
         let input_ys = melt_request
@@ -1080,7 +1085,8 @@ impl Mint {
     }
 
     /// Process melt request marking [`Proofs`] as spent
-    /// The melt request must be verifyed using [`Self::verify_melt_request`] before calling [`Self::process_melt_request`]
+    /// The melt request must be verifyed using [`Self::verify_melt_request`]
+    /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
     pub async fn process_melt_request(
         &self,
