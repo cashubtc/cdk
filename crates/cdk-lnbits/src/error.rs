@@ -1,8 +1,8 @@
-//! Error for Strike ln backend
+//! Error for LNbits ln backend
 
 use thiserror::Error;
 
-/// Strike Error
+/// LNbits Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Invoice amount not defined

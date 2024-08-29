@@ -23,7 +23,7 @@ use cdk::nuts::{
 use cdk_axum::LnKey;
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
-use cdk_lnbits::LNBits;
+use cdk_lnbits::LNbits;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use cdk_strike::Strike;
@@ -198,7 +198,7 @@ async fn main() -> anyhow::Result<()> {
 
             routers
         }
-        LnBackend::LNBits => {
+        LnBackend::LNbits => {
             let lnbits_settings = settings.lnbits.expect("Checked on config load");
             let admin_api_key = lnbits_settings.admin_api_key;
             let invoice_api_key = lnbits_settings.invoice_api_key;
@@ -209,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
 
             let webhook_url = mint_url.join(webhook_endpoint)?;
 
-            let lnbits = LNBits::new(
+            let lnbits = LNbits::new(
                 admin_api_key,
                 invoice_api_key,
                 lnbits_settings.lnbits_api,

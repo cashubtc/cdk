@@ -27,9 +27,9 @@ use tokio::sync::Mutex;
 
 pub mod error;
 
-/// LNBits
+/// LNbits
 #[derive(Clone)]
-pub struct LNBits {
+pub struct LNbits {
     lnbits_api: LNBitsClient,
     mint_settings: MintMeltSettings,
     melt_settings: MintMeltSettings,
@@ -38,8 +38,8 @@ pub struct LNBits {
     webhook_url: String,
 }
 
-impl LNBits {
-    /// Create new [`LNBits`] wallet
+impl LNbits {
+    /// Create new [`LNbits`] wallet
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         admin_api_key: String,
@@ -65,7 +65,7 @@ impl LNBits {
 }
 
 #[async_trait]
-impl MintLightning for LNBits {
+impl MintLightning for LNbits {
     type Err = cdk_lightning::Error;
 
     fn get_settings(&self) -> Settings {
@@ -260,7 +260,7 @@ impl MintLightning for LNBits {
     }
 }
 
-impl LNBits {
+impl LNbits {
     /// Create invoice webhook
     pub async fn create_invoice_webhook_router(
         &self,
