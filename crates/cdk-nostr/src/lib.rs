@@ -219,7 +219,7 @@ impl WalletNostrDatabase {
                         ..Default::default()
                     },
                 );
-                self.save_info_with_lock(&info).await?;
+                self.save_info_with_lock(&mut info).await?;
             }
         }
         for url in info.1.mints.iter() {
@@ -232,19 +232,20 @@ impl WalletNostrDatabase {
     /// Save the latest [`WalletInfo`]
     #[tracing::instrument(skip(self))]
     pub async fn save_info(&self) -> Result<(), Error> {
-        self.save_info_with_lock(&self.info.lock().await).await
+        self.save_info_with_lock(&mut self.info.lock().await).await
     }
 
     async fn save_info_with_lock<'a>(
         &self,
-        info: &MutexGuard<'a, (Timestamp, WalletInfo)>,
+        info: &mut MutexGuard<'a, (Timestamp, WalletInfo)>,
     ) -> Result<(), Error> {
-        tracing::debug!("Saving wallet info: {:?}", info);
         let mut timestamp = Timestamp::now();
         if timestamp <= info.0 {
             timestamp = info.0 + 1;
             tracing::debug!("Incrementing timestamp to {}", timestamp);
         }
+        info.0 = timestamp;
+        tracing::debug!("Saving wallet info: {:?}", info);
         let event = info.1.to_event(&self.keys, timestamp)?;
         self.save_event(event).await
     }
@@ -257,7 +258,7 @@ impl WalletNostrDatabase {
         self.save_event(event).await?;
         let mut info = self.info.lock().await;
         tx.update_balance(info.1.balance.get_or_insert(Amount::ZERO));
-        self.save_info_with_lock(&info).await?;
+        self.save_info_with_lock(&mut info).await?;
         Ok(id)
     }
 
@@ -308,7 +309,7 @@ impl WalletNostrDatabase {
         if let Some(description) = description {
             info.1.description = Some(description);
         }
-        self.save_info_with_lock(&info).await
+        self.save_info_with_lock(&mut info).await
     }
 
     async fn get_events(&self, filters: Vec<Filter>) -> Result<Vec<Event>, Error> {
@@ -341,7 +342,7 @@ impl WalletDatabase for WalletNostrDatabase {
     ) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
         if info.1.mints.insert(mint_url.clone()) {
-            self.save_info_with_lock(&info).await.map_err(map_err)?;
+            self.save_info_with_lock(&mut info).await.map_err(map_err)?;
         }
         self.wallet_db.add_mint(mint_url, mint_info).await
     }
@@ -349,7 +350,7 @@ impl WalletDatabase for WalletNostrDatabase {
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
         let mut info = self.info.lock().await;
         if info.1.mints.remove(&mint_url) {
-            self.save_info_with_lock(&info).await.map_err(map_err)?;
+            self.save_info_with_lock(&mut info).await.map_err(map_err)?;
         }
         self.wallet_db.remove_mint(mint_url).await
     }
@@ -370,7 +371,7 @@ impl WalletDatabase for WalletNostrDatabase {
         let mut info = self.info.lock().await;
         let removed = info.1.mints.remove(&old_mint_url);
         if info.1.mints.insert(new_mint_url.clone()) || removed {
-            self.save_info_with_lock(&info).await.map_err(map_err)?;
+            self.save_info_with_lock(&mut info).await.map_err(map_err)?;
         }
         self.wallet_db
             .update_mint_url(old_mint_url, new_mint_url)
@@ -520,7 +521,7 @@ impl WalletDatabase for WalletNostrDatabase {
             .entry(keyset_id.clone())
             .and_modify(|c| *c += count)
             .or_insert(count);
-        self.save_info_with_lock(&info).await.map_err(map_err)?;
+        self.save_info_with_lock(&mut info).await.map_err(map_err)?;
         self.wallet_db
             .increment_keyset_counter(keyset_id, count)
             .await
