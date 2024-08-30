@@ -467,11 +467,14 @@ impl Node {
                     match listener.accept().await {
                         Ok((tcp_stream, peer_addr)) => {
                             tracing::info!("Accepted connection from {}", peer_addr);
-                            lightning_net_tokio::setup_inbound(
-                                peer_manager_listener.clone(),
-                                tcp_stream.into_std().unwrap(),
-                            )
-                            .await;
+                            let peer_mananger_conn = peer_manager_listener.clone();
+                            tokio::spawn(async move {
+                                lightning_net_tokio::setup_inbound(
+                                    peer_mananger_conn,
+                                    tcp_stream.into_std().unwrap(),
+                                )
+                                .await;
+                            });
                         }
                         Err(e) => tracing::error!("Error accepting connection: {:?}", e),
                     }
