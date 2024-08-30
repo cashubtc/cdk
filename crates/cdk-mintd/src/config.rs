@@ -24,6 +24,7 @@ pub enum LnBackend {
     LNbits,
     FakeWallet,
     Phoenixd,
+    Lnd,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -50,6 +51,13 @@ pub struct LNbits {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Lnd {
+    pub address: String,
+    pub cert_file: PathBuf,
+    pub macaroon_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -93,6 +101,7 @@ pub struct Settings {
     pub strike: Option<Strike>,
     pub lnbits: Option<LNbits>,
     pub phoenixd: Option<Phoenixd>,
+    pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
 }
@@ -159,6 +168,7 @@ impl Settings {
             LnBackend::Strike => assert!(settings.strike.is_some()),
             LnBackend::LNbits => assert!(settings.lnbits.is_some()),
             LnBackend::Phoenixd => assert!(settings.phoenixd.is_some()),
+            LnBackend::Lnd => assert!(settings.lnd.is_some()),
             LnBackend::FakeWallet => (),
         }
 

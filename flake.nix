@@ -54,7 +54,7 @@
         devShells = flakeboxLib.mkShells {
           toolchain = toolchainNative;
           packages = [ ];
-          nativeBuildInputs = with pkgs; [ wasm-pack sqlx-cli ];
+          nativeBuildInputs = with pkgs; [ wasm-pack sqlx-cli protobuf3_20 ];
         };
       });
 }

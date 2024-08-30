@@ -1,0 +1,20 @@
+[package]
+name = "cdk-lnd"
+version = { workspace = true }
+edition = "2021"
+authors = ["CDK Developers"]
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true # MSRV
+license.workspace = true
+description = "CDK ln backend for lnd"
+
+[dependencies]
+async-trait.workspace = true
+anyhow.workspace = true
+cdk = { workspace = true, default-features = false, features = ["mint"] }
+fedimint-tonic-lnd = "0.2.0"
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

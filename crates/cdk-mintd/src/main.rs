@@ -24,6 +24,7 @@ use cdk_axum::LnKey;
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
 use cdk_lnbits::LNbits;
+use cdk_lnd::Lnd;
 use cdk_phoenixd::Phoenixd;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -285,6 +286,34 @@ async fn main() -> anyhow::Result<()> {
             );
 
             vec![router]
+        }
+        LnBackend::Lnd => {
+            let lnd_settings = settings.lnd.expect("Checked at config load");
+
+            let address = lnd_settings.address;
+            let cert_file = lnd_settings.cert_file;
+            let macaroon_file = lnd_settings.macaroon_file;
+
+            let lnd = Lnd::new(
+                address,
+                cert_file,
+                macaroon_file,
+                fee_reserve,
+                MintMeltSettings::default(),
+                MintMeltSettings::default(),
+            )
+            .await?;
+
+            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+            ln_backends.insert(
+                LnKey {
+                    unit: CurrencyUnit::Sat,
+                    method: PaymentMethod::Bolt11,
+                },
+                Arc::new(lnd),
+            );
+
+            vec![]
         }
         LnBackend::FakeWallet => {
             let units = settings.fake_wallet.unwrap_or_default().supported_units;
