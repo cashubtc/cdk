@@ -660,9 +660,10 @@ impl Mint {
 
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
-        let Some(key_pair) = keyset.keys.get(amount) else {
-            // No key for amount
-            return Err(Error::AmountKey);
+
+        let key_pair = match keyset.keys.get(amount) {
+            Some(key_pair) => key_pair,
+            None => return Err(Error::AmountKey),
         };
 
         let c = sign_message(&key_pair.secret_key, blinded_secret)?;
@@ -877,8 +878,10 @@ impl Mint {
         self.ensure_keyset_loaded(&proof.keyset_id).await?;
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
-        let Some(keypair) = keyset.keys.get(&proof.amount) else {
-            return Err(Error::AmountKey);
+
+        let keypair = match keyset.keys.get(&proof.amount) {
+            Some(key_pair) => key_pair,
+            None => return Err(Error::AmountKey),
         };
 
         verify_message(&keypair.secret_key, proof.c, proof.secret.as_bytes())?;

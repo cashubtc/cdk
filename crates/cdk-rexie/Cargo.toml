@@ -1,13 +1,13 @@
 [package]
 name = "cdk-rexie"
-version = { workspace = true }
+version = "0.3.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Indexdb storage backend for CDK in the browser"
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-rust-version.workspace = true
+license = "MIT"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.63.0" # MSRV
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
@@ -16,11 +16,11 @@ wallet = ["cdk/wallet"]
 
 [dependencies]
 rexie = "0.6.0"
-cdk = { workspace = true, default-features = false }
-async-trait.workspace = true
-tokio.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-serde-wasm-bindgen.workspace = true
-web-sys.workspace = true
+cdk = { path = "../cdk", default-features = false }
+async-trait = "0.1.74"
+tokio = { version = "1", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+serde-wasm-bindgen = "0.6.5"
+web-sys =  { version = "0.3.69", default-features = false, features = ["console"] }

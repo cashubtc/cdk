@@ -59,6 +59,8 @@ The project is split up into several crates in the `crates/` directory:
 | [16][16] | Animated QR codes | :x: |
 | [17][17] | WebSocket subscriptions  | :construction: |
 
+MSRV
+
 ## Bindings
 
 Experimental bindings can be found in the [bindings](./bindings/) folder.

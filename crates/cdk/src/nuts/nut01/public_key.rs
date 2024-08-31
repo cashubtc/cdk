@@ -150,7 +150,7 @@ mod tests {
     }
 }
 
-#[cfg(bench)]
+#[cfg(feature = "bench")]
 mod benches {
     use test::{black_box, Bencher};
 

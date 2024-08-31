@@ -123,7 +123,7 @@ mod tests {
     }
 }
 
-#[cfg(bench)]
+#[cfg(feature = "bench")]
 mod benches {
     use super::*;
     use crate::test::{black_box, Bencher};
