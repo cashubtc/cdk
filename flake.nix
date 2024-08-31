@@ -45,12 +45,14 @@
                 pname = "flexbox-multibuild";
                 src = rustSrc;
               }).overrideArgs commonArgs;
-            in rec {
+            in
+            rec {
               workspaceDeps = craneLib.buildWorkspaceDepsOnly { };
               workspaceBuild =
                 craneLib.buildWorkspace { cargoArtifacts = workspaceDeps; };
             });
-      in {
+      in
+      {
         devShells = flakeboxLib.mkShells {
           toolchain = toolchainNative;
           packages = [ ];
