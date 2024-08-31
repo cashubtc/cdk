@@ -1,24 +1,24 @@
 [package]
 name = "cdk-fake-wallet"
-version = { workspace = true }
+version = "0.3.0"
 edition = "2021"
 authors = ["CDK Developers"]
-homepage.workspace = true
-repository.workspace = true
-rust-version.workspace = true # MSRV
-license.workspace = true
-description = "CDK ln backend for cln"
+license = "MIT"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.63.0" # MSRV
+description = "CDK fake ln backend"
 
 [dependencies]
-async-trait.workspace = true
-bitcoin.workspace = true
-cdk = { workspace = true, default-features = false, features = ["mint"] }
-futures.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-thiserror.workspace = true
-uuid.workspace = true
-lightning-invoice.workspace = true
+async-trait = "0.1.74"
+bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
+cdk = { path = "../cdk", default-features = false, features = ["mint"] }
+futures = { version = "0.3.28", default-features = false }
+tokio = { version = "1", default-features = false }
+tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+lightning-invoice = { version = "0.31", features = ["serde"] }
 lightning = "0.0.123"
 tokio-stream = "0.1.15"
-rand.workspace = true
+rand = "0.8.5"

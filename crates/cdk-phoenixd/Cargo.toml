@@ -1,24 +1,23 @@
 [package]
 name = "cdk-phoenixd"
-version = { workspace = true }
+version = "0.3.0"
 edition = "2021"
 authors = ["CDK Developers"]
-homepage.workspace = true
-repository.workspace = true
-rust-version.workspace = true # MSRV
-license.workspace = true
+license = "MIT"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.63.0" # MSRV
 description = "CDK ln backend for phoenixd"
 
 [dependencies]
-async-trait.workspace = true
-anyhow.workspace = true
-axum.workspace = true
-bitcoin.workspace = true
-cdk = { workspace = true, default-features = false, features = ["mint"] }
-futures.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-thiserror.workspace = true
-phoenixd-rs = "0.2.0"
-# phoenixd-rs = { path = "../../../../phoenixd-rs" }
-uuid.workspace = true
+async-trait = "0.1"
+anyhow = "1"
+axum = "0.6.20"
+bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
+cdk = { path = "../cdk", default-features = false, features = ["mint"] }
+futures = { version = "0.3.28", default-features = false }
+tokio = { version = "1", default-features = false }
+tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+thiserror = "1"
+phoenixd-rs = "0.3.0"
+uuid = { version = "1", features = ["v4"] }

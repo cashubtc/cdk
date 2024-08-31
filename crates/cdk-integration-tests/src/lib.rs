@@ -115,11 +115,14 @@ pub async fn start_mint(
             }
         });
     }
-    let listener =
-        tokio::net::TcpListener::bind(format!("{}:{}", LISTEN_ADDR, LISTEN_PORT)).await?;
 
-    println!("Starting mint");
-    axum::serve(listener, mint_service).await?;
+    axum::Server::bind(
+        &format!("{}:{}", LISTEN_ADDR, LISTEN_PORT)
+            .as_str()
+            .parse()?,
+    )
+    .serve(mint_service.into_make_service())
+    .await?;
 
     Ok(())
 }

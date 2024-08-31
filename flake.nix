@@ -1,62 +1,176 @@
 {
-  description = "Cashu Development Kit";
+  description = "CDK Flake";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
 
-    flakebox = {
-      url = "github:rustshop/flakebox";
-      inputs.nixpkgs.follows = "nixpkgs";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+      };
     };
 
     flake-utils.url = "github:numtide/flake-utils";
+
+    pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
-  outputs = { self, nixpkgs, flakebox, flake-utils }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { system = system; };
+        overlays = [ (import rust-overlay) ];
         lib = pkgs.lib;
-        flakeboxLib = flakebox.lib.${system} { };
-        rustSrc = flakeboxLib.filterSubPaths {
-          root = builtins.path {
-            name = "cdk";
-            path = ./.;
-          };
-          paths = [ "crates/*" ];
+        stdenv = pkgs.stdenv;
+        isDarwin = stdenv.isDarwin;
+        libsDarwin = with pkgs; lib.optionals isDarwin [
+          # Additional darwin specific inputs can be set here
+          darwin.apple_sdk.frameworks.Security
+          darwin.apple_sdk.frameworks.SystemConfiguration
+        ];
+
+        # Dependencies
+        pkgs = import nixpkgs {
+          inherit system overlays;
         };
 
-        targetsStd = flakeboxLib.mkStdTargets { };
-        toolchainsStd = flakeboxLib.mkStdToolchains { };
 
-        toolchainNative = flakeboxLib.mkFenixToolchain {
-          targets = (pkgs.lib.getAttrs [ "default" "wasm32-unknown" ] targetsStd);
+        # Toolchains
+        # latest stable
+        stable_toolchain = pkgs.rust-bin.stable.latest.default.override {
+          targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
 
-        commonArgs = {
-          buildInputs = [ pkgs.openssl ] ++ lib.optionals pkgs.stdenv.isDarwin
-            [ pkgs.darwin.apple_sdk.frameworks.SystemConfiguration ];
-          nativeBuildInputs = [ pkgs.pkg-config ];
+        # MSRV stable
+        msrv_toolchain = pkgs.rust-bin.stable."1.63.0".default.override {
+          targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
-        outputs = (flakeboxLib.craneMultiBuild { toolchains = toolchainsStd; })
-          (craneLib':
-            let
-              craneLib = (craneLib'.overrideArgs {
-                pname = "flexbox-multibuild";
-                src = rustSrc;
-              }).overrideArgs commonArgs;
-            in
-            rec {
-              workspaceDeps = craneLib.buildWorkspaceDepsOnly { };
-              workspaceBuild =
-                craneLib.buildWorkspace { cargoArtifacts = workspaceDeps; };
-            });
+
+
+        # DB MSRV stable
+        db_msrv_toolchain = pkgs.rust-bin.stable."1.66.0".default.override {
+          targets = [ "wasm32-unknown-unknown" ]; # wasm
+        };
+
+        # Nighly for creating lock files
+        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default);
+
+        # Common inputs
+        envVars = { };
+        buildInputs = with pkgs; [
+          # Add additional build inputs here
+          git
+          pkg-config
+          curl
+          just
+          protobuf3_20
+          nixpkgs-fmt
+          rust-analyzer
+        ] ++ libsDarwin;
+
+        # WASM deps
+        WASMInputs = with pkgs; [
+        ];
+
+        nativeBuildInputs = with pkgs; [
+          # Add additional build inputs here
+        ] ++ lib.optionals isDarwin [
+          # Additional darwin specific native inputs can be set here
+        ];
       in
       {
-        devShells = flakeboxLib.mkShells {
-          toolchain = toolchainNative;
-          packages = [ ];
-          nativeBuildInputs = with pkgs; [ wasm-pack sqlx-cli protobuf3_20 ];
+        checks = {
+          # Pre-commit checks
+          pre-commit-check =
+            let
+              # this is a hack based on https://github.com/cachix/pre-commit-hooks.nix/issues/126
+              # we want to use our own rust stuff from oxalica's overlay
+              _rust = pkgs.rust-bin.stable.latest.default;
+              rust = pkgs.buildEnv {
+                name = _rust.name;
+                inherit (_rust) meta;
+                buildInputs = [ pkgs.makeWrapper ];
+                paths = [ _rust ];
+                pathsToLink = [ "/" "/bin" ];
+                postBuild = ''
+                  for i in $out/bin/*; do
+                    wrapProgram "$i" --prefix PATH : "$out/bin"
+                  done
+                '';
+              };
+            in
+            pre-commit-hooks.lib.${system}.run {
+              src = ./.;
+              hooks = {
+                rustfmt = {
+                  enable = true;
+                  entry = lib.mkForce "${rust}/bin/cargo-fmt fmt --all -- --config format_code_in_doc_comments=true --check --color always";
+                };
+                nixpkgs-fmt.enable = true;
+                typos.enable = true;
+                commitizen.enable = true; # conventional commits
+              };
+            };
         };
-      });
+
+        devShells =
+          let
+            # pre-commit-checks
+            _shellHook = (self.checks.${system}.pre-commit-check.shellHook or "");
+
+            # devShells
+            msrv = pkgs.mkShell ({
+              shellHook = "
+              ${_shellHook}
+              cargo update -p half --precise 2.2.1
+              cargo update -p tokio --precise 1.38.1
+              cargo update -p reqwest --precise 0.12.4
+              cargo update -p serde_with --precise 3.1.0
+              cargo update -p regex --precise 1.9.6
+              cargo update -p backtrace --precise 0.3.58
+              # For wasm32-unknown-unknown target 
+              cargo update -p bumpalo --precise 3.12.0
+              ";
+              buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
+              inherit nativeBuildInputs;
+            } // envVars);
+
+            stable = pkgs.mkShell ({
+              shellHook = "${_shellHook}";
+              buildInputs = buildInputs ++ WASMInputs ++ [ stable_toolchain ];
+              inherit nativeBuildInputs;
+            } // envVars);
+
+
+            db_shell = pkgs.mkShell ({
+              shellHook = "
+              ${_shellHook}
+              cargo update -p half --precise 2.2.1
+              cargo update -p home --precise 0.5.5
+              cargo update -p tokio --precise 1.38.1
+              cargo update -p serde_with --precise 3.1.0
+              # cargo update -p prost-derive --precise 0.12.3
+              # cargo update -p prost --precise 0.12.3
+              # cargo update -p prost-build --precise 0.12.3
+              # cargo update -p prost-types --precise 0.12.3
+              ";
+              buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
+              inherit nativeBuildInputs;
+            } // envVars);
+
+
+
+            nightly = pkgs.mkShell ({
+              shellHook = "${_shellHook}";
+              buildInputs = buildInputs ++ [ nightly_toolchain ];
+              inherit nativeBuildInputs;
+            } // envVars);
+
+          in
+          {
+            inherit msrv stable nightly db_shell;
+            default = msrv;
+          };
+      }
+    );
 }

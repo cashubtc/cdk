@@ -480,10 +480,13 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let listener =
-        tokio::net::TcpListener::bind(format!("{}:{}", listen_addr, listen_port)).await?;
-
-    axum::serve(listener, mint_service).await?;
+    axum::Server::bind(
+        &format!("{}:{}", listen_addr, listen_port)
+            .as_str()
+            .parse()?,
+    )
+    .serve(mint_service.into_make_service())
+    .await?;
 
     Ok(())
 }

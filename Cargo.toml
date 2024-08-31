@@ -9,7 +9,7 @@ resolver = "2"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.70.0" # MSRV
+rust-version = "1.63.0" # MSRV
 version = "0.3.0"
 
 [workspace.metadata]
@@ -21,44 +21,9 @@ repository = "https://github.com/cashubtc/cdk"
 license-file = "LICENSE"
 keywords = ["bitcoin", "e-cash", "cashu"]
 
-[workspace.dependencies]
-async-trait = "0.1.74"
-anyhow = "1"
-axum = "0.7.5"
-bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
-bip39 = "2.0"
-clap = { version = "4.4.8", features = ["derive", "env", "default"] }
-cdk = { version = "0.3", path = "./crates/cdk", default-features = false }
-cdk-rexie = { version = "0.3", path = "./crates/cdk-rexie", default-features = false }
-cdk-sqlite = { version = "0.3", path = "./crates/cdk-sqlite", default-features = false }
-cdk-redb = { version = "0.3", path = "./crates/cdk-redb", default-features = false }
-cdk-cln = { version = "0.3", path = "./crates/cdk-cln", default-features = false }
-cdk-lnbits = { version = "0.3", path = "./crates/cdk-lnbits", default-features = false }
-cdk-phoenixd = { version = "0.3", path = "./crates/cdk-phoenixd", default-features = false }
-cdk-axum = { version = "0.3", path = "./crates/cdk-axum", default-features = false }
-cdk-fake-wallet = { version = "0.3", path = "./crates/cdk-fake-wallet", default-features = false }
-cdk-strike = { version = "0.3", path = "./crates/cdk-strike", default-features = false }
-cdk-lnd = { version = "0.3", path = "./crates/cdk-lnd", default-features = false }
-tokio = { version = "1", default-features = false }
-thiserror = "1"
-tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-serde = { version = "1", default-features = false, features = ["derive"] }
-serde_json = "1"
-serde-wasm-bindgen = "0.6.5"
-futures = { version = "0.3.28", default-feature = false }
-web-sys =  { version = "0.3.69", default-features = false, features = ["console"] }
-uuid = { version = "1", features = ["v4"] }
-lightning-invoice = { version = "0.31", features = ["serde"] }
-tower-http = { version = "0.5.2", features = ["cors"] }
-home = "0.5.9"
-rand = "0.8.5"
-url = "2.3"
-
 [profile]
 
 [profile.ci]
 inherits = "dev"
 incremental = false
-debug = "line-tables-only"
 lto = "off"
