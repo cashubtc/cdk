@@ -564,6 +564,62 @@ impl Wallet {
         Ok(total_amount)
     }
 
+    /// Generates blinded secrets to send to the mint for signing. This function
+    /// is appropriate if the caller is providing their own network
+    /// transport. Otherwise use `mint`, which makes a network request to
+    /// the mint.
+    ///
+    /// # Parameters
+    ///
+    /// - `&self`: A reference to the current instance
+    /// - `active_keyset_id`: The ID of the active keyset
+    /// - `quote_info_amount`: The amount to be minted
+    /// - `amount_split_target`: Strategy for splitting amount into discrete
+    ///   tokens
+    /// - `spending_conditions`: Optional spending conditions to apply to the
+    ///   minted tokens
+    /// - `count`: How many tokens were previously generated from this keyset +
+    ///   1
+    /// - `xpriv`: The extended private key used for generating secrets
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing `PreMintSecrets` if successful, or an `Error`
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the creation of `PreMintSecrets`
+    /// fails.
+    ///
+    /// ```
+    pub fn generate_premint_secrets(
+        &self,
+        active_keyset_id: Id,
+        quote_info_amount: Amount,
+        amount_split_target: &SplitTarget,
+        spending_conditions: Option<&SpendingConditions>,
+        count: u32,
+        xpriv: ExtendedPrivKey,
+    ) -> Result<PreMintSecrets, Error> {
+        // Move the match logic into this function.
+        match spending_conditions {
+            Some(spending_conditions) => Ok(PreMintSecrets::with_conditions(
+                active_keyset_id,
+                quote_info_amount,
+                amount_split_target,
+                spending_conditions,
+            )?),
+            None => Ok(PreMintSecrets::from_xpriv(
+                active_keyset_id,
+                count,
+                xpriv,
+                quote_info_amount,
+                amount_split_target,
+            )?),
+        }
+    }
+
     /// Mint
     /// # Synopsis
     /// ```rust
@@ -632,21 +688,14 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
-        let premint_secrets = match &spending_conditions {
-            Some(spending_conditions) => PreMintSecrets::with_conditions(
-                active_keyset_id,
-                quote_info.amount,
-                &amount_split_target,
-                spending_conditions,
-            )?,
-            None => PreMintSecrets::from_xpriv(
-                active_keyset_id,
-                count,
-                self.xpriv,
-                quote_info.amount,
-                &amount_split_target,
-            )?,
-        };
+        let premint_secrets = self.generate_premint_secrets(
+            active_keyset_id,
+            quote_info.amount,
+            &amount_split_target,
+            spending_conditions.as_ref(),
+            count,
+            self.xpriv,
+        )?;
 
         let mint_res = self
             .client

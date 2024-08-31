@@ -323,6 +323,8 @@ pub enum CurrencyUnit {
     Usd,
     /// Euro
     Eur,
+    /// Hash
+    Hash,
 }
 
 #[cfg(feature = "mint")]
@@ -334,6 +336,7 @@ impl CurrencyUnit {
             Self::Msat => 1,
             Self::Usd => 2,
             Self::Eur => 3,
+            Self::Hash => 4,
         }
     }
 }
@@ -346,6 +349,7 @@ impl FromStr for CurrencyUnit {
             "msat" => Ok(Self::Msat),
             "usd" => Ok(Self::Usd),
             "eur" => Ok(Self::Eur),
+            "hash" => Ok(Self::Hash),
             _ => Err(Error::UnsupportedUnit),
         }
     }
@@ -358,6 +362,7 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Msat => write!(f, "msat"),
             CurrencyUnit::Usd => write!(f, "usd"),
             CurrencyUnit::Eur => write!(f, "eur"),
+            CurrencyUnit::Hash => write!(f, "hash"),
         }
     }
 }
