@@ -129,6 +129,7 @@ impl MintLightning for Strike {
             CurrencyUnit::Msat => StrikeCurrencyUnit::BTC,
             CurrencyUnit::Usd => StrikeCurrencyUnit::USD,
             CurrencyUnit::Eur => StrikeCurrencyUnit::EUR,
+            CurrencyUnit::Hash => unimplemented!(),
         };
 
         let payment_quote_request = PayInvoiceQuoteRequest {
@@ -274,6 +275,7 @@ pub(crate) fn from_strike_amount(
                 bail!("Could not convert to EUR");
             }
         }
+        CurrencyUnit::Hash => unimplemented!(),
     }
 }
 
@@ -301,5 +303,6 @@ where
                 amount: euro.round() / 100.0,
             }
         }
+        CurrencyUnit::Hash => unimplemented!(),
     }
 }
