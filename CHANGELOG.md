@@ -22,7 +22,7 @@
 -->
 
 
-## [Unreleased]
+## [0.3.0]
 
 ### Summary
 
