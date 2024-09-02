@@ -392,7 +392,7 @@ pub async fn post_check(
 }
 
 pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
-    Ok(Json(state.mint.mint_info().clone()))
+    Ok(Json(state.mint.mint_info().clone().time(unix_time())))
 }
 
 pub async fn post_swap(

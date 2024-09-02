@@ -92,6 +92,7 @@ impl WalletDatabase for WalletSqliteDatabase {
             nuts,
             mint_icon_url,
             motd,
+            time,
         ) = match mint_info {
             Some(mint_info) => {
                 let MintInfo {
@@ -104,6 +105,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                     nuts,
                     mint_icon_url,
                     motd,
+                    time,
                 } = mint_info;
 
                 (
@@ -116,16 +118,17 @@ impl WalletDatabase for WalletSqliteDatabase {
                     serde_json::to_string(&nuts).ok(),
                     mint_icon_url,
                     motd,
+                    time,
                 )
             }
-            None => (None, None, None, None, None, None, None, None, None),
+            None => (None, None, None, None, None, None, None, None, None, None),
         };
 
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint
-(mint_url, name, pubkey, version, description, description_long, contact, nuts, mint_icon_url, motd)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+(mint_url, name, pubkey, version, description, description_long, contact, nuts, mint_icon_url, motd, mint_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(mint_url.to_string())
@@ -138,6 +141,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(nuts)
         .bind(mint_icon_url)
         .bind(motd)
+        .bind(time.map(|v| v as i64))
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -768,6 +772,7 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
     let row_nuts: Option<String> = row.try_get("nuts").map_err(Error::from)?;
     let mint_icon_url: Option<String> = row.try_get("mint_icon_url").map_err(Error::from)?;
     let motd: Option<String> = row.try_get("motd").map_err(Error::from)?;
+    let time: Option<i64> = row.try_get("mint_time").map_err(Error::from)?;
 
     Ok(MintInfo {
         name,
@@ -781,6 +786,7 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
             .unwrap_or_default(),
         mint_icon_url,
         motd,
+        time: time.map(|t| t as u64),
     })
 }
 

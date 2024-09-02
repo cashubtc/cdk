@@ -79,6 +79,9 @@ pub struct MintInfo {
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
+    /// server unix timestamp
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<u64>,
 }
 
 impl MintInfo {
@@ -167,6 +170,17 @@ impl MintInfo {
     {
         Self {
             motd: Some(motd.into()),
+            ..self
+        }
+    }
+
+    /// Set time
+    pub fn time<S>(self, time: S) -> Self
+    where
+        S: Into<u64>,
+    {
+        Self {
+            time: Some(time.into()),
             ..self
         }
     }
