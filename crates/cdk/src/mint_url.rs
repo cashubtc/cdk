@@ -24,7 +24,7 @@ pub struct MintUrl(String);
 
 impl MintUrl {
     fn format_url(url: &str) -> String {
-        if url.len() == 0 {
+        if url.is_empty() {
             return String::new();
         }
         let url = url.trim_end_matches('/');
