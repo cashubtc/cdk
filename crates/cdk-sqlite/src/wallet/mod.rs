@@ -104,6 +104,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                     nuts,
                     mint_icon_url,
                     motd,
+                    time: _,
                 } = mint_info;
 
                 (
@@ -781,6 +782,7 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
             .unwrap_or_default(),
         mint_icon_url,
         motd,
+        time: None,
     })
 }
 

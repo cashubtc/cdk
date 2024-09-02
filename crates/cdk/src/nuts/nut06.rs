@@ -2,6 +2,8 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
@@ -79,6 +81,20 @@ pub struct MintInfo {
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
+    /// server unix timestamp
+    #[serde(serialize_with = "serialize_time")]
+    pub time: Option<u64>,
+}
+
+fn serialize_time<S>(_: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    serializer.serialize_u64(epoch)
 }
 
 impl MintInfo {
@@ -169,6 +185,16 @@ impl MintInfo {
             motd: Some(motd.into()),
             ..self
         }
+    }
+
+    /// Get time
+    pub fn time(&self) -> Option<u64> {
+        Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
     }
 }
 

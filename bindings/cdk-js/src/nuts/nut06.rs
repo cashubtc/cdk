@@ -79,6 +79,7 @@ impl JsMintInfo {
         nuts: JsValue,
         mint_icon_url: Option<String>,
         motd: Option<String>,
+        time: Option<u64>,
     ) -> Result<JsMintInfo> {
         Ok(JsMintInfo {
             inner: MintInfo {
@@ -92,6 +93,7 @@ impl JsMintInfo {
                 nuts: serde_wasm_bindgen::from_value(nuts).map_err(into_err)?,
                 mint_icon_url,
                 motd,
+                time,
             },
         })
     }
@@ -151,6 +153,12 @@ impl JsMintInfo {
     #[wasm_bindgen(getter)]
     pub fn motd(&self) -> Option<String> {
         self.inner.motd.clone()
+    }
+
+    /// Get time
+    #[wasm_bindgen(getter)]
+    pub fn time(&self) -> Option<u64> {
+        self.inner.time()
     }
 }
 
