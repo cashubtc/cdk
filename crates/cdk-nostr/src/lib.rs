@@ -449,12 +449,39 @@ impl WalletDatabase for WalletNostrDatabase {
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err> {
+        let unspent_proofs = self
+            .get_proofs(
+                None,
+                Some(CurrencyUnit::Sat),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await?;
         let added_proofs_by_url = added.iter().into_group_map_by(|info| info.mint_url.clone());
-        for (mint_url, proofs) in added_proofs_by_url {
+        let removed_proofs_by_url = unspent_proofs
+            .iter()
+            .filter_map(|info| match info.proof.y() {
+                Ok(y) if removed_ys.contains(&y) => Some(info),
+                _ => None,
+            })
+            .into_group_map_by(|info| info.mint_url.clone());
+        let mint_urls = added_proofs_by_url
+            .keys()
+            .chain(removed_proofs_by_url.keys())
+            .collect::<HashSet<_>>();
+        for mint_url in mint_urls {
+            let added_proofs = added_proofs_by_url
+                .get(mint_url)
+                .cloned()
+                .unwrap_or_default();
+            let removed_proofs = removed_proofs_by_url
+                .get(mint_url)
+                .cloned()
+                .unwrap_or_default();
             let event = ProofsEvent {
                 url: mint_url.clone(),
-                added: proofs.iter().map(|info| info.proof.clone()).collect(),
-                deleted: removed_ys.clone(),
+                added: added_proofs.iter().map(|info| info.proof.clone()).collect(),
+                deleted: removed_proofs.iter().map(|info| info.y).collect(),
                 reserved: vec![],
             };
             self.client
