@@ -78,7 +78,7 @@ impl WalletNostrDatabase {
         nostr_db: D,
     ) -> Result<Self, Error>
     where
-        D: NostrDatabase<Err = DatabaseError> + 'static,
+        D: NostrDatabase + 'static,
     {
         let client = Client::builder().signer(&keys).database(nostr_db).build();
         Self::connect_client(&client, relays).await?;
