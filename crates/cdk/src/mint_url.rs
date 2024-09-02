@@ -16,6 +16,9 @@ pub enum Error {
     /// Url error
     #[error(transparent)]
     Url(#[from] ParseError),
+    /// Invalid URL structure
+    #[error("Invalid URL")]
+    InvalidUrl,
 }
 
 /// MintUrl Url
@@ -23,25 +26,29 @@ pub enum Error {
 pub struct MintUrl(String);
 
 impl MintUrl {
-    fn format_url(url: &str) -> String {
+    fn format_url(url: &str) -> Result<String, Error> {
         if url.is_empty() {
-            return String::new();
+            return Ok(String::new());
         }
         let url = url.trim_end_matches('/');
         // https://URL.com/path/TO/resource -> https://url.com/path/TO/resource
-        let protocol = url.split("://").nth(0).unwrap().to_lowercase();
+        let protocol = url
+            .split("://")
+            .nth(0)
+            .ok_or(Error::InvalidUrl)?
+            .to_lowercase();
         let host = url
             .split("://")
             .nth(1)
-            .unwrap()
+            .ok_or(Error::InvalidUrl)?
             .split('/')
             .nth(0)
-            .unwrap()
+            .ok_or(Error::InvalidUrl)?
             .to_lowercase();
         let path = url
             .split("://")
             .nth(1)
-            .unwrap()
+            .ok_or(Error::InvalidUrl)?
             .split('/')
             .skip(1)
             .collect::<Vec<&str>>()
@@ -50,7 +57,7 @@ impl MintUrl {
         if !path.is_empty() {
             formatted_url.push_str(&format!("/{}", path));
         }
-        formatted_url
+        Ok(formatted_url)
     }
 
     /// Empty mint url
@@ -82,7 +89,10 @@ where
     fn from(url: S) -> Self {
         let url: String = url.into();
         let formatted_url = Self::format_url(&url);
-        Self(formatted_url)
+        match formatted_url {
+            Ok(url) => Self(url),
+            Err(_) => Self::default(),
+        }
     }
 }
 
