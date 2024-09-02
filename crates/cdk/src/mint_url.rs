@@ -24,6 +24,9 @@ pub struct MintUrl(String);
 
 impl MintUrl {
     fn format_url(url: &str) -> String {
+        if url.len() == 0 {
+            return String::new();
+        }
         let url = url.trim_end_matches('/');
         // https://URL.com/path/TO/resource -> https://url.com/path/TO/resource
         let protocol = url.split("://").nth(0).unwrap().to_lowercase();
