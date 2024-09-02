@@ -34,9 +34,12 @@ jobs:
             -p cdk-sqlite,
             -p cdk-axum,
             -p cdk-cln,
-            -p cdk-fake-wallet,
+            -p cdk-lnd,
+            -p cdk-phoenixd,
             -p cdk-strike,
+            -p cdk-lnbits
             -p cdk-integration-tests,
+            -p cdk-fake-wallet,
             --bin cdk-cli,
             --bin cdk-mintd,
           ]
@@ -51,6 +54,8 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml','**/Cargo.lock') }}
+    - name: Install protobuf
+      run:  sudo apt-get install -y protobuf-compiler
     - name: Set default toolchain
       run: rustup default ${{ matrix.rust.version }}
     - name: Set profile

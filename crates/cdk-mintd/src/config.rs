@@ -21,9 +21,10 @@ pub enum LnBackend {
     #[default]
     Cln,
     Strike,
+    LNbits,
     FakeWallet,
-    //  Greenlight,
-    //  Ldk,
+    Phoenixd,
+    Lnd,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -41,8 +42,28 @@ pub struct Strike {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LNbits {
+    pub admin_api_key: String,
+    pub invoice_api_key: String,
+    pub lnbits_api: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Lnd {
+    pub address: String,
+    pub cert_file: PathBuf,
+    pub macaroon_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Phoenixd {
+    pub api_password: String,
+    pub api_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +99,9 @@ pub struct Settings {
     pub ln: Ln,
     pub cln: Option<Cln>,
     pub strike: Option<Strike>,
+    pub lnbits: Option<LNbits>,
+    pub phoenixd: Option<Phoenixd>,
+    pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
 }
@@ -141,8 +165,11 @@ impl Settings {
 
         match settings.ln.ln_backend {
             LnBackend::Cln => assert!(settings.cln.is_some()),
-            LnBackend::FakeWallet => (),
             LnBackend::Strike => assert!(settings.strike.is_some()),
+            LnBackend::LNbits => assert!(settings.lnbits.is_some()),
+            LnBackend::Phoenixd => assert!(settings.phoenixd.is_some()),
+            LnBackend::Lnd => assert!(settings.lnd.is_some()),
+            LnBackend::FakeWallet => (),
         }
 
         Ok(settings)

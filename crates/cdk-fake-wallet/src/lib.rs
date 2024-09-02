@@ -110,7 +110,8 @@ impl MintLightning for FakeWallet {
         Ok(PaymentQuoteResponse {
             request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
             amount,
-            fee,
+            fee: fee.into(),
+            state: MeltQuoteState::Unpaid,
         })
     }
 

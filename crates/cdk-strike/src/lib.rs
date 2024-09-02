@@ -143,7 +143,8 @@ impl MintLightning for Strike {
         Ok(PaymentQuoteResponse {
             request_lookup_id: quote.payment_quote_id,
             amount: from_strike_amount(quote.amount, &melt_quote_request.unit)?.into(),
-            fee,
+            fee: fee.into(),
+            state: MeltQuoteState::Unpaid,
         })
     }
 

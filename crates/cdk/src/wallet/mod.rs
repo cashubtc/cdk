@@ -192,7 +192,8 @@ impl Wallet {
         Ok(balances)
     }
 
-    /// Update Mint information and related entries in the event a mint changes its URL
+    /// Update Mint information and related entries in the event a mint changes
+    /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
         self.mint_url = new_mint_url.clone();
@@ -327,7 +328,8 @@ impl Wallet {
 
     /// Get active keyset for mint
     ///
-    /// Quieries mint for current keysets then gets [`Keys`] for any unknown keysets
+    /// Quieries mint for current keysets then gets [`Keys`] for any unknown
+    /// keysets
     #[instrument(skip(self))]
     pub async fn get_active_mint_keyset(&self) -> Result<KeySetInfo, Error> {
         let keysets = self
@@ -441,9 +443,10 @@ impl Wallet {
             .check_proofs_spent(proofs.clone().into_iter().map(|p| p.proof).collect())
             .await?;
 
-        // Both `State::Pending` and `State::Unspent` should be included in the pending table.
-        // This is because a proof that has been crated to send will be stored in the pending table
-        // in order to avoid accidentally double spending but to allow it to be explicitly reclaimed
+        // Both `State::Pending` and `State::Unspent` should be included in the pending
+        // table. This is because a proof that has been crated to send will be
+        // stored in the pending table in order to avoid accidentally double
+        // spending but to allow it to be explicitly reclaimed
         let pending_states: HashSet<PublicKey> = states
             .into_iter()
             .filter(|s| s.state.ne(&State::Spent))
@@ -1721,6 +1724,14 @@ impl Wallet {
                 }
             }
         }
+
+        // Since the proofs are unknown they need to be added to the database
+        let proofs_info = proofs
+            .clone()
+            .into_iter()
+            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit))
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
+        self.localstore.update_proofs(proofs_info, vec![]).await?;
 
         let mut pre_swap = self
             .create_swap(None, amount_split_target, proofs, None, false)

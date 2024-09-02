@@ -16,6 +16,9 @@ cdk = { workspace = true, default-features = false, features = ["mint"] }
 cdk-redb = { workspace = true, default-features = false, features = ["mint"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["mint"] }
 cdk-cln = { workspace = true, default-features = false }
+cdk-lnbits = { workspace = true, default-features = false }
+cdk-phoenixd = { workspace = true, default-features = false }
+cdk-lnd = { workspace = true, default-features = false }
 cdk-fake-wallet = { workspace = true, default-features = false }
 cdk-strike.workspace = true
 cdk-axum = { workspace = true, default-features = false }
@@ -30,3 +33,4 @@ bip39.workspace = true
 tower-http = { version = "0.5.2", features = ["cors"] }
 lightning-invoice.workspace = true
 home.workspace = true
+url.workspace = true

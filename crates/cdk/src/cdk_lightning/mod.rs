@@ -115,7 +115,9 @@ pub struct PaymentQuoteResponse {
     /// Amount
     pub amount: Amount,
     /// Fee required for melt
-    pub fee: u64,
+    pub fee: Amount,
+    /// Status
+    pub state: MeltQuoteState,
 }
 
 /// Ln backend settings
@@ -152,7 +154,8 @@ impl Default for MintMeltSettings {
     }
 }
 
-const MSAT_IN_SAT: u64 = 1000;
+/// Msats in sat
+pub const MSAT_IN_SAT: u64 = 1000;
 
 /// Helper function to convert units
 pub fn to_unit<T>(

@@ -26,7 +26,7 @@ mnemonic = ""
 
 [ln]
 
-# Required ln backend `cln`, `strike`, `fakewallet`
+# Required ln backend `cln`, `lnd`, `strike`, `fakewallet`
 ln_backend = "cln"
 
 # [cln]
@@ -37,3 +37,18 @@ ln_backend = "cln"
 # api_key=""
 # Optional default sats
 # supported_units=[""]
+
+
+# [lnbits]
+# admin_api_key = ""
+# invoice_api_key = ""
+# lnbits_api = ""
+
+# [phoenixd]
+# api_password = ""
+# api_url = ""
+
+# [lnd]
+# address = ""
+# macaroon_file = ""
+# cert_file = ""

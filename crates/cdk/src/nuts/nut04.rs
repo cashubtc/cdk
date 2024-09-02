@@ -40,7 +40,8 @@ pub enum QuoteState {
     /// Quote has been paid and wallet can mint
     Paid,
     /// Minting is in progress
-    /// **Note:** This state is to be used internally but is not part of the nut.
+    /// **Note:** This state is to be used internally but is not part of the
+    /// nut.
     Pending,
     /// ecash issued for quote
     Issued,
