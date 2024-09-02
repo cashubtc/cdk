@@ -161,6 +161,7 @@ impl WalletNostrDatabase {
         &self,
         until: Option<Timestamp>,
         limit: Option<usize>,
+        sync_relays: bool,
     ) -> Result<Vec<TransactionEvent>, Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
@@ -172,7 +173,7 @@ impl WalletNostrDatabase {
             limit,
             ..Default::default()
         }];
-        let events = self.get_events(filters).await?;
+        let events = self.get_events(filters, sync_relays).await?;
         Ok(events
             .into_iter()
             .map(|event| TransactionEvent::from_event(&event, &self.keys))
@@ -190,7 +191,7 @@ impl WalletNostrDatabase {
             ),
             ..Default::default()
         }];
-        self.get_events(filters).await?;
+        self.get_events(filters, true).await?;
         Ok(())
     }
 
@@ -205,7 +206,7 @@ impl WalletNostrDatabase {
             ),
             ..Default::default()
         }];
-        let events = self.get_events(filters).await?;
+        let events = self.get_events(filters, true).await?;
         let mut info = self.info.lock().await;
         match events.first() {
             Some(event) => {
@@ -273,7 +274,8 @@ impl WalletNostrDatabase {
             ),
             ..Default::default()
         }];
-        let events = self.get_events(filters).await?;
+        let mut events = self.get_events(filters, true).await?;
+        events.sort(); // Ensure events are sorted by timestamp
         for event in events {
             let event = ProofsEvent::from_event(&event, &self.keys)?;
             self.wallet_db.add_mint(event.url.clone(), None).await?;
@@ -312,14 +314,19 @@ impl WalletNostrDatabase {
         self.save_info_with_lock(&mut info).await
     }
 
-    async fn get_events(&self, filters: Vec<Filter>) -> Result<Vec<Event>, Error> {
+    async fn get_events(
+        &self,
+        filters: Vec<Filter>,
+        sync_relays: bool,
+    ) -> Result<Vec<Event>, Error> {
         Ok(self
             .client
             .get_events_of(
                 filters,
-                EventSource::Both {
-                    timeout: None,
-                    specific_relays: None,
+                if sync_relays {
+                    EventSource::both(None)
+                } else {
+                    EventSource::Database
                 },
             )
             .await?)
