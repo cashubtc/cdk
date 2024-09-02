@@ -75,7 +75,7 @@ pub struct MintInfo {
     pub nuts: Nuts,
     /// Mint's icon URL
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mint_icon_url: Option<String>,
+    pub icon_url: Option<String>,
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
@@ -153,12 +153,12 @@ impl MintInfo {
     }
 
     /// Set mint icon url
-    pub fn mint_icon_url<S>(self, mint_icon_url: S) -> Self
+    pub fn icon_url<S>(self, icon_url: S) -> Self
     where
         S: Into<String>,
     {
         Self {
-            mint_icon_url: Some(mint_icon_url.into()),
+            icon_url: Some(icon_url.into()),
             ..self
         }
     }
@@ -417,7 +417,7 @@ mod tests {
     }
   ],
   "motd": "Message to display to users.",
-  "mint_icon_url": "https://this-is-a-mint-icon-url.com/icon.png",
+  "icon_url": "https://this-is-a-mint-icon-url.com/icon.png",
   "nuts": {
     "4": {
       "methods": [
@@ -460,7 +460,7 @@ mod tests {
         ["email", "contact@me.com"]
   ],
   "motd": "Message to display to users.",
-  "mint_icon_url": "https://this-is-a-mint-icon-url.com/icon.png",
+  "icon_url": "https://this-is-a-mint-icon-url.com/icon.png",
   "nuts": {
     "4": {
       "methods": [
