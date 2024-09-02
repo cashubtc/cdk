@@ -407,8 +407,8 @@ async fn main() -> anyhow::Result<()> {
         mint_info = mint_info.pubkey(pubkey);
     }
 
-    if let Some(mint_icon_url) = &settings.mint_info.mint_icon_url {
-        mint_info = mint_info.mint_icon_url(mint_icon_url);
+    if let Some(icon_url) = &settings.mint_info.icon_url {
+        mint_info = mint_info.icon_url(icon_url);
     }
 
     if let Some(motd) = settings.mint_info.motd {
