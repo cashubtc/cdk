@@ -97,6 +97,7 @@ impl WalletNostrDatabase {
         };
         let info = self_.refresh_info(false).await?;
         self_.load_db(info).await?;
+        self_.sync_proofs(false).await?;
         Ok(self_)
     }
 
@@ -129,7 +130,7 @@ impl WalletNostrDatabase {
         };
         let info = self_.refresh_info(true).await?;
         self_.load_db(info).await?;
-        self_.sync_proofs().await?;
+        self_.sync_proofs(true).await?;
         Ok(self_)
     }
 
@@ -264,7 +265,7 @@ impl WalletNostrDatabase {
 
     /// Sync proofs from Nostr
     #[tracing::instrument(skip(self))]
-    pub async fn sync_proofs(&self) -> Result<(), Error> {
+    pub async fn sync_proofs(&self, sync_relays: bool) -> Result<(), Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(PROOFS_KIND),
@@ -273,7 +274,7 @@ impl WalletNostrDatabase {
             ),
             ..Default::default()
         }];
-        let mut events = self.get_events(filters, true).await?;
+        let mut events = self.get_events(filters, sync_relays).await?;
         events.sort(); // Ensure events are sorted by timestamp
         for event in events {
             let event = ProofsEvent::from_event(&event, &self.keys)?;
