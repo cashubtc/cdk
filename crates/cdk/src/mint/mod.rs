@@ -1,6 +1,7 @@
 //! Cashu Mint
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
@@ -155,7 +156,7 @@ impl Mint {
         }
 
         Ok(Self {
-            mint_url: MintUrl::from(mint_url),
+            mint_url: MintUrl::from_str(mint_url)?,
             keysets: Arc::new(RwLock::new(active_keysets)),
             secp_ctx,
             xpriv,

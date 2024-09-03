@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::mint::{MintKeySetInfo, MintQuote};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::nut05::QuoteState;
 use cdk::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
@@ -792,7 +793,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
 
     Ok(MintQuote {
         id: row_id,
-        mint_url: row_mint_url.into(),
+        mint_url: MintUrl::from_str(&row_mint_url)?,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,

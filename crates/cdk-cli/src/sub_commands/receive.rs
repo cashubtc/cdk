@@ -148,7 +148,7 @@ async fn receive_token(
             localstore,
             seed,
             None,
-        );
+        )?;
         multi_mint_wallet.add_wallet(wallet).await;
     }
 
