@@ -2,8 +2,8 @@
 
 use thiserror::Error;
 
-use crate::cdk_database;
 use crate::error::{ErrorCode, ErrorResponse};
+use crate::{cdk_database, mint_url};
 
 /// CDK Mint Error
 #[derive(Debug, Error)]
@@ -101,6 +101,9 @@ pub enum Error {
     /// Database Error
     #[error(transparent)]
     Database(#[from] cdk_database::Error),
+    /// Mint Url Error
+    #[error(transparent)]
+    MintUrl(#[from] mint_url::Error),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

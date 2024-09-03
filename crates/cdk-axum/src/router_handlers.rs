@@ -81,7 +81,7 @@ pub async fn get_mint_bolt11_quote(
     let quote = state
         .mint
         .new_mint_quote(
-            state.mint_url.into(),
+            state.mint_url,
             create_invoice_response.request.to_string(),
             payload.unit,
             payload.amount,

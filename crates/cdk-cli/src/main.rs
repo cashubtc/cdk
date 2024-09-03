@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
             localstore.clone(),
             &mnemonic.to_seed_normalized(""),
             None,
-        );
+        )?;
         if let Some(proxy_url) = args.proxy.as_ref() {
             wallet.set_client(HttpClient::with_proxy(proxy_url.clone(), None, true)?);
         }

@@ -27,7 +27,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &mnemonic.to_seed_normalized(""),
         None,
-    );
+    )?;
 
     let wallet = Arc::new(wallet);
 

@@ -82,17 +82,6 @@ impl<'de> Deserialize<'de> for MintUrl {
     }
 }
 
-impl<S> From<S> for MintUrl
-where
-    S: Into<String>,
-{
-    fn from(url: S) -> Self {
-        let url: String = url.into();
-        let formatted_url = Self::format_url(&url).unwrap();
-        Self(formatted_url)
-    }
-}
-
 impl FromStr for MintUrl {
     type Err = Error;
 

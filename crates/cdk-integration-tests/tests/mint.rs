@@ -31,7 +31,7 @@ pub async fn test_mint_double_receive() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &mnemonic.to_seed_normalized(""),
         None,
-    );
+    )?;
 
     let wallet = Arc::new(wallet);
 
@@ -56,7 +56,7 @@ pub async fn test_mint_double_receive() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &mnemonic.to_seed_normalized(""),
         None,
-    );
+    )?;
 
     let rec = wallet_two
         .receive(&token.to_string(), SplitTarget::default(), &[], &[])

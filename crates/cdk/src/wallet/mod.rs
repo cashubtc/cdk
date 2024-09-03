@@ -79,18 +79,18 @@ impl Wallet {
         localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
         target_proof_count: Option<usize>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, seed)
             .expect("Could not create master key");
 
-        Self {
-            mint_url: MintUrl::from(mint_url),
+        Ok(Self {
+            mint_url: MintUrl::from_str(mint_url)?,
             unit,
             client: HttpClient::new(),
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
-        }
+        })
     }
 
     /// Change HTTP client
@@ -489,7 +489,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount).await?;
@@ -583,7 +583,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount).await?;
@@ -1270,7 +1270,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///     let quote = wallet.melt_quote(bolt11, None).await?;
     ///
@@ -1488,7 +1488,7 @@ impl Wallet {
     ///  let unit = CurrencyUnit::Sat;
     ///
     ///  let localstore = WalletMemoryDatabase::default();
-    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///  let quote = wallet.melt_quote(bolt11, None).await?;
     ///  let quote_id = quote.id;
@@ -1796,7 +1796,7 @@ impl Wallet {
     ///  let unit = CurrencyUnit::Sat;
     ///
     ///  let localstore = WalletMemoryDatabase::default();
-    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjEsInNlY3JldCI6ImI0ZjVlNDAxMDJhMzhiYjg3NDNiOTkwMzU5MTU1MGYyZGEzZTQxNWEzMzU0OTUyN2M2MmM5ZDc5MGVmYjM3MDUiLCJDIjoiMDIzYmU1M2U4YzYwNTMwZWVhOWIzOTQzZmRhMWEyY2U3MWM3YjNmMGNmMGRjNmQ4NDZmYTc2NWFhZjc3OWZhODFkIiwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
     ///  let amount_receive = wallet.receive(token, SplitTarget::default(), &[], &[]).await?;
     ///  Ok(())

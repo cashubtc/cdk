@@ -35,6 +35,9 @@ pub enum Error {
     /// Secret Error
     #[error(transparent)]
     CDKSECRET(#[from] cdk::secret::Error),
+    /// Mint Url
+    #[error(transparent)]
+    MintUrl(#[from] cdk::mint_url::Error),
     /// BIP32 Error
     #[error(transparent)]
     BIP32(#[from] bitcoin::bip32::Error),

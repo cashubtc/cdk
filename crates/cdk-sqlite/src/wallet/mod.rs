@@ -199,12 +199,15 @@ FROM mint
 
         let mints = rec
             .into_iter()
-            .map(|row| {
+            .flat_map(|row| {
                 let mint_url: String = row.get("mint_url");
 
+                // Attempt to parse mint_url and convert mint_info
+                let mint_result = MintUrl::from_str(&mint_url).ok();
                 let mint_info = sqlite_row_to_mint_info(&row).ok();
 
-                (mint_url.into(), mint_info)
+                // Combine mint_result and mint_info into an Option tuple
+                mint_result.map(|mint| (mint, mint_info))
             })
             .collect();
 
@@ -811,7 +814,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
 
     Ok(MintQuote {
         id: row_id,
-        mint_url: row_mint_url.into(),
+        mint_url: MintUrl::from_str(&row_mint_url)?,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
@@ -869,7 +872,7 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
     Ok(ProofInfo {
         proof,
         y: PublicKey::from_slice(&y)?,
-        mint_url: row_mint_url.into(),
+        mint_url: MintUrl::from_str(&row_mint_url)?,
         state: State::from_str(&row_state)?,
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
