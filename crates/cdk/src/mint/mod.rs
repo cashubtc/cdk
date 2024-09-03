@@ -154,10 +154,8 @@ impl Mint {
             }
         }
 
-        let mint_url = MintUrl::from(mint_url);
-
         Ok(Self {
-            mint_url,
+            mint_url: MintUrl::from(mint_url),
             keysets: Arc::new(RwLock::new(active_keysets)),
             secp_ctx,
             xpriv,
@@ -1569,7 +1567,10 @@ mod tests {
 
     #[tokio::test]
     async fn mint_mod_rotate_keyset() -> Result<(), Error> {
-        let config: MintConfig = Default::default();
+        let config = MintConfig::<'_> {
+            mint_url: "http://example.com",
+            ..Default::default()
+        };
         let mint = create_mint(config).await?;
 
         let keysets = mint.keysets().await.unwrap();
