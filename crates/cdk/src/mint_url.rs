@@ -97,7 +97,7 @@ impl FromStr for MintUrl {
     type Err = Error;
 
     fn from_str(url: &str) -> Result<Self, Self::Err> {
-        let formatted_url = Self::format_url(&url);
+        let formatted_url = Self::format_url(url);
         match formatted_url {
             Ok(url) => Ok(Self(url)),
             Err(_) => Err(Error::InvalidUrl),
