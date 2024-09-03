@@ -21,6 +21,21 @@
 
 -->
 
+#[Unreleased]
+### Summary
+
+### Changed
+- cdk: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-axum: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-strike: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-lnbits: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-phoenixd: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-fake-wallet: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-cln: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-sqlite: Reduce MSRV to 1.66.0 ([thesimplekid]).
+- cdk-redb: Reduce MSRV to 1.66.0 ([thesimplekid]).
+- cdk: Format url base lowercase ([callebtc]).
+
 
 ## [0.3.0]
 
@@ -121,3 +136,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [davidcaseria]: https://github.com/davidcaseria
 [vnprc]: https://github.com/vnprc
 [cjbeery24]: https://github.com/cjbeery24
+[callebtc]: https://github.com/callebtc
