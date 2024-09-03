@@ -95,9 +95,8 @@ impl WalletNostrDatabase {
             ))),
             wallet_db: WalletMemoryDatabase::default(),
         };
-        let info = self_.refresh_info().await?;
+        let info = self_.refresh_info(false).await?;
         self_.load_db(info).await?;
-        self_.sync_proofs().await?;
         Ok(self_)
     }
 
@@ -128,7 +127,7 @@ impl WalletNostrDatabase {
             ))),
             wallet_db: WalletMemoryDatabase::default(),
         };
-        let info = self_.refresh_info().await?;
+        let info = self_.refresh_info(true).await?;
         self_.load_db(info).await?;
         self_.sync_proofs().await?;
         Ok(self_)
@@ -197,7 +196,7 @@ impl WalletNostrDatabase {
 
     /// Refresh the latest [`WalletInfo`]
     #[tracing::instrument(skip(self))]
-    pub async fn refresh_info(&self) -> Result<WalletInfo, Error> {
+    pub async fn refresh_info(&self, sync_relays: bool) -> Result<WalletInfo, Error> {
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(WALLET_INFO_KIND),
@@ -206,7 +205,7 @@ impl WalletNostrDatabase {
             ),
             ..Default::default()
         }];
-        let events = self.get_events(filters, true).await?;
+        let events = self.get_events(filters, sync_relays).await?;
         let mut info = self.info.lock().await;
         match events.first() {
             Some(event) => {
