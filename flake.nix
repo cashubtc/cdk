@@ -169,7 +169,7 @@
           in
           {
             inherit msrv stable nightly db_shell;
-            default = msrv;
+            default = stable;
           };
       }
     );
