@@ -28,7 +28,7 @@ pub struct MintUrl(String);
 impl MintUrl {
     fn format_url(url: &str) -> Result<String, Error> {
         if url.is_empty() {
-            return Ok(String::new());
+            return Err(Error::InvalidUrl);
         }
         let url = url.trim_end_matches('/');
         // https://URL.com/path/TO/resource -> https://url.com/path/TO/resource
@@ -88,11 +88,8 @@ where
 {
     fn from(url: S) -> Self {
         let url: String = url.into();
-        let formatted_url = Self::format_url(&url);
-        match formatted_url {
-            Ok(url) => Self(url),
-            Err(_) => Self::default(),
-        }
+        let formatted_url = Self::format_url(&url).unwrap();
+        Self(formatted_url)
     }
 }
 
@@ -100,7 +97,11 @@ impl FromStr for MintUrl {
     type Err = Error;
 
     fn from_str(url: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from(url))
+        let formatted_url = Self::format_url(&url);
+        match formatted_url {
+            Ok(url) => Ok(Self(url)),
+            Err(_) => Err(Error::InvalidUrl),
+        }
     }
 }
 
