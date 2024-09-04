@@ -46,7 +46,8 @@ pub async fn test_mint_double_receive() -> Result<()> {
             &SendKind::default(),
             false,
         )
-        .await?;
+        .await
+        .unwrap();
 
     let mnemonic = Mnemonic::generate(12)?;
 
