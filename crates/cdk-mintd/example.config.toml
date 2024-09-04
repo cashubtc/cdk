@@ -9,7 +9,7 @@ mnemonic = ""
 
 [mint_info]
 # name = "cdk-mintd mutiney net mint"
-# Hex publey of mint
+# Hex pubkey of mint
 # pubkey = ""
 # description = "These are not real sats for testing only"
 # description_long = "A longer mint for testing"
@@ -25,8 +25,7 @@ mnemonic = ""
 # engine = "sqlite"
 
 [ln]
-
-# Required ln backend `cln`, `lnd`, `strike`, `fakewallet`
+# Required ln backend `cln`, `lnd`, `strike`, `fakewallet`, 'lnbits', 'phoenixd'
 ln_backend = "cln"
 
 # [cln]
@@ -37,7 +36,6 @@ ln_backend = "cln"
 # api_key=""
 # Optional default sats
 # supported_units=[""]
-
 
 # [lnbits]
 # admin_api_key = ""
