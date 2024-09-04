@@ -149,10 +149,7 @@
               cargo update -p home --precise 0.5.5
               cargo update -p tokio --precise 1.38.1
               cargo update -p serde_with --precise 3.1.0
-              # cargo update -p prost-derive --precise 0.12.3
-              # cargo update -p prost --precise 0.12.3
-              # cargo update -p prost-build --precise 0.12.3
-              # cargo update -p prost-types --precise 0.12.3
+              cargo update -p reqwest --precise 0.12.4
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
               inherit nativeBuildInputs;
