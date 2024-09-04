@@ -580,7 +580,6 @@ impl Wallet {
     ///   minted tokens
     /// - `count`: How many tokens were previously generated from this keyset +
     ///   1
-    /// - `xpriv`: The extended private key used for generating secrets
     ///
     /// # Returns
     ///
@@ -600,7 +599,6 @@ impl Wallet {
         amount_split_target: &SplitTarget,
         spending_conditions: Option<&SpendingConditions>,
         count: u32,
-        xpriv: ExtendedPrivKey,
     ) -> Result<PreMintSecrets, Error> {
         // Move the match logic into this function.
         match spending_conditions {
@@ -613,7 +611,7 @@ impl Wallet {
             None => Ok(PreMintSecrets::from_xpriv(
                 active_keyset_id,
                 count,
-                xpriv,
+                self.xpriv,
                 quote_info_amount,
                 amount_split_target,
             )?),
@@ -694,7 +692,6 @@ impl Wallet {
             &amount_split_target,
             spending_conditions.as_ref(),
             count,
-            self.xpriv,
         )?;
 
         let mint_res = self
