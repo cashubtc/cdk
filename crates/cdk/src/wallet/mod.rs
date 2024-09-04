@@ -328,7 +328,7 @@ impl Wallet {
 
     /// Get active keyset for mint
     ///
-    /// Quieries mint for current keysets then gets [`Keys`] for any unknown
+    /// Queries mint for current keysets then gets [`Keys`] for any unknown
     /// keysets
     #[instrument(skip(self))]
     pub async fn get_active_mint_keyset(&self) -> Result<KeySetInfo, Error> {
