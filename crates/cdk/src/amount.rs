@@ -87,6 +87,21 @@ impl Amount {
         parts.sort();
         Ok(parts)
     }
+
+    /// Checked addition for Amount. Returns None if overflow occurs.
+    pub fn checked_add(self, other: Amount) -> Option<Amount> {
+        self.0.checked_add(other.0).map(Amount)
+    }
+
+    /// Try sum to check for overflow
+    pub fn try_sum<I>(iter: I) -> Result<Self, Error>
+    where
+        I: IntoIterator<Item = Self>,
+    {
+        iter.into_iter().try_fold(Amount::ZERO, |acc, x| {
+            acc.checked_add(x).ok_or(Error::AmountOverflow)
+        })
+    }
 }
 
 impl Default for Amount {
@@ -135,13 +150,13 @@ impl std::ops::Add for Amount {
     type Output = Amount;
 
     fn add(self, rhs: Amount) -> Self::Output {
-        Amount(self.0 + rhs.0)
+        Amount(self.0.checked_add(rhs.0).expect("Addition error"))
     }
 }
 
 impl std::ops::AddAssign for Amount {
     fn add_assign(&mut self, rhs: Self) {
-        self.0 += rhs.0;
+        self.0 = self.0.checked_add(rhs.0).expect("Addition error");
     }
 }
 
@@ -177,8 +192,10 @@ impl std::ops::Div for Amount {
 
 impl core::iter::Sum for Amount {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let sats: u64 = iter.map(|amt| amt.0).sum();
-        Amount::from(sats)
+        iter.fold(Amount::ZERO, |acc, x| {
+            acc.checked_add(x)
+                .unwrap_or_else(|| panic!("Addition overflow"))
+        })
     }
 }
 
@@ -287,5 +304,35 @@ mod tests {
         let values = amount.split_targeted(&split_target);
 
         assert!(values.is_err())
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_amount_addition() {
+        let amount_one: Amount = u64::MAX.into();
+        let amount_two: Amount = 1.into();
+
+        let amounts = vec![amount_one, amount_two];
+
+        let _total: Amount = amounts.into_iter().sum();
+    }
+
+    #[test]
+    fn test_try_amount_addition() {
+        let amount_one: Amount = u64::MAX.into();
+        let amount_two: Amount = 1.into();
+
+        let amounts = vec![amount_one, amount_two];
+
+        let total = Amount::try_sum(amounts);
+
+        assert!(total.is_err());
+        let amount_one: Amount = 10000.into();
+        let amount_two: Amount = 1.into();
+
+        let amounts = vec![amount_one, amount_two];
+        let total = Amount::try_sum(amounts).unwrap();
+
+        assert_eq!(total, 10001.into());
     }
 }

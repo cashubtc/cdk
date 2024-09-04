@@ -57,6 +57,9 @@ pub enum Error {
     /// Split Values must be less then or equal to amount
     #[error("Split Values must be less then or equal to amount")]
     SplitValuesGreater,
+    /// Amount overflow
+    #[error("Amount Overflow")]
+    AmountOverflow,
     /// Secp256k1 error
     #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),
