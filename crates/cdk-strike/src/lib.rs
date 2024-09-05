@@ -124,17 +124,25 @@ impl MintLightning for Strike {
             return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
         }
 
+        let source_currency = match melt_quote_request.unit {
+            CurrencyUnit::Sat => StrikeCurrencyUnit::BTC,
+            CurrencyUnit::Msat => StrikeCurrencyUnit::BTC,
+            CurrencyUnit::Usd => StrikeCurrencyUnit::USD,
+            CurrencyUnit::Eur => StrikeCurrencyUnit::EUR,
+        };
+
         let payment_quote_request = PayInvoiceQuoteRequest {
             ln_invoice: melt_quote_request.request.to_string(),
-            source_currency: strike_rs::Currency::BTC,
+            source_currency,
         };
+
         let quote = self.strike_api.payment_quote(payment_quote_request).await?;
 
         let fee = from_strike_amount(quote.lightning_network_fee, &melt_quote_request.unit)?;
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: quote.payment_quote_id,
-            amount: from_strike_amount(quote.amount, &melt_quote_request.unit)?,
+            amount: from_strike_amount(quote.amount, &melt_quote_request.unit)?.into(),
             fee,
         })
     }
@@ -157,7 +165,7 @@ impl MintLightning for Strike {
             InvoiceState::Pending => MeltQuoteState::Pending,
         };
 
-        let total_spent_msats = from_strike_amount(pay_response.total_amount, &melt_quote.unit)?;
+        let total_spent = from_strike_amount(pay_response.total_amount, &melt_quote.unit)?.into();
 
         let bolt11: Bolt11Invoice = melt_quote.request.parse()?;
 
@@ -165,13 +173,14 @@ impl MintLightning for Strike {
             payment_hash: bolt11.payment_hash().to_string(),
             payment_preimage: None,
             status: state,
-            total_spent: total_spent_msats.into(),
+            total_spent,
         })
     }
 
     async fn create_invoice(
         &self,
         amount: Amount,
+        _unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -192,9 +201,13 @@ impl MintLightning for Strike {
             .invoice_quote(&create_invoice_response.invoice_id)
             .await?;
 
+        let request: Bolt11Invoice = quote.ln_invoice.parse()?;
+        let expiry = request.expires_at().map(|t| t.as_secs());
+
         Ok(CreateInvoiceResponse {
             request_lookup_id: create_invoice_response.invoice_id,
             request: quote.ln_invoice.parse()?,
+            expiry,
         })
     }
 
@@ -250,14 +263,14 @@ pub(crate) fn from_strike_amount(
             if strike_amount.currency == StrikeCurrencyUnit::USD {
                 Ok(Amount::from((strike_amount.amount * 100.0).round() as u64))
             } else {
-                bail!("Could not convert ");
+                bail!("Could not convert strike USD");
             }
         }
         CurrencyUnit::Eur => {
             if strike_amount.currency == StrikeCurrencyUnit::EUR {
                 Ok(Amount::from((strike_amount.amount * 100.0).round() as u64))
             } else {
-                bail!("Could not convert ");
+                bail!("Could not convert to EUR");
             }
         }
     }

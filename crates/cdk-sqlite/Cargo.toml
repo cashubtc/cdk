@@ -1,9 +1,9 @@
 [package]
 name = "cdk-sqlite"
-version = "0.2.0"
+version = { workspace = true }
 edition = "2021"
 authors = ["CDK Developers"]
-description = "Sqlite storage backend for CDK"
+description = "SQLite storage backend for CDK"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

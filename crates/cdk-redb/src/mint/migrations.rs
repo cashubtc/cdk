@@ -4,8 +4,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk::mint::MintQuote;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, Proof, State};
-use cdk::{Amount, UncheckedUrl};
+use cdk::Amount;
 use lightning_invoice::Bolt11Invoice;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -26,11 +27,12 @@ pub fn migrate_02_to_03(db: Arc<Database>) -> Result<u32, Error> {
     migrate_mint_proofs_02_to_03(db)?;
     Ok(3)
 }
+
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct V1MintQuote {
     pub id: String,
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     pub amount: Amount,
     pub unit: CurrencyUnit,
     pub request: String,

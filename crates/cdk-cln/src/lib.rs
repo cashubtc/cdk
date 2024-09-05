@@ -131,7 +131,8 @@ impl MintLightning for Cln {
             &melt_quote_request.unit,
         )?;
 
-        let relative_fee_reserve = (self.fee_reserve.percent_fee_reserve * amount as f32) as u64;
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
 
         let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -182,9 +183,24 @@ impl MintLightning for Cln {
                 exemptfee: None,
                 localinvreqid: None,
                 exclude: None,
-                maxfee: max_fee.map(|v| CLN_Amount::from_msat(v.into())),
+                maxfee: max_fee
+                    .map(|a| {
+                        let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
+                        Ok::<cln_rpc::primitives::Amount, Self::Err>(CLN_Amount::from_msat(
+                            msat.into(),
+                        ))
+                    })
+                    .transpose()?,
                 description: None,
-                partial_msat: partial_amount.map(|v| CLN_Amount::from_msat(v.into())),
+                partial_msat: partial_amount
+                    .map(|a| {
+                        let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
+
+                        Ok::<cln_rpc::primitives::Amount, Self::Err>(CLN_Amount::from_msat(
+                            msat.into(),
+                        ))
+                    })
+                    .transpose()?,
             }))
             .await
             .map_err(Error::from)?;
@@ -200,7 +216,11 @@ impl MintLightning for Cln {
                     payment_preimage: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_hash: pay_response.payment_hash.to_string(),
                     status,
-                    total_spent: pay_response.amount_sent_msat.msat().into(),
+                    total_spent: to_unit(
+                        pay_response.amount_sent_msat.msat(),
+                        &CurrencyUnit::Msat,
+                        &melt_quote.unit,
+                    )?,
                 }
             }
             _ => {
@@ -215,6 +235,7 @@ impl MintLightning for Cln {
     async fn create_invoice(
         &self,
         amount: Amount,
+        unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -224,7 +245,10 @@ impl MintLightning for Cln {
         let mut cln_client = self.cln_client.lock().await;
 
         let label = Uuid::new_v4().to_string();
+
+        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
         let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.into()));
+
         let cln_response = cln_client
             .call(cln_rpc::Request::Invoice(InvoiceRequest {
                 amount_msat,
@@ -241,10 +265,16 @@ impl MintLightning for Cln {
             .map_err(Error::from)?;
 
         match cln_response {
-            cln_rpc::Response::Invoice(invoice_res) => Ok(CreateInvoiceResponse {
-                request_lookup_id: label,
-                request: Bolt11Invoice::from_str(&invoice_res.bolt11)?,
-            }),
+            cln_rpc::Response::Invoice(invoice_res) => {
+                let request = Bolt11Invoice::from_str(&invoice_res.bolt11)?;
+                let expiry = request.expires_at().map(|t| t.as_secs());
+
+                Ok(CreateInvoiceResponse {
+                    request_lookup_id: label,
+                    request,
+                    expiry,
+                })
+            }
             _ => {
                 tracing::warn!("CLN returned wrong response kind");
                 Err(Error::WrongClnResponse.into())

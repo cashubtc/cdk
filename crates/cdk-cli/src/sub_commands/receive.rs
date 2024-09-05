@@ -46,7 +46,7 @@ pub async fn receive(
         let mut s_keys: Vec<SecretKey> = sub_command_args
             .signing_key
             .iter()
-            .flat_map(|s| {
+            .map(|s| {
                 if s.starts_with("nsec") {
                     let nostr_key = nostr_sdk::SecretKey::from_str(s).expect("Invalid secret key");
 
@@ -55,7 +55,7 @@ pub async fn receive(
                     SecretKey::from_str(s)
                 }
             })
-            .collect();
+            .collect::<Result<Vec<SecretKey>, _>>()?;
         signing_keys.append(&mut s_keys);
     }
 

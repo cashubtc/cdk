@@ -39,7 +39,7 @@ pub struct SendSubCommand {
     /// Should the send be offline only
     #[arg(short, long)]
     offline: bool,
-    /// Include fee to redeam in token
+    /// Include fee to redeem in token
     #[arg(short, long)]
     include_fee: bool,
     /// Amount willing to overpay to avoid a swap

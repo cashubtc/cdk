@@ -34,6 +34,9 @@ pub enum Error {
     /// CDK Database Error
     #[error(transparent)]
     CDKDatabase(#[from] cdk::cdk_database::Error),
+    /// CDK Mint Url Error
+    #[error(transparent)]
+    CDKMintUrl(#[from] cdk::mint_url::Error),
     /// CDK Error
     #[error(transparent)]
     CDK(#[from] cdk::error::Error),
@@ -44,13 +47,13 @@ pub enum Error {
     #[error(transparent)]
     CDKNUT00(#[from] cdk::nuts::nut00::Error),
     /// Unknown Mint Info
-    #[error("Unknown Mint Info")]
+    #[error("Unknown mint info")]
     UnknownMintInfo,
     /// Unknown Proof Y
-    #[error("Unknown Proof Y")]
+    #[error("Unknown proof Y")]
     UnknownY,
     /// Unknown Database Version
-    #[error("Unknown Database Version")]
+    #[error("Unknown database version")]
     UnknownDatabaseVersion,
 }
 

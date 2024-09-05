@@ -1,6 +1,6 @@
 [package]
 name = "cdk-cli"
-version = "0.2.0"
+version = { workspace = true }
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Cashu cli wallet built on CDK"
@@ -12,20 +12,21 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow.workspace = true
 bip39.workspace = true
 cdk = { workspace = true, default-features = false, features = ["wallet"] }
 cdk-redb = { workspace = true, default-features = false, features = ["wallet"] }
 cdk-sqlite = { workspace = true, default-features = false, features = ["wallet"] }
-clap = { version = "4.4.8", features = ["derive", "env"] }
+clap.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-rand = "0.8.5"
+rand.workspace = true
 home.workspace = true
-nostr-sdk = { version = "0.32.0", default-features = false, features = [
+nostr-sdk = { version = "0.33.0", default-features = false, features = [
     "nip04",
     "nip44"
 ]}
+url.workspace = true

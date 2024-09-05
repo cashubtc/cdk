@@ -97,7 +97,8 @@ impl MintLightning for FakeWallet {
             &melt_quote_request.unit,
         )?;
 
-        let relative_fee_reserve = (self.fee_reserve.percent_fee_reserve * amount as f32) as u64;
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
 
         let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -123,13 +124,14 @@ impl MintLightning for FakeWallet {
             payment_preimage: Some("".to_string()),
             payment_hash: "".to_string(),
             status: MeltQuoteState::Paid,
-            total_spent: melt_quote.amount.into(),
+            total_spent: melt_quote.amount,
         })
     }
 
     async fn create_invoice(
         &self,
-        amount_msats: Amount,
+        amount: Amount,
+        unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
@@ -150,11 +152,13 @@ impl MintLightning for FakeWallet {
         let payment_hash = sha256::Hash::from_slice(&[0; 32][..]).unwrap();
         let payment_secret = PaymentSecret([42u8; 32]);
 
+        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+
         let invoice = InvoiceBuilder::new(Currency::Bitcoin)
             .description(description)
             .payment_hash(payment_hash)
             .payment_secret(payment_secret)
-            .amount_milli_satoshis(amount_msats.into())
+            .amount_milli_satoshis(amount.into())
             .current_timestamp()
             .min_final_cltv_expiry_delta(144)
             .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
@@ -177,9 +181,12 @@ impl MintLightning for FakeWallet {
             }
         });
 
+        let expiry = invoice.expires_at().map(|t| t.as_secs());
+
         Ok(CreateInvoiceResponse {
             request_lookup_id: label,
             request: invoice,
+            expiry,
         })
     }
 

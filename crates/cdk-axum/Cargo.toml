@@ -1,6 +1,6 @@
 [package]
 name = "cdk-axum"
-version = "0.1.0"
+version = { workspace = true }
 edition = "2021"
 license.workspace = true
 homepage.workspace = true
@@ -9,12 +9,11 @@ rust-version.workspace = true
 description = "Cashu CDK axum webserver"
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
-axum-macros = "0.4.1"
 cdk = { workspace = true, default-features = false, features = ["mint"] }
 tokio.workspace = true
-tower-http = { version = "0.5.2", features = ["cors"] }
+tower-http.workspace = true
 tracing.workspace = true
-futures = "0.3.28"
+futures.workspace = true

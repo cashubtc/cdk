@@ -14,6 +14,7 @@ mnemonic = ""
 # description = "These are not real sats for testing only"
 # description_long = "A longer mint for testing"
 # motd = "Hello world"
+# mint_icon_url = "https://this-is-a-mint-icon-url.com/icon.png"
 # contact_email = "hello@cashu.me"
 # Nostr pubkey of mint (Hex)
 # contact_nostr_public_key = ""
@@ -28,10 +29,11 @@ mnemonic = ""
 # Required ln backend `cln`, `strike`, `fakewallet`
 ln_backend = "cln"
 
-# CLN
+# [cln]
 # Required if using cln backend path to rpc
 # cln_path = ""
 
-# Strike
-# Required if using strike backed
-# strike_api_key=""
+# [strike]
+# api_key=""
+# Optional default sats
+# supported_units=[""]

@@ -35,7 +35,13 @@
 - cdk(cdk-database/wallet): Change `get_proofs` to return `Vec<ProofInfo>` instead of `Option<Vec<ProofInfo>>` ([thesimplekid]).
 - cdk-cli: Receive will add wallet when receiving if mint is unknown ([thesimplekid]).
 - cdk(cdk-database/mint): Rename `get_blinded_signatures` to `get_blind_signatures` ([thesimplekid]).
-- cdk(cdk-database/mint):rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
+- cdk(cdk-database/mint): Rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
+- cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
+- cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnprc]).
+- cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
+- cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimeplkid]).
+- cdk(cdk-lightning): Use `Amount` type instead of `u64` ([thesimplekid]).
+- cdk(cdk-lightning): `CreateInvoice` requires unit argument ([thesimplekid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
@@ -47,14 +53,21 @@
 - cdk(cdk-database/mint): Add `get_blinded_signatures_for_keyset` to get all blind signatures for a `keyset_id` ([thesimplekid]).
 - cdk(mint): Add `total_issued` and `total_redeamed` ([thesimplekid]).
 - cdk(cdk-database/mint) Add `get_proofs_by_keyset_id` ([thesimplekid]).
+- cdk(wallet/mint): Add `mint_icon_url` ([cjbeery24]).
+- cdk: Add `MintUrl` that sanatizes mint url by removing trailing `/` ([cjbeery24]).
+
 
 ### Fixed
 - cdk(mint): `SIG_ALL` is not allowed in `melt` ([thesimplekid]).
 - cdk(mint): On `swap` verify correct number of sigs on outputs when `SigAll` ([thesimplekid]).
+- cdk(mint): Use amount in payment_quote response from ln backend ([thesimplekid]).
+- cdk(mint): Create new keysets for added supported units ([thesimplekid]).
+- cdk(mint): If there is an error in swap proofs should be reset to unspent ([thesimplekid]).
 
 ### Removed
 - cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).
 - cdk(cdk-database/mint): Remove `get_spent_proofs`, `get_spent_proofs_by_ys`,`get_pending_proofs`, `get_pending_proofs_by_ys`, and `remove_pending_proofs` ([thesimplekid]).
+- cdk: Remove `UncheckedUrl` in favor of `MintUrl` ([cjbeery24]).
 
 ## [v0.2.0]
 
@@ -102,3 +115,5 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 <!-- Contributors -->
 [thesimplekid]: https://github.com/thesimplekid
 [davidcaseria]: https://github.com/davidcaseria
+[vnprc]: https://github.com/vnprc
+[cjbeery24]: https://github.com/cjbeery24

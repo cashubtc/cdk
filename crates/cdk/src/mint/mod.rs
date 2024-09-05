@@ -14,9 +14,9 @@ use self::nut05::QuoteState;
 use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
+use crate::mint_url::MintUrl;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
-use crate::url::UncheckedUrl;
 use crate::util::unix_time;
 use crate::Amount;
 
@@ -29,7 +29,7 @@ pub use types::{MeltQuote, MintQuote};
 #[derive(Clone)]
 pub struct Mint {
     /// Mint Url
-    pub mint_url: UncheckedUrl,
+    pub mint_url: MintUrl,
     /// Mint Info
     pub mint_info: MintInfo,
     /// Mint Storage backend
@@ -57,99 +57,104 @@ impl Mint {
         let mut active_keysets = HashMap::new();
         let keysets_infos = localstore.get_keyset_infos().await?;
 
-        match keysets_infos.is_empty() {
-            false => {
-                tracing::debug!("Setting all saved keysets to inactive");
-                for keyset in keysets_infos.clone() {
-                    // Set all to in active
-                    let mut keyset = keyset;
-                    keyset.active = false;
-                    localstore.add_keyset_info(keyset).await?;
-                }
+        let mut active_keyset_units = vec![];
 
-                let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
-                    keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
-                        acc.entry(ks.unit).or_default().push(ks.clone());
-                        acc
-                    });
+        if !keysets_infos.is_empty() {
+            tracing::debug!("Setting all saved keysets to inactive");
+            for keyset in keysets_infos.clone() {
+                // Set all to in active
+                let mut keyset = keyset;
+                keyset.active = false;
+                localstore.add_keyset_info(keyset).await?;
+            }
 
-                for (unit, keysets) in keysets_by_unit {
-                    let mut keysets = keysets;
-                    keysets.sort_by(|a, b| b.derivation_path_index.cmp(&a.derivation_path_index));
-                    let highest_index_keyset = keysets
-                        .first()
-                        .cloned()
-                        .expect("unit will not be added to hashmap if empty");
+            let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
+                keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
+                    acc.entry(ks.unit).or_default().push(ks.clone());
+                    acc
+                });
 
-                    let keysets: Vec<MintKeySetInfo> = keysets
-                        .into_iter()
-                        .filter(|ks| ks.derivation_path_index.is_some())
-                        .collect();
+            for (unit, keysets) in keysets_by_unit {
+                let mut keysets = keysets;
+                keysets.sort_by(|a, b| b.derivation_path_index.cmp(&a.derivation_path_index));
 
-                    if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
-                        let derivation_path_index = if keysets.is_empty() {
-                            1
-                        } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
-                            && &highest_index_keyset.max_order == max_order
-                        {
-                            let id = highest_index_keyset.id;
-                            let keyset = MintKeySet::generate_from_xpriv(
-                                &secp_ctx,
-                                xpriv,
-                                highest_index_keyset.clone(),
-                            );
-                            active_keysets.insert(id, keyset);
-                            let mut keyset_info = highest_index_keyset;
-                            keyset_info.active = true;
-                            localstore.add_keyset_info(keyset_info).await?;
-                            localstore.set_active_keyset(unit, id).await?;
-                            continue;
-                        } else {
-                            highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
-                        };
+                let highest_index_keyset = keysets
+                    .first()
+                    .cloned()
+                    .expect("unit will not be added to hashmap if empty");
 
-                        let derivation_path =
-                            derivation_path_from_unit(unit, derivation_path_index);
+                let keysets: Vec<MintKeySetInfo> = keysets
+                    .into_iter()
+                    .filter(|ks| ks.derivation_path_index.is_some())
+                    .collect();
 
-                        let (keyset, keyset_info) = create_new_keyset(
+                if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
+                    let derivation_path_index = if keysets.is_empty() {
+                        1
+                    } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
+                        && &highest_index_keyset.max_order == max_order
+                    {
+                        let id = highest_index_keyset.id;
+                        let keyset = MintKeySet::generate_from_xpriv(
                             &secp_ctx,
                             xpriv,
-                            derivation_path,
-                            Some(derivation_path_index),
-                            unit,
-                            *max_order,
-                            *input_fee_ppk,
+                            highest_index_keyset.max_order,
+                            highest_index_keyset.unit,
+                            highest_index_keyset.derivation_path.clone(),
                         );
-
-                        let id = keyset_info.id;
+                        active_keysets.insert(id, keyset);
+                        let mut keyset_info = highest_index_keyset;
+                        keyset_info.active = true;
                         localstore.add_keyset_info(keyset_info).await?;
                         localstore.set_active_keyset(unit, id).await?;
-                        active_keysets.insert(id, keyset);
-                    }
-                }
-            }
-            true => {
-                for (unit, (input_fee_ppk, max_order)) in supported_units {
-                    let derivation_path = derivation_path_from_unit(unit, 0);
-                    tracing::debug!("Der: {}", derivation_path);
+                        continue;
+                    } else {
+                        highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
+                    };
+
+                    let derivation_path = derivation_path_from_unit(unit, derivation_path_index);
+
                     let (keyset, keyset_info) = create_new_keyset(
                         &secp_ctx,
                         xpriv,
                         derivation_path,
-                        Some(0),
+                        Some(derivation_path_index),
                         unit,
-                        max_order,
-                        input_fee_ppk,
+                        *max_order,
+                        *input_fee_ppk,
                     );
+
                     let id = keyset_info.id;
                     localstore.add_keyset_info(keyset_info).await?;
-                    localstore.set_active_keyset(CurrencyUnit::Sat, id).await?;
+                    localstore.set_active_keyset(unit, id).await?;
                     active_keysets.insert(id, keyset);
+                    active_keyset_units.push(unit);
                 }
             }
         }
 
-        let mint_url = UncheckedUrl::from(mint_url);
+        for (unit, (fee, max_order)) in supported_units {
+            if !active_keyset_units.contains(&unit) {
+                let derivation_path = derivation_path_from_unit(unit, 0);
+
+                let (keyset, keyset_info) = create_new_keyset(
+                    &secp_ctx,
+                    xpriv,
+                    derivation_path,
+                    Some(0),
+                    unit,
+                    max_order,
+                    fee,
+                );
+
+                let id = keyset_info.id;
+                localstore.add_keyset_info(keyset_info).await?;
+                localstore.set_active_keyset(unit, id).await?;
+                active_keysets.insert(id, keyset);
+            }
+        }
+
+        let mint_url = MintUrl::from(mint_url);
 
         Ok(Self {
             mint_url,
@@ -163,13 +168,13 @@ impl Mint {
 
     /// Set Mint Url
     #[instrument(skip_all)]
-    pub fn set_mint_url(&mut self, mint_url: UncheckedUrl) {
+    pub fn set_mint_url(&mut self, mint_url: MintUrl) {
         self.mint_url = mint_url;
     }
 
     /// Get Mint Url
     #[instrument(skip_all)]
-    pub fn get_mint_url(&self) -> &UncheckedUrl {
+    pub fn get_mint_url(&self) -> &MintUrl {
         &self.mint_url
     }
 
@@ -189,13 +194,40 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn new_mint_quote(
         &self,
-        mint_url: UncheckedUrl,
+        mint_url: MintUrl,
         request: String,
         unit: CurrencyUnit,
         amount: Amount,
         expiry: u64,
         ln_lookup: String,
     ) -> Result<MintQuote, Error> {
+        let nut04 = &self.mint_info.nuts.nut04;
+
+        if nut04.disabled {
+            return Err(Error::MintingDisabled);
+        }
+
+        match nut04.get_settings(&unit, &PaymentMethod::Bolt11) {
+            Some(settings) => {
+                if settings
+                    .max_amount
+                    .map_or(false, |max_amount| amount > max_amount)
+                {
+                    return Err(Error::MintOverLimit);
+                }
+
+                if settings
+                    .min_amount
+                    .map_or(false, |min_amount| amount < min_amount)
+                {
+                    return Err(Error::MintUnderLimit);
+                }
+            }
+            None => {
+                return Err(Error::UnsupportedUnit);
+            }
+        }
+
         let quote = MintQuote::new(mint_url, request, unit, amount, expiry, ln_lookup.clone());
         tracing::debug!(
             "New mint quote {} for {} {} with request id {}",
@@ -281,6 +313,29 @@ impl Mint {
         Ok(())
     }
 
+    /// Flag mint quote as paid
+    #[instrument(skip_all)]
+    pub async fn pay_mint_quote_for_request_id(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<(), Error> {
+        if let Ok(Some(mint_quote)) = self
+            .localstore
+            .get_mint_quote_by_request_lookup_id(request_lookup_id)
+            .await
+        {
+            tracing::debug!(
+                "Quote {} paid by lookup id {}",
+                mint_quote.id,
+                request_lookup_id
+            );
+            self.localstore
+                .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// New melt quote
     #[instrument(skip_all)]
     pub async fn new_melt_quote(
@@ -292,6 +347,33 @@ impl Mint {
         expiry: u64,
         request_lookup_id: String,
     ) -> Result<MeltQuote, Error> {
+        let nut05 = &self.mint_info.nuts.nut05;
+
+        if nut05.disabled {
+            return Err(Error::MeltingDisabled);
+        }
+
+        match nut05.get_settings(&unit, &PaymentMethod::Bolt11) {
+            Some(settings) => {
+                if settings
+                    .max_amount
+                    .map_or(false, |max_amount| amount > max_amount)
+                {
+                    return Err(Error::MeltOverLimit);
+                }
+
+                if settings
+                    .min_amount
+                    .map_or(false, |min_amount| amount < min_amount)
+                {
+                    return Err(Error::MeltUnderLimit);
+                }
+            }
+            None => {
+                return Err(Error::UnsupportedUnit);
+            }
+        }
+
         let quote = MeltQuote::new(
             request,
             unit,
@@ -634,11 +716,11 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let input_ys: Vec<PublicKey> = swap_request
+        let input_ys = swap_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .add_proofs(swap_request.inputs.clone())
@@ -652,11 +734,20 @@ impl Mint {
             .len()
             .ne(&proof_count)
         {
+            self.localstore
+                .update_proofs_states(&input_ys, State::Unspent)
+                .await?;
             return Err(Error::DuplicateProofs);
         }
 
         for proof in &swap_request.inputs {
-            self.verify_proof(proof).await?
+            if let Err(err) = self.verify_proof(proof).await {
+                tracing::info!("Error verifying proof in swap");
+                self.localstore
+                    .update_proofs_states(&input_ys, State::Unspent)
+                    .await?;
+                return Err(err);
+            }
         }
 
         let input_keyset_ids: HashSet<Id> =
@@ -665,25 +756,34 @@ impl Mint {
         let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
 
         for id in input_keyset_ids {
-            let keyset = self
-                .localstore
-                .get_keyset_info(&id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
-            keyset_units.insert(keyset.unit);
+            match self.localstore.get_keyset_info(&id).await? {
+                Some(keyset) => {
+                    keyset_units.insert(keyset.unit);
+                }
+                None => {
+                    tracing::info!("Swap request with unknown keyset in inputs");
+                    self.localstore
+                        .update_proofs_states(&input_ys, State::Unspent)
+                        .await?;
+                }
+            }
         }
 
         let output_keyset_ids: HashSet<Id> =
             swap_request.outputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &output_keyset_ids {
-            let keyset = self
-                .localstore
-                .get_keyset_info(id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
-
-            keyset_units.insert(keyset.unit);
+            match self.localstore.get_keyset_info(id).await? {
+                Some(keyset) => {
+                    keyset_units.insert(keyset.unit);
+                }
+                None => {
+                    tracing::info!("Swap request with unknown keyset in outputs");
+                    self.localstore
+                        .update_proofs_states(&input_ys, State::Unspent)
+                        .await?;
+                }
+            }
         }
 
         // Check that all proofs are the same unit
@@ -691,6 +791,9 @@ impl Mint {
         // now
         if keyset_units.len().gt(&1) {
             tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
+            self.localstore
+                .update_proofs_states(&input_ys, State::Unspent)
+                .await?;
             return Err(Error::MultipleUnits);
         }
 
@@ -703,7 +806,13 @@ impl Mint {
         if sig_flag.eq(&SigFlag::SigAll) {
             let pubkeys = pubkeys.into_iter().collect();
             for blinded_message in &swap_request.outputs {
-                blinded_message.verify_p2pk(&pubkeys, sigs_required)?;
+                if let Err(err) = blinded_message.verify_p2pk(&pubkeys, sigs_required) {
+                    tracing::info!("Could not verify p2pk in swap request");
+                    self.localstore
+                        .update_proofs_states(&input_ys, State::Unspent)
+                        .await?;
+                    return Err(err.into());
+                }
             }
         }
 
@@ -825,26 +934,6 @@ impl Mint {
         &self,
         melt_request: &MeltBolt11Request,
     ) -> Result<MeltQuote, Error> {
-        let ys: Vec<PublicKey> = melt_request
-            .inputs
-            .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
-
-        // Ensure proofs are unique and not being double spent
-        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
-            return Err(Error::DuplicateProofs);
-        }
-
-        self.localstore
-            .add_proofs(melt_request.inputs.clone())
-            .await?;
-        self.check_ys_spendable(&ys, State::Pending).await?;
-
-        for proof in &melt_request.inputs {
-            self.verify_proof(proof).await?;
-        }
-
         let state = self
             .localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Pending)
@@ -858,6 +947,26 @@ impl Mint {
             MeltQuoteState::Paid => {
                 return Err(Error::PaidQuote);
             }
+        }
+
+        let ys = melt_request
+            .inputs
+            .iter()
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
+
+        // Ensure proofs are unique and not being double spent
+        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
+            return Err(Error::DuplicateProofs);
+        }
+
+        self.localstore
+            .add_proofs(melt_request.inputs.clone())
+            .await?;
+        self.check_ys_spendable(&ys, State::Pending).await?;
+
+        for proof in &melt_request.inputs {
+            self.verify_proof(proof).await?;
         }
 
         let quote = self
@@ -901,13 +1010,13 @@ impl Mint {
             keyset_units.insert(keyset.unit);
         }
 
+        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
+
+        if sig_flag.eq(&SigFlag::SigAll) {
+            return Err(Error::SigAllUsedInMelt);
+        }
+
         if let Some(outputs) = &melt_request.outputs {
-            let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
-
-            if sig_flag.eq(&SigFlag::SigAll) {
-                return Err(Error::SigAllUsedInMelt);
-            }
-
             let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
             for id in output_keysets_ids {
                 let keyset = self
@@ -945,11 +1054,11 @@ impl Mint {
     /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let input_ys: Vec<PublicKey> = melt_request
+        let input_ys = melt_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Unspent)
@@ -972,83 +1081,18 @@ impl Mint {
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         tracing::debug!("Processing melt quote: {}", melt_request.quote);
+
         let quote = self
             .localstore
             .get_melt_quote(&melt_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if let Some(outputs) = &melt_request.outputs {
-            let blinded_messages: Vec<PublicKey> =
-                outputs.iter().map(|b| b.blinded_secret).collect();
-
-            if self
-                .localstore
-                .get_blind_signatures(&blinded_messages)
-                .await?
-                .iter()
-                .flatten()
-                .next()
-                .is_some()
-            {
-                tracing::info!("Output has already been signed",);
-
-                return Err(Error::BlindedMessageAlreadySigned);
-            }
-        }
-
-        let mut change = None;
-
-        if let Some(outputs) = melt_request.outputs.clone() {
-            let change_target = melt_request.proofs_amount() - total_spent;
-            let mut amounts = change_target.split();
-            let mut change_sigs = Vec::with_capacity(amounts.len());
-
-            if outputs.len().lt(&amounts.len()) {
-                tracing::debug!(
-                    "Providing change requires {} blinded messages, but only {} provided",
-                    amounts.len(),
-                    outputs.len()
-                );
-
-                // In the case that not enough outputs are provided to return all change
-                // Reverse sort the amounts so that the most amount of change possible is
-                // returned. The rest is burnt
-                amounts.sort_by(|a, b| b.cmp(a));
-            }
-
-            let mut outputs = outputs;
-
-            for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
-                blinded_message.amount = *amount;
-
-                let blinded_signature = self.blind_sign(blinded_message).await?;
-                change_sigs.push(blinded_signature)
-            }
-
-            self.localstore
-                .add_blind_signatures(
-                    &outputs[0..change_sigs.len()]
-                        .iter()
-                        .map(|o| o.blinded_secret)
-                        .collect::<Vec<PublicKey>>(),
-                    &change_sigs,
-                )
-                .await?;
-
-            change = Some(change_sigs);
-        } else {
-            tracing::info!(
-                "No change outputs provided. Burnt: {:?} sats",
-                (melt_request.proofs_amount() - total_spent)
-            );
-        }
-
-        let input_ys: Vec<PublicKey> = melt_request
+        let input_ys = melt_request
             .inputs
             .iter()
-            .flat_map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect();
+            .map(|p| hash_to_curve(&p.secret.to_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Spent)
@@ -1057,6 +1101,69 @@ impl Mint {
         self.localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
             .await?;
+
+        let mut change = None;
+
+        // Check if there is change to return
+        if melt_request.proofs_amount() > total_spent {
+            // Check if wallet provided change outputs
+            if let Some(outputs) = melt_request.outputs.clone() {
+                let blinded_messages: Vec<PublicKey> =
+                    outputs.iter().map(|b| b.blinded_secret).collect();
+
+                if self
+                    .localstore
+                    .get_blind_signatures(&blinded_messages)
+                    .await?
+                    .iter()
+                    .flatten()
+                    .next()
+                    .is_some()
+                {
+                    tracing::info!("Output has already been signed");
+
+                    return Err(Error::BlindedMessageAlreadySigned);
+                }
+
+                let change_target = melt_request.proofs_amount() - total_spent;
+                let mut amounts = change_target.split();
+                let mut change_sigs = Vec::with_capacity(amounts.len());
+
+                if outputs.len().lt(&amounts.len()) {
+                    tracing::debug!(
+                        "Providing change requires {} blinded messages, but only {} provided",
+                        amounts.len(),
+                        outputs.len()
+                    );
+
+                    // In the case that not enough outputs are provided to return all change
+                    // Reverse sort the amounts so that the most amount of change possible is
+                    // returned. The rest is burnt
+                    amounts.sort_by(|a, b| b.cmp(a));
+                }
+
+                let mut outputs = outputs;
+
+                for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
+                    blinded_message.amount = *amount;
+
+                    let blinded_signature = self.blind_sign(blinded_message).await?;
+                    change_sigs.push(blinded_signature)
+                }
+
+                self.localstore
+                    .add_blind_signatures(
+                        &outputs[0..change_sigs.len()]
+                            .iter()
+                            .map(|o| o.blinded_secret)
+                            .collect::<Vec<PublicKey>>(),
+                        &change_sigs,
+                    )
+                    .await?;
+
+                change = Some(change_sigs);
+            }
+        }
 
         Ok(MeltQuoteBolt11Response {
             amount: quote.amount,
@@ -1126,7 +1233,13 @@ impl Mint {
     /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
     #[instrument(skip_all)]
     pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
-        MintKeySet::generate_from_xpriv(&self.secp_ctx, self.xpriv, keyset_info)
+        MintKeySet::generate_from_xpriv(
+            &self.secp_ctx,
+            self.xpriv,
+            keyset_info.max_order,
+            keyset_info.unit,
+            keyset_info.derivation_path,
+        )
     }
 
     /// Get the total amount issed by keyset
@@ -1150,12 +1263,12 @@ impl Mint {
         Ok(total_issued)
     }
 
-    /// Total redeamed for keyset
+    /// Total redeemed for keyset
     #[instrument(skip_all)]
-    pub async fn total_redeamed(&self) -> Result<HashMap<Id, Amount>, Error> {
+    pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
         let keysets = self.localstore.get_keyset_infos().await?;
 
-        let mut total_redeamed = HashMap::new();
+        let mut total_redeemed = HashMap::new();
 
         for keyset in keysets {
             let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
@@ -1169,10 +1282,10 @@ impl Mint {
                 })
                 .sum();
 
-            total_redeamed.insert(keyset.id, total_spent);
+            total_redeemed.insert(keyset.id, total_spent);
         }
 
-        Ok(total_redeamed)
+        Ok(total_redeemed)
     }
 }
 
@@ -1265,4 +1378,211 @@ fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> DerivationPath {
         ChildNumber::from_hardened_idx(unit.derivation_index()).expect("0 is a valid index"),
         ChildNumber::from_hardened_idx(index).expect("0 is a valid index"),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::Network;
+    use secp256k1::Secp256k1;
+
+    use super::*;
+
+    #[test]
+    fn mint_mod_generate_keyset_from_seed() {
+        let seed = "test_seed".as_bytes();
+        let keyset = MintKeySet::generate_from_seed(
+            &Secp256k1::new(),
+            seed,
+            2,
+            CurrencyUnit::Sat,
+            derivation_path_from_unit(CurrencyUnit::Sat, 0),
+        );
+
+        assert_eq!(keyset.unit, CurrencyUnit::Sat);
+        assert_eq!(keyset.keys.len(), 2);
+
+        let expected_amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = vec![
+            (
+                Amount::from(1),
+                PublicKey::from_hex(
+                    "0257aed43bf2c1cdbe3e7ae2db2b27a723c6746fc7415e09748f6847916c09176e",
+                )
+                .unwrap(),
+            ),
+            (
+                Amount::from(2),
+                PublicKey::from_hex(
+                    "03ad95811e51adb6231613f9b54ba2ba31e4442c9db9d69f8df42c2b26fbfed26e",
+                )
+                .unwrap(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = keyset
+            .keys
+            .iter()
+            .map(|(amount, pair)| (*amount, pair.public_key))
+            .collect();
+
+        assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
+    }
+
+    #[test]
+    fn mint_mod_generate_keyset_from_xpriv() {
+        let seed = "test_seed".as_bytes();
+        let network = Network::Bitcoin;
+        let xpriv = ExtendedPrivKey::new_master(network, seed).expect("Failed to create xpriv");
+        let keyset = MintKeySet::generate_from_xpriv(
+            &Secp256k1::new(),
+            xpriv,
+            2,
+            CurrencyUnit::Sat,
+            derivation_path_from_unit(CurrencyUnit::Sat, 0),
+        );
+
+        assert_eq!(keyset.unit, CurrencyUnit::Sat);
+        assert_eq!(keyset.keys.len(), 2);
+
+        let expected_amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = vec![
+            (
+                Amount::from(1),
+                PublicKey::from_hex(
+                    "0257aed43bf2c1cdbe3e7ae2db2b27a723c6746fc7415e09748f6847916c09176e",
+                )
+                .unwrap(),
+            ),
+            (
+                Amount::from(2),
+                PublicKey::from_hex(
+                    "03ad95811e51adb6231613f9b54ba2ba31e4442c9db9d69f8df42c2b26fbfed26e",
+                )
+                .unwrap(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = keyset
+            .keys
+            .iter()
+            .map(|(amount, pair)| (*amount, pair.public_key))
+            .collect();
+
+        assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
+    }
+
+    use cdk_database::mint_memory::MintMemoryDatabase;
+
+    #[derive(Default)]
+    struct MintConfig<'a> {
+        active_keysets: HashMap<CurrencyUnit, Id>,
+        keysets: Vec<MintKeySetInfo>,
+        mint_quotes: Vec<MintQuote>,
+        melt_quotes: Vec<MeltQuote>,
+        pending_proofs: Proofs,
+        spent_proofs: Proofs,
+        blinded_signatures: HashMap<[u8; 33], BlindSignature>,
+        mint_url: &'a str,
+        seed: &'a [u8],
+        mint_info: MintInfo,
+        supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    }
+
+    async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
+        let localstore = Arc::new(
+            MintMemoryDatabase::new(
+                config.active_keysets,
+                config.keysets,
+                config.mint_quotes,
+                config.melt_quotes,
+                config.pending_proofs,
+                config.spent_proofs,
+                config.blinded_signatures,
+            )
+            .unwrap(),
+        );
+
+        Mint::new(
+            config.mint_url,
+            config.seed,
+            config.mint_info,
+            localstore,
+            config.supported_units,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn mint_mod_new_mint() -> Result<(), Error> {
+        let config = MintConfig::<'_> {
+            mint_url: "http://example.com",
+            ..Default::default()
+        };
+        let mint = create_mint(config).await?;
+
+        assert_eq!(mint.get_mint_url().to_string(), "http://example.com");
+        let info = mint.mint_info();
+        assert!(info.name.is_none());
+        assert!(info.pubkey.is_none());
+        assert_eq!(
+            mint.pubkeys().await.unwrap(),
+            KeysResponse {
+                keysets: Vec::new()
+            }
+        );
+
+        assert_eq!(
+            mint.keysets().await.unwrap(),
+            KeysetResponse {
+                keysets: Vec::new()
+            }
+        );
+
+        assert_eq!(
+            mint.total_issued().await.unwrap(),
+            HashMap::<nut02::Id, Amount>::new()
+        );
+
+        assert_eq!(
+            mint.total_redeemed().await.unwrap(),
+            HashMap::<nut02::Id, Amount>::new()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mint_mod_rotate_keyset() -> Result<(), Error> {
+        let config: MintConfig = Default::default();
+        let mint = create_mint(config).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+        assert!(keysets.keysets.is_empty());
+
+        // generate the first keyset and set it to active
+        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+        assert!(keysets.keysets.len().eq(&1));
+        assert!(keysets.keysets[0].active);
+        let first_keyset_id = keysets.keysets[0].id;
+
+        // set the first keyset to inactive and generate a new keyset
+        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1).await?;
+
+        let keysets = mint.keysets().await.unwrap();
+
+        assert!(keysets.keysets.len().eq(&2));
+        for keyset in &keysets.keysets {
+            if keyset.id == first_keyset_id {
+                assert!(!keyset.active);
+            } else {
+                assert!(keyset.active);
+            }
+        }
+
+        Ok(())
+    }
 }

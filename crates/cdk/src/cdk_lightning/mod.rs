@@ -50,6 +50,7 @@ pub trait MintLightning {
     async fn create_invoice(
         &self,
         amount: Amount,
+        unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err>;
@@ -66,7 +67,7 @@ pub trait MintLightning {
         &self,
         melt_quote: mint::MeltQuote,
         partial_amount: Option<Amount>,
-        max_fee: Option<Amount>,
+        max_fee_amount: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err>;
 
     /// Listen for invoices to be paid to the mint
@@ -89,6 +90,8 @@ pub struct CreateInvoiceResponse {
     pub request_lookup_id: String,
     /// Bolt11 payment request
     pub request: Bolt11Invoice,
+    /// Unix Expiry of Invoice
+    pub expiry: Option<u64>,
 }
 
 /// Pay invoice response
@@ -100,7 +103,7 @@ pub struct PayInvoiceResponse {
     pub payment_preimage: Option<String>,
     /// Status
     pub status: MeltQuoteState,
-    /// Total Amount Spent
+    /// Totoal Amount Spent
     pub total_spent: Amount,
 }
 
@@ -156,17 +159,18 @@ pub fn to_unit<T>(
     amount: T,
     current_unit: &CurrencyUnit,
     target_unit: &CurrencyUnit,
-) -> Result<u64, Error>
+) -> Result<Amount, Error>
 where
     T: Into<u64>,
 {
     let amount = amount.into();
     match (current_unit, target_unit) {
-        (CurrencyUnit::Sat, CurrencyUnit::Sat) => Ok(amount),
-        (CurrencyUnit::Msat, CurrencyUnit::Msat) => Ok(amount),
-        (CurrencyUnit::Sat, CurrencyUnit::Msat) => Ok(amount * MSAT_IN_SAT),
-        (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok(amount / MSAT_IN_SAT),
-        (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount),
+        (CurrencyUnit::Sat, CurrencyUnit::Sat) => Ok(amount.into()),
+        (CurrencyUnit::Msat, CurrencyUnit::Msat) => Ok(amount.into()),
+        (CurrencyUnit::Sat, CurrencyUnit::Msat) => Ok((amount * MSAT_IN_SAT).into()),
+        (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok((amount / MSAT_IN_SAT).into()),
+        (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount.into()),
+        (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount.into()),
         _ => Err(Error::CannotConvertUnits),
     }
 }

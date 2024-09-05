@@ -1,6 +1,6 @@
 [package]
 name = "cdk-fake-wallet"
-version = "0.1.0"
+version = { workspace = true }
 edition = "2021"
 authors = ["CDK Developers"]
 homepage.workspace = true
@@ -21,4 +21,4 @@ uuid.workspace = true
 lightning-invoice.workspace = true
 lightning = "0.0.123"
 tokio-stream = "0.1.15"
-rand = "0.8.5"
+rand.workspace = true

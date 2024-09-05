@@ -1,15 +1,13 @@
 [workspace]
-members = [
-    "bindings/cdk-js",
-    "crates/*",
-]
+members = ["bindings/cdk-js", "crates/*"]
 resolver = "2"
 
 [workspace.package]
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.70.0" # MSRV
+rust-version = "1.70.0"                            # MSRV
+version = "0.3.0"
 
 [workspace.metadata]
 authors = ["CDK Developers"]
@@ -26,26 +24,35 @@ anyhow = "1"
 axum = "0.7.5"
 bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
 bip39 = "2.0"
-cdk = { version = "0.2", path = "./crates/cdk", default-features = false }
-cdk-rexie = { version = "0.2", path = "./crates/cdk-rexie", default-features = false }
-cdk-sqlite = { version = "0.2", path = "./crates/cdk-sqlite", default-features = false }
-cdk-redb = { version = "0.2", path = "./crates/cdk-redb", default-features = false }
-cdk-cln = { version = "0.1", path = "./crates/cdk-cln", default-features = false }
-cdk-axum = { version = "0.1", path = "./crates/cdk-axum", default-features = false }
-cdk-fake-wallet = { version = "0.1", path = "./crates/cdk-fake-wallet", default-features = false }
-cdk-strike = { version = "0.1", path = "./crates/cdk-strike", default-features = false }
+clap = { version = "4.4.8", features = ["derive", "env", "default"] }
+cdk = { version = "0.3", path = "./crates/cdk", default-features = false }
+cdk-rexie = { version = "0.3", path = "./crates/cdk-rexie", default-features = false }
+cdk-sqlite = { version = "0.3", path = "./crates/cdk-sqlite", default-features = false }
+cdk-redb = { version = "0.3", path = "./crates/cdk-redb", default-features = false }
+cdk-cln = { version = "0.3", path = "./crates/cdk-cln", default-features = false }
+cdk-axum = { version = "0.3", path = "./crates/cdk-axum", default-features = false }
+cdk-fake-wallet = { version = "0.3", path = "./crates/cdk-fake-wallet", default-features = false }
+cdk-strike = { version = "0.3", path = "./crates/cdk-strike", default-features = false }
 tokio = { version = "1", default-features = false }
 thiserror = "1"
-tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+tracing = { version = "0.1", default-features = false, features = [
+    "attributes",
+    "log",
+] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6.5"
 futures = { version = "0.3.28", default-feature = false }
-web-sys =  { version = "0.3.69", default-features = false, features = ["console"] }
+web-sys = { version = "0.3.69", default-features = false, features = [
+    "console",
+] }
 uuid = { version = "1", features = ["v4"] }
 lightning-invoice = { version = "0.31", features = ["serde"] }
+tower-http = { version = "0.5.2", features = ["cors"] }
 home = "0.5.9"
+rand = "0.8.5"
+url = "2.3"
 redb = "2.1.0"
 
 [profile]
