@@ -85,7 +85,7 @@ impl HttpClient {
         }
         let client = builder
             .pool_max_idle_per_host(0) // NWS doesn't support keep-alive
-            .timeout(Duration::from_secs(30)) // NWS hack to avoid hanging
+            .timeout(Duration::from_secs(60)) // NWS hack to avoid hanging
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
             .build()?;
 
