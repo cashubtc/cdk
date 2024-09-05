@@ -66,6 +66,7 @@
           protobuf3_20
           nixpkgs-fmt
           rust-analyzer
+          typos
         ] ++ libsDarwin;
 
         # WASM deps
