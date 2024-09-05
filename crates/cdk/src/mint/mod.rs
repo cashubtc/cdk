@@ -711,9 +711,25 @@ impl Mint {
 
         let fee = self.get_proofs_fee(&swap_request.inputs).await?;
 
-        if proofs_total < output_total.checked_add(fee).ok_or(Error::AmountOverflow)? {
+        let total_with_fee = output_total.checked_add(fee).ok_or(Error::AmountOverflow)?;
+
+        if proofs_total < total_with_fee {
             tracing::info!(
                 "Swap request without enough inputs: {}, outputs {}, fee {}",
+                proofs_total,
+                output_total,
+                fee
+            );
+            return Err(Error::InsufficientInputs(
+                proofs_total.into(),
+                output_total.into(),
+                fee.into(),
+            ));
+        }
+
+        if proofs_total != total_with_fee {
+            tracing::info!(
+                "Swap request unbalanced: {}, outputs {}, fee {}",
                 proofs_total,
                 output_total,
                 fee
