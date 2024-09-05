@@ -9,7 +9,7 @@ use cdk::HttpClient;
 use cdk_integration_tests::{create_backends_fake_wallet, start_mint, MINT_URL};
 use tokio::time::sleep;
 
-/// This attemps to swap for more outputs then inputs.
+/// This attempts to swap for more outputs then inputs.
 /// This will work if the mint does not check for outputs amounts overflowing
 async fn attempt_to_swap_by_overflowing() -> Result<()> {
     let wallet_client = HttpClient::new();
