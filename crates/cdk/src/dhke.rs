@@ -102,6 +102,11 @@ pub fn construct_proofs(
     secrets: Vec<Secret>,
     keys: &Keys,
 ) -> Result<Proofs, Error> {
+    if (promises.len() != rs.len()) || (promises.len() != secrets.len()) {
+        return Err(Error::CustomError(
+            "Lengths of promises, rs, and secrets must be equal".to_string(),
+        ));
+    }
     let mut proofs = vec![];
     for ((blinded_signature, r), secret) in promises.into_iter().zip(rs).zip(secrets) {
         let blinded_c: PublicKey = blinded_signature.c;
