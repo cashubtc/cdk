@@ -26,6 +26,9 @@ pub enum Error {
     /// Not engough inputs provided
     #[error("Inputs: `{0}`, Outputs: `{0}`, Fee: `{0}`")]
     InsufficientInputs(u64, u64, u64),
+    /// Transaction unbalanced
+    #[error("Inputs: `{0}`, Outputs: `{0}`, Fee: `{0}`")]
+    TransactionUnbalanced(u64, u64, u64),
     /// Duplicate proofs provided
     #[error("Duplicate proofs")]
     DuplicateProofs,
