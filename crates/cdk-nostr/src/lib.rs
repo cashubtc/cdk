@@ -451,16 +451,11 @@ impl WalletDatabase for WalletNostrDatabase {
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err> {
-        let unspent_proofs = self
-            .get_proofs(
-                None,
-                Some(CurrencyUnit::Sat),
-                Some(vec![State::Unspent]),
-                None,
-            )
+        let active_proofs = self
+            .get_proofs(None, Some(CurrencyUnit::Sat), None, None)
             .await?;
         let added_proofs_by_url = added.iter().into_group_map_by(|info| info.mint_url.clone());
-        let removed_proofs_by_url = unspent_proofs
+        let removed_proofs_by_url = active_proofs
             .iter()
             .filter_map(|info| match info.proof.y() {
                 Ok(y) if removed_ys.contains(&y) => Some(info),
