@@ -33,6 +33,7 @@ ln_backend = "cln"
 # cln_path = ""
 
 # [strike]
+# For the Webhook subscription, the url under [info] must be a valid, absolute, non-local, https url 
 # api_key=""
 # Optional default sats
 # supported_units=[""]
