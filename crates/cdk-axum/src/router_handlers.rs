@@ -337,18 +337,6 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            let partial_amount = partial_msats
-                .map(|partial_msats| {
-                    to_unit(partial_msats, &CurrencyUnit::Msat, &ln.get_settings().unit)
-                        .map_err(|_| into_response(Error::UnsupportedUnit))
-                })
-                .transpose()?;
-            let max_fee = max_fee_msats
-                .map(|max_fee_msats| {
-                    to_unit(max_fee_msats, &CurrencyUnit::Msat, &ln.get_settings().unit)
-                        .map_err(|_| into_response(Error::UnsupportedUnit))
-                })
-                .transpose()?;
             let pre = match ln
                 .pay_invoice(quote.clone(), partial_amount, Some(quote.fee_reserve))
                 .await

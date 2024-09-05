@@ -1146,17 +1146,23 @@ impl MintLightning for Node {
     async fn create_invoice(
         &self,
         amount: Amount,
+        unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
-        tracing::info!("Creating invoice: {} {}", amount, description);
+        tracing::info!("Creating invoice: {} {}", amount, unit);
+        let amount_msats = match unit {
+            CurrencyUnit::Sat => Into::<u64>::into(amount) * 1000,
+            CurrencyUnit::Msat => Into::<u64>::into(amount),
+            _ => return Err(map_err("Invalid currency unit")),
+        };
         let expiry = unix_expiry - unix_time();
         let invoice = create_invoice_from_channelmanager(
             &self.channel_manager,
             self.keys_manager.clone(),
             self.logger.clone(),
             self.network.into(),
-            Some(Into::<u64>::into(amount) * 1000),
+            Some(amount_msats),
             description.to_string(),
             expiry as u32,
             None,
@@ -1166,6 +1172,7 @@ impl MintLightning for Node {
         Ok(CreateInvoiceResponse {
             request_lookup_id: invoice.payment_hash().to_string(),
             request: invoice,
+            expiry: Some(expiry),
         })
     }
 
