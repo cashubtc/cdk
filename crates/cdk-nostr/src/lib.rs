@@ -924,6 +924,14 @@ impl Transaction {
                 }
             }
         }
+        if let Some(price) = &self.price {
+            content.push(Tag::parse(&[PRICE_TAG, price])?);
+        }
+        if !self.proofs.is_empty() {
+            let mut proof_vec = vec![PROOFS_TAG.to_string()];
+            proof_vec.extend(self.proofs.iter().map(|y| y.to_string()));
+            content.push(Tag::parse(&proof_vec)?);
+        }
 
         let mut tags = Vec::new();
         tags.push(wallet_link_tag(wallet_id, keys)?);
