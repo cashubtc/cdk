@@ -151,6 +151,7 @@
               cargo update -p half --precise 2.2.1
               cargo update -p home --precise 0.5.5
               cargo update -p tokio --precise 1.38.1
+              cargo update -p tokio-stream --precise 0.1.15
               cargo update -p serde_with --precise 3.1.0
               cargo update -p reqwest --precise 0.12.4
               ";
