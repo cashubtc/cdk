@@ -609,11 +609,10 @@ impl PreMintSecrets {
     }
 
     /// Totoal amount of secrets
-    pub fn total_amount(&self) -> Amount {
-        self.secrets
-            .iter()
-            .map(|PreMint { amount, .. }| *amount)
-            .sum()
+    pub fn total_amount(&self) -> Result<Amount, Error> {
+        Ok(Amount::try_sum(
+            self.secrets.iter().map(|PreMint { amount, .. }| *amount),
+        )?)
     }
 
     /// [`BlindedMessage`]s from [`PreMintSecrets`]

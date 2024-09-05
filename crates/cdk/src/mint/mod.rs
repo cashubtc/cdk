@@ -705,13 +705,13 @@ impl Mint {
             return Err(Error::BlindedMessageAlreadySigned);
         }
 
-        let proofs_total = swap_request.input_amount();
+        let proofs_total = swap_request.input_amount()?;
 
-        let output_total = swap_request.output_amount();
+        let output_total = swap_request.output_amount()?;
 
         let fee = self.get_proofs_fee(&swap_request.inputs).await?;
 
-        if proofs_total < output_total + fee {
+        if proofs_total < output_total.checked_add(fee).ok_or(Error::AmountOverflow)? {
             tracing::info!(
                 "Swap request without enough inputs: {}, outputs {}, fee {}",
                 proofs_total,
@@ -989,7 +989,7 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let proofs_total = melt_request.proofs_amount();
+        let proofs_total = melt_request.proofs_amount()?;
 
         let fee = self.get_proofs_fee(&melt_request.inputs).await?;
 
@@ -1121,7 +1121,7 @@ impl Mint {
         let mut change = None;
 
         // Check if there is change to return
-        if melt_request.proofs_amount() > total_spent {
+        if melt_request.proofs_amount()? > total_spent {
             // Check if wallet provided change outputs
             if let Some(outputs) = melt_request.outputs.clone() {
                 let blinded_messages: Vec<PublicKey> =
@@ -1141,7 +1141,7 @@ impl Mint {
                     return Err(Error::BlindedMessageAlreadySigned);
                 }
 
-                let change_target = melt_request.proofs_amount() - total_spent;
+                let change_target = melt_request.proofs_amount()? - total_spent;
                 let mut amounts = change_target.split();
                 let mut change_sigs = Vec::with_capacity(amounts.len());
 
@@ -1271,7 +1271,7 @@ impl Mint {
                 .get_blind_signatures_for_keyset(&keyset.id)
                 .await?;
 
-            let total = blinded.iter().map(|b| b.amount).sum();
+            let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
 
             total_issued.insert(keyset.id, total);
         }
@@ -1289,14 +1289,13 @@ impl Mint {
         for keyset in keysets {
             let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
 
-            let total_spent = proofs
-                .iter()
-                .zip(state)
-                .filter_map(|(p, s)| match s == Some(State::Spent) {
-                    true => Some(p.amount),
-                    false => None,
-                })
-                .sum();
+            let total_spent =
+                Amount::try_sum(proofs.iter().zip(state).filter_map(|(p, s)| {
+                    match s == Some(State::Spent) {
+                        true => Some(p.amount),
+                        false => None,
+                    }
+                }))?;
 
             total_redeemed.insert(keyset.id, total_spent);
         }

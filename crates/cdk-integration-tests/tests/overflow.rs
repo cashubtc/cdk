@@ -37,8 +37,7 @@ async fn attempt_to_swap_by_overflowing() -> Result<()> {
         sleep(Duration::from_secs(2)).await;
     }
 
-    let premint_secrets =
-        PreMintSecrets::random(keyset_id.clone(), 1.into(), &SplitTarget::default())?;
+    let premint_secrets = PreMintSecrets::random(keyset_id, 1.into(), &SplitTarget::default())?;
 
     let mint_response = wallet_client
         .post_mint(
@@ -60,12 +59,11 @@ async fn attempt_to_swap_by_overflowing() -> Result<()> {
     let amount = 2_u64.pow(63);
 
     let pre_mint_amount =
-        PreMintSecrets::random(keyset_id.clone(), amount.into(), &SplitTarget::default())?;
+        PreMintSecrets::random(keyset_id, amount.into(), &SplitTarget::default())?;
     let pre_mint_amount_two =
-        PreMintSecrets::random(keyset_id.clone(), amount.into(), &SplitTarget::default())?;
+        PreMintSecrets::random(keyset_id, amount.into(), &SplitTarget::default())?;
 
-    let mut pre_mint =
-        PreMintSecrets::random(keyset_id.clone(), 1.into(), &SplitTarget::default())?;
+    let mut pre_mint = PreMintSecrets::random(keyset_id, 1.into(), &SplitTarget::default())?;
 
     pre_mint.combine(pre_mint_amount);
     pre_mint.combine(pre_mint_amount_two);
@@ -91,11 +89,11 @@ async fn attempt_to_swap_by_overflowing() -> Result<()> {
 
     println!(
         "Pre swap amount: {:?}",
-        pre_swap_proofs.iter().map(|p| p.amount).sum::<Amount>()
+        Amount::try_sum(pre_swap_proofs.iter().map(|p| p.amount)).expect("Amount overflowed")
     );
     println!(
         "Post swap amount: {:?}",
-        post_swap_proofs.iter().map(|p| p.amount).sum::<Amount>()
+        Amount::try_sum(post_swap_proofs.iter().map(|p| p.amount)).expect("Amount Overflowed")
     );
 
     println!(

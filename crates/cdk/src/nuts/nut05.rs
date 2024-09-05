@@ -21,6 +21,9 @@ pub enum Error {
     /// Unknown Quote State
     #[error("Unknown quote state")]
     UnknownState,
+    /// Amount overflow
+    #[error("Amount Overflow")]
+    AmountOverflow,
 }
 
 /// Melt quote request [NUT-05]
@@ -210,8 +213,9 @@ pub struct MeltBolt11Request {
 
 impl MeltBolt11Request {
     /// Total [`Amount`] of [`Proofs`]
-    pub fn proofs_amount(&self) -> Amount {
-        self.inputs.iter().map(|proof| proof.amount).sum()
+    pub fn proofs_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
+            .map_err(|_| Error::AmountOverflow)
     }
 }
 

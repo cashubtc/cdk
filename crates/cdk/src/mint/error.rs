@@ -20,6 +20,9 @@ pub enum Error {
     /// Amount is not what is expected
     #[error("Amount")]
     Amount,
+    /// Amount overflow
+    #[error("Amount Overflow")]
+    AmountOverflow,
     /// Not engough inputs provided
     #[error("Inputs: `{0}`, Outputs: `{0}`, Fee: `{0}`")]
     InsufficientInputs(u64, u64, u64),
@@ -89,6 +92,12 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT04 Error
+    #[error(transparent)]
+    NUT04(#[from] crate::nuts::nut04::Error),
+    /// NUT05 Error
+    #[error(transparent)]
+    NUT05(#[from] crate::nuts::nut05::Error),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
