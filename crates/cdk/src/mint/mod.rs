@@ -734,7 +734,7 @@ impl Mint {
                 output_total,
                 fee
             );
-            return Err(Error::InsufficientInputs(
+            return Err(Error::TransactionUnbalanced(
                 proofs_total.into(),
                 output_total.into(),
                 fee.into(),
