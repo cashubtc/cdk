@@ -24,10 +24,10 @@ pub enum Error {
     #[error("Amount Overflow")]
     AmountOverflow,
     /// Not engough inputs provided
-    #[error("Inputs: `{0}`, Outputs: `{0}`, Fee: `{0}`")]
+    #[error("Inputs: `{0}`, Outputs: `{0}`, Expected Fee: `{0}`")]
     InsufficientInputs(u64, u64, u64),
     /// Transaction unbalanced
-    #[error("Inputs: `{0}`, Outputs: `{0}`, Fee: `{0}`")]
+    #[error("Inputs: `{0}`, Outputs: `{0}`, Expected Fee: `{0}`")]
     TransactionUnbalanced(u64, u64, u64),
     /// Duplicate proofs provided
     #[error("Duplicate proofs")]
@@ -132,6 +132,50 @@ impl From<Error> for ErrorResponse {
         match err {
             Error::TokenAlreadySpent => ErrorResponse {
                 code: ErrorCode::TokenAlreadySpent,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::TransactionUnbalanced(_inputs_amount, _output_amouns, _expected_fee) => {
+                ErrorResponse {
+                    code: ErrorCode::TransactionUnbalanced,
+                    error: Some(err.to_string()),
+                    detail: None,
+                }
+            }
+            Error::InsufficientInputs(_inputs_amount, _output_amount, _expected_fee) => {
+                ErrorResponse {
+                    code: ErrorCode::InsufficientFee,
+                    error: Some(err.to_string()),
+                    detail: None,
+                }
+            }
+            Error::MintingDisabled => ErrorResponse {
+                code: ErrorCode::MintingDisabled,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::InactiveKeyset => ErrorResponse {
+                code: ErrorCode::KeysetInactive,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::UnknownKeySet => ErrorResponse {
+                code: ErrorCode::KeysetNotFound,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::UnpaidQuote => ErrorResponse {
+                code: ErrorCode::QuoteNotPaid,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::PendingQuote => ErrorResponse {
+                code: ErrorCode::QuotePending,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::IssuedQuote => ErrorResponse {
+                code: ErrorCode::TokensAlreadyIssued,
                 error: Some(err.to_string()),
                 detail: None,
             },
