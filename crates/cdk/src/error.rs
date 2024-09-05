@@ -228,8 +228,56 @@ pub enum ErrorCode {
     TokenNotVerified,
     /// Lightning Error
     LightningError,
+    /// Unbalanced Error
+    TransactionUnbalanced,
     /// Unknown error code
     Unknown(u16),
+}
+
+impl ErrorCode {
+    /// Error code from u16
+    pub fn from_code(code: u16) -> Self {
+        match code {
+            10002 => Self::BlindedMessageAlreadySigned,
+            10003 => Self::TokenNotVerified,
+            11001 => Self::TokenAlreadySpent,
+            11002 => Self::TransactionUnbalanced,
+            11005 => Self::UnitUnsupported,
+            11006 => Self::InsufficientFee,
+            11007 => Self::FeeOverPaid,
+            12001 => Self::KeysetNotFound,
+            12002 => Self::KeysetInactive,
+            20000 => Self::LightningError,
+            20001 => Self::QuoteNotPaid,
+            20002 => Self::TokensAlreadyIssued,
+            20003 => Self::MintingDisabled,
+            20005 => Self::QuotePending,
+            20006 => Self::InvoiceAlreadyPaid,
+            _ => Self::Unknown(code),
+        }
+    }
+
+    /// Error code to u16
+    pub fn to_code(&self) -> u16 {
+        match self {
+            Self::BlindedMessageAlreadySigned => 10002,
+            Self::TokenNotVerified => 10003,
+            Self::TokenAlreadySpent => 11001,
+            Self::TransactionUnbalanced => 11002,
+            Self::UnitUnsupported => 11005,
+            Self::InsufficientFee => 11006,
+            Self::FeeOverPaid => 11007,
+            Self::KeysetNotFound => 12001,
+            Self::KeysetInactive => 12002,
+            Self::LightningError => 20000,
+            Self::QuoteNotPaid => 20001,
+            Self::TokensAlreadyIssued => 20002,
+            Self::MintingDisabled => 20003,
+            Self::QuotePending => 20005,
+            Self::InvoiceAlreadyPaid => 20006,
+            Self::Unknown(code) => *code,
+        }
+    }
 }
 
 impl Serialize for ErrorCode {
@@ -237,23 +285,7 @@ impl Serialize for ErrorCode {
     where
         S: Serializer,
     {
-        serializer.serialize_u16(match self {
-            Self::TokenAlreadySpent => 11001,
-            Self::LightningError => 20003,
-            Self::QuoteNotPaid => 20001,
-            Self::KeysetNotFound => 12001,
-            Self::KeysetInactive => 12002,
-            Self::FeeOverPaid => 11003,
-            Self::InsufficientFee => 11002,
-            Self::BlindedMessageAlreadySigned => 10002,
-            Self::UnitUnsupported => 11005,
-            Self::TokensAlreadyIssued => 20002,
-            Self::MintingDisabled => 20003,
-            Self::QuotePending => 20005,
-            Self::InvoiceAlreadyPaid => 20006,
-            Self::TokenNotVerified => 10003,
-            Self::Unknown(code) => *code,
-        })
+        serializer.serialize_u16(self.to_code())
     }
 }
 
@@ -264,47 +296,12 @@ impl<'de> Deserialize<'de> for ErrorCode {
     {
         let code = u16::deserialize(deserializer)?;
 
-        let error_code = match code {
-            10002 => Self::BlindedMessageAlreadySigned,
-            10003 => Self::TokenNotVerified,
-            11001 => Self::TokenAlreadySpent,
-            11002 => Self::InsufficientFee,
-            11003 => Self::FeeOverPaid,
-            11005 => Self::UnitUnsupported,
-            12001 => Self::KeysetNotFound,
-            12002 => Self::KeysetInactive,
-            20000 => Self::LightningError,
-            20001 => Self::QuoteNotPaid,
-            20002 => Self::TokensAlreadyIssued,
-            20003 => Self::MintingDisabled,
-            20005 => Self::QuotePending,
-            20006 => Self::InvoiceAlreadyPaid,
-            c => Self::Unknown(c),
-        };
-
-        Ok(error_code)
+        Ok(ErrorCode::from_code(code))
     }
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let code = match self {
-            Self::TokenAlreadySpent => 11001,
-            Self::QuoteNotPaid => 20001,
-            Self::KeysetNotFound => 12001,
-            Self::KeysetInactive => 12002,
-            Self::FeeOverPaid => 11003,
-            Self::InsufficientFee => 11002,
-            Self::BlindedMessageAlreadySigned => 10002,
-            Self::TokenNotVerified => 10003,
-            Self::UnitUnsupported => 11005,
-            Self::LightningError => 20003,
-            Self::TokensAlreadyIssued => 20002,
-            Self::MintingDisabled => 20003,
-            Self::QuotePending => 20005,
-            Self::InvoiceAlreadyPaid => 20006,
-            Self::Unknown(code) => *code,
-        };
-        write!(f, "{}", code)
+        write!(f, "{}", self.to_code())
     }
 }
