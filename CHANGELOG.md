@@ -37,6 +37,10 @@
 - cdk: Format url base lowercase ([callebtc]).
 
 
+### Fixed
+- cdk(mint): use checked addition on amount to ensure there is no overflow ([thesimplekid]).
+
+
 ## [0.3.0]
 
 ### Summary
