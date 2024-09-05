@@ -10,7 +10,7 @@ impl MeltBolt11Request {
     pub fn output_amount(&self) -> Option<Amount> {
         self.outputs
             .as_ref()
-            .map(|o| o.iter().map(|proof| proof.amount).sum())
+            .and_then(|o| Amount::try_sum(o.iter().map(|proof| proof.amount)).ok())
     }
 }
 
@@ -19,6 +19,6 @@ impl MeltQuoteBolt11Response {
     pub fn change_amount(&self) -> Option<Amount> {
         self.change
             .as_ref()
-            .map(|c| c.iter().map(|b| b.amount).sum())
+            .and_then(|o| Amount::try_sum(o.iter().map(|proof| proof.amount)).ok())
     }
 }

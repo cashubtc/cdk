@@ -223,7 +223,10 @@ pub async fn post_melt_bolt11(
         }
     };
 
-    let inputs_amount_quote_unit = payload.proofs_amount();
+    let inputs_amount_quote_unit = payload.proofs_amount().map_err(|_| {
+        tracing::error!("Proof inputs in melt quote overflowed");
+        into_response(Error::AmountOverflow)
+    })?;
 
     let (preimage, amount_spent_quote_unit) = match mint_quote {
         Some(mint_quote) => {

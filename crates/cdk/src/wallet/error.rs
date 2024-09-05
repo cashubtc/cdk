@@ -39,6 +39,9 @@ pub enum Error {
     /// Unknown Key
     #[error("Unknown key")]
     UnknownKey,
+    /// Amount overflow
+    #[error("Amount Overflow")]
+    AmountOverflow,
     /// Spending Locktime not provided
     #[error("Spending condition locktime not provided")]
     LocktimeNotProvided,

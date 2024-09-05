@@ -74,7 +74,7 @@ impl Token {
     }
 
     /// Total value of [`Token`]
-    pub fn value(&self) -> Amount {
+    pub fn value(&self) -> Result<Amount, Error> {
         match self {
             Self::TokenV3(token) => token.value(),
             Self::TokenV4(token) => token.value(),
@@ -207,11 +207,13 @@ impl TokenV3 {
     }
 
     #[inline]
-    fn value(&self) -> Amount {
-        self.token
-            .iter()
-            .map(|t| t.proofs.iter().map(|p| p.amount).sum())
-            .sum()
+    fn value(&self) -> Result<Amount, Error> {
+        Ok(Amount::try_sum(
+            self.token
+                .iter()
+                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .collect::<Result<Vec<Amount>, _>>()?,
+        )?)
     }
 
     #[inline]
@@ -305,11 +307,13 @@ impl TokenV4 {
     }
 
     #[inline]
-    fn value(&self) -> Amount {
-        self.token
-            .iter()
-            .map(|t| t.proofs.iter().map(|p| p.amount).sum())
-            .sum()
+    fn value(&self) -> Result<Amount, Error> {
+        Ok(Amount::try_sum(
+            self.token
+                .iter()
+                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .collect::<Result<Vec<Amount>, _>>()?,
+        )?)
     }
 
     #[inline]
@@ -464,7 +468,7 @@ mod tests {
         let token_str_multi_keysets = "cashuBo2F0gqJhaUgA_9SLj17PgGFwgaNhYQFhc3hAYWNjMTI0MzVlN2I4NDg0YzNjZjE4NTAxNDkyMThhZjkwZjcxNmE1MmJmNGE1ZWQzNDdlNDhlY2MxM2Y3NzM4OGFjWCECRFODGd5IXVW-07KaZCvuWHk3WrnnpiDhHki6SCQh88-iYWlIAK0mjE0fWCZhcIKjYWECYXN4QDEzMjNkM2Q0NzA3YTU4YWQyZTIzYWRhNGU5ZjFmNDlmNWE1YjRhYzdiNzA4ZWIwZDYxZjczOGY0ODMwN2U4ZWVhY1ghAjRWqhENhLSsdHrr2Cw7AFrKUL9Ffr1XN6RBT6w659lNo2FhAWFzeEA1NmJjYmNiYjdjYzY0MDZiM2ZhNWQ1N2QyMTc0ZjRlZmY4YjQ0MDJiMTc2OTI2ZDNhNTdkM2MzZGNiYjU5ZDU3YWNYIQJzEpxXGeWZN5qXSmJjY8MzxWyvwObQGr5G1YCCgHicY2FtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1Y3NhdA==";
 
         let token = Token::from_str(token_str_multi_keysets).unwrap();
-        let amount = token.value();
+        let amount = token.value()?;
 
         assert_eq!(amount, Amount::from(4));
 

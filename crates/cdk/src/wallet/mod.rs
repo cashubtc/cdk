@@ -145,7 +145,7 @@ impl Wallet {
                 None,
             )
             .await?;
-        let balance = proofs.iter().map(|p| p.proof.amount).sum::<Amount>();
+        let balance = Amount::try_sum(proofs.iter().map(|p| p.proof.amount))?;
 
         Ok(balance)
     }
@@ -457,7 +457,7 @@ impl Wallet {
             .into_iter()
             .partition(|p| pending_states.contains(&p.y));
 
-        let amount = pending_proofs.iter().map(|p| p.proof.amount).sum();
+        let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
 
         self.localstore
             .update_proofs(
@@ -678,7 +678,7 @@ impl Wallet {
             &keys,
         )?;
 
-        let minted_amount = proofs.iter().map(|p| p.amount).sum();
+        let minted_amount = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
 
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
@@ -754,7 +754,7 @@ impl Wallet {
         let mut values = Vec::new();
 
         for amount in amounts_needed_refill {
-            let values_sum: Amount = values.clone().into_iter().sum();
+            let values_sum = Amount::try_sum(values.clone().into_iter())?;
             if values_sum + amount <= change_amount {
                 values.push(amount);
             }
@@ -776,7 +776,7 @@ impl Wallet {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         // Desired amount is either amount passed or value of all proof
-        let proofs_total: Amount = proofs.iter().map(|p| p.amount).sum();
+        let proofs_total = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
 
         let ys: Vec<PublicKey> = proofs.iter().map(|p| p.y()).collect::<Result<_, _>>()?;
         self.localstore.set_pending_proofs(ys).await?;
@@ -953,7 +953,7 @@ impl Wallet {
 
                         for proof in all_proofs {
                             let proofs_to_send_amount =
-                                proofs_to_send.iter().map(|p| p.amount).sum::<Amount>();
+                                Amount::try_sum(proofs_to_send.iter().map(|p| p.amount))?;
                             if proof.amount + proofs_to_send_amount <= amount + pre_swap.fee {
                                 proofs_to_send.push(proof);
                             } else {
@@ -965,7 +965,7 @@ impl Wallet {
                     }
                 };
 
-                let send_amount: Amount = proofs_to_send.iter().map(|p| p.amount).sum();
+                let send_amount = Amount::try_sum(proofs_to_send.iter().map(|p| p.amount))?;
 
                 if send_amount.ne(&(amount + pre_swap.fee)) {
                     tracing::warn!(
@@ -1158,7 +1158,7 @@ impl Wallet {
             // Handle exact matches offline
             (SendKind::OfflineExact, Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -1175,7 +1175,7 @@ impl Wallet {
             // Handle exact matches
             (SendKind::OnlineExact, Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -1196,7 +1196,7 @@ impl Wallet {
             // Handle offline tolerance
             (SendKind::OfflineTolerance(tolerance), Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -1222,7 +1222,7 @@ impl Wallet {
             // Handle online tolerance with successful selection
             (SendKind::OnlineTolerance(tolerance), Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
                     false => amount,
@@ -1435,7 +1435,7 @@ impl Wallet {
             Some(change_proofs) => {
                 tracing::debug!(
                     "Change amount returned from melt: {}",
-                    change_proofs.iter().map(|p| p.amount).sum::<Amount>()
+                    Amount::try_sum(change_proofs.iter().map(|p| p.amount))?
                 );
 
                 // Update counter for keyset
@@ -1532,7 +1532,7 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         // TODO: Check all proofs are same unit
 
-        if proofs.iter().map(|p| p.amount).sum::<Amount>() < amount {
+        if Amount::try_sum(proofs.iter().map(|p| p.amount))? < amount {
             return Err(Error::InsufficientFunds);
         }
 
@@ -1571,8 +1571,8 @@ impl Wallet {
                 break;
             }
 
-            remaining_amount =
-                amount + fees - selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+            remaining_amount = amount.checked_add(fees).ok_or(Error::AmountOverflow)?
+                - Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
             (proofs_larger, proofs_smaller) = proofs_smaller
                 .into_iter()
                 .skip(1)
@@ -1608,7 +1608,7 @@ impl Wallet {
 
         for inactive_proof in inactive_proofs {
             selected_proofs.push(inactive_proof);
-            let selected_total = selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
             let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {
@@ -1620,7 +1620,7 @@ impl Wallet {
 
         for active_proof in active_proofs {
             selected_proofs.push(active_proof);
-            let selected_total = selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
             let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {
@@ -1767,7 +1767,7 @@ impl Wallet {
 
         let mut total_amount = Amount::ZERO;
         for (mint, proofs) in received_proofs {
-            total_amount += proofs.iter().map(|p| p.amount).sum();
+            total_amount += Amount::try_sum(proofs.iter().map(|p| p.amount))?;
             let proofs = proofs
                 .into_iter()
                 .map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
@@ -1927,7 +1927,7 @@ impl Wallet {
                     .cloned()
                     .collect();
 
-                restored_value += unspent_proofs.iter().map(|p| p.amount).sum();
+                restored_value += Amount::try_sum(unspent_proofs.iter().map(|p| p.amount))?;
 
                 let unspent_proofs = unspent_proofs
                     .into_iter()

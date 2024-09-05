@@ -51,13 +51,13 @@ impl JsSwapRequest {
     /// Proofs Amount
     #[wasm_bindgen(js_name = proofsAmount)]
     pub fn proofs_amount(&self) -> JsAmount {
-        self.inner.input_amount().into()
+        self.inner.input_amount().expect("Amount overflow").into()
     }
 
     /// Output Amount
     #[wasm_bindgen(js_name = outputAmount)]
     pub fn output_amount(&self) -> JsAmount {
-        self.inner.output_amount().into()
+        self.inner.output_amount().expect("Amount overflow").into()
     }
 }
 
@@ -99,6 +99,9 @@ impl JsSwapResponse {
     /// Promises Amount
     #[wasm_bindgen(js_name = promisesAmount)]
     pub fn promises_amount(&self) -> JsAmount {
-        self.inner.promises_amount().into()
+        self.inner
+            .promises_amount()
+            .expect("Amount overflow")
+            .into()
     }
 }

@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::nut00::{BlindSignature, BlindedMessage, PreMintSecrets, Proofs};
-use crate::Amount;
+use crate::{error::Error, Amount};
 
 /// Preswap information
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -36,13 +36,13 @@ impl SwapRequest {
     }
 
     /// Total value of proofs in [`SwapRequest`]
-    pub fn input_amount(&self) -> Amount {
-        self.inputs.iter().map(|proof| proof.amount).sum()
+    pub fn input_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
     }
 
     /// Total value of outputs in [`SwapRequest`]
-    pub fn output_amount(&self) -> Amount {
-        self.outputs.iter().map(|proof| proof.amount).sum()
+    pub fn output_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(self.outputs.iter().map(|proof| proof.amount))
     }
 }
 
@@ -62,10 +62,11 @@ impl SwapResponse {
     }
 
     /// Total [`Amount`] of promises
-    pub fn promises_amount(&self) -> Amount {
-        self.signatures
-            .iter()
-            .map(|BlindSignature { amount, .. }| *amount)
-            .sum()
+    pub fn promises_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(
+            self.signatures
+                .iter()
+                .map(|BlindSignature { amount, .. }| *amount),
+        )
     }
 }

@@ -102,7 +102,7 @@ impl JsMintBolt11Request {
 
     #[wasm_bindgen(js_name = totalAmount)]
     pub fn total_amount(&self) -> JsAmount {
-        self.inner.total_amount().into()
+        self.inner.total_amount().expect("Amount overflow").into()
     }
 }
 

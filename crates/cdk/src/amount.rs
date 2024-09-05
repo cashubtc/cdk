@@ -54,7 +54,7 @@ impl Amount {
                             parts.extend(amount_left.split());
                         }
 
-                        parts_total = parts.clone().iter().copied().sum::<Amount>();
+                        parts_total = Amount::try_sum(parts.clone().iter().copied())?;
 
                         if parts_total.eq(self) {
                             break;
@@ -65,7 +65,7 @@ impl Amount {
                 parts
             }
             SplitTarget::Values(values) => {
-                let values_total: Amount = values.clone().into_iter().sum();
+                let values_total: Amount = Amount::try_sum(values.clone().into_iter())?;
 
                 match self.cmp(&values_total) {
                     Ordering::Equal => values.clone(),
@@ -190,15 +190,6 @@ impl std::ops::Div for Amount {
     }
 }
 
-impl core::iter::Sum for Amount {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Amount::ZERO, |acc, x| {
-            acc.checked_add(x)
-                .unwrap_or_else(|| panic!("Addition overflow"))
-        })
-    }
-}
-
 /// Kinds of targeting that are supported
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub enum SplitTarget {
@@ -314,7 +305,7 @@ mod tests {
 
         let amounts = vec![amount_one, amount_two];
 
-        let _total: Amount = amounts.into_iter().sum();
+        let _total: Amount = Amount::try_sum(amounts).unwrap();
     }
 
     #[test]
