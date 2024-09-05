@@ -48,6 +48,8 @@ const PRIVKEY_TAG: &str = "privkey";
 const COUNTER_TAG: &str = "counter";
 const DIRECTION_TAG: &str = "direction";
 const AMOUNT_TAG: &str = "amount";
+const PRICE_TAG: &str = "price";
+const PROOFS_TAG: &str = "proofs";
 
 macro_rules! filter_value {
     ($($value:expr),*) => {
@@ -819,6 +821,10 @@ pub struct Transaction {
     pub event_id: Option<EventId>,
     /// Relay URL
     pub relay: Option<Url>,
+    /// Price
+    pub price: Option<String>,
+    /// List of proofs IDs (Ys)
+    pub proofs: Vec<PublicKey>,
 }
 
 impl Transaction {
@@ -828,6 +834,8 @@ impl Transaction {
         let mut amount: Option<Amount> = None;
         let mut event_id: Option<EventId> = None;
         let mut relay: Option<Url> = None;
+        let mut price: Option<String> = None;
+        let mut proofs: Vec<PublicKey> = Vec::new();
 
         let content: Vec<Tag> = serde_json::from_str(&nip44::decrypt(
             keys.secret_key()?,
@@ -852,6 +860,21 @@ impl Transaction {
                             .parse::<u64>()?,
                     ));
                 }
+                PRICE_TAG => {
+                    price = Some(
+                        tag.content()
+                            .ok_or(Error::EmptyTag(PRICE_TAG.to_string()))?
+                            .to_string(),
+                    );
+                }
+                PROOFS_TAG => {
+                    proofs = tag
+                        .as_vec()
+                        .iter()
+                        .skip(1)
+                        .map(|y| PublicKey::from_str(y))
+                        .collect::<Result<Vec<PublicKey>, _>>()?;
+                }
                 t => {
                     if t == EVENT_TAG.to_string().as_str() {
                         let mut parts = tag.as_vec().into_iter();
@@ -874,6 +897,8 @@ impl Transaction {
             amount: amount.ok_or(Error::MissingTag(AMOUNT_TAG.to_string()))?,
             event_id,
             relay,
+            price,
+            proofs,
         })
     }
 
