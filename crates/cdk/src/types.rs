@@ -44,9 +44,7 @@ impl ProofInfo {
         state: State,
         unit: CurrencyUnit,
     ) -> Result<Self, Error> {
-        let y = proof
-            .y()
-            .map_err(|_| Error::CustomError("Could not find y".to_string()))?;
+        let y = proof.y()?;
 
         let spending_condition: Option<SpendingConditions> = (&proof.secret).try_into().ok();
 

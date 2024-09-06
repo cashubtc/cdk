@@ -26,9 +26,9 @@ pub enum Error {
     /// Invalid DLEQ Proof
     #[error("Invalid DLEQ proof")]
     InvalidDleqProof,
-    /// Cashu Error
+    /// DHKE error
     #[error(transparent)]
-    Cashu(#[from] crate::error::Error),
+    DHKE(#[from] crate::dhke::Error),
     /// NUT01 Error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),

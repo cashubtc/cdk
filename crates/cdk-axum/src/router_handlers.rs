@@ -59,13 +59,13 @@ pub async fn get_mint_bolt11_quote(
         .ok_or_else(|| {
             tracing::info!("Bolt11 mint request for unsupported unit");
 
-            into_response(Error::UnsupportedUnit)
+            into_response(Error::UnitUnsupported)
         })?;
 
     let amount =
         to_unit(payload.amount, &payload.unit, &ln.get_settings().unit).map_err(|err| {
             tracing::error!("Backed does not support unit: {}", err);
-            into_response(Error::UnsupportedUnit)
+            into_response(Error::UnitUnsupported)
         })?;
 
     let quote_expiry = unix_time() + state.quote_ttl;
@@ -139,7 +139,7 @@ pub async fn get_melt_bolt11_quote(
         .ok_or_else(|| {
             tracing::info!("Could not get ln backend for {}, bolt11 ", payload.unit);
 
-            into_response(Error::UnsupportedUnit)
+            into_response(Error::UnitUnsupported)
         })?;
 
     let payment_quote = ln.get_payment_quote(&payload).await.map_err(|err| {
@@ -149,7 +149,7 @@ pub async fn get_melt_bolt11_quote(
             err
         );
 
-        into_response(Error::UnsupportedUnit)
+        into_response(Error::UnitUnsupported)
     })?;
 
     let quote = state
@@ -199,7 +199,7 @@ pub async fn post_melt_bolt11(
             if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                 tracing::error!("Could not reset melt quote state: {}", err);
             }
-            return Err(into_response(Error::MeltRequestInvalid));
+            return Err(into_response(Error::UnitUnsupported));
         }
     };
 
@@ -219,7 +219,7 @@ pub async fn post_melt_bolt11(
             if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                 tracing::error!("Could not reset melt quote state: {}", err);
             }
-            return Err(into_response(Error::DatabaseError));
+            return Err(into_response(Error::Internal));
         }
     };
 
@@ -247,7 +247,7 @@ pub async fn post_melt_bolt11(
                 if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                     tracing::error!("Could not reset melt quote state: {}", err);
                 }
-                return Err(into_response(Error::InsufficientInputProofs));
+                return Err(into_response(Error::InsufficientFunds));
             }
 
             mint_quote.state = MintQuoteState::Paid;
@@ -258,7 +258,7 @@ pub async fn post_melt_bolt11(
                 if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                     tracing::error!("Could not reset melt quote state: {}", err);
                 }
-                return Err(into_response(Error::DatabaseError));
+                return Err(into_response(Error::Internal));
             }
 
             (None, amount)
@@ -305,7 +305,7 @@ pub async fn post_melt_bolt11(
 
                         Some(
                             to_unit(partial_msats, &CurrencyUnit::Msat, &quote.unit)
-                                .map_err(|_| into_response(Error::UnsupportedUnit))?,
+                                .map_err(|_| into_response(Error::UnitUnsupported))?,
                         )
                     }
                     false => None,
@@ -314,7 +314,7 @@ pub async fn post_melt_bolt11(
                 let amount_to_pay = match partial_amount {
                     Some(amount_to_pay) => amount_to_pay,
                     None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &quote.unit)
-                        .map_err(|_| into_response(Error::UnsupportedUnit))?,
+                        .map_err(|_| into_response(Error::UnitUnsupported))?,
                 };
 
                 if amount_to_pay + quote.fee_reserve > inputs_amount_quote_unit {
@@ -327,7 +327,11 @@ pub async fn post_melt_bolt11(
                     if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
-                    return Err(into_response(Error::InsufficientInputProofs));
+                    return Err(into_response(Error::InsufficientInputs(
+                        inputs_amount_quote_unit.into(),
+                        amount_to_pay.into(),
+                        quote.fee_reserve.into(),
+                    )));
                 }
             }
 
@@ -339,7 +343,7 @@ pub async fn post_melt_bolt11(
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
 
-                    return Err(into_response(Error::UnsupportedUnit));
+                    return Err(into_response(Error::UnitUnsupported));
                 }
             };
 
@@ -364,7 +368,7 @@ pub async fn post_melt_bolt11(
             };
 
             let amount_spent = to_unit(pre.total_spent, &ln.get_settings().unit, &quote.unit)
-                .map_err(|_| into_response(Error::UnsupportedUnit))?;
+                .map_err(|_| into_response(Error::UnitUnsupported))?;
 
             (pre.payment_preimage, amount_spent)
         }

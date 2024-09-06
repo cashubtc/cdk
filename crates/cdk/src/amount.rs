@@ -6,8 +6,18 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::error::Error;
+/// Amount Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Split Values must be less then or equal to amount
+    #[error("Split Values must be less then or equal to amount")]
+    SplitValuesGreater,
+    /// Amount overflow
+    #[error("Amount Overflow")]
+    AmountOverflow,
+}
 
 /// Amount can be any unit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

@@ -40,12 +40,15 @@ pub enum Error {
     /// CDK Error
     #[error(transparent)]
     CDK(#[from] cdk::error::Error),
-    /// NUT02 Error
-    #[error(transparent)]
-    CDKNUT02(#[from] cdk::nuts::nut02::Error),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk::nuts::nut00::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    CDKNUT02(#[from] cdk::nuts::nut02::Error),
+    /// DHKE Error
+    #[error(transparent)]
+    DHKE(#[from] cdk::dhke::Error),
     /// Unknown Mint Info
     #[error("Unknown mint info")]
     UnknownMintInfo,

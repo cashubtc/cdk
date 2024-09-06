@@ -7,8 +7,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{
     Parity, PublicKey as NormalizedPublicKey, Scalar, Secp256k1, XOnlyPublicKey,
 };
+use thiserror::Error;
 
-use crate::error::Error;
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::nuts::nut12::ProofDleq;
 use crate::nuts::{BlindSignature, Keys, Proof, Proofs};
@@ -17,6 +17,24 @@ use crate::util::hex;
 use crate::SECP256K1;
 
 const DOMAIN_SEPARATOR: &[u8; 28] = b"Secp256k1_HashToCurve_Cashu_";
+
+/// NUT00 Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Token could not be validated
+    #[error("Token not verified")]
+    TokenNotVerified,
+    /// No valid point on curve
+    #[error("No valid point found")]
+    NoValidPoint,
+    /// Secp256k1 error
+    #[error(transparent)]
+    Secp256k1(#[from] bitcoin::secp256k1::Error),
+    // TODO: Remove use anyhow
+    /// Custom Error
+    #[error("`{0}`")]
+    Custom(String),
+}
 
 /// Deterministically maps a message to a public key point on the secp256k1
 /// curve, utilizing a domain separator to ensure uniqueness.
@@ -103,7 +121,7 @@ pub fn construct_proofs(
     keys: &Keys,
 ) -> Result<Proofs, Error> {
     if (promises.len() != rs.len()) || (promises.len() != secrets.len()) {
-        return Err(Error::CustomError(
+        return Err(Error::Custom(
             "Lengths of promises, rs, and secrets must be equal".to_string(),
         ));
     }
@@ -112,7 +130,7 @@ pub fn construct_proofs(
         let blinded_c: PublicKey = blinded_signature.c;
         let a: PublicKey = keys
             .amount_key(blinded_signature.amount)
-            .ok_or(Error::CustomError("Could not get proofs".to_string()))?;
+            .ok_or(Error::Custom("Could not get proofs".to_string()))?;
 
         let unblinded_signature: PublicKey = unblind_message(&blinded_c, &r, &a)?;
 

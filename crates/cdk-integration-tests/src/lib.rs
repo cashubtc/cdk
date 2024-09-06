@@ -79,7 +79,7 @@ pub async fn start_mint(
     )
     .await?;
 
-    let quote_ttl = 2000;
+    let quote_ttl = 100000;
 
     let mint_arc = Arc::new(mint);
 

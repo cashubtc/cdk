@@ -23,6 +23,8 @@ pub mod wallet;
 #[doc(hidden)]
 pub use bitcoin::secp256k1;
 #[doc(hidden)]
+pub use error::Error;
+#[doc(hidden)]
 pub use lightning_invoice::{self, Bolt11Invoice};
 #[cfg(feature = "mint")]
 #[doc(hidden)]

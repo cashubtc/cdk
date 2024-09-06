@@ -3,6 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/13.md>
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
+use thiserror::Error;
 use tracing::instrument;
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
@@ -10,10 +11,29 @@ use super::nut01::SecretKey;
 use super::nut02::Id;
 use crate::amount::SplitTarget;
 use crate::dhke::blind_message;
-use crate::error::Error;
 use crate::secret::Secret;
 use crate::util::hex;
 use crate::{Amount, SECP256K1};
+
+/// NUT13 Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// DHKE error
+    #[error(transparent)]
+    DHKE(#[from] crate::dhke::Error),
+    /// Amount Error
+    #[error(transparent)]
+    Amount(#[from] crate::amount::Error),
+    /// NUT00 Error
+    #[error(transparent)]
+    NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    NUT02(#[from] crate::nuts::nut02::Error),
+    /// Bip32 Error
+    #[error(transparent)]
+    Bip32(#[from] bitcoin::bip32::Error),
+}
 
 impl Secret {
     /// Create new [`Secret`] from xpriv
