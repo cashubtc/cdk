@@ -25,12 +25,14 @@ use cdk::{
 use itertools::Itertools;
 use nostr_database::{DatabaseError, MemoryDatabase, MemoryDatabaseOptions, NostrDatabase};
 use nostr_sdk::{
-    client, nips::nip44, Client, Event, EventBuilder, EventId, EventSource, Filter, Kind,
-    SingleLetterTag, Tag, TagKind, Timestamp,
+    client, nips::nip44, Client, Event, EventBuilder, EventSource, Filter, Kind, SingleLetterTag,
+    Tag, TagKind, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
 use url::Url;
+
+pub use nostr_sdk::EventId;
 
 const PROOFS_KIND: Kind = Kind::Custom(7375);
 const TX_HISTORY_KIND: Kind = Kind::Custom(7376);
@@ -155,6 +157,26 @@ impl WalletNostrDatabase {
     /// Get the latest [`WalletInfo`]
     pub async fn get_info(&self) -> WalletInfo {
         self.info.lock().await.1.clone()
+    }
+
+    /// Get a transaction by its [`EventId`]
+    #[tracing::instrument(skip(self))]
+    pub async fn get_transaction(&self, event_id: EventId) -> Result<TransactionEvent, Error> {
+        let filters = vec![Filter {
+            authors: filter_value!(self.keys.public_key()),
+            kinds: filter_value!(TX_HISTORY_KIND),
+            ids: filter_value!(event_id),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
+            ),
+            ..Default::default()
+        }];
+        let events = self.get_events(filters, false).await?;
+        if let Some(event) = events.first() {
+            Ok(TransactionEvent::from_event(&event, &self.keys)?)
+        } else {
+            Err(Error::EventNotFound(event_id))
+        }
     }
 
     /// Get [`TransactionEvent`]s
@@ -761,7 +783,7 @@ impl WalletInfo {
 }
 
 /// Proofs event
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProofsEvent {
     /// Mint url
     pub url: MintUrl,
@@ -806,7 +828,7 @@ impl ProofsEvent {
 }
 
 /// Tx history
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Transaction {
     /// Direction (in for received, out for sent)
     pub direction: Direction,
@@ -983,6 +1005,7 @@ impl FromStr for Direction {
 }
 
 /// Transaction event
+#[derive(Clone, Debug)]
 pub struct TransactionEvent {
     /// Event ID
     pub event_id: EventId,
@@ -1032,6 +1055,9 @@ pub enum Error {
     /// Event id error
     #[error(transparent)]
     EventId(#[from] nostr_sdk::event::id::Error),
+    /// Event not found error
+    #[error("Event not found: {0}")]
+    EventNotFound(EventId),
     /// Json error
     #[error(transparent)]
     Json(#[from] serde_json::Error),
