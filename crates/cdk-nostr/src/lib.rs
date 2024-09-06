@@ -154,6 +154,28 @@ impl WalletNostrDatabase {
         Ok(())
     }
 
+    /// Delete a [`TransactionEvent`] by its [`EventId`].
+    ///
+    /// *Important*: This will remove the transaction from the wallet's history, but will *not* affect the proofs or balance!
+    pub async fn delete_transaction(&self, event_id: EventId) -> Result<(), Error> {
+        let filters = vec![Filter {
+            authors: filter_value!(self.keys.public_key()),
+            kinds: filter_value!(TX_HISTORY_KIND),
+            ids: filter_value!(event_id),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
+            ),
+            ..Default::default()
+        }];
+        let events = self.get_events(filters, false).await?;
+        if let Some(event) = events.first() {
+            self.client.delete_event(event.id()).await?;
+            Ok(())
+        } else {
+            Err(Error::EventNotFound(event_id))
+        }
+    }
+
     /// Get the latest [`WalletInfo`]
     pub async fn get_info(&self) -> WalletInfo {
         self.info.lock().await.1.clone()
