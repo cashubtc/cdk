@@ -8,8 +8,8 @@ use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::error::Error;
 use cdk::wallet::SendKind;
+use cdk::Error;
 use cdk::Wallet;
 use cdk_integration_tests::{create_backends_fake_wallet, start_mint, wallet_mint, MINT_URL};
 
@@ -35,7 +35,8 @@ pub async fn test_mint_double_receive() -> Result<()> {
 
     let wallet = Arc::new(wallet);
 
-    wallet_mint(Arc::clone(&wallet), 100.into()).await?;
+    wallet_mint(Arc::clone(&wallet), 100.into()).await.unwrap();
+    println!("Minted");
 
     let token = wallet
         .send(
@@ -72,6 +73,7 @@ pub async fn test_mint_double_receive() -> Result<()> {
         match err {
             Error::TokenAlreadySpent => (),
             _ => {
+                println!("{}", err);
                 bail!("Expected an already spent error");
             }
         }

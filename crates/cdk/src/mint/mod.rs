@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use bitcoin::secp256k1::{self, Secp256k1};
-use error::Error;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::instrument;
@@ -15,13 +14,13 @@ use self::nut05::QuoteState;
 use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
+use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
 use crate::util::unix_time;
 use crate::Amount;
 
-pub mod error;
 pub mod types;
 
 pub use types::{MeltQuote, MintQuote};
@@ -212,18 +211,26 @@ impl Mint {
                     .max_amount
                     .map_or(false, |max_amount| amount > max_amount)
                 {
-                    return Err(Error::MintOverLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
 
                 if settings
                     .min_amount
                     .map_or(false, |min_amount| amount < min_amount)
                 {
-                    return Err(Error::MintUnderLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
             }
             None => {
-                return Err(Error::UnsupportedUnit);
+                return Err(Error::UnitUnsupported);
             }
         }
 
@@ -359,18 +366,26 @@ impl Mint {
                     .max_amount
                     .map_or(false, |max_amount| amount > max_amount)
                 {
-                    return Err(Error::MeltOverLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
 
                 if settings
                     .min_amount
                     .map_or(false, |min_amount| amount < min_amount)
                 {
-                    return Err(Error::MeltUnderLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
             }
             None => {
-                return Err(Error::UnsupportedUnit);
+                return Err(Error::UnitUnsupported);
             }
         }
 
@@ -555,6 +570,18 @@ impl Mint {
         &self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
+        // Check quote is known and not expired
+        match self.localstore.get_mint_quote(&mint_request.quote).await? {
+            Some(quote) => {
+                if quote.expiry < unix_time() {
+                    return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
+                }
+            }
+            None => {
+                return Err(Error::UnknownQuote);
+            }
+        }
+
         let state = self
             .localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)

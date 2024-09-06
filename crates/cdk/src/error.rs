@@ -1,13 +1,14 @@
 //! Errors
 
 use std::fmt;
-use std::string::FromUtf8Error;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::util::hex;
+#[cfg(feature = "wallet")]
+use crate::wallet::multi_mint_wallet::WalletKey;
+use crate::{util::hex, Amount};
 
 /// CDK Error
 #[derive(Debug, Error)]
@@ -15,57 +16,146 @@ pub enum Error {
     /// Mint does not have a key for amount
     #[error("No Key for Amount")]
     AmountKey,
-    /// Not enough input proofs provided
-    #[error("Not enough input proofs spent")]
-    InsufficientInputProofs,
-    /// Database update failed
-    #[error("Database error")]
-    DatabaseError,
-    /// Unsupported unit
-    #[error("Unit unsupported")]
-    UnsupportedUnit,
     /// Payment failed
     #[error("Payment failed")]
     PaymentFailed,
-    /// Melt Request is not valid
-    #[error("Melt request is not valid")]
-    MeltRequestInvalid,
     /// Invoice already paid
     #[error("Request already paid")]
     RequestAlreadyPaid,
-    /// Amount is not what expected
-    #[error("Amount miss match")]
-    Amount,
-    /// Token is already spent
-    #[error("Token already spent")]
-    TokenSpent,
-    /// Token could not be validated
-    #[error("Token not verified")]
-    TokenNotVerified,
     /// Invalid payment request
     #[error("Invalid payment request")]
     InvalidPaymentRequest,
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
-    /// Proof is missing a required field
-    #[error("Proof missing required field")]
-    MissingProofField,
-    /// No valid point on curve
-    #[error("No valid point found")]
-    NoValidPoint,
     /// Split Values must be less then or equal to amount
     #[error("Split Values must be less then or equal to amount")]
     SplitValuesGreater,
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
-    /// Secp256k1 error
+
+    // Mint Errors
+    /// Minting is disabled
+    #[error("Minting is disabled")]
+    MintingDisabled,
+    /// Quote is not known
+    #[error("Unknown quote")]
+    UnknownQuote,
+    /// Quote is expired
+    #[error("Expired quote: Expired: `{0}`, Time: `{1}`")]
+    ExpiredQuote(u64, u64),
+    /// Amount is outside of allowed range
+    #[error("Amount but be between `{0}` and `{1}` is `{2}`")]
+    AmountOutofLimitRange(Amount, Amount, Amount),
+    /// Quote is not paiud
+    #[error("Quote not paid")]
+    UnpaidQuote,
+    /// Quote is pending
+    #[error("Quote pending")]
+    PendingQuote,
+    /// ecash already issued for quote
+    #[error("Quote already issued")]
+    IssuedQuote,
+    /// Quote has already been paid
+    #[error("Quote is already paid")]
+    PaidQuote,
+    /// Melting is disabled
+    #[error("Minting is disabled")]
+    MeltingDisabled,
+    /// Unknown Keyset
+    #[error("Unknown Keyset")]
+    UnknownKeySet,
+    /// BlindedMessage is already signed
+    #[error("Blinded Message is already signed")]
+    BlindedMessageAlreadySigned,
+    /// Inactive Keyset
+    #[error("Inactive Keyset")]
+    InactiveKeyset,
+    /// Not engough inputs provided
+    #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
+    InsufficientInputs(u64, u64, u64),
+    /// Transaction unbalanced
+    #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
+    TransactionUnbalanced(u64, u64, u64),
+    /// Duplicate proofs provided
+    #[error("Duplicate proofs")]
+    DuplicateProofs,
+    /// Multiple units provided
+    #[error("Cannot have multiple units")]
+    MultipleUnits,
+    /// Sig all cannot be used in melt
+    #[error("Sig all cannot be used in melt")]
+    SigAllUsedInMelt,
+    /// Token is already spent
+    #[error("Token Already Spent")]
+    TokenAlreadySpent,
+    /// Token is already pending
+    #[error("Token Pending")]
+    TokenPending,
+    /// Internal Error
+    #[error("Internal Error")]
+    Internal,
+
+    // Wallet Errors
+    /// P2PK spending conditions not met
+    #[error("P2PK condition not met `{0}`")]
+    P2PKConditionsNotMet(String),
+    /// Spending Locktime not provided
+    #[error("Spending condition locktime not provided")]
+    LocktimeNotProvided,
+    /// Invalid Spending Conditions
+    #[error("Invalid spending conditions: `{0}`")]
+    InvalidSpendConditions(String),
+    /// Incorrect Wallet
+    #[error("Incorrect wallet: `{0}`")]
+    IncorrectWallet(String),
+    /// Unknown Wallet
+    #[cfg(feature = "wallet")]
+    #[error("Unknown wallet: `{0}`")]
+    UnknownWallet(WalletKey),
+    /// Max Fee Ecxeded
+    #[error("Max fee exceeded")]
+    MaxFeeExceeded,
+    /// Url path segments could not be joined
+    #[error("Url path segments could not be joined")]
+    UrlPathSegments,
+    ///  Unknown error response
+    #[error("Unknown error response: `{0}`")]
+    UnknownErrorResponse(String),
+    /// Invalid DLEQ proof
+    #[error("Could not verify DLEQ proof")]
+    CouldNotVerifyDleq,
+    /// Incorrect Mint
+    /// Token does not match wallet mint
+    #[error("Token does not match wallet mint")]
+    IncorrectMint,
+    /// Receive can only be used with tokens from single mint
+    #[error("Multiple mint tokens not supported by receive. Please deconstruct the token and use receive with_proof")]
+    MultiMintTokenNotSupported,
+    /// Unit Not supported
+    #[error("Unit not supported for method")]
+    UnitUnsupported,
+    /// Preimage not provided
+    #[error("Preimage not provided")]
+    PreimageNotProvided,
+    /// Insufficient Funds
+    #[error("Insufficient funds")]
+    InsufficientFunds,
+    /// No active keyset
+    #[error("No active keyset")]
+    NoActiveKeyset,
+    /// Incorrect quote amount
+    #[error("Incorrect quote amount")]
+    IncorrectQuoteAmount,
+    /// Custom Error
+    #[error("`{0}`")]
+    Custom(String),
+
+    // External Error conversions
+    /// Parse invoice error
     #[error(transparent)]
-    Secp256k1(#[from] bitcoin::secp256k1::Error),
-    /// Secret error
-    #[error(transparent)]
-    Secret(#[from] super::secret::Error),
+    Invoice(#[from] lightning_invoice::ParseOrSemanticError),
     /// Bip32 error
     #[error(transparent)]
     Bip32(#[from] bitcoin::bip32::Error),
@@ -77,7 +167,7 @@ pub enum Error {
     UrlParseError(#[from] url::ParseError),
     /// Utf8 parse error
     #[error(transparent)]
-    Utf8ParseError(#[from] FromUtf8Error),
+    Utf8ParseError(#[from] std::string::FromUtf8Error),
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -91,18 +181,51 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
+
+    // Crate error conversions
+    /// Cashu Url Error
+    #[error(transparent)]
+    CashuUrl(#[from] crate::mint_url::Error),
+    /// Secret error
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
+    /// Amount Error
+    #[error(transparent)]
+    AmountError(#[from] crate::amount::Error),
+    /// DHKE Error
+    #[error(transparent)]
+    DHKE(#[from] crate::dhke::Error),
+    /// NUT00 Error
+    #[error(transparent)]
+    NUT00(#[from] crate::nuts::nut00::Error),
     /// Nut01 error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
     /// NUT02 error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
+    /// NUT03 error
+    #[error(transparent)]
+    NUT03(#[from] crate::nuts::nut03::Error),
+    /// NUT05 error
+    #[error(transparent)]
+    NUT05(#[from] crate::nuts::nut05::Error),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
-    /// Custom error
-    #[error("`{0}`")]
-    CustomError(String),
+    /// NUT12 Error
+    #[error(transparent)]
+    NUT12(#[from] crate::nuts::nut12::Error),
+    /// NUT13 Error
+    #[error(transparent)]
+    NUT13(#[from] crate::nuts::nut13::Error),
+    /// NUT14 Error
+    #[error(transparent)]
+    NUT14(#[from] crate::nuts::nut14::Error),
+    /// Database Error
+    #[cfg(any(feature = "wallet", feature = "mint"))]
+    #[error(transparent)]
+    Database(#[from] crate::cdk_database::Error),
 }
 
 /// CDK Error Response
@@ -163,17 +286,7 @@ impl ErrorResponse {
 impl From<Error> for ErrorResponse {
     fn from(err: Error) -> ErrorResponse {
         match err {
-            Error::TokenSpent => ErrorResponse {
-                code: ErrorCode::TokenAlreadySpent,
-                error: Some(err.to_string()),
-                detail: None,
-            },
-            Error::InsufficientInputProofs => ErrorResponse {
-                code: ErrorCode::InsufficientFee,
-                error: Some(err.to_string()),
-                detail: None,
-            },
-            Error::UnsupportedUnit => ErrorResponse {
+            Error::UnitUnsupported => ErrorResponse {
                 code: ErrorCode::UnitUnsupported,
                 error: Some(err.to_string()),
                 detail: None,
@@ -188,11 +301,80 @@ impl From<Error> for ErrorResponse {
                 error: Some("Invoice already paid.".to_string()),
                 detail: None,
             },
+            Error::TokenAlreadySpent => ErrorResponse {
+                code: ErrorCode::TokenAlreadySpent,
+                error: Some("Token is already spent.".to_string()),
+                detail: None,
+            },
+            Error::TransactionUnbalanced(inputs_total, outputs_total, fee_expected) => {
+                ErrorResponse {
+                    code: ErrorCode::TransactionUnbalanced,
+                    error: Some(format!(
+                        "Inputs: {}, Outputs: {}, expected_fee: {}",
+                        inputs_total, outputs_total, fee_expected,
+                    )),
+                    detail: Some("Transaction inputs should equal outputs less fee".to_string()),
+                }
+            }
+            Error::MintingDisabled => ErrorResponse {
+                code: ErrorCode::MintingDisabled,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::BlindedMessageAlreadySigned => ErrorResponse {
+                code: ErrorCode::BlindedMessageAlreadySigned,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::InsufficientFunds => ErrorResponse {
+                code: ErrorCode::TransactionUnbalanced,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::AmountOutofLimitRange(_min, _max, _amount) => ErrorResponse {
+                code: ErrorCode::AmountOutofLimitRange,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::ExpiredQuote(_, _) => ErrorResponse {
+                code: ErrorCode::QuoteExpired,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::PendingQuote => ErrorResponse {
+                code: ErrorCode::QuotePending,
+                error: Some(err.to_string()),
+                detail: None,
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),
                 detail: None,
             },
+        }
+    }
+}
+
+impl From<ErrorResponse> for Error {
+    fn from(err: ErrorResponse) -> Error {
+        match err.code {
+            ErrorCode::TokenAlreadySpent => Self::TokenAlreadySpent,
+            ErrorCode::QuoteNotPaid => Self::UnpaidQuote,
+            ErrorCode::QuotePending => Self::PendingQuote,
+            ErrorCode::QuoteExpired => Self::ExpiredQuote(0, 0),
+            ErrorCode::KeysetNotFound => Self::UnknownKeySet,
+            ErrorCode::KeysetInactive => Self::InactiveKeyset,
+            ErrorCode::BlindedMessageAlreadySigned => Self::BlindedMessageAlreadySigned,
+            ErrorCode::UnitUnsupported => Self::UnitUnsupported,
+            ErrorCode::TransactionUnbalanced => Self::TransactionUnbalanced(0, 0, 0),
+            ErrorCode::MintingDisabled => Self::MintingDisabled,
+            ErrorCode::InvoiceAlreadyPaid => Self::RequestAlreadyPaid,
+            ErrorCode::TokenNotVerified => Self::DHKE(crate::dhke::Error::TokenNotVerified),
+            ErrorCode::LightningError => Self::PaymentFailed,
+            ErrorCode::AmountOutofLimitRange => {
+                Self::AmountOutofLimitRange(Amount::default(), Amount::default(), Amount::default())
+            }
+            _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
 }
@@ -204,14 +386,14 @@ pub enum ErrorCode {
     TokenAlreadySpent,
     /// Quote is not paid
     QuoteNotPaid,
+    /// Quote is not expired
+    QuoteExpired,
+    /// Quote Pending
+    QuotePending,
     /// Keyset is not found
     KeysetNotFound,
     /// Keyset inactive
     KeysetInactive,
-    /// Fee Overpaid
-    FeeOverPaid,
-    /// Insufficient Fee
-    InsufficientFee,
     /// Blinded Message Already signed
     BlindedMessageAlreadySigned,
     /// Unsupported unit
@@ -220,8 +402,6 @@ pub enum ErrorCode {
     TokensAlreadyIssued,
     /// Minting Disabled
     MintingDisabled,
-    /// Quote Pending
-    QuotePending,
     /// Invoice Already Paid
     InvoiceAlreadyPaid,
     /// Token Not Verified
@@ -230,6 +410,8 @@ pub enum ErrorCode {
     LightningError,
     /// Unbalanced Error
     TransactionUnbalanced,
+    /// Amount outside of allowed range
+    AmountOutofLimitRange,
     /// Unknown error code
     Unknown(u16),
 }
@@ -243,8 +425,7 @@ impl ErrorCode {
             11001 => Self::TokenAlreadySpent,
             11002 => Self::TransactionUnbalanced,
             11005 => Self::UnitUnsupported,
-            11006 => Self::InsufficientFee,
-            11007 => Self::FeeOverPaid,
+            11006 => Self::AmountOutofLimitRange,
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
             20000 => Self::LightningError,
@@ -253,6 +434,7 @@ impl ErrorCode {
             20003 => Self::MintingDisabled,
             20005 => Self::QuotePending,
             20006 => Self::InvoiceAlreadyPaid,
+            20007 => Self::QuoteExpired,
             _ => Self::Unknown(code),
         }
     }
@@ -265,8 +447,7 @@ impl ErrorCode {
             Self::TokenAlreadySpent => 11001,
             Self::TransactionUnbalanced => 11002,
             Self::UnitUnsupported => 11005,
-            Self::InsufficientFee => 11006,
-            Self::FeeOverPaid => 11007,
+            Self::AmountOutofLimitRange => 11006,
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
             Self::LightningError => 20000,
@@ -275,6 +456,7 @@ impl ErrorCode {
             Self::MintingDisabled => 20003,
             Self::QuotePending => 20005,
             Self::InvoiceAlreadyPaid => 20006,
+            Self::QuoteExpired => 20007,
             Self::Unknown(code) => *code,
         }
     }

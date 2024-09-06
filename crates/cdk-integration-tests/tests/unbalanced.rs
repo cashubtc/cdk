@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::nuts::{PreMintSecrets, SwapRequest};
+use cdk::Error;
 use cdk::HttpClient;
 use cdk_integration_tests::{create_backends_fake_wallet, mint_proofs, start_mint, MINT_URL};
 
@@ -40,7 +41,7 @@ pub async fn test_unbalanced_swap() -> Result<()> {
         // In the context of this test an error response here is good.
         // It means the mint does not allow us to swap for more then we should by overflowing
         Err(err) => match err {
-            cdk::wallet::error::Error::TransactionUnbalanced => {
+            Error::TransactionUnbalanced(_, _, _) => {
                 return Ok(());
             }
             _ => {

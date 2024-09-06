@@ -7,7 +7,7 @@ alias t := test
 default:
   @just --list
 
-final-check: format clippy test
+final-check: typos format clippy test
 
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
@@ -53,6 +53,9 @@ clippy *ARGS="--locked --offline --workspace --all-targets":
 # run `cargo clippy --fix` on everything
 clippy-fix *ARGS="--locked --offline --workspace --all-targets":
   cargo clippy {{ARGS}} --fix
+
+typos: 
+  typos
 
 # fix all typos
 [no-exit-message]

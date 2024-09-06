@@ -9,12 +9,12 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::key::XOnlyPublicKey;
 use bitcoin::Network;
-use error::Error;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::{
@@ -28,7 +28,6 @@ use crate::util::{hex, unix_time};
 use crate::{Amount, Bolt11Invoice, HttpClient, SECP256K1};
 
 pub mod client;
-pub mod error;
 pub mod multi_mint_wallet;
 pub mod types;
 pub mod util;
@@ -108,7 +107,7 @@ impl Wallet {
                 .localstore
                 .get_keyset_by_id(&proof.keyset_id)
                 .await?
-                .ok_or(Error::UnknownKey)?;
+                .ok_or(Error::UnknownKeySet)?;
 
             sum_fee += input_fee_ppk.input_fee_ppk;
         }
@@ -125,7 +124,7 @@ impl Wallet {
             .localstore
             .get_keyset_by_id(keyset_id)
             .await?
-            .ok_or(Error::UnknownKey)?
+            .ok_or(Error::UnknownKeySet)?
             .input_fee_ppk;
 
         let fee = (input_fee_ppk * count + 999) / 1000;
@@ -615,12 +614,12 @@ impl Wallet {
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
-                return Err(Error::QuoteExpired);
+                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
             }
 
             quote.clone()
         } else {
-            return Err(Error::QuoteUnknown);
+            return Err(Error::UnknownQuote);
         };
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
@@ -663,7 +662,7 @@ impl Wallet {
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.get_keyset_keys(sig.keyset_id).await?;
-                let key = keys.amount_key(sig.amount).ok_or(Error::UnknownKey)?;
+                let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
@@ -1292,7 +1291,7 @@ impl Wallet {
         let amount = match self.unit {
             CurrencyUnit::Sat => Amount::from(request_amount / 1000),
             CurrencyUnit::Msat => Amount::from(request_amount),
-            _ => return Err(Error::UnitNotSupported),
+            _ => return Err(Error::UnitUnsupported),
         };
 
         let quote_res = self
@@ -1352,12 +1351,12 @@ impl Wallet {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
-                return Err(Error::QuoteExpired);
+                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
             }
 
             quote.clone()
         } else {
-            return Err(Error::QuoteUnknown);
+            return Err(Error::UnknownQuote);
         };
 
         let ys = proofs
@@ -1503,12 +1502,12 @@ impl Wallet {
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
-                return Err(Error::QuoteExpired);
+                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
             }
 
             quote.clone()
         } else {
-            return Err(Error::QuoteUnknown);
+            return Err(Error::UnknownQuote);
         };
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
@@ -1684,7 +1683,7 @@ impl Wallet {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
                 let keys = self.get_keyset_keys(proof.keyset_id).await?;
-                let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
+                let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
                 proof.verify_dleq(key)?;
             }
 
@@ -1815,7 +1814,7 @@ impl Wallet {
         let unit = token_data.unit().unwrap_or_default();
 
         if unit != self.unit {
-            return Err(Error::UnitNotSupported);
+            return Err(Error::UnitUnsupported);
         }
 
         let proofs = token_data.proofs();
@@ -2108,7 +2107,7 @@ impl Wallet {
                         key
                     }
                 }
-                .ok_or(Error::UnknownKey)?;
+                .ok_or(Error::AmountKey)?;
 
                 proof
                     .verify_dleq(mint_pubkey)
