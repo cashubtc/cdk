@@ -91,6 +91,9 @@ pub enum Error {
     /// Max Fee Ecxeded
     #[error("Max fee exceeded")]
     MaxFeeExceeded,
+    /// Transaction unbalanced
+    #[error("Transaction is unbalanced")]
+    TransactionUnbalanced,
     /// CDK Error
     #[error(transparent)]
     Cashu(#[from] crate::error::Error),
@@ -138,6 +141,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::QuoteNotPaid => Self::QuoteNotePaid,
             ErrorCode::TokenAlreadySpent => Self::TokenAlreadySpent,
             ErrorCode::KeysetNotFound => Self::KeysetNotFound,
+            ErrorCode::TransactionUnbalanced => Self::TransactionUnbalanced,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
