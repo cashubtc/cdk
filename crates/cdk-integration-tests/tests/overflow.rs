@@ -3,56 +3,35 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::dhke::construct_proofs;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, PreMintSecrets, SwapRequest};
+use cdk::nuts::{PreMintSecrets, SwapRequest};
 use cdk::Amount;
 use cdk::HttpClient;
-use cdk_integration_tests::{create_backends_fake_wallet, start_mint, MINT_URL};
-use tokio::time::sleep;
+use cdk_integration_tests::{create_backends_fake_wallet, mint_proofs, start_mint, MINT_URL};
 
 /// This attempts to swap for more outputs then inputs.
 /// This will work if the mint does not check for outputs amounts overflowing
 async fn attempt_to_swap_by_overflowing() -> Result<()> {
     let wallet_client = HttpClient::new();
-
     let mint_keys = wallet_client.get_mint_keys(MINT_URL.parse()?).await?;
 
     let mint_keys = mint_keys.first().unwrap();
 
     let keyset_id = mint_keys.id;
 
-    let mint_quote = wallet_client
-        .post_mint_quote(MINT_URL.parse()?, 100.into(), CurrencyUnit::Sat)
-        .await?;
+    let pre_swap_proofs = mint_proofs(MINT_URL, 1.into(), keyset_id, mint_keys).await?;
 
-    loop {
-        let status = wallet_client
-            .get_mint_quote_status(MINT_URL.parse()?, &mint_quote.quote)
-            .await?;
+    println!(
+        "Pre swap amount: {:?}",
+        Amount::try_sum(pre_swap_proofs.iter().map(|p| p.amount))?
+    );
 
-        if status.state == MintQuoteState::Paid {
-            break;
-        }
-        println!("{:?}", status);
-
-        sleep(Duration::from_secs(2)).await;
-    }
-
-    let premint_secrets = PreMintSecrets::random(keyset_id, 1.into(), &SplitTarget::default())?;
-
-    let mint_response = wallet_client
-        .post_mint(
-            MINT_URL.parse()?,
-            &mint_quote.quote,
-            premint_secrets.clone(),
-        )
-        .await?;
-
-    let pre_swap_proofs = construct_proofs(
-        mint_response.signatures,
-        premint_secrets.rs(),
-        premint_secrets.secrets(),
-        &mint_keys.clone().keys,
-    )?;
+    println!(
+        "Pre swap amounts: {:?}",
+        pre_swap_proofs
+            .iter()
+            .map(|p| p.amount)
+            .collect::<Vec<Amount>>()
+    );
 
     // Construct messages that will overflow
 

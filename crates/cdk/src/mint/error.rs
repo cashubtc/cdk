@@ -24,10 +24,10 @@ pub enum Error {
     #[error("Amount Overflow")]
     AmountOverflow,
     /// Not engough inputs provided
-    #[error("Inputs: `{0}`, Outputs: `{0}`, Expected Fee: `{0}`")]
+    #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
     InsufficientInputs(u64, u64, u64),
     /// Transaction unbalanced
-    #[error("Inputs: `{0}`, Outputs: `{0}`, Expected Fee: `{0}`")]
+    #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
     TransactionUnbalanced(u64, u64, u64),
     /// Duplicate proofs provided
     #[error("Duplicate proofs")]
