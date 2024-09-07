@@ -17,7 +17,6 @@ use cdk::util::unix_time;
 use cdk::wallet::MintQuote;
 use cdk::{cdk_database, wallet};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
-use tokio::sync::Mutex;
 use tracing::instrument;
 
 use super::error::Error;
@@ -49,7 +48,7 @@ const DATABASE_VERSION: u32 = 2;
 /// Wallet Redb Database
 #[derive(Debug, Clone)]
 pub struct WalletRedbDatabase {
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
 }
 
 impl WalletRedbDatabase {
@@ -147,9 +146,7 @@ impl WalletRedbDatabase {
 
         let db = Database::create(path)?;
 
-        Ok(Self {
-            db: Arc::new(Mutex::new(db)),
-        })
+        Ok(Self { db: Arc::new(db) })
     }
 
     async fn update_proof_states(
@@ -157,11 +154,10 @@ impl WalletRedbDatabase {
         ys: Vec<PublicKey>,
         state: State,
     ) -> Result<(), cdk_database::Error> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         for y in ys {
             let y_slice = y.to_bytes();
@@ -204,9 +200,7 @@ impl WalletDatabase for WalletRedbDatabase {
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
@@ -226,9 +220,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self))]
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
@@ -243,8 +235,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
         if let Some(mint_info) = table
@@ -259,8 +250,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self))]
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
         let mints = table
             .iter()
@@ -337,9 +327,7 @@ impl WalletDatabase for WalletRedbDatabase {
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -375,8 +363,7 @@ impl WalletDatabase for WalletRedbDatabase {
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_multimap_table(MINT_KEYSETS_TABLE)
             .map_err(Error::from)?;
@@ -411,8 +398,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
 
         match table
@@ -431,8 +417,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -453,8 +438,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
@@ -468,8 +452,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Into::<Error>::into)?;
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
@@ -484,8 +467,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -501,8 +483,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -523,8 +504,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
             .map_err(Error::from)?;
@@ -538,8 +518,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -555,8 +534,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip_all)]
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
@@ -575,8 +553,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
         if let Some(mint_info) = table
@@ -591,8 +568,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn remove_keys(&self, keyset_id: &Id) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
@@ -613,9 +589,7 @@ impl WalletDatabase for WalletRedbDatabase {
         added: Vec<ProofInfo>,
         deleted_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
@@ -663,8 +637,7 @@ impl WalletDatabase for WalletRedbDatabase {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
 
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
@@ -696,12 +669,11 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         let current_counter;
         {
-            let read_txn = db.begin_read().map_err(Error::from)?;
-            let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+            let table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
             let counter = table
                 .get(keyset_id.to_string().as_str())
                 .map_err(Error::from)?;
@@ -712,7 +684,6 @@ impl WalletDatabase for WalletRedbDatabase {
             };
         }
 
-        let write_txn = db.begin_write().map_err(Error::from)?;
         {
             let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
             let new_counter = current_counter + count;
@@ -728,8 +699,7 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
 
         let counter = table
@@ -744,8 +714,7 @@ impl WalletDatabase for WalletRedbDatabase {
         &self,
         verifying_key: &PublicKey,
     ) -> Result<Option<u32>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(NOSTR_LAST_CHECKED)
             .map_err(Error::from)?;
@@ -763,8 +732,7 @@ impl WalletDatabase for WalletRedbDatabase {
         verifying_key: PublicKey,
         last_checked: u32,
     ) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
             let mut table = write_txn
                 .open_table(NOSTR_LAST_CHECKED)

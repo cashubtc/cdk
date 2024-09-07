@@ -19,7 +19,6 @@ wallet = ["cdk/wallet"]
 async-trait = "0.1"
 cdk = { path = "../cdk", default-features = false }
 redb = "2.1.0"
-tokio = { version = "1", default-features = false }
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
