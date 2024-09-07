@@ -53,6 +53,7 @@ pub async fn start_mint(
         LnKey,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     >,
+    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
 ) -> Result<()> {
     let nuts = Nuts::new()
         .nut07(true)
@@ -66,9 +67,6 @@ pub async fn start_mint(
     let mint_info = MintInfo::new().nuts(nuts);
 
     let mnemonic = Mnemonic::generate(12)?;
-
-    let mut supported_units = HashMap::new();
-    supported_units.insert(CurrencyUnit::Sat, (0, 64));
 
     let mint = Mint::new(
         MINT_URL,
@@ -150,7 +148,11 @@ async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result
     Ok(())
 }
 
-pub async fn wallet_mint(wallet: Arc<Wallet>, amount: Amount) -> Result<()> {
+pub async fn wallet_mint(
+    wallet: Arc<Wallet>,
+    amount: Amount,
+    split_target: SplitTarget,
+) -> Result<()> {
     let quote = wallet.mint_quote(amount).await?;
 
     loop {
@@ -163,7 +165,8 @@ pub async fn wallet_mint(wallet: Arc<Wallet>, amount: Amount) -> Result<()> {
 
         sleep(Duration::from_secs(2)).await;
     }
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+
+    let receive_amount = wallet.mint(&quote.id, split_target, None).await?;
 
     println!("Minted: {}", receive_amount);
 

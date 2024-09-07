@@ -8,7 +8,7 @@ use thiserror::Error;
 
 #[cfg(feature = "wallet")]
 use crate::wallet::multi_mint_wallet::WalletKey;
-use crate::{util::hex, Amount};
+use crate::{nuts::Id, util::hex, Amount};
 
 /// CDK Error
 #[derive(Debug, Error)]
@@ -16,6 +16,12 @@ pub enum Error {
     /// Mint does not have a key for amount
     #[error("No Key for Amount")]
     AmountKey,
+    /// Keyset is not known
+    #[error("Keyset id not known: `{0}`")]
+    KeysetUnknown(Id),
+    /// Unsupported unit
+    #[error("Unit unsupported")]
+    UnsupportedUnit,
     /// Payment failed
     #[error("Payment failed")]
     PaymentFailed,
@@ -72,9 +78,6 @@ pub enum Error {
     /// Inactive Keyset
     #[error("Inactive Keyset")]
     InactiveKeyset,
-    /// Not engough inputs provided
-    #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
-    InsufficientInputs(u64, u64, u64),
     /// Transaction unbalanced
     #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
     TransactionUnbalanced(u64, u64, u64),
@@ -286,7 +289,12 @@ impl ErrorResponse {
 impl From<Error> for ErrorResponse {
     fn from(err: Error) -> ErrorResponse {
         match err {
-            Error::UnitUnsupported => ErrorResponse {
+            Error::TokenAlreadySpent => ErrorResponse {
+                code: ErrorCode::TokenAlreadySpent,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::UnsupportedUnit => ErrorResponse {
                 code: ErrorCode::UnitUnsupported,
                 error: Some(err.to_string()),
                 detail: None,
@@ -299,11 +307,6 @@ impl From<Error> for ErrorResponse {
             Error::RequestAlreadyPaid => ErrorResponse {
                 code: ErrorCode::InvoiceAlreadyPaid,
                 error: Some("Invoice already paid.".to_string()),
-                detail: None,
-            },
-            Error::TokenAlreadySpent => ErrorResponse {
-                code: ErrorCode::TokenAlreadySpent,
-                error: Some("Token is already spent.".to_string()),
                 detail: None,
             },
             Error::TransactionUnbalanced(inputs_total, outputs_total, fee_expected) => {

@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::dhke::construct_proofs;
-use cdk::nuts::{PreMintSecrets, SwapRequest};
+use cdk::nuts::{CurrencyUnit, PreMintSecrets, SwapRequest};
 use cdk::Amount;
 use cdk::HttpClient;
 use cdk_integration_tests::{create_backends_fake_wallet, mint_proofs, start_mint, MINT_URL};
@@ -98,7 +99,12 @@ pub async fn test_overflow() -> Result<()> {
     tokio::spawn(async move {
         let ln_backends = create_backends_fake_wallet();
 
-        start_mint(ln_backends).await.expect("Could not start mint")
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Sat, (0, 32));
+
+        start_mint(ln_backends, supported_units)
+            .await
+            .expect("Could not start mint")
     });
 
     // Wait for mint server to start

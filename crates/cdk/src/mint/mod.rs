@@ -15,6 +15,7 @@ use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::Error;
+use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
@@ -414,21 +415,30 @@ impl Mint {
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
-        let mut sum_fee = 0;
+        let mut proofs_per_keyset = HashMap::new();
+        let mut fee_per_keyset = HashMap::new();
 
         for proof in proofs {
-            let input_fee_ppk = self
-                .localstore
-                .get_keyset_info(&proof.keyset_id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                fee_per_keyset.entry(proof.keyset_id)
+            {
+                let mint_keyset_info = self
+                    .localstore
+                    .get_keyset_info(&proof.keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?;
+                e.insert(mint_keyset_info.input_fee_ppk);
+            }
 
-            sum_fee += input_fee_ppk.input_fee_ppk;
+            proofs_per_keyset
+                .entry(proof.keyset_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
         }
 
-        let fee = (sum_fee + 999) / 1000;
+        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(Amount::from(fee))
+        Ok(fee)
     }
 
     /// Check melt quote status
@@ -740,20 +750,6 @@ impl Mint {
 
         let total_with_fee = output_total.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
-        if proofs_total < total_with_fee {
-            tracing::info!(
-                "Swap request without enough inputs: {}, outputs {}, fee {}",
-                proofs_total,
-                output_total,
-                fee
-            );
-            return Err(Error::InsufficientInputs(
-                proofs_total.into(),
-                output_total.into(),
-                fee.into(),
-            ));
-        }
-
         if proofs_total != total_with_fee {
             tracing::info!(
                 "Swap request unbalanced: {}, outputs {}, fee {}",
@@ -1038,17 +1034,16 @@ impl Mint {
 
         let required_total = quote.amount + quote.fee_reserve + fee;
 
-        if proofs_total < required_total {
+        if proofs_total != required_total {
             tracing::info!(
-                "Swap request without enough inputs: {}, quote amount {}, fee_reserve: {} fee {}",
+                "Swap request unbalanced: {}, outputs {}, fee {}",
                 proofs_total,
                 quote.amount,
-                quote.fee_reserve,
                 fee
             );
-            return Err(Error::InsufficientInputs(
+            return Err(Error::TransactionUnbalanced(
                 proofs_total.into(),
-                (quote.amount + quote.fee_reserve).into(),
+                quote.amount.into(),
                 fee.into(),
             ));
         }
