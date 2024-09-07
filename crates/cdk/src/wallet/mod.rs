@@ -15,6 +15,7 @@ use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::error::Error;
+use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::{
@@ -100,21 +101,30 @@ impl Wallet {
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
-        let mut sum_fee = 0;
+        let mut proofs_per_keyset = HashMap::new();
+        let mut fee_per_keyset = HashMap::new();
 
         for proof in proofs {
-            let input_fee_ppk = self
-                .localstore
-                .get_keyset_by_id(&proof.keyset_id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                fee_per_keyset.entry(proof.keyset_id)
+            {
+                let mint_keyset_info = self
+                    .localstore
+                    .get_keyset_by_id(&proof.keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?;
+                e.insert(mint_keyset_info.input_fee_ppk);
+            }
 
-            sum_fee += input_fee_ppk.input_fee_ppk;
+            proofs_per_keyset
+                .entry(proof.keyset_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
         }
 
-        let fee = (sum_fee + 999) / 1000;
+        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(Amount::from(fee))
+        Ok(fee)
     }
 
     /// Get fee for count of proofs in a keyset

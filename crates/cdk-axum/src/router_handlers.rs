@@ -317,7 +317,7 @@ pub async fn post_melt_bolt11(
                         .map_err(|_| into_response(Error::UnitUnsupported))?,
                 };
 
-                if amount_to_pay + quote.fee_reserve > inputs_amount_quote_unit {
+                if amount_to_pay + quote.fee_reserve != inputs_amount_quote_unit {
                     tracing::debug!(
                         "Not enough inuts provided: {} msats needed {} msats",
                         inputs_amount_quote_unit,
@@ -327,7 +327,7 @@ pub async fn post_melt_bolt11(
                     if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
-                    return Err(into_response(Error::InsufficientInputs(
+                    return Err(into_response(Error::TransactionUnbalanced(
                         inputs_amount_quote_unit.into(),
                         amount_to_pay.into(),
                         quote.fee_reserve.into(),

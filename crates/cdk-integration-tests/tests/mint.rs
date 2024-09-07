@@ -1,5 +1,6 @@
 //! Mint integration tests
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,12 @@ pub async fn test_mint_double_receive() -> Result<()> {
     tokio::spawn(async move {
         let ln_backends = create_backends_fake_wallet();
 
-        start_mint(ln_backends).await.expect("Could not start mint")
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Sat, (0, 64));
+
+        start_mint(ln_backends, supported_units)
+            .await
+            .expect("Could not start mint")
     });
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -35,7 +41,7 @@ pub async fn test_mint_double_receive() -> Result<()> {
 
     let wallet = Arc::new(wallet);
 
-    wallet_mint(Arc::clone(&wallet), 100.into()).await.unwrap();
+    wallet_mint(Arc::clone(&wallet), 100.into(), SplitTarget::default()).await?;
     println!("Minted");
 
     let token = wallet
@@ -47,8 +53,7 @@ pub async fn test_mint_double_receive() -> Result<()> {
             &SendKind::default(),
             false,
         )
-        .await
-        .unwrap();
+        .await?;
 
     let mnemonic = Mnemonic::generate(12)?;
 
