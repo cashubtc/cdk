@@ -17,7 +17,6 @@ use cdk::nuts::{
 use cdk::{cdk_database, mint};
 use migrations::migrate_01_to_02;
 use redb::{Database, ReadableTable, TableDefinition};
-use tokio::sync::Mutex;
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
@@ -41,7 +40,7 @@ const DATABASE_VERSION: u32 = 3;
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
 pub struct MintRedbDatabase {
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
 }
 
 impl MintRedbDatabase {
@@ -137,9 +136,7 @@ impl MintRedbDatabase {
         }
 
         let db = Database::create(path)?;
-        Ok(Self {
-            db: Arc::new(Mutex::new(db)),
-        })
+        Ok(Self { db: Arc::new(db) })
     }
 }
 
@@ -148,9 +145,7 @@ impl MintDatabase for MintRedbDatabase {
     type Err = cdk_database::Error;
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -166,8 +161,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(ACTIVE_KEYSETS_TABLE)
             .map_err(Error::from)?;
@@ -180,8 +174,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(ACTIVE_KEYSETS_TABLE)
             .map_err(Error::from)?;
@@ -199,9 +192,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
@@ -220,8 +211,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_keyset_info(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
 
         match table
@@ -234,8 +224,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
 
         let mut keysets = Vec::new();
@@ -250,9 +239,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -271,8 +258,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
@@ -288,12 +274,11 @@ impl MintDatabase for MintRedbDatabase {
         quote_id: &str,
         state: MintQuoteState,
     ) -> Result<MintQuoteState, Self::Err> {
-        let db = self.db.lock().await;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         let mut mint_quote: MintQuote;
         {
-            let read_txn = db.begin_read().map_err(Error::from)?;
-            let table = read_txn
+            let table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
 
@@ -310,7 +295,6 @@ impl MintDatabase for MintRedbDatabase {
         let current_state = mint_quote.state;
         mint_quote.state = state;
 
-        let write_txn = db.begin_write().map_err(Error::from)?;
         {
             let mut table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
@@ -362,8 +346,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
@@ -380,9 +363,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -396,9 +377,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -417,8 +396,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<mint::MeltQuote>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
             .map_err(Error::from)?;
@@ -433,11 +411,12 @@ impl MintDatabase for MintRedbDatabase {
         quote_id: &str,
         state: MeltQuoteState,
     ) -> Result<MeltQuoteState, Self::Err> {
-        let db = self.db.lock().await;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
         let mut melt_quote: mint::MeltQuote;
+
         {
-            let read_txn = db.begin_read().map_err(Error::from)?;
-            let table = read_txn
+            let table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
 
@@ -454,7 +433,6 @@ impl MintDatabase for MintRedbDatabase {
         let current_state = melt_quote.state;
         melt_quote.state = state;
 
-        let write_txn = db.begin_write().map_err(Error::from)?;
         {
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
@@ -475,8 +453,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
             .map_err(Error::from)?;
@@ -493,9 +470,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -509,9 +484,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
@@ -533,8 +506,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
         let mut proofs = Vec::with_capacity(ys.len());
@@ -552,8 +524,7 @@ impl MintDatabase for MintRedbDatabase {
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(PROOFS_STATE_TABLE)
             .map_err(Error::from)?;
@@ -576,8 +547,7 @@ impl MintDatabase for MintRedbDatabase {
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
         let proofs_for_id = table
@@ -607,8 +577,7 @@ impl MintDatabase for MintRedbDatabase {
         ys: &[PublicKey],
         proofs_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         let mut states = Vec::with_capacity(ys.len());
 
@@ -651,8 +620,7 @@ impl MintDatabase for MintRedbDatabase {
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err> {
-        let db = self.db.lock().await;
-        let write_txn = db.begin_write().map_err(Error::from)?;
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
@@ -681,8 +649,7 @@ impl MintDatabase for MintRedbDatabase {
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(BLINDED_SIGNATURES)
             .map_err(Error::from)?;
@@ -705,8 +672,7 @@ impl MintDatabase for MintRedbDatabase {
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
-        let db = self.db.lock().await;
-        let read_txn = db.begin_read().map_err(Error::from)?;
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(BLINDED_SIGNATURES)
             .map_err(Error::from)?;
