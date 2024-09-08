@@ -18,7 +18,7 @@ axum = "0.6.20"
 rand = "0.8.5"
 bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
-cdk = { path = "../cdk", version = "0.3.0", features = ["mint", "wallet"] }
+cdk = { path = "../cdk", version = "0.4.0", features = ["mint", "wallet"] }
 cdk-axum = { path = "../cdk-axum"}
 cdk-fake-wallet = { path = "../cdk-fake-wallet" }
 tower-http = { version = "0.4.4", features = ["cors"] }
