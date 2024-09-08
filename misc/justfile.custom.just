@@ -56,7 +56,7 @@ clippy-each:
     echo
   done
 
-release:
+release m:
   #!/usr/bin/env bash
   set -euo pipefail
 

@@ -17,7 +17,7 @@ wallet = ["cdk/wallet"]
 
 [dependencies]
 async-trait = "0.1"
-cdk = { path = "../cdk", default-features = false }
+cdk = { path = "../cdk", version = "0.4.0", default-features = false }
 bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
 sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
 thiserror = "1"
