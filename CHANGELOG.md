@@ -21,7 +21,7 @@
 
 -->
 
-#[Unreleased]
+#[0.4.0]
 ### Summary
 
 ### Changed
@@ -35,10 +35,20 @@
 - cdk-sqlite: Reduce MSRV to 1.66.0 ([thesimplekid]).
 - cdk-redb: Reduce MSRV to 1.66.0 ([thesimplekid]).
 - cdk: Format url base lowercase ([callebtc]).
+- cdk: Use CDK error type instead of mint and wallet specefic ([thesimplekid]).
+- cdk-cli: Tokenv4 error print diagnostic notation ([ok300]).
+- cdk-redb: Remove use of mutex ([thesimplekid]).
+
+### Added
+- cdk: Multiple error types ([thesimplekid]).
 
 
 ### Fixed
 - cdk(mint): use checked addition on amount to ensure there is no overflow ([thesimplekid]).
+
+### Removed
+- cdk(wallet): Removed CDK wallet error ([thesimplekid]).
+- cdk(mint): Removed CDK mint error ([thesimplekid]).
 
 
 ## [0.3.0]
@@ -141,3 +151,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [vnprc]: https://github.com/vnprc
 [cjbeery24]: https://github.com/cjbeery24
 [callebtc]: https://github.com/callebtc
+[ok300]: (https://github.com/ok300)
