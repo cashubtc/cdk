@@ -226,6 +226,8 @@ impl MultiMintWallet {
 
         let mut amount_received = Amount::ZERO;
 
+        let mut mint_errors = None;
+
         // Check that all mints in tokes have wallets
         for (mint_url, proofs) in mint_proofs {
             let wallet_key = WalletKey::new(mint_url.clone(), unit);
@@ -233,20 +235,30 @@ impl MultiMintWallet {
                 return Err(Error::UnknownWallet(wallet_key.clone()));
             }
 
-            let wallet_key = WalletKey::new(mint_url, unit);
+            let wallet_key = WalletKey::new(mint_url.clone(), unit);
             let wallet = self
                 .get_wallet(&wallet_key)
                 .await
                 .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-            let amount = wallet
+            match wallet
                 .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
-                .await?;
-
-            amount_received += amount;
+                .await
+            {
+                Ok(amount) => {
+                    amount_received += amount;
+                }
+                Err(err) => {
+                    tracing::error!("Could no receive proofs for mint: {}", err);
+                    mint_errors = Some(err);
+                }
+            }
         }
 
-        Ok(amount_received)
+        match mint_errors {
+            None => Ok(amount_received),
+            Some(err) => Err(err),
+        }
     }
 
     /// Pay an bolt11 invoice from specific wallet
