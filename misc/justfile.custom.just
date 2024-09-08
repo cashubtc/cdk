@@ -56,12 +56,11 @@ clippy-each:
     echo
   done
 
-release m:
+release m="":
   #!/usr/bin/env bash
   set -euo pipefail
 
   args=(
-    "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-axum"
@@ -79,7 +78,7 @@ release m:
   for arg in "${args[@]}";
   do
     echo "Publishing '$arg'"
-    cargo publish $arg
+    cargo publish $arg {{m}}
     echo
   done
 
