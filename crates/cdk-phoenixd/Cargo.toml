@@ -14,7 +14,7 @@ async-trait = "0.1"
 anyhow = "1"
 axum = "0.6.20"
 bitcoin = { version = "0.30", default-features = false } # lightning-invoice uses v0.30
-cdk = { path = "../cdk", default-features = false, features = ["mint"] }
+cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = ["mint"] }
 futures = { version = "0.3.28", default-features = false }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
