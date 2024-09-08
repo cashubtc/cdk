@@ -35,7 +35,7 @@
 - cdk-sqlite: Reduce MSRV to 1.66.0 ([thesimplekid]).
 - cdk-redb: Reduce MSRV to 1.66.0 ([thesimplekid]).
 - cdk: Format url base lowercase ([callebtc]).
-- cdk: Use CDK error type instead of mint and wallet specefic ([thesimplekid]).
+- cdk: Use CDK error type instead of mint and wallet specific ([thesimplekid]).
 - cdk-cli: Tokenv4 error print diagnostic notation ([ok300]).
 - cdk-redb: Remove use of mutex ([thesimplekid]).
 
