@@ -74,6 +74,7 @@ impl MintLightning for LNbits {
             unit: CurrencyUnit::Sat,
             mint_settings: self.mint_settings,
             melt_settings: self.melt_settings,
+            invoice_description: true,
         }
     }
 

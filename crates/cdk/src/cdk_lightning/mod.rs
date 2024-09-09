@@ -131,6 +131,8 @@ pub struct Settings {
     pub melt_settings: MintMeltSettings,
     /// Base unit of backend
     pub unit: CurrencyUnit,
+    /// Invoice Description supported
+    pub invoice_description: bool,
 }
 
 /// Mint or melt settings

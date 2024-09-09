@@ -214,6 +214,8 @@ pub struct MintMethodSettings {
     /// Max Amount
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
+    /// Quote Description
+    pub quote_description: bool,
 }
 
 /// Mint Settings
@@ -254,6 +256,7 @@ impl Default for Settings {
             unit: CurrencyUnit::Sat,
             min_amount: Some(Amount::from(1)),
             max_amount: Some(Amount::from(1000000)),
+            quote_description: true,
         };
 
         Settings {

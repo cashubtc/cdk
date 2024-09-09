@@ -81,6 +81,7 @@ impl MintLightning for Lnd {
             unit: CurrencyUnit::Msat,
             mint_settings: self.mint_settings,
             melt_settings: self.melt_settings,
+            invoice_description: true,
         }
     }
 

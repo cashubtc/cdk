@@ -151,6 +151,9 @@ pub enum Error {
     /// Incorrect quote amount
     #[error("Incorrect quote amount")]
     IncorrectQuoteAmount,
+    /// Invoice Description not supported
+    #[error("Invoice Description not supported")]
+    InvoiceDescriptionUnsupported,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
