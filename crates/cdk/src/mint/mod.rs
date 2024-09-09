@@ -511,8 +511,10 @@ impl Mint {
         Ok(KeysResponse {
             keysets: keysets
                 .values()
-                .filter(|k| active_keysets.contains(&k.id))
-                .map(|k| k.clone().into())
+                .filter_map(|k| match active_keysets.contains(&k.id) {
+                    true => Some(k.clone().into()),
+                    false => None,
+                })
                 .collect(),
         })
     }
@@ -1646,6 +1648,11 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_over_pay_fee() -> anyhow::Result<()> {
         Ok(())
     }
 }
