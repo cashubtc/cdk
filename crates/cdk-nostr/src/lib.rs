@@ -8,6 +8,7 @@ use std::{
     fmt,
     str::FromStr,
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -85,7 +86,7 @@ impl WalletNostrDatabase {
         D: NostrDatabase + 'static,
     {
         let client = Client::builder().signer(&keys).database(nostr_db).build();
-        Self::connect_client(&client, relays).await?;
+        client.add_relays(relays).await?;
         let mut self_ = Self {
             client,
             keys,
@@ -118,7 +119,7 @@ impl WalletNostrDatabase {
                 max_events: None,
             }))
             .build();
-        Self::connect_client(&client, relays).await?;
+        client.add_relays(relays).await?;
         let mut self_ = Self {
             client,
             keys,
@@ -138,10 +139,16 @@ impl WalletNostrDatabase {
         Ok(self_)
     }
 
-    async fn connect_client(client: &Client, relays: Vec<Url>) -> Result<(), Error> {
-        client.add_relays(relays).await?;
-        client.connect().await;
-        Ok(())
+    async fn ensure_relays_connected(&self) {
+        let relays = self.client.relays().await;
+        for relay in relays.values() {
+            if !relay.is_connected().await {
+                self.client
+                    .connect_with_timeout(Duration::from_secs(5))
+                    .await;
+            }
+            break;
+        }
     }
 
     async fn load_db(&mut self, info: WalletInfo) -> Result<(), Error> {
@@ -158,6 +165,7 @@ impl WalletNostrDatabase {
     ///
     /// *Important*: This will remove the transaction from the wallet's history, but will *not* affect the proofs or balance!
     pub async fn delete_transaction(&self, event_id: EventId) -> Result<(), Error> {
+        self.ensure_relays_connected().await;
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(TX_HISTORY_KIND),
@@ -184,6 +192,7 @@ impl WalletNostrDatabase {
     /// Get a transaction by its [`EventId`]
     #[tracing::instrument(skip(self))]
     pub async fn get_transaction(&self, event_id: EventId) -> Result<TransactionEvent, Error> {
+        self.ensure_relays_connected().await;
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(TX_HISTORY_KIND),
@@ -209,6 +218,9 @@ impl WalletNostrDatabase {
         limit: Option<usize>,
         sync_relays: bool,
     ) -> Result<Vec<TransactionEvent>, Error> {
+        if sync_relays {
+            self.ensure_relays_connected().await;
+        }
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(TX_HISTORY_KIND),
@@ -229,6 +241,7 @@ impl WalletNostrDatabase {
     /// Refresh all events
     #[tracing::instrument(skip(self))]
     pub async fn refresh_events(&self) -> Result<(), Error> {
+        self.ensure_relays_connected().await;
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(PROOFS_KIND, TX_HISTORY_KIND),
@@ -244,6 +257,9 @@ impl WalletNostrDatabase {
     /// Refresh the latest [`WalletInfo`]
     #[tracing::instrument(skip(self))]
     pub async fn refresh_info(&self, sync_relays: bool) -> Result<WalletInfo, Error> {
+        if sync_relays {
+            self.ensure_relays_connected().await;
+        }
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(WALLET_INFO_KIND),
@@ -312,6 +328,9 @@ impl WalletNostrDatabase {
     /// Sync proofs from Nostr
     #[tracing::instrument(skip(self))]
     pub async fn sync_proofs(&self, sync_relays: bool) -> Result<(), Error> {
+        if sync_relays {
+            self.ensure_relays_connected().await;
+        }
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(PROOFS_KIND),
@@ -365,6 +384,9 @@ impl WalletNostrDatabase {
         filters: Vec<Filter>,
         sync_relays: bool,
     ) -> Result<Vec<Event>, Error> {
+        if sync_relays {
+            self.ensure_relays_connected().await;
+        }
         Ok(self
             .client
             .get_events_of(
@@ -379,6 +401,7 @@ impl WalletNostrDatabase {
     }
 
     async fn save_event(&self, event: Event) -> Result<(), Error> {
+        self.ensure_relays_connected().await;
         self.client.send_event(event).await?;
         Ok(())
     }
