@@ -185,7 +185,7 @@ pub async fn mint_proofs(
     let wallet_client = HttpClient::new();
 
     let mint_quote = wallet_client
-        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat)
+        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat, None)
         .await?;
 
     println!("Please pay: {}", mint_quote.request);

@@ -510,7 +510,7 @@ impl Wallet {
         let unit = self.unit;
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone().try_into()?, amount, unit)
+            .post_mint_quote(mint_url.clone().try_into()?, amount, unit, None)
             .await?;
 
         let quote = MintQuote {

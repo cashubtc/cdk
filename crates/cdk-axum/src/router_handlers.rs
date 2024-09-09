@@ -69,9 +69,8 @@ pub async fn get_mint_bolt11_quote(
         })?;
 
     let quote_expiry = unix_time() + state.quote_ttl;
-
     let create_invoice_response = ln
-        .create_invoice(amount, &payload.unit, "".to_string(), quote_expiry)
+        .create_invoice(amount, &payload.unit, payload.description.unwrap_or("".to_string()), quote_expiry)
         .await
         .map_err(|err| {
             tracing::error!("Could not create invoice: {}", err);

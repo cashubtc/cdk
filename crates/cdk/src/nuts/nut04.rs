@@ -31,6 +31,8 @@ pub struct MintQuoteBolt11Request {
     pub amount: Amount,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
+    /// Memo to create the invoice with
+    pub description: Option<String>,
 }
 
 /// Possible states of a quote
