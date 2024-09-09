@@ -499,13 +499,21 @@ impl Mint {
     /// clients
     #[instrument(skip_all)]
     pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
-        let keyset_infos = self.localstore.get_keyset_infos().await?;
-        for keyset_info in keyset_infos {
-            self.ensure_keyset_loaded(&keyset_info.id).await?;
+        let active_keysets = self.localstore.get_active_keysets().await?;
+
+        let active_keysets: HashSet<&Id> = active_keysets.values().collect();
+
+        for id in active_keysets.iter() {
+            self.ensure_keyset_loaded(id).await?;
         }
+
         let keysets = self.keysets.read().await;
         Ok(KeysResponse {
-            keysets: keysets.values().map(|k| k.clone().into()).collect(),
+            keysets: keysets
+                .values()
+                .filter(|k| active_keysets.contains(&k.id))
+                .map(|k| k.clone().into())
+                .collect(),
         })
     }
 
