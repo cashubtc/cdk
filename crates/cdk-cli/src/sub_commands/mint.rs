@@ -23,7 +23,7 @@ pub struct MintSubCommand {
     #[arg(default_value = "sat")]
     unit: String,
     /// Quote description
-    #[arg(default_value = None)]
+ #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 }
 
