@@ -103,6 +103,11 @@ impl Amount {
         self.0.checked_add(other.0).map(Amount)
     }
 
+    /// Checked subtraction for Amount. Returns None if overflow occurs.
+    pub fn checked_sub(self, other: Amount) -> Option<Amount> {
+        self.0.checked_sub(other.0).map(Amount)
+    }
+
     /// Try sum to check for overflow
     pub fn try_sum<I>(iter: I) -> Result<Self, Error>
     where
