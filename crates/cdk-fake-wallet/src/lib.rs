@@ -13,12 +13,15 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+    Settings,
 };
 use cdk::mint;
 use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MintMethodSettings, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::unix_time;
 use error::Error;
 use futures::stream::StreamExt;

@@ -133,7 +133,11 @@ impl HttpClient {
     ) -> Result<MintQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11"])?;
 
-        let request = MintQuoteBolt11Request { amount, unit, description };
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit,
+            description,
+        };
 
         let res = self
             .inner

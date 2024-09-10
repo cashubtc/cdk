@@ -8,7 +8,10 @@ use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::nuts::{CurrencyUnit, MintMethodSettings, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use crate::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use crate::{mint, Amount};
 
 /// CDK Lightning Error

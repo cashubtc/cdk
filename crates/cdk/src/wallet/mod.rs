@@ -19,7 +19,10 @@ use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::{
-    nut10, nut12, Conditions, CurrencyUnit, Id, KeySetInfo, Keys, Kind, MeltQuoteBolt11Response, MeltQuoteState, MintInfo, MintQuoteBolt11Response, MintQuoteState, PaymentMethod, PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SecretKey, SigFlag, SpendingConditions, State, SwapRequest
+    nut10, nut12, Conditions, CurrencyUnit, Id, KeySetInfo, Keys, Kind, MeltQuoteBolt11Response,
+    MeltQuoteState, MintInfo, MintQuoteBolt11Response, MintQuoteState, PaymentMethod,
+    PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SecretKey,
+    SigFlag, SpendingConditions, State, SwapRequest,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::{hex, unix_time};
@@ -502,7 +505,11 @@ impl Wallet {
     /// }
     /// ```
     #[instrument(skip(self))]
-    pub async fn mint_quote(&self, amount: Amount, description: Option<String>) -> Result<MintQuote, Error> {
+    pub async fn mint_quote(
+        &self,
+        amount: Amount,
+        description: Option<String>,
+    ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = self.unit;
 
@@ -523,7 +530,6 @@ impl Wallet {
                 return Err(Error::InvoiceDescriptionUnsupported);
             }
         }
-
 
         let quote_res = self
             .client

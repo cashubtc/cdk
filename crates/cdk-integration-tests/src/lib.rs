@@ -11,7 +11,8 @@ use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState, Nuts, PaymentMethod, PreMintSecrets, Proofs
+    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
+    Nuts, PaymentMethod, PreMintSecrets, Proofs,
 };
 use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};

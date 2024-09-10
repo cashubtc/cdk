@@ -74,7 +74,12 @@ pub async fn get_mint_bolt11_quote(
         return Err(into_response(Error::InvoiceDescriptionUnsupported));
     }
     let create_invoice_response = ln
-        .create_invoice(amount, &payload.unit, payload.description.unwrap_or("".to_string()), quote_expiry)
+        .create_invoice(
+            amount,
+            &payload.unit,
+            payload.description.unwrap_or("".to_string()),
+            quote_expiry,
+        )
         .await
         .map_err(|err| {
             tracing::error!("Could not create invoice: {}", err);
