@@ -360,7 +360,7 @@ async fn main() -> anyhow::Result<()> {
                 unit: key.unit,
                 min_amount: Some(settings.mint_settings.min_amount),
                 max_amount: Some(settings.mint_settings.max_amount),
-                quote_description: settings.invoice_description,
+                description: settings.invoice_description,
             };
 
             let n5 = MeltMethodSettings {
