@@ -7,11 +7,11 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
+use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MintInfo, MintQuoteState, Nuts, PaymentMethod, PreMintSecrets, Proofs,
+    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState, Nuts, PaymentMethod, PreMintSecrets, Proofs
 };
 use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};
@@ -39,8 +39,8 @@ pub fn create_backends_fake_wallet(
 
     let wallet = Arc::new(FakeWallet::new(
         fee_reserve.clone(),
-        MintMeltSettings::default(),
-        MintMeltSettings::default(),
+        MintMethodSettings::default(),
+        MeltMethodSettings::default(),
     ));
 
     ln_backends.insert(ln_key, wallet.clone());

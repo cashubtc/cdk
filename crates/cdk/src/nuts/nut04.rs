@@ -256,7 +256,7 @@ impl Default for Settings {
             unit: CurrencyUnit::Sat,
             min_amount: Some(Amount::from(1)),
             max_amount: Some(Amount::from(1000000)),
-            description: false,
+            description: true,
         };
 
         Settings {
