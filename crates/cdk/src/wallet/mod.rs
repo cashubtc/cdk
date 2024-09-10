@@ -507,21 +507,23 @@ impl Wallet {
         let unit = self.unit;
 
         // If we have a description, we check that the mint supports it.
+        // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            if let Some(mint_method_settings) = self.localstore
+            let mint_method_settings = self
+                .localstore
                 .get_mint(mint_url.clone())
                 .await?
-                .expect("Could not retrieve mint information")
+                .ok_or(Error::IncorrectMint)?
                 .nuts
                 .nut04
-                .get_settings(&unit, &PaymentMethod::Bolt11) {
-                if !mint_method_settings.description {
-                    return Err(Error::InvoiceDescriptionUnsupported);
-                }
-            } else {
-                return Err(Error::UnitUnsupported);
+                .get_settings(&unit, &PaymentMethod::Bolt11)
+                .ok_or(Error::UnsupportedUnit)?;
+
+            if !mint_method_settings.description {
+                return Err(Error::InvoiceDescriptionUnsupported);
             }
         }
+
 
         let quote_res = self
             .client
