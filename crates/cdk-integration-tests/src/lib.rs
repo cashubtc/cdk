@@ -152,8 +152,9 @@ pub async fn wallet_mint(
     wallet: Arc<Wallet>,
     amount: Amount,
     split_target: SplitTarget,
+    description: Option<String>,
 ) -> Result<()> {
-    let quote = wallet.mint_quote(amount).await?;
+    let quote = wallet.mint_quote(amount, description).await?;
 
     loop {
         let status = wallet.mint_quote_state(&quote.id).await?;
@@ -178,6 +179,7 @@ pub async fn mint_proofs(
     amount: Amount,
     keyset_id: Id,
     mint_keys: &KeySet,
+    description: Option<String>,
 ) -> anyhow::Result<Proofs> {
     println!("Minting for ecash");
     println!();
@@ -185,7 +187,7 @@ pub async fn mint_proofs(
     let wallet_client = HttpClient::new();
 
     let mint_quote = wallet_client
-        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat, None)
+        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat, description)
         .await?;
 
     println!("Please pay: {}", mint_quote.request);

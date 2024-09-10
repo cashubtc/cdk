@@ -40,27 +40,13 @@ async fn new_mint(fee: u64) -> Mint {
     let mint = Mint::new(
         MINT_URL,
         &mnemonic.to_seed_normalized(""),
-        mint_info,
-        Arc::new(MintMemoryDatabase::default()),
-        supported_units,
-    )
-    .await
-    .unwrap();
+        None,
+    )?;
 
-    mint
-}
+    let wallet = Arc::new(wallet);
 
-async fn initialize() -> &'static Mint {
-    INSTANCE.get_or_init(|| new_mint(0)).await
-}
-
-async fn mint_proofs(
-    mint: &Mint,
-    amount: Amount,
-    split_target: &SplitTarget,
-    keys: cdk::nuts::Keys,
-) -> Result<Proofs> {
-    let request_lookup = uuid::Uuid::new_v4().to_string();
+    wallet_mint(Arc::clone(&wallet), 100.into(), SplitTarget::default(), None).await?;
+    println!("Minted");
 
     let mint_quote = mint
         .new_mint_quote(

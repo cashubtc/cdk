@@ -22,6 +22,9 @@ pub struct MintSubCommand {
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,
+    /// Quote description
+    #[arg(default_value = None)]
+    description: Option<String>,
 }
 
 pub async fn mint(
@@ -32,6 +35,7 @@ pub async fn mint(
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    let description: Option<String> = sub_command_args.description.clone();
 
     let wallet = match multi_mint_wallet
         .get_wallet(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
@@ -47,7 +51,7 @@ pub async fn mint(
     };
 
     let quote = wallet
-        .mint_quote(Amount::from(sub_command_args.amount))
+        .mint_quote(Amount::from(sub_command_args.amount), description)
         .await?;
 
     println!("Quote: {:#?}", quote);

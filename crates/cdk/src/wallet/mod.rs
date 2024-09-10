@@ -505,12 +505,12 @@ impl Wallet {
     /// }
     /// ```
     #[instrument(skip(self))]
-    pub async fn mint_quote(&self, amount: Amount) -> Result<MintQuote, Error> {
+    pub async fn mint_quote(&self, amount: Amount, description: Option<String>) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = self.unit;
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone().try_into()?, amount, unit, None)
+            .post_mint_quote(mint_url.clone().try_into()?, amount, unit, description)
             .await?;
 
         let quote = MintQuote {
