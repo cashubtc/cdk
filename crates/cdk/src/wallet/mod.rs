@@ -1433,11 +1433,13 @@ impl Wallet {
             false => MeltQuoteState::Unpaid,
         };
 
-        let melted = Melted {
+        let melted = Melted::from_proofs(
             state,
-            preimage: melt_response.payment_preimage,
-            change: change_proofs.clone(),
-        };
+            melt_response.payment_preimage,
+            quote_info.amount,
+            proofs.clone(),
+            change_proofs.clone(),
+        )?;
 
         let change_proof_infos = match change_proofs {
             Some(change_proofs) => {
