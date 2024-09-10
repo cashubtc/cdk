@@ -4,17 +4,18 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use bitcoin::bip32::ExtendedPrivKey;
+use bitcoin::bip32::Xpriv;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::key::XOnlyPublicKey;
 use bitcoin::Network;
-use error::Error;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::error::Error;
+use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::{
@@ -28,7 +29,6 @@ use crate::util::{hex, unix_time};
 use crate::{Amount, Bolt11Invoice, HttpClient, SECP256K1};
 
 pub mod client;
-pub mod error;
 pub mod multi_mint_wallet;
 pub mod types;
 pub mod util;
@@ -51,7 +51,7 @@ pub struct Wallet {
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    xpriv: ExtendedPrivKey,
+    xpriv: Xpriv,
     client: HttpClient,
 }
 
@@ -79,18 +79,17 @@ impl Wallet {
         localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
         target_proof_count: Option<usize>,
-    ) -> Self {
-        let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, seed)
-            .expect("Could not create master key");
+    ) -> Result<Self, Error> {
+        let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
 
-        Self {
-            mint_url: MintUrl::from(mint_url),
+        Ok(Self {
+            mint_url: MintUrl::from_str(mint_url)?,
             unit,
             client: HttpClient::new(),
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
-        }
+        })
     }
 
     /// Change HTTP client
@@ -101,21 +100,30 @@ impl Wallet {
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
-        let mut sum_fee = 0;
+        let mut proofs_per_keyset = HashMap::new();
+        let mut fee_per_keyset = HashMap::new();
 
         for proof in proofs {
-            let input_fee_ppk = self
-                .localstore
-                .get_keyset_by_id(&proof.keyset_id)
-                .await?
-                .ok_or(Error::UnknownKey)?;
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                fee_per_keyset.entry(proof.keyset_id)
+            {
+                let mint_keyset_info = self
+                    .localstore
+                    .get_keyset_by_id(&proof.keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?;
+                e.insert(mint_keyset_info.input_fee_ppk);
+            }
 
-            sum_fee += input_fee_ppk.input_fee_ppk;
+            proofs_per_keyset
+                .entry(proof.keyset_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
         }
 
-        let fee = (sum_fee + 999) / 1000;
+        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(Amount::from(fee))
+        Ok(fee)
     }
 
     /// Get fee for count of proofs in a keyset
@@ -125,7 +133,7 @@ impl Wallet {
             .localstore
             .get_keyset_by_id(keyset_id)
             .await?
-            .ok_or(Error::UnknownKey)?
+            .ok_or(Error::UnknownKeySet)?
             .input_fee_ppk;
 
         let fee = (input_fee_ppk * count + 999) / 1000;
@@ -145,7 +153,7 @@ impl Wallet {
                 None,
             )
             .await?;
-        let balance = proofs.iter().map(|p| p.proof.amount).sum::<Amount>();
+        let balance = Amount::try_sum(proofs.iter().map(|p| p.proof.amount))?;
 
         Ok(balance)
     }
@@ -328,7 +336,7 @@ impl Wallet {
 
     /// Get active keyset for mint
     ///
-    /// Quieries mint for current keysets then gets [`Keys`] for any unknown
+    /// Queries mint for current keysets then gets [`Keys`] for any unknown
     /// keysets
     #[instrument(skip(self))]
     pub async fn get_active_mint_keyset(&self) -> Result<KeySetInfo, Error> {
@@ -457,7 +465,7 @@ impl Wallet {
             .into_iter()
             .partition(|p| pending_states.contains(&p.y));
 
-        let amount = pending_proofs.iter().map(|p| p.proof.amount).sum();
+        let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
 
         self.localstore
             .update_proofs(
@@ -489,7 +497,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount).await?;
@@ -583,7 +591,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount).await?;
@@ -615,12 +623,12 @@ impl Wallet {
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
-                return Err(Error::QuoteExpired);
+                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
             }
 
             quote.clone()
         } else {
-            return Err(Error::QuoteUnknown);
+            return Err(Error::UnknownQuote);
         };
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
@@ -663,7 +671,7 @@ impl Wallet {
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.get_keyset_keys(sig.keyset_id).await?;
-                let key = keys.amount_key(sig.amount).ok_or(Error::UnknownKey)?;
+                let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
                     Err(_) => return Err(Error::CouldNotVerifyDleq),
@@ -678,7 +686,7 @@ impl Wallet {
             &keys,
         )?;
 
-        let minted_amount = proofs.iter().map(|p| p.amount).sum();
+        let minted_amount = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
 
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
@@ -754,7 +762,7 @@ impl Wallet {
         let mut values = Vec::new();
 
         for amount in amounts_needed_refill {
-            let values_sum: Amount = values.clone().into_iter().sum();
+            let values_sum = Amount::try_sum(values.clone().into_iter())?;
             if values_sum + amount <= change_amount {
                 values.push(amount);
             }
@@ -776,7 +784,7 @@ impl Wallet {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         // Desired amount is either amount passed or value of all proof
-        let proofs_total: Amount = proofs.iter().map(|p| p.amount).sum();
+        let proofs_total = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
 
         let ys: Vec<PublicKey> = proofs.iter().map(|p| p.y()).collect::<Result<_, _>>()?;
         self.localstore.set_pending_proofs(ys).await?;
@@ -953,7 +961,7 @@ impl Wallet {
 
                         for proof in all_proofs {
                             let proofs_to_send_amount =
-                                proofs_to_send.iter().map(|p| p.amount).sum::<Amount>();
+                                Amount::try_sum(proofs_to_send.iter().map(|p| p.amount))?;
                             if proof.amount + proofs_to_send_amount <= amount + pre_swap.fee {
                                 proofs_to_send.push(proof);
                             } else {
@@ -965,7 +973,7 @@ impl Wallet {
                     }
                 };
 
-                let send_amount: Amount = proofs_to_send.iter().map(|p| p.amount).sum();
+                let send_amount = Amount::try_sum(proofs_to_send.iter().map(|p| p.amount))?;
 
                 if send_amount.ne(&(amount + pre_swap.fee)) {
                     tracing::warn!(
@@ -1158,7 +1166,7 @@ impl Wallet {
             // Handle exact matches offline
             (SendKind::OfflineExact, Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -1175,7 +1183,7 @@ impl Wallet {
             // Handle exact matches
             (SendKind::OnlineExact, Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -1196,7 +1204,7 @@ impl Wallet {
             // Handle offline tolerance
             (SendKind::OfflineTolerance(tolerance), Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -1222,7 +1230,7 @@ impl Wallet {
             // Handle online tolerance with successful selection
             (SendKind::OnlineTolerance(tolerance), Ok(selected_proofs), _) => {
                 let selected_proofs_amount =
-                    selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
                     false => amount,
@@ -1270,7 +1278,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///     let quote = wallet.melt_quote(bolt11, None).await?;
     ///
@@ -1292,7 +1300,7 @@ impl Wallet {
         let amount = match self.unit {
             CurrencyUnit::Sat => Amount::from(request_amount / 1000),
             CurrencyUnit::Msat => Amount::from(request_amount),
-            _ => return Err(Error::UnitNotSupported),
+            _ => return Err(Error::UnitUnsupported),
         };
 
         let quote_res = self
@@ -1352,12 +1360,12 @@ impl Wallet {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
-                return Err(Error::QuoteExpired);
+                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
             }
 
             quote.clone()
         } else {
-            return Err(Error::QuoteUnknown);
+            return Err(Error::UnknownQuote);
         };
 
         let ys = proofs
@@ -1425,17 +1433,19 @@ impl Wallet {
             false => MeltQuoteState::Unpaid,
         };
 
-        let melted = Melted {
+        let melted = Melted::from_proofs(
             state,
-            preimage: melt_response.payment_preimage,
-            change: change_proofs.clone(),
-        };
+            melt_response.payment_preimage,
+            quote_info.amount,
+            proofs.clone(),
+            change_proofs.clone(),
+        )?;
 
         let change_proof_infos = match change_proofs {
             Some(change_proofs) => {
                 tracing::debug!(
                     "Change amount returned from melt: {}",
-                    change_proofs.iter().map(|p| p.amount).sum::<Amount>()
+                    Amount::try_sum(change_proofs.iter().map(|p| p.amount))?
                 );
 
                 // Update counter for keyset
@@ -1488,7 +1498,7 @@ impl Wallet {
     ///  let unit = CurrencyUnit::Sat;
     ///
     ///  let localstore = WalletMemoryDatabase::default();
-    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///  let quote = wallet.melt_quote(bolt11, None).await?;
     ///  let quote_id = quote.id;
@@ -1503,12 +1513,12 @@ impl Wallet {
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
-                return Err(Error::QuoteExpired);
+                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
             }
 
             quote.clone()
         } else {
-            return Err(Error::QuoteUnknown);
+            return Err(Error::UnknownQuote);
         };
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
@@ -1532,7 +1542,7 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         // TODO: Check all proofs are same unit
 
-        if proofs.iter().map(|p| p.amount).sum::<Amount>() < amount {
+        if Amount::try_sum(proofs.iter().map(|p| p.amount))? < amount {
             return Err(Error::InsufficientFunds);
         }
 
@@ -1571,8 +1581,8 @@ impl Wallet {
                 break;
             }
 
-            remaining_amount =
-                amount + fees - selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+            remaining_amount = amount.checked_add(fees).ok_or(Error::AmountOverflow)?
+                - Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
             (proofs_larger, proofs_smaller) = proofs_smaller
                 .into_iter()
                 .skip(1)
@@ -1608,7 +1618,7 @@ impl Wallet {
 
         for inactive_proof in inactive_proofs {
             selected_proofs.push(inactive_proof);
-            let selected_total = selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
             let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {
@@ -1620,7 +1630,7 @@ impl Wallet {
 
         for active_proof in active_proofs {
             selected_proofs.push(active_proof);
-            let selected_total = selected_proofs.iter().map(|p| p.amount).sum::<Amount>();
+            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
             let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {
@@ -1684,7 +1694,7 @@ impl Wallet {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
                 let keys = self.get_keyset_keys(proof.keyset_id).await?;
-                let key = keys.amount_key(proof.amount).ok_or(Error::UnknownKey)?;
+                let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
                 proof.verify_dleq(key)?;
             }
 
@@ -1767,7 +1777,7 @@ impl Wallet {
 
         let mut total_amount = Amount::ZERO;
         for (mint, proofs) in received_proofs {
-            total_amount += proofs.iter().map(|p| p.amount).sum();
+            total_amount += Amount::try_sum(proofs.iter().map(|p| p.amount))?;
             let proofs = proofs
                 .into_iter()
                 .map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
@@ -1796,7 +1806,7 @@ impl Wallet {
     ///  let unit = CurrencyUnit::Sat;
     ///
     ///  let localstore = WalletMemoryDatabase::default();
-    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjEsInNlY3JldCI6ImI0ZjVlNDAxMDJhMzhiYjg3NDNiOTkwMzU5MTU1MGYyZGEzZTQxNWEzMzU0OTUyN2M2MmM5ZDc5MGVmYjM3MDUiLCJDIjoiMDIzYmU1M2U4YzYwNTMwZWVhOWIzOTQzZmRhMWEyY2U3MWM3YjNmMGNmMGRjNmQ4NDZmYTc2NWFhZjc3OWZhODFkIiwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
     ///  let amount_receive = wallet.receive(token, SplitTarget::default(), &[], &[]).await?;
     ///  Ok(())
@@ -1815,7 +1825,7 @@ impl Wallet {
         let unit = token_data.unit().unwrap_or_default();
 
         if unit != self.unit {
-            return Err(Error::UnitNotSupported);
+            return Err(Error::UnitUnsupported);
         }
 
         let proofs = token_data.proofs();
@@ -1927,7 +1937,7 @@ impl Wallet {
                     .cloned()
                     .collect();
 
-                restored_value += unspent_proofs.iter().map(|p| p.amount).sum();
+                restored_value += Amount::try_sum(unspent_proofs.iter().map(|p| p.amount))?;
 
                 let unspent_proofs = unspent_proofs
                     .into_iter()
@@ -2108,7 +2118,7 @@ impl Wallet {
                         key
                     }
                 }
-                .ok_or(Error::UnknownKey)?;
+                .ok_or(Error::AmountKey)?;
 
                 proof
                     .verify_dleq(mint_pubkey)

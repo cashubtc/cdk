@@ -23,6 +23,9 @@ pub enum Error {
     /// Hex Error
     #[error(transparent)]
     Hex(#[from] hex::Error),
+    /// Serde Json error
+    #[error(transparent)]
+    SerdeJsonError(#[from] serde_json::Error),
 }
 
 impl Default for Secret {
@@ -119,10 +122,10 @@ impl TryFrom<Secret> for crate::nuts::nut10::Secret {
 }
 
 impl TryFrom<&Secret> for crate::nuts::nut10::Secret {
-    type Error = serde_json::Error;
+    type Error = Error;
 
     fn try_from(unchecked_secret: &Secret) -> Result<crate::nuts::nut10::Secret, Self::Error> {
-        serde_json::from_str(&unchecked_secret.0)
+        Ok(serde_json::from_str(&unchecked_secret.0)?)
     }
 }
 

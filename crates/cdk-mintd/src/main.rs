@@ -407,8 +407,8 @@ async fn main() -> anyhow::Result<()> {
         mint_info = mint_info.pubkey(pubkey);
     }
 
-    if let Some(mint_icon_url) = &settings.mint_info.mint_icon_url {
-        mint_info = mint_info.mint_icon_url(mint_icon_url);
+    if let Some(icon_url) = &settings.mint_info.icon_url {
+        mint_info = mint_info.icon_url(icon_url);
     }
 
     if let Some(motd) = settings.mint_info.motd {
@@ -480,10 +480,13 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let listener =
-        tokio::net::TcpListener::bind(format!("{}:{}", listen_addr, listen_port)).await?;
-
-    axum::serve(listener, mint_service).await?;
+    axum::Server::bind(
+        &format!("{}:{}", listen_addr, listen_port)
+            .as_str()
+            .parse()?,
+    )
+    .serve(mint_service.into_make_service())
+    .await?;
 
     Ok(())
 }

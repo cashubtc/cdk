@@ -20,7 +20,7 @@ async fn main() -> Result<(), Error> {
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
     let quote = wallet.mint_quote(amount).await.unwrap();
 

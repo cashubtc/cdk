@@ -90,8 +90,9 @@ impl WalletDatabase for WalletSqliteDatabase {
             description_long,
             contact,
             nuts,
-            mint_icon_url,
+            icon_url,
             motd,
+            time,
         ) = match mint_info {
             Some(mint_info) => {
                 let MintInfo {
@@ -102,8 +103,9 @@ impl WalletDatabase for WalletSqliteDatabase {
                     description_long,
                     contact,
                     nuts,
-                    mint_icon_url,
+                    icon_url,
                     motd,
+                    time,
                 } = mint_info;
 
                 (
@@ -114,18 +116,19 @@ impl WalletDatabase for WalletSqliteDatabase {
                     description_long,
                     contact.map(|c| serde_json::to_string(&c).ok()),
                     serde_json::to_string(&nuts).ok(),
-                    mint_icon_url,
+                    icon_url,
                     motd,
+                    time,
                 )
             }
-            None => (None, None, None, None, None, None, None, None, None),
+            None => (None, None, None, None, None, None, None, None, None, None),
         };
 
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint
-(mint_url, name, pubkey, version, description, description_long, contact, nuts, mint_icon_url, motd)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+(mint_url, name, pubkey, version, description, description_long, contact, nuts, icon_url, motd, mint_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(mint_url.to_string())
@@ -136,8 +139,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(description_long)
         .bind(contact)
         .bind(nuts)
-        .bind(mint_icon_url)
+        .bind(icon_url)
         .bind(motd)
+        .bind(time.map(|v| v as i64))
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -199,12 +203,15 @@ FROM mint
 
         let mints = rec
             .into_iter()
-            .map(|row| {
+            .flat_map(|row| {
                 let mint_url: String = row.get("mint_url");
 
+                // Attempt to parse mint_url and convert mint_info
+                let mint_result = MintUrl::from_str(&mint_url).ok();
                 let mint_info = sqlite_row_to_mint_info(&row).ok();
 
-                (mint_url.into(), mint_info)
+                // Combine mint_result and mint_info into an Option tuple
+                mint_result.map(|mint| (mint, mint_info))
             })
             .collect();
 
@@ -766,8 +773,9 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
     let description_long: Option<String> = row.try_get("description_long").map_err(Error::from)?;
     let row_contact: Option<String> = row.try_get("contact").map_err(Error::from)?;
     let row_nuts: Option<String> = row.try_get("nuts").map_err(Error::from)?;
-    let mint_icon_url: Option<String> = row.try_get("mint_icon_url").map_err(Error::from)?;
+    let icon_url: Option<String> = row.try_get("icon_url").map_err(Error::from)?;
     let motd: Option<String> = row.try_get("motd").map_err(Error::from)?;
+    let time: Option<i64> = row.try_get("mint_time").map_err(Error::from)?;
 
     Ok(MintInfo {
         name,
@@ -779,8 +787,9 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
         nuts: row_nuts
             .and_then(|n| serde_json::from_str(&n).ok())
             .unwrap_or_default(),
-        mint_icon_url,
+        icon_url,
         motd,
+        time: time.map(|t| t as u64),
     })
 }
 
@@ -811,7 +820,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
 
     Ok(MintQuote {
         id: row_id,
-        mint_url: row_mint_url.into(),
+        mint_url: MintUrl::from_str(&row_mint_url)?,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
@@ -869,7 +878,7 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
     Ok(ProofInfo {
         proof,
         y: PublicKey::from_slice(&y)?,
-        mint_url: row_mint_url.into(),
+        mint_url: MintUrl::from_str(&row_mint_url)?,
         state: State::from_str(&row_state)?,
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,

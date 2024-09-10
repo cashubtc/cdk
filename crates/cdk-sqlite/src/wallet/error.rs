@@ -11,9 +11,6 @@ pub enum Error {
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
-    /// Wallet Error
-    #[error(transparent)]
-    CDKWallet(#[from] cdk::wallet::error::Error),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk::nuts::nut00::Error),
@@ -35,6 +32,9 @@ pub enum Error {
     /// Secret Error
     #[error(transparent)]
     CDKSECRET(#[from] cdk::secret::Error),
+    /// Mint Url
+    #[error(transparent)]
+    MintUrl(#[from] cdk::mint_url::Error),
     /// BIP32 Error
     #[error(transparent)]
     BIP32(#[from] bitcoin::bip32::Error),

@@ -117,7 +117,7 @@ pub struct MintInfo {
     /// long description
     pub description_long: Option<String>,
     /// url to the mint icon
-    pub mint_icon_url: Option<String>,
+    pub icon_url: Option<String>,
     /// message of the day that the wallet must display to the user
     pub motd: Option<String>,
     /// Nostr publickey

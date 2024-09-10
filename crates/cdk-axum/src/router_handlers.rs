@@ -59,13 +59,13 @@ pub async fn get_mint_bolt11_quote(
         .ok_or_else(|| {
             tracing::info!("Bolt11 mint request for unsupported unit");
 
-            into_response(Error::UnsupportedUnit)
+            into_response(Error::UnitUnsupported)
         })?;
 
     let amount =
         to_unit(payload.amount, &payload.unit, &ln.get_settings().unit).map_err(|err| {
             tracing::error!("Backed does not support unit: {}", err);
-            into_response(Error::UnsupportedUnit)
+            into_response(Error::UnitUnsupported)
         })?;
 
     let quote_expiry = unix_time() + state.quote_ttl;
@@ -81,7 +81,7 @@ pub async fn get_mint_bolt11_quote(
     let quote = state
         .mint
         .new_mint_quote(
-            state.mint_url.into(),
+            state.mint_url,
             create_invoice_response.request.to_string(),
             payload.unit,
             payload.amount,
@@ -139,7 +139,7 @@ pub async fn get_melt_bolt11_quote(
         .ok_or_else(|| {
             tracing::info!("Could not get ln backend for {}, bolt11 ", payload.unit);
 
-            into_response(Error::UnsupportedUnit)
+            into_response(Error::UnitUnsupported)
         })?;
 
     let payment_quote = ln.get_payment_quote(&payload).await.map_err(|err| {
@@ -149,7 +149,7 @@ pub async fn get_melt_bolt11_quote(
             err
         );
 
-        into_response(Error::UnsupportedUnit)
+        into_response(Error::UnitUnsupported)
     })?;
 
     let quote = state
@@ -199,7 +199,7 @@ pub async fn post_melt_bolt11(
             if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                 tracing::error!("Could not reset melt quote state: {}", err);
             }
-            return Err(into_response(Error::MeltRequestInvalid));
+            return Err(into_response(Error::UnitUnsupported));
         }
     };
 
@@ -219,11 +219,14 @@ pub async fn post_melt_bolt11(
             if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                 tracing::error!("Could not reset melt quote state: {}", err);
             }
-            return Err(into_response(Error::DatabaseError));
+            return Err(into_response(Error::Internal));
         }
     };
 
-    let inputs_amount_quote_unit = payload.proofs_amount();
+    let inputs_amount_quote_unit = payload.proofs_amount().map_err(|_| {
+        tracing::error!("Proof inputs in melt quote overflowed");
+        into_response(Error::AmountOverflow)
+    })?;
 
     let (preimage, amount_spent_quote_unit) = match mint_quote {
         Some(mint_quote) => {
@@ -244,7 +247,7 @@ pub async fn post_melt_bolt11(
                 if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                     tracing::error!("Could not reset melt quote state: {}", err);
                 }
-                return Err(into_response(Error::InsufficientInputProofs));
+                return Err(into_response(Error::InsufficientFunds));
             }
 
             mint_quote.state = MintQuoteState::Paid;
@@ -255,7 +258,7 @@ pub async fn post_melt_bolt11(
                 if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                     tracing::error!("Could not reset melt quote state: {}", err);
                 }
-                return Err(into_response(Error::DatabaseError));
+                return Err(into_response(Error::Internal));
             }
 
             (None, amount)
@@ -302,7 +305,7 @@ pub async fn post_melt_bolt11(
 
                         Some(
                             to_unit(partial_msats, &CurrencyUnit::Msat, &quote.unit)
-                                .map_err(|_| into_response(Error::UnsupportedUnit))?,
+                                .map_err(|_| into_response(Error::UnitUnsupported))?,
                         )
                     }
                     false => None,
@@ -311,10 +314,10 @@ pub async fn post_melt_bolt11(
                 let amount_to_pay = match partial_amount {
                     Some(amount_to_pay) => amount_to_pay,
                     None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &quote.unit)
-                        .map_err(|_| into_response(Error::UnsupportedUnit))?,
+                        .map_err(|_| into_response(Error::UnitUnsupported))?,
                 };
 
-                if amount_to_pay + quote.fee_reserve > inputs_amount_quote_unit {
+                if amount_to_pay + quote.fee_reserve != inputs_amount_quote_unit {
                     tracing::debug!(
                         "Not enough inuts provided: {} msats needed {} msats",
                         inputs_amount_quote_unit,
@@ -324,7 +327,11 @@ pub async fn post_melt_bolt11(
                     if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
-                    return Err(into_response(Error::InsufficientInputProofs));
+                    return Err(into_response(Error::TransactionUnbalanced(
+                        inputs_amount_quote_unit.into(),
+                        amount_to_pay.into(),
+                        quote.fee_reserve.into(),
+                    )));
                 }
             }
 
@@ -336,7 +343,7 @@ pub async fn post_melt_bolt11(
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
 
-                    return Err(into_response(Error::UnsupportedUnit));
+                    return Err(into_response(Error::UnitUnsupported));
                 }
             };
 
@@ -361,7 +368,7 @@ pub async fn post_melt_bolt11(
             };
 
             let amount_spent = to_unit(pre.total_spent, &ln.get_settings().unit, &quote.unit)
-                .map_err(|_| into_response(Error::UnsupportedUnit))?;
+                .map_err(|_| into_response(Error::UnitUnsupported))?;
 
             (pre.payment_preimage, amount_spent)
         }
@@ -392,7 +399,7 @@ pub async fn post_check(
 }
 
 pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
-    Ok(Json(state.mint.mint_info().clone()))
+    Ok(Json(state.mint.mint_info().clone().time(unix_time())))
 }
 
 pub async fn post_swap(

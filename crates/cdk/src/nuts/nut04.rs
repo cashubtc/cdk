@@ -19,6 +19,9 @@ pub enum Error {
     /// Unknown Quote State
     #[error("Unknown Quote State")]
     UnknownState,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
 }
 
 /// Mint quote request [NUT-04]
@@ -179,11 +182,13 @@ pub struct MintBolt11Request {
 
 impl MintBolt11Request {
     /// Total [`Amount`] of outputs
-    pub fn total_amount(&self) -> Amount {
-        self.outputs
-            .iter()
-            .map(|BlindedMessage { amount, .. }| *amount)
-            .sum()
+    pub fn total_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(
+            self.outputs
+                .iter()
+                .map(|BlindedMessage { amount, .. }| *amount),
+        )
+        .map_err(|_| Error::AmountOverflow)
     }
 }
 

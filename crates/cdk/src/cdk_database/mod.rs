@@ -43,9 +43,9 @@ pub enum Error {
     /// Database Error
     #[error(transparent)]
     Database(Box<dyn std::error::Error + Send + Sync>),
-    /// CDK Error
+    /// DHKE error
     #[error(transparent)]
-    Cdk(#[from] crate::error::Error),
+    DHKE(#[from] crate::dhke::Error),
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),

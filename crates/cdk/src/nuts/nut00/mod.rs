@@ -52,16 +52,25 @@ pub enum Error {
     Utf8ParseError(#[from] FromUtf8Error),
     /// Base64 error
     #[error(transparent)]
-    Base64Error(#[from] base64::DecodeError),
+    Base64Error(#[from] bitcoin::base64::DecodeError),
     /// Parse Url Error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
     /// Ciborium error
     #[error(transparent)]
     CiboriumError(#[from] ciborium::de::Error<std::io::Error>),
-    /// CDK error
+    /// Amount Error
     #[error(transparent)]
-    Cdk(#[from] crate::error::Error),
+    Amount(#[from] crate::amount::Error),
+    /// Secret error
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
+    /// DHKE error
+    #[error(transparent)]
+    DHKE(#[from] crate::dhke::Error),
+    /// NUT10 error
+    #[error(transparent)]
+    NUT10(#[from] crate::nuts::nut10::Error),
     /// NUT11 error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
@@ -609,11 +618,10 @@ impl PreMintSecrets {
     }
 
     /// Totoal amount of secrets
-    pub fn total_amount(&self) -> Amount {
-        self.secrets
-            .iter()
-            .map(|PreMint { amount, .. }| *amount)
-            .sum()
+    pub fn total_amount(&self) -> Result<Amount, Error> {
+        Ok(Amount::try_sum(
+            self.secrets.iter().map(|PreMint { amount, .. }| *amount),
+        )?)
     }
 
     /// [`BlindedMessage`]s from [`PreMintSecrets`]
