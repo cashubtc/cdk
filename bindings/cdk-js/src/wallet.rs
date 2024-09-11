@@ -86,7 +86,11 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = mintQuote)]
-    pub async fn mint_quote(&mut self, amount: u64, description: Option<String>) -> Result<JsMintQuote> {
+    pub async fn mint_quote(
+        &mut self,
+        amount: u64,
+        description: Option<String>,
+    ) -> Result<JsMintQuote> {
         let quote = self
             .inner
             .mint_quote(amount.into(), description)
