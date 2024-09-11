@@ -112,6 +112,20 @@ impl Id {
             id: bytes[1..].try_into()?,
         })
     }
+
+    /// [`Id`] to u64
+    pub fn to_u64(&self) -> u64 {
+        let bytes = self.to_bytes();
+        let mut array = [0u8; 8];
+        array[..bytes.len()].copy_from_slice(&bytes);
+        u64::from_be_bytes(array)
+    }
+
+    /// [`Id`] from u64
+    pub fn from_u64(value: u64) -> Result<Self, Error> {
+        let bytes = value.to_be_bytes();
+        Self::from_bytes(&bytes)
+    }
 }
 
 impl TryFrom<Id> for u64 {
