@@ -114,14 +114,33 @@ impl Id {
     }
 }
 
-impl TryFrom<Id> for u64 {
+impl TryFrom<Id> for u32 {
     type Error = Error;
     fn try_from(value: Id) -> Result<Self, Self::Error> {
         let hex_bytes: [u8; 8] = value.to_bytes().try_into().map_err(|_| Error::Length)?;
 
         let int = u64::from_be_bytes(hex_bytes);
 
-        Ok(int % (2_u64.pow(31) - 1))
+        let result = (int % (2_u64.pow(31) - 1)) as u32;
+        Ok(result)
+    }
+}
+
+impl TryFrom<u64> for Id {
+    type Error = Error;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        let bytes = value.to_be_bytes();
+        Self::from_bytes(&bytes)
+    }
+}
+
+impl TryFrom<Id> for u64 {
+    type Error = Error;
+
+    fn try_from(value: Id) -> Result<Self, Self::Error> {
+        let bytes = value.to_bytes();
+        let byte_array: [u8; 8] = bytes.try_into().map_err(|_| Error::Length)?;
+        Ok(u64::from_be_bytes(byte_array))
     }
 }
 
@@ -490,8 +509,26 @@ mod test {
     fn test_to_int() {
         let id = Id::from_str("009a1f293253e41e").unwrap();
 
-        let id_int = u64::try_from(id).unwrap();
+        let id_int = u32::try_from(id).unwrap();
         assert_eq!(864559728, id_int)
+    }
+
+    #[test]
+    fn test_to_u64_and_back() {
+        let id = Id::from_str("009a1f293253e41e").unwrap();
+
+        let id_long = u64::try_from(id).unwrap();
+        assert_eq!(43381408211919902, id_long);
+
+        let new_id = Id::try_from(id_long).unwrap();
+        assert_eq!(id, new_id);
+    }
+
+    #[test]
+    fn test_id_from_invalid_byte_length() {
+        let three_bytes = [0x01, 0x02, 0x03];
+        let result = Id::from_bytes(&three_bytes);
+        assert!(result.is_err(), "Expected an invalid byte length error");
     }
 
     #[test]
