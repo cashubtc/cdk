@@ -11,10 +11,12 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -33,8 +35,8 @@ pub mod error;
 #[derive(Clone)]
 pub struct Strike {
     strike_api: StrikeApi,
-    mint_settings: MintMeltSettings,
-    melt_settings: MintMeltSettings,
+    mint_settings: MintMethodSettings,
+    melt_settings: MeltMethodSettings,
     unit: CurrencyUnit,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     webhook_url: String,
@@ -44,8 +46,8 @@ impl Strike {
     /// Create new [`Strike`] wallet
     pub async fn new(
         api_key: String,
-        mint_settings: MintMeltSettings,
-        melt_settings: MintMeltSettings,
+        mint_settings: MintMethodSettings,
+        melt_settings: MeltMethodSettings,
         unit: CurrencyUnit,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
         webhook_url: String,
@@ -70,8 +72,9 @@ impl MintLightning for Strike {
         Settings {
             mpp: false,
             unit: self.unit,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            mint_settings: self.mint_settings.clone(),
+            melt_settings: self.melt_settings.clone(),
+            invoice_description: true,
         }
     }
 

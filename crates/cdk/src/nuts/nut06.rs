@@ -360,8 +360,8 @@ mod tests {
     "nuts": {
         "4": {
             "methods": [
-                {"method": "bolt11", "unit": "sat"},
-                {"method": "bolt11", "unit": "usd"}
+                {"method": "bolt11", "unit": "sat", "description": true},
+                {"method": "bolt11", "unit": "usd", "description": true}
             ],
             "disabled": false
         },
@@ -425,7 +425,8 @@ mod tests {
         "method": "bolt11",
         "unit": "sat",
         "min_amount": 0,
-        "max_amount": 10000
+        "max_amount": 10000,
+        "description": true
         }
       ],
       "disabled": false
@@ -468,7 +469,8 @@ mod tests {
         "method": "bolt11",
         "unit": "sat",
         "min_amount": 0,
-        "max_amount": 10000
+        "max_amount": 10000,
+        "description": true
         }
       ],
       "disabled": false

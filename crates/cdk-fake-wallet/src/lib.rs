@@ -13,12 +13,15 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+    Settings,
 };
 use cdk::mint;
 use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::unix_time;
 use error::Error;
 use futures::stream::StreamExt;
@@ -37,16 +40,16 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<String>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
-    mint_settings: MintMeltSettings,
-    melt_settings: MintMeltSettings,
+    mint_settings: MintMethodSettings,
+    melt_settings: MeltMethodSettings,
 }
 
 impl FakeWallet {
     /// Creat new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
-        mint_settings: MintMeltSettings,
-        melt_settings: MintMeltSettings,
+        mint_settings: MintMethodSettings,
+        melt_settings: MeltMethodSettings,
     ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
 
@@ -68,8 +71,9 @@ impl MintLightning for FakeWallet {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            melt_settings: self.melt_settings,
-            mint_settings: self.mint_settings,
+            melt_settings: self.melt_settings.clone(),
+            mint_settings: self.mint_settings.clone(),
+            invoice_description: true,
         }
     }
 

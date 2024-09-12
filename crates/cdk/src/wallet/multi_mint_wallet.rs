@@ -151,13 +151,14 @@ impl MultiMintWallet {
         &self,
         wallet_key: &WalletKey,
         amount: Amount,
+        description: Option<String>,
     ) -> Result<MintQuote, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        wallet.mint_quote(amount).await
+        wallet.mint_quote(amount, description).await
     }
 
     /// Check all mint quotes
