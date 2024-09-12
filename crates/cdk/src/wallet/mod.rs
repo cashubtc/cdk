@@ -20,9 +20,9 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::{
     nut10, nut12, Conditions, CurrencyUnit, Id, KeySetInfo, Keys, Kind, MeltQuoteBolt11Response,
-    MeltQuoteState, MintInfo, MintQuoteBolt11Response, MintQuoteState, PreMintSecrets, PreSwap,
-    Proof, ProofState, Proofs, PublicKey, RestoreRequest, SecretKey, SigFlag, SpendingConditions,
-    State, SwapRequest,
+    MeltQuoteState, MintInfo, MintQuoteBolt11Response, MintQuoteState, PaymentMethod,
+    PreMintSecrets, PreSwap, Proof, ProofState, Proofs, PublicKey, RestoreRequest, SecretKey,
+    SigFlag, SpendingConditions, State, SwapRequest,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::{hex, unix_time};
@@ -500,17 +500,40 @@ impl Wallet {
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
     ///     let amount = Amount::from(100);
     ///
-    ///     let quote = wallet.mint_quote(amount).await?;
+    ///     let quote = wallet.mint_quote(amount, None).await?;
     ///     Ok(())
     /// }
     /// ```
     #[instrument(skip(self))]
-    pub async fn mint_quote(&self, amount: Amount) -> Result<MintQuote, Error> {
+    pub async fn mint_quote(
+        &self,
+        amount: Amount,
+        description: Option<String>,
+    ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = self.unit;
+
+        // If we have a description, we check that the mint supports it.
+        // If we have a description, we check that the mint supports it.
+        if description.is_some() {
+            let mint_method_settings = self
+                .localstore
+                .get_mint(mint_url.clone())
+                .await?
+                .ok_or(Error::IncorrectMint)?
+                .nuts
+                .nut04
+                .get_settings(&unit, &PaymentMethod::Bolt11)
+                .ok_or(Error::UnsupportedUnit)?;
+
+            if !mint_method_settings.description {
+                return Err(Error::InvoiceDescriptionUnsupported);
+            }
+        }
+
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone().try_into()?, amount, unit)
+            .post_mint_quote(mint_url.clone().try_into()?, amount, unit, description)
             .await?;
 
         let quote = MintQuote {
@@ -594,7 +617,7 @@ impl Wallet {
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
-    ///     let quote = wallet.mint_quote(amount).await?;
+    ///     let quote = wallet.mint_quote(amount, None).await?;
     ///     let quote_id = quote.id;
     ///     // To be called after quote request is paid
     ///     let amount_minted = wallet.mint(&quote_id, SplitTarget::default(), None).await?;

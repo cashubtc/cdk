@@ -64,14 +64,22 @@ pub async fn get_mint_bolt11_quote(
 
     let amount =
         to_unit(payload.amount, &payload.unit, &ln.get_settings().unit).map_err(|err| {
-            tracing::error!("Backed does not support unit: {}", err);
+            tracing::error!("Backend does not support unit: {}", err);
             into_response(Error::UnitUnsupported)
         })?;
 
     let quote_expiry = unix_time() + state.quote_ttl;
-
+    if payload.description.is_some() && !ln.get_settings().invoice_description {
+        tracing::error!("Backend does not support invoice description");
+        return Err(into_response(Error::InvoiceDescriptionUnsupported));
+    }
     let create_invoice_response = ln
-        .create_invoice(amount, &payload.unit, "".to_string(), quote_expiry)
+        .create_invoice(
+            amount,
+            &payload.unit,
+            payload.description.unwrap_or("".to_string()),
+            quote_expiry,
+        )
         .await
         .map_err(|err| {
             tracing::error!("Could not create invoice: {}", err);

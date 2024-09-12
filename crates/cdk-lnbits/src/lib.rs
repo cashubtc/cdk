@@ -11,11 +11,14 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+    Settings,
 };
 use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -31,8 +34,8 @@ pub mod error;
 #[derive(Clone)]
 pub struct LNbits {
     lnbits_api: LNBitsClient,
-    mint_settings: MintMeltSettings,
-    melt_settings: MintMeltSettings,
+    mint_settings: MintMethodSettings,
+    melt_settings: MeltMethodSettings,
     fee_reserve: FeeReserve,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     webhook_url: String,
@@ -45,8 +48,8 @@ impl LNbits {
         admin_api_key: String,
         invoice_api_key: String,
         api_url: String,
-        mint_settings: MintMeltSettings,
-        melt_settings: MintMeltSettings,
+        mint_settings: MintMethodSettings,
+        melt_settings: MeltMethodSettings,
         fee_reserve: FeeReserve,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
         webhook_url: String,
@@ -72,8 +75,9 @@ impl MintLightning for LNbits {
         Settings {
             mpp: false,
             unit: CurrencyUnit::Sat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            mint_settings: self.mint_settings.clone(),
+            melt_settings: self.melt_settings.clone(),
+            invoice_description: true,
         }
     }
 

@@ -31,6 +31,8 @@ pub struct MintQuoteBolt11Request {
     pub amount: Amount,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
+    /// Memo to create the invoice with
+    pub description: Option<String>,
 }
 
 /// Possible states of a quote
@@ -212,6 +214,8 @@ pub struct MintMethodSettings {
     /// Max Amount
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
+    /// Quote Description
+    pub description: bool,
 }
 
 /// Mint Settings
@@ -252,6 +256,7 @@ impl Default for Settings {
             unit: CurrencyUnit::Sat,
             min_amount: Some(Amount::from(1)),
             max_amount: Some(Amount::from(1000000)),
+            description: true,
         };
 
         Settings {

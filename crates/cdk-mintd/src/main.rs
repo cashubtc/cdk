@@ -13,7 +13,7 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
-use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
+use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{FeeReserve, Mint};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
@@ -150,8 +150,8 @@ async fn main() -> anyhow::Result<()> {
                 Cln::new(
                     cln_socket,
                     fee_reserve,
-                    MintMeltSettings::default(),
-                    MintMeltSettings::default(),
+                    MintMethodSettings::default(),
+                    MeltMethodSettings::default(),
                 )
                 .await?,
             );
@@ -179,8 +179,8 @@ async fn main() -> anyhow::Result<()> {
 
                 let strike = Strike::new(
                     api_key.clone(),
-                    MintMeltSettings::default(),
-                    MintMeltSettings::default(),
+                    MintMethodSettings::default(),
+                    MeltMethodSettings::default(),
                     unit,
                     Arc::new(Mutex::new(Some(receiver))),
                     webhook_url.to_string(),
@@ -216,8 +216,8 @@ async fn main() -> anyhow::Result<()> {
                 admin_api_key,
                 invoice_api_key,
                 lnbits_settings.lnbits_api,
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
+                MintMethodSettings::default(),
+                MeltMethodSettings::default(),
                 fee_reserve,
                 Arc::new(Mutex::new(Some(receiver))),
                 webhook_url.to_string(),
@@ -265,8 +265,8 @@ async fn main() -> anyhow::Result<()> {
             let phoenixd = Phoenixd::new(
                 api_password.to_string(),
                 api_url.to_string(),
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
+                MintMethodSettings::default(),
+                MeltMethodSettings::default(),
                 fee_reserve,
                 Arc::new(Mutex::new(Some(receiver))),
                 webhook_url,
@@ -299,8 +299,8 @@ async fn main() -> anyhow::Result<()> {
                 cert_file,
                 macaroon_file,
                 fee_reserve,
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
+                MintMethodSettings::default(),
+                MeltMethodSettings::default(),
             )
             .await?;
 
@@ -323,8 +323,8 @@ async fn main() -> anyhow::Result<()> {
 
                 let wallet = Arc::new(FakeWallet::new(
                     fee_reserve.clone(),
-                    MintMeltSettings::default(),
-                    MintMeltSettings::default(),
+                    MintMethodSettings::default(),
+                    MeltMethodSettings::default(),
                 ));
 
                 ln_backends.insert(ln_key, wallet);
@@ -358,15 +358,16 @@ async fn main() -> anyhow::Result<()> {
             let n4 = MintMethodSettings {
                 method: key.method.clone(),
                 unit: key.unit,
-                min_amount: Some(settings.mint_settings.min_amount),
-                max_amount: Some(settings.mint_settings.max_amount),
+                min_amount: settings.mint_settings.min_amount,
+                max_amount: settings.mint_settings.max_amount,
+                description: settings.invoice_description,
             };
 
             let n5 = MeltMethodSettings {
                 method: key.method.clone(),
                 unit: key.unit,
-                min_amount: Some(settings.melt_settings.min_amount),
-                max_amount: Some(settings.melt_settings.max_amount),
+                min_amount: settings.melt_settings.min_amount,
+                max_amount: settings.melt_settings.max_amount,
             };
 
             nut_04.methods.push(n4);
