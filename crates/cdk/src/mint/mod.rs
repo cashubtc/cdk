@@ -26,7 +26,7 @@ pub mod types;
 pub use types::{MeltQuote, MintQuote};
 
 /// Cashu Mint
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Mint {
     /// Mint Url
     pub mint_url: MintUrl,

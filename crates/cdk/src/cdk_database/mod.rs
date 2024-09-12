@@ -2,6 +2,7 @@
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use std::collections::HashMap;
+use std::fmt;
 use std::fmt::Debug;
 
 #[cfg(any(feature = "wallet", feature = "mint"))]
@@ -169,7 +170,7 @@ pub trait WalletDatabase: Debug {
 /// Mint Database trait
 #[cfg(feature = "mint")]
 #[async_trait]
-pub trait MintDatabase {
+pub trait MintDatabase: fmt::Debug {
     /// Mint Database Error
     type Err: Into<Error> + From<Error>;
 
