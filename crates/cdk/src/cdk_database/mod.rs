@@ -172,7 +172,7 @@ pub trait WalletDatabase: Debug {
 #[async_trait]
 pub trait MintDatabase: fmt::Debug {
     /// Mint Database Error
-    type Err: Into<Error> + From<Error>;
+    type Err: Into<Error> + From<Error> + Debug;
 
     /// Add Active Keyset
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
