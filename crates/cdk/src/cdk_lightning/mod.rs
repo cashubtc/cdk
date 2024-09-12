@@ -138,27 +138,6 @@ pub struct Settings {
     pub invoice_description: bool,
 }
 
-/// Mint or melt settings
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintMeltSettings {
-    /// Min Amount
-    pub min_amount: Amount,
-    /// Max Amount
-    pub max_amount: Amount,
-    /// Enabled
-    pub enabled: bool,
-}
-
-impl Default for MintMeltSettings {
-    fn default() -> Self {
-        Self {
-            min_amount: Amount::from(1),
-            max_amount: Amount::from(500000),
-            enabled: true,
-        }
-    }
-}
-
 /// Msats in sat
 pub const MSAT_IN_SAT: u64 = 1000;
 
