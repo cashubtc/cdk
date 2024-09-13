@@ -215,6 +215,7 @@ pub struct MintMethodSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
     /// Quote Description
+    #[serde(default)]
     pub description: bool,
 }
 
