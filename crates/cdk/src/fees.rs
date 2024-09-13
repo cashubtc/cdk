@@ -26,10 +26,7 @@ pub fn calculate_fee(
         let proofs_fee = keyset_fee_ppk * proof_count;
 
         sum_fee += proofs_fee;
-        println!("{}", sum_fee);
     }
-
-    println!("{}", sum_fee);
 
     let fee = (sum_fee + 999) / 1000;
 
