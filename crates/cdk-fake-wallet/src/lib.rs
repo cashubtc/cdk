@@ -129,6 +129,7 @@ impl MintLightning for FakeWallet {
             payment_hash: "".to_string(),
             status: MeltQuoteState::Paid,
             total_spent: melt_quote.amount,
+            unit: melt_quote.unit,
         })
     }
 

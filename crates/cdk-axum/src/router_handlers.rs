@@ -375,7 +375,7 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            let amount_spent = to_unit(pre.total_spent, &ln.get_settings().unit, &quote.unit)
+            let amount_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit)
                 .map_err(|_| into_response(Error::UnitUnsupported))?;
 
             (pre.payment_preimage, amount_spent)

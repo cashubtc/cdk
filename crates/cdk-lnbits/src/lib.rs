@@ -193,6 +193,7 @@ impl MintLightning for LNbits {
             payment_preimage: Some(invoice_info.payment_hash),
             status,
             total_spent,
+            unit: CurrencyUnit::Sat,
         })
     }
 

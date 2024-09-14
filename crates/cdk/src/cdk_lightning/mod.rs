@@ -106,8 +106,10 @@ pub struct PayInvoiceResponse {
     pub payment_preimage: Option<String>,
     /// Status
     pub status: MeltQuoteState,
-    /// Totoal Amount Spent
+    /// Total Amount Spent
     pub total_spent: Amount,
+    /// Unit of total spent
+    pub unit: CurrencyUnit,
 }
 
 /// Payment quote response
