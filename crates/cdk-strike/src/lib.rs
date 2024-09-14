@@ -72,7 +72,7 @@ impl MintLightning for Strike {
         Settings {
             mpp: false,
             unit: self.unit,
-            mint_settings: self.mint_settings.clone(),
+            mint_settings: self.mint_settings,
             melt_settings: self.melt_settings,
             invoice_description: true,
         }
