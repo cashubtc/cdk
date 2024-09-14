@@ -208,7 +208,7 @@ impl HttpClient {
     }
 
     /// Melt Quote [NUT-05]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_melt_quote(
         &self,
         mint_url: Url,
