@@ -226,6 +226,7 @@ impl MintLightning for Cln {
                         &CurrencyUnit::Msat,
                         &melt_quote.unit,
                     )?,
+                    unit: melt_quote.unit,
                 }
             }
             _ => {

@@ -178,6 +178,7 @@ impl MintLightning for Strike {
             payment_preimage: None,
             status: state,
             total_spent,
+            unit: melt_quote.unit,
         })
     }
 

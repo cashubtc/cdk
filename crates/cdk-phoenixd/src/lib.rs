@@ -193,6 +193,7 @@ impl MintLightning for Phoenixd {
             payment_preimage: Some(pay_response.payment_preimage),
             status: MeltQuoteState::Paid,
             total_spent: total_spent_sats,
+            unit: CurrencyUnit::Sat,
         })
     }
 

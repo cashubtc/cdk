@@ -200,8 +200,9 @@ impl MintLightning for Lnd {
         Ok(PayInvoiceResponse {
             payment_hash: hex::encode(payment_response.payment_hash),
             payment_preimage: Some(hex::encode(payment_response.payment_preimage)),
-            status: MeltQuoteState::Pending,
+            status: MeltQuoteState::Paid,
             total_spent: total_spent.into(),
+            unit: CurrencyUnit::Sat,
         })
     }
 
