@@ -1308,7 +1308,7 @@ impl Wallet {
     ///     Ok(())
     /// }
     /// ```
-    #[instrument(skip(self))]
+    #[instrument(skip(self, request))]
     pub async fn melt_quote(
         &self,
         request: String,
@@ -1378,7 +1378,7 @@ impl Wallet {
     }
 
     /// Melt specific proofs
-    #[instrument(skip(self))]
+    #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
