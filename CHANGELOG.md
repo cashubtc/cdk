@@ -25,15 +25,19 @@
 - cdk: Bump `bitcoin` to `0.32.2` ([prusnak]).
 - cdk: Bump `lightning-invoice` to `0.32.2` ([prusnak]).
 - cdk: Bump `lightning` to `0.0.124` ([prusnak]).
+- cdk: `PaymentMethod` as a `non_exhaustive` enum ([thesimplekid]).
+- cdk: `CurrencyUnit` as a `non_exhaustive` enum ([thesimpekid]).
 
 ### Added
 - cdk: Added description to `MintQuoteBolt11Request` ([lollerfirst]).
 - cdk(wallet): Added description to `mint_quote` ([lollerfirst]).
 - cdk: Add `amount` and `fee_paid` to `Melted` ([davidcaseria]).
 - cdk: Add `from_proofs` on `Melted` ([davidcaseria]). 
+- cdk: Add unit on `PaymentResponse` ([thesimplekid]).
 
 ### Removed
--cdk: Remove `MintMeltSettings` since it is no longer used ([lollerfirst]).
+- cdk: Remove `MintMeltSettings` since it is no longer used ([lollerfirst]).
+- cdk: `PaymentMethod::Custom` ([thesimplekid]).
 
 
 
