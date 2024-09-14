@@ -189,19 +189,27 @@ impl MintLightning for Lnd {
             .lightning()
             .send_payment_sync(fedimint_tonic_lnd::tonic::Request::new(pay_req))
             .await
-            .unwrap()
+            .map_err(|_| Error::PaymentFailed)?
             .into_inner();
 
-        let total_spent = payment_response
+        let total_amount = payment_response
             .payment_route
-            .map_or(0, |route| route.total_fees_msat / MSAT_IN_SAT as i64)
+            .map_or(0, |route| route.total_amt_msat / MSAT_IN_SAT as i64)
             as u64;
+
+        let (status, payment_preimage) = match total_amount == 0 {
+            true => (MeltQuoteState::Unpaid, None),
+            false => (
+                MeltQuoteState::Paid,
+                Some(hex::encode(payment_response.payment_preimage)),
+            ),
+        };
 
         Ok(PayInvoiceResponse {
             payment_hash: hex::encode(payment_response.payment_hash),
-            payment_preimage: Some(hex::encode(payment_response.payment_preimage)),
-            status: MeltQuoteState::Paid,
-            total_spent: total_spent.into(),
+            payment_preimage,
+            status,
+            total_spent: total_amount.into(),
             unit: CurrencyUnit::Sat,
         })
     }

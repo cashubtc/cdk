@@ -11,9 +11,12 @@ pub enum Error {
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
-    /// Connection Error
+    /// Connection error
     #[error("LND connection error")]
     Connection,
+    /// Payment failed
+    #[error("LND payment failed")]
+    PaymentFailed,
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {
