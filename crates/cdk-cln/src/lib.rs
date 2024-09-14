@@ -76,7 +76,7 @@ impl MintLightning for Cln {
             mpp: true,
             unit: CurrencyUnit::Msat,
             mint_settings: self.mint_settings.clone(),
-            melt_settings: self.melt_settings.clone(),
+            melt_settings: self.melt_settings,
             invoice_description: true,
         }
     }

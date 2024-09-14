@@ -71,8 +71,8 @@ impl MintLightning for FakeWallet {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            melt_settings: self.melt_settings.clone(),
             mint_settings: self.mint_settings.clone(),
+            melt_settings: self.melt_settings,
             invoice_description: true,
         }
     }
