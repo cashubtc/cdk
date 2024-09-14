@@ -132,6 +132,7 @@ impl MintLightning for Strike {
             CurrencyUnit::Msat => StrikeCurrencyUnit::BTC,
             CurrencyUnit::Usd => StrikeCurrencyUnit::USD,
             CurrencyUnit::Eur => StrikeCurrencyUnit::EUR,
+            _ => return Err(Self::Err::UnsupportedUnit),
         };
 
         let payment_quote_request = PayInvoiceQuoteRequest {
@@ -195,7 +196,7 @@ impl MintLightning for Strike {
 
         let invoice_request = InvoiceRequest {
             correlation_id: Some(request_lookup_id.to_string()),
-            amount: to_strike_unit(amount, &self.unit),
+            amount: to_strike_unit(amount, &self.unit)?,
             description: Some(description),
         };
 
@@ -278,32 +279,37 @@ pub(crate) fn from_strike_amount(
                 bail!("Could not convert to EUR");
             }
         }
+        _ => bail!("Unsupported unit"),
     }
 }
 
-pub(crate) fn to_strike_unit<T>(amount: T, current_unit: &CurrencyUnit) -> StrikeAmount
+pub(crate) fn to_strike_unit<T>(
+    amount: T,
+    current_unit: &CurrencyUnit,
+) -> anyhow::Result<StrikeAmount>
 where
     T: Into<u64>,
 {
     let amount = amount.into();
     match current_unit {
-        CurrencyUnit::Sat => StrikeAmount::from_sats(amount),
-        CurrencyUnit::Msat => StrikeAmount::from_sats(amount / 1000),
+        CurrencyUnit::Sat => Ok(StrikeAmount::from_sats(amount)),
+        CurrencyUnit::Msat => Ok(StrikeAmount::from_sats(amount / 1000)),
         CurrencyUnit::Usd => {
             let dollars = (amount as f64 / 100_f64) * 100.0;
 
-            StrikeAmount {
+            Ok(StrikeAmount {
                 currency: StrikeCurrencyUnit::USD,
                 amount: dollars.round() / 100.0,
-            }
+            })
         }
         CurrencyUnit::Eur => {
             let euro = (amount as f64 / 100_f64) * 100.0;
 
-            StrikeAmount {
+            Ok(StrikeAmount {
                 currency: StrikeCurrencyUnit::EUR,
                 amount: euro.round() / 100.0,
-            }
+            })
         }
+        _ => bail!("Unsupported unit"),
     }
 }
