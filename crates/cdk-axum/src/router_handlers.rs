@@ -10,9 +10,10 @@ use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeysResponse, KeysetResponse,
-    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
-    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteState,
+    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteState, PaymentMethod, RestoreRequest, RestoreResponse,
+    SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use cdk::Bolt11Invoice;
@@ -375,6 +376,16 @@ pub async fn post_melt_bolt11(
                 }
             };
 
+            // Check that melt quote status paid by in ln backend
+            if pre.status != MeltQuoteState::Paid {
+                if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
+                    tracing::error!("Could not reset melt quote state: {}", err);
+                }
+
+                return Err(into_response(Error::PaymentFailed));
+            }
+
+            // Convert from unit of backend to quote unit
             let amount_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit)
                 .map_err(|_| into_response(Error::UnitUnsupported))?;
 
