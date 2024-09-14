@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::nut10;
@@ -41,6 +41,9 @@ pub enum Error {
     /// Unsupported token
     #[error("Unsupported unit")]
     UnsupportedUnit,
+    /// Unsupported token
+    #[error("Unsupported payment method")]
+    UnsupportedPaymentMethod,
     /// Invalid Url
     #[error("Invalid URL")]
     InvalidUrl,
@@ -321,6 +324,7 @@ where
 }
 
 /// Currency Unit
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum CurrencyUnit {
     /// Sat
@@ -391,23 +395,20 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
 }
 
 /// Payment Method
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum PaymentMethod {
     /// Bolt11 payment type
     #[default]
     Bolt11,
-    /// Custom payment type:
-    Custom(String),
 }
 
-impl<S> From<S> for PaymentMethod
-where
-    S: AsRef<str>,
-{
-    fn from(method: S) -> Self {
-        match method.as_ref() {
-            "bolt11" => Self::Bolt11,
-            o => Self::Custom(o.to_string()),
+impl FromStr for PaymentMethod {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "bolt11" => Ok(Self::Bolt11),
+            _ => Err(Error::UnsupportedPaymentMethod),
         }
     }
 }
@@ -416,7 +417,6 @@ impl fmt::Display for PaymentMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentMethod::Bolt11 => write!(f, "bolt11"),
-            PaymentMethod::Custom(unit) => write!(f, "{}", unit),
         }
     }
 }
@@ -436,7 +436,7 @@ impl<'de> Deserialize<'de> for PaymentMethod {
         D: Deserializer<'de>,
     {
         let payment_method: String = String::deserialize(deserializer)?;
-        Ok(Self::from(payment_method))
+        Self::from_str(&payment_method).map_err(|_| de::Error::custom("Unsupported payment method"))
     }
 }
 

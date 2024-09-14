@@ -23,6 +23,9 @@ pub enum Error {
     /// Invoice pay pending
     #[error("Invoice pay is pending")]
     InvoicePaymentPending,
+    /// Unsupported unit
+    #[error("Unsupported unit")]
+    UnsupportedUnit,
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),

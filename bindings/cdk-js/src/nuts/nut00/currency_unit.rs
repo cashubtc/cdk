@@ -18,6 +18,7 @@ impl From<CurrencyUnit> for JsCurrencyUnit {
             CurrencyUnit::Msat => JsCurrencyUnit::Msat,
             CurrencyUnit::Usd => JsCurrencyUnit::Usd,
             CurrencyUnit::Eur => JsCurrencyUnit::Eur,
+            _ => panic!("Unsupported unit"),
         }
     }
 }
