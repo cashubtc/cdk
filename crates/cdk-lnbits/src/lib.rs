@@ -75,7 +75,7 @@ impl MintLightning for LNbits {
         Settings {
             mpp: false,
             unit: CurrencyUnit::Sat,
-            mint_settings: self.mint_settings.clone(),
+            mint_settings: self.mint_settings,
             melt_settings: self.melt_settings,
             invoice_description: true,
         }
