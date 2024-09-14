@@ -350,13 +350,13 @@ async fn main() -> anyhow::Result<()> {
             let settings = ln.get_settings();
 
             let m = MppMethodSettings {
-                method: key.method.clone(),
+                method: key.method,
                 unit: key.unit,
                 mpp: settings.mpp,
             };
 
             let n4 = MintMethodSettings {
-                method: key.method.clone(),
+                method: key.method,
                 unit: key.unit,
                 min_amount: settings.mint_settings.min_amount,
                 max_amount: settings.mint_settings.max_amount,
@@ -364,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let n5 = MeltMethodSettings {
-                method: key.method.clone(),
+                method: key.method,
                 unit: key.unit,
                 min_amount: settings.melt_settings.min_amount,
                 max_amount: settings.melt_settings.max_amount,
