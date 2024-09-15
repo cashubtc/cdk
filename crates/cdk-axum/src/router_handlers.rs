@@ -206,9 +206,13 @@ pub async fn post_melt_bolt11(
             tracing::debug!("Error attempting to verify melt quote: {}", err);
 
             if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                tracing::error!("Could not reset melt quote state: {}", err);
+                tracing::error!(
+                    "Could not reset melt quote {} state: {}",
+                    payload.quote,
+                    err
+                );
             }
-            return Err(into_response(Error::UnitUnsupported));
+            return Err(into_response(err));
         }
     };
 
