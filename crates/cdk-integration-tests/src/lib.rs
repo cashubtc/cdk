@@ -19,12 +19,11 @@ use cdk::{Mint, Wallet};
 use cdk_axum::LnKey;
 use cdk_fake_wallet::FakeWallet;
 use futures::StreamExt;
+use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
-pub const MINT_URL: &str = "http://127.0.0.1:8088";
-const LISTEN_ADDR: &str = "127.0.0.1";
-const LISTEN_PORT: u16 = 8088;
+pub mod init_regtest;
 
 pub fn create_backends_fake_wallet(
 ) -> HashMap<LnKey, Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>> {
@@ -70,7 +69,7 @@ pub async fn start_mint(
     let mnemonic = Mnemonic::generate(12)?;
 
     let mint = Mint::new(
-        MINT_URL,
+        &get_mint_url(),
         &mnemonic.to_seed_normalized(""),
         mint_info,
         Arc::new(MintMemoryDatabase::default()),
@@ -83,7 +82,7 @@ pub async fn start_mint(
     let mint_arc = Arc::new(mint);
 
     let v1_service = cdk_axum::create_mint_router(
-        MINT_URL,
+        &get_mint_url(),
         Arc::clone(&mint_arc),
         ln_backends.clone(),
         quote_ttl,
@@ -120,7 +119,7 @@ pub async fn start_mint(
     }
 
     axum::Server::bind(
-        &format!("{}:{}", LISTEN_ADDR, LISTEN_PORT)
+        &format!("{}:{}", get_mint_addr(), get_mint_port())
             .as_str()
             .parse()?,
     )

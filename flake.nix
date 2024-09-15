@@ -67,6 +67,9 @@
           nixpkgs-fmt
           rust-analyzer
           typos
+          lnd
+          clightning
+          bitcoind
         ] ++ libsDarwin;
 
         # WASM deps
