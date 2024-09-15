@@ -121,6 +121,12 @@ pub fn construct_proofs(
     keys: &Keys,
 ) -> Result<Proofs, Error> {
     if (promises.len() != rs.len()) || (promises.len() != secrets.len()) {
+        tracing::error!(
+            "Promises: {}, RS: {}, secrets:{}",
+            promises.len(),
+            rs.len(),
+            secrets.len()
+        );
         return Err(Error::Custom(
             "Lengths of promises, rs, and secrets must be equal".to_string(),
         ));
