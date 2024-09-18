@@ -12,6 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bitcoin::hashes::sha256::Hash as PaymentHash;
 use cdk::{
     cdk_database::{self, WalletDatabase, WalletMemoryDatabase},
     mint_url::MintUrl,
@@ -53,6 +54,7 @@ const DIRECTION_TAG: &str = "direction";
 const AMOUNT_TAG: &str = "amount";
 const PRICE_TAG: &str = "price";
 const PROOFS_TAG: &str = "proofs";
+const PAYMENT_HASH_TAG: &str = "payment_hash";
 
 macro_rules! filter_value {
     ($($value:expr),*) => {
@@ -887,6 +889,8 @@ pub struct Transaction {
     pub price: Option<String>,
     /// List of proofs IDs (Ys)
     pub proofs: Vec<PublicKey>,
+    /// Payment hash for Lightning Network transactions
+    pub payment_hash: Option<PaymentHash>,
 }
 
 impl Transaction {
@@ -898,6 +902,7 @@ impl Transaction {
         let mut relay: Option<Url> = None;
         let mut price: Option<String> = None;
         let mut proofs: Vec<PublicKey> = Vec::new();
+        let mut payment_hash: Option<PaymentHash> = None;
 
         let content: Vec<Tag> = serde_json::from_str(&nip44::decrypt(
             keys.secret_key()?,
@@ -937,6 +942,12 @@ impl Transaction {
                         .map(|y| PublicKey::from_str(y))
                         .collect::<Result<Vec<PublicKey>, _>>()?;
                 }
+                PAYMENT_HASH_TAG => {
+                    payment_hash = Some(PaymentHash::from_str(
+                        tag.content()
+                            .ok_or(Error::EmptyTag(PAYMENT_HASH_TAG.to_string()))?,
+                    )?);
+                }
                 t => {
                     if t == EVENT_TAG.to_string().as_str() {
                         let mut parts = tag.as_vec().into_iter();
@@ -961,6 +972,7 @@ impl Transaction {
             relay,
             price,
             proofs,
+            payment_hash,
         })
     }
 
@@ -993,6 +1005,9 @@ impl Transaction {
             let mut proof_vec = vec![PROOFS_TAG.to_string()];
             proof_vec.extend(self.proofs.iter().map(|y| y.to_string()));
             content.push(Tag::parse(&proof_vec)?);
+        }
+        if let Some(payment_hash) = &self.payment_hash {
+            content.push(Tag::parse(&[PAYMENT_HASH_TAG, &payment_hash.to_string()])?);
         }
 
         let mut tags = Vec::new();
@@ -1103,6 +1118,9 @@ pub enum Error {
     /// Event not found error
     #[error("Event not found: {0}")]
     EventNotFound(EventId),
+    /// Payment hash error
+    #[error(transparent)]
+    Hex(#[from] bitcoin::hex::HexToArrayError),
     /// Json error
     #[error(transparent)]
     Json(#[from] serde_json::Error),

@@ -11,6 +11,7 @@ license.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+bitcoin = { version = "0.32.2", default-features = false }
 cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = [
     "wallet",
 ] }
