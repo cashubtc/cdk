@@ -242,7 +242,7 @@ impl From<MeltQuoteBolt11Response> for MeltBolt11Response {
 }
 
 /// Melt Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -270,7 +270,7 @@ impl Settings {
     ) -> Option<MeltMethodSettings> {
         for method_settings in self.methods.iter() {
             if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
-                return Some(method_settings.clone());
+                return Some(*method_settings);
             }
         }
 

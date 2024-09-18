@@ -1043,7 +1043,9 @@ impl Mint {
 
         let required_total = quote.amount + quote.fee_reserve + fee;
 
-        if proofs_total != required_total {
+        // Check that the inputs proofs are greater then total.
+        // Transaction does not need to be balanced as wallet may not want change.
+        if proofs_total < required_total {
             tracing::info!(
                 "Swap request unbalanced: {}, outputs {}, fee {}",
                 proofs_total,
@@ -1053,7 +1055,7 @@ impl Mint {
             return Err(Error::TransactionUnbalanced(
                 proofs_total.into(),
                 quote.amount.into(),
-                fee.into(),
+                (fee + quote.fee_reserve).into(),
             ));
         }
 

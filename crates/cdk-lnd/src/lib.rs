@@ -14,11 +14,14 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings, MSAT_IN_SAT,
+    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+    Settings, MSAT_IN_SAT,
 };
 use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -38,8 +41,8 @@ pub struct Lnd {
     macaroon_file: PathBuf,
     client: Arc<Mutex<Client>>,
     fee_reserve: FeeReserve,
-    mint_settings: MintMeltSettings,
-    melt_settings: MintMeltSettings,
+    mint_settings: MintMethodSettings,
+    melt_settings: MeltMethodSettings,
 }
 
 impl Lnd {
@@ -49,8 +52,8 @@ impl Lnd {
         cert_file: PathBuf,
         macaroon_file: PathBuf,
         fee_reserve: FeeReserve,
-        mint_settings: MintMeltSettings,
-        melt_settings: MintMeltSettings,
+        mint_settings: MintMethodSettings,
+        melt_settings: MeltMethodSettings,
     ) -> Result<Self, Error> {
         let client = fedimint_tonic_lnd::connect(address.to_string(), &cert_file, &macaroon_file)
             .await
@@ -81,6 +84,7 @@ impl MintLightning for Lnd {
             unit: CurrencyUnit::Msat,
             mint_settings: self.mint_settings,
             melt_settings: self.melt_settings,
+            invoice_description: true,
         }
     }
 
@@ -185,19 +189,28 @@ impl MintLightning for Lnd {
             .lightning()
             .send_payment_sync(fedimint_tonic_lnd::tonic::Request::new(pay_req))
             .await
-            .unwrap()
+            .map_err(|_| Error::PaymentFailed)?
             .into_inner();
 
-        let total_spent = payment_response
+        let total_amount = payment_response
             .payment_route
-            .map_or(0, |route| route.total_fees_msat / MSAT_IN_SAT as i64)
+            .map_or(0, |route| route.total_amt_msat / MSAT_IN_SAT as i64)
             as u64;
+
+        let (status, payment_preimage) = match total_amount == 0 {
+            true => (MeltQuoteState::Unpaid, None),
+            false => (
+                MeltQuoteState::Paid,
+                Some(hex::encode(payment_response.payment_preimage)),
+            ),
+        };
 
         Ok(PayInvoiceResponse {
             payment_hash: hex::encode(payment_response.payment_hash),
-            payment_preimage: Some(hex::encode(payment_response.payment_preimage)),
-            status: MeltQuoteState::Pending,
-            total_spent: total_spent.into(),
+            payment_preimage,
+            status,
+            total_spent: total_amount.into(),
+            unit: CurrencyUnit::Sat,
         })
     }
 

@@ -12,10 +12,11 @@ use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk::Amount;
 use clap::Args;
+use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use url::Url;
 
-#[derive(Args)]
+#[derive(Args, Serialize, Deserialize)]
 pub struct MintSubCommand {
     /// Mint url
     mint_url: MintUrl,
@@ -24,6 +25,9 @@ pub struct MintSubCommand {
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,
+    /// Quote description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 pub async fn mint(
@@ -35,6 +39,7 @@ pub async fn mint(
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    let description: Option<String> = sub_command_args.description.clone();
 
     let mut wallet = match multi_mint_wallet
         .get_wallet(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
@@ -53,7 +58,7 @@ pub async fn mint(
     }
 
     let quote = wallet
-        .mint_quote(Amount::from(sub_command_args.amount))
+        .mint_quote(Amount::from(sub_command_args.amount), description)
         .await?;
 
     println!("Quote: {:#?}", quote);

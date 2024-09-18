@@ -7,11 +7,12 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
+use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MintInfo, MintQuoteState, Nuts, PaymentMethod, PreMintSecrets, Proofs,
+    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
+    Nuts, PaymentMethod, PreMintSecrets, Proofs,
 };
 use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};
@@ -39,8 +40,8 @@ pub fn create_backends_fake_wallet(
 
     let wallet = Arc::new(FakeWallet::new(
         fee_reserve.clone(),
-        MintMeltSettings::default(),
-        MintMeltSettings::default(),
+        MintMethodSettings::default(),
+        MeltMethodSettings::default(),
     ));
 
     ln_backends.insert(ln_key, wallet.clone());
@@ -152,8 +153,9 @@ pub async fn wallet_mint(
     wallet: Arc<Wallet>,
     amount: Amount,
     split_target: SplitTarget,
+    description: Option<String>,
 ) -> Result<()> {
-    let quote = wallet.mint_quote(amount).await?;
+    let quote = wallet.mint_quote(amount, description).await?;
 
     loop {
         let status = wallet.mint_quote_state(&quote.id).await?;
@@ -178,6 +180,7 @@ pub async fn mint_proofs(
     amount: Amount,
     keyset_id: Id,
     mint_keys: &KeySet,
+    description: Option<String>,
 ) -> anyhow::Result<Proofs> {
     println!("Minting for ecash");
     println!();
@@ -185,7 +188,7 @@ pub async fn mint_proofs(
     let wallet_client = HttpClient::new();
 
     let mint_quote = wallet_client
-        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat)
+        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat, description)
         .await?;
 
     println!("Please pay: {}", mint_quote.request);

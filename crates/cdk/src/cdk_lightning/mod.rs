@@ -8,7 +8,10 @@ use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use crate::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use crate::{mint, Amount};
 
 /// CDK Lightning Error
@@ -20,6 +23,9 @@ pub enum Error {
     /// Invoice pay pending
     #[error("Invoice pay is pending")]
     InvoicePaymentPending,
+    /// Unsupported unit
+    #[error("Unsupported unit")]
+    UnsupportedUnit,
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),
@@ -103,8 +109,10 @@ pub struct PayInvoiceResponse {
     pub payment_preimage: Option<String>,
     /// Status
     pub status: MeltQuoteState,
-    /// Totoal Amount Spent
+    /// Total Amount Spent
     pub total_spent: Amount,
+    /// Unit of total spent
+    pub unit: CurrencyUnit,
 }
 
 /// Payment quote response
@@ -121,37 +129,18 @@ pub struct PaymentQuoteResponse {
 }
 
 /// Ln backend settings
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// MPP supported
     pub mpp: bool,
     /// Min amount to mint
-    pub mint_settings: MintMeltSettings,
+    pub mint_settings: MintMethodSettings,
     /// Max amount to mint
-    pub melt_settings: MintMeltSettings,
+    pub melt_settings: MeltMethodSettings,
     /// Base unit of backend
     pub unit: CurrencyUnit,
-}
-
-/// Mint or melt settings
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintMeltSettings {
-    /// Min Amount
-    pub min_amount: Amount,
-    /// Max Amount
-    pub max_amount: Amount,
-    /// Enabled
-    pub enabled: bool,
-}
-
-impl Default for MintMeltSettings {
-    fn default() -> Self {
-        Self {
-            min_amount: Amount::from(1),
-            max_amount: Amount::from(500000),
-            enabled: true,
-        }
-    }
+    /// Invoice Description supported
+    pub invoice_description: bool,
 }
 
 /// Msats in sat

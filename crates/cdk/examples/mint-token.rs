@@ -22,7 +22,7 @@ async fn main() -> Result<(), Error> {
 
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
-    let quote = wallet.mint_quote(amount).await.unwrap();
+    let quote = wallet.mint_quote(amount, None).await.unwrap();
 
     println!("Quote: {:#?}", quote);
 

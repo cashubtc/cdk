@@ -10,9 +10,10 @@ use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeysResponse, KeysetResponse,
-    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
-    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteState,
+    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteState, PaymentMethod, RestoreRequest, RestoreResponse,
+    SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use cdk::Bolt11Invoice;
@@ -64,14 +65,22 @@ pub async fn get_mint_bolt11_quote(
 
     let amount =
         to_unit(payload.amount, &payload.unit, &ln.get_settings().unit).map_err(|err| {
-            tracing::error!("Backed does not support unit: {}", err);
+            tracing::error!("Backend does not support unit: {}", err);
             into_response(Error::UnitUnsupported)
         })?;
 
     let quote_expiry = unix_time() + state.quote_ttl;
-
+    if payload.description.is_some() && !ln.get_settings().invoice_description {
+        tracing::error!("Backend does not support invoice description");
+        return Err(into_response(Error::InvoiceDescriptionUnsupported));
+    }
     let create_invoice_response = ln
-        .create_invoice(amount, &payload.unit, "".to_string(), quote_expiry)
+        .create_invoice(
+            amount,
+            &payload.unit,
+            payload.description.unwrap_or("".to_string()),
+            quote_expiry,
+        )
         .await
         .map_err(|err| {
             tracing::error!("Could not create invoice: {}", err);
@@ -197,9 +206,13 @@ pub async fn post_melt_bolt11(
             tracing::debug!("Error attempting to verify melt quote: {}", err);
 
             if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                tracing::error!("Could not reset melt quote state: {}", err);
+                tracing::error!(
+                    "Could not reset melt quote {} state: {}",
+                    payload.quote,
+                    err
+                );
             }
-            return Err(into_response(Error::UnitUnsupported));
+            return Err(into_response(err));
         }
     };
 
@@ -317,7 +330,7 @@ pub async fn post_melt_bolt11(
                         .map_err(|_| into_response(Error::UnitUnsupported))?,
                 };
 
-                if amount_to_pay + quote.fee_reserve != inputs_amount_quote_unit {
+                if amount_to_pay + quote.fee_reserve > inputs_amount_quote_unit {
                     tracing::debug!(
                         "Not enough inuts provided: {} msats needed {} msats",
                         inputs_amount_quote_unit,
@@ -327,6 +340,7 @@ pub async fn post_melt_bolt11(
                     if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
+
                     return Err(into_response(Error::TransactionUnbalanced(
                         inputs_amount_quote_unit.into(),
                         amount_to_pay.into(),
@@ -367,7 +381,17 @@ pub async fn post_melt_bolt11(
                 }
             };
 
-            let amount_spent = to_unit(pre.total_spent, &ln.get_settings().unit, &quote.unit)
+            // Check that melt quote status paid by in ln backend
+            if pre.status != MeltQuoteState::Paid {
+                if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
+                    tracing::error!("Could not reset melt quote state: {}", err);
+                }
+
+                return Err(into_response(Error::PaymentFailed));
+            }
+
+            // Convert from unit of backend to quote unit
+            let amount_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit)
                 .map_err(|_| into_response(Error::UnitUnsupported))?;
 
             (pre.payment_preimage, amount_spent)

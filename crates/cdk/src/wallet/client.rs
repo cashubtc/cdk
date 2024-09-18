@@ -135,10 +135,15 @@ impl HttpClient {
         mint_url: Url,
         amount: Amount,
         unit: CurrencyUnit,
+        description: Option<String>,
     ) -> Result<MintQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11"])?;
 
-        let request = MintQuoteBolt11Request { amount, unit };
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit,
+            description,
+        };
 
         let res = self
             .inner
@@ -209,7 +214,7 @@ impl HttpClient {
     }
 
     /// Melt Quote [NUT-05]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_melt_quote(
         &self,
         mint_url: Url,

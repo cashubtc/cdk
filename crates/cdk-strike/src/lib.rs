@@ -11,10 +11,12 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -33,8 +35,8 @@ pub mod error;
 #[derive(Clone)]
 pub struct Strike {
     strike_api: StrikeApi,
-    mint_settings: MintMeltSettings,
-    melt_settings: MintMeltSettings,
+    mint_settings: MintMethodSettings,
+    melt_settings: MeltMethodSettings,
     unit: CurrencyUnit,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     webhook_url: String,
@@ -44,8 +46,8 @@ impl Strike {
     /// Create new [`Strike`] wallet
     pub async fn new(
         api_key: String,
-        mint_settings: MintMeltSettings,
-        melt_settings: MintMeltSettings,
+        mint_settings: MintMethodSettings,
+        melt_settings: MeltMethodSettings,
         unit: CurrencyUnit,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
         webhook_url: String,
@@ -72,6 +74,7 @@ impl MintLightning for Strike {
             unit: self.unit,
             mint_settings: self.mint_settings,
             melt_settings: self.melt_settings,
+            invoice_description: true,
         }
     }
 
@@ -129,6 +132,7 @@ impl MintLightning for Strike {
             CurrencyUnit::Msat => StrikeCurrencyUnit::BTC,
             CurrencyUnit::Usd => StrikeCurrencyUnit::USD,
             CurrencyUnit::Eur => StrikeCurrencyUnit::EUR,
+            _ => return Err(Self::Err::UnsupportedUnit),
         };
 
         let payment_quote_request = PayInvoiceQuoteRequest {
@@ -175,6 +179,7 @@ impl MintLightning for Strike {
             payment_preimage: None,
             status: state,
             total_spent,
+            unit: melt_quote.unit,
         })
     }
 
@@ -191,7 +196,7 @@ impl MintLightning for Strike {
 
         let invoice_request = InvoiceRequest {
             correlation_id: Some(request_lookup_id.to_string()),
-            amount: to_strike_unit(amount, &self.unit),
+            amount: to_strike_unit(amount, &self.unit)?,
             description: Some(description),
         };
 
@@ -274,32 +279,37 @@ pub(crate) fn from_strike_amount(
                 bail!("Could not convert to EUR");
             }
         }
+        _ => bail!("Unsupported unit"),
     }
 }
 
-pub(crate) fn to_strike_unit<T>(amount: T, current_unit: &CurrencyUnit) -> StrikeAmount
+pub(crate) fn to_strike_unit<T>(
+    amount: T,
+    current_unit: &CurrencyUnit,
+) -> anyhow::Result<StrikeAmount>
 where
     T: Into<u64>,
 {
     let amount = amount.into();
     match current_unit {
-        CurrencyUnit::Sat => StrikeAmount::from_sats(amount),
-        CurrencyUnit::Msat => StrikeAmount::from_sats(amount / 1000),
+        CurrencyUnit::Sat => Ok(StrikeAmount::from_sats(amount)),
+        CurrencyUnit::Msat => Ok(StrikeAmount::from_sats(amount / 1000)),
         CurrencyUnit::Usd => {
             let dollars = (amount as f64 / 100_f64) * 100.0;
 
-            StrikeAmount {
+            Ok(StrikeAmount {
                 currency: StrikeCurrencyUnit::USD,
                 amount: dollars.round() / 100.0,
-            }
+            })
         }
         CurrencyUnit::Eur => {
             let euro = (amount as f64 / 100_f64) * 100.0;
 
-            StrikeAmount {
+            Ok(StrikeAmount {
                 currency: StrikeCurrencyUnit::EUR,
                 amount: euro.round() / 100.0,
-            }
+            })
         }
+        _ => bail!("Unsupported unit"),
     }
 }
