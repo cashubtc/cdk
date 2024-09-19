@@ -41,6 +41,9 @@ pub enum Error {
     /// Invalid Database Path
     #[error("Invalid database path")]
     InvalidDbPath,
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
 }
 
 impl From<Error> for cdk::cdk_database::Error {
