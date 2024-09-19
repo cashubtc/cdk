@@ -382,7 +382,7 @@ impl WalletConnection {
         if let Some(renews_at) = self.budget_renews_at() {
             if renews_at < Timestamp::now() {
                 self.budget.used_budget_msats = Amount::ZERO;
-                self.budget.renews_at = renews_at;
+                self.budget.renews_at = Some(renews_at);
             }
         }
         if self.budget.used_budget_msats >= self.budget.total_budget_msats {
@@ -405,13 +405,16 @@ impl WalletConnection {
     /// Gets the next budget renewal timestamp.
     pub fn budget_renews_at(&self) -> Option<Timestamp> {
         let now = Timestamp::now();
-        let mut renews_at = self.budget.renews_at;
         let period = match self.budget.renewal_period {
             BudgetRenewalPeriod::Daily => Duration::from_secs(24 * 60 * 60),
             BudgetRenewalPeriod::Weekly => Duration::from_secs(7 * 24 * 60 * 60),
             BudgetRenewalPeriod::Monthly => Duration::from_secs(30 * 24 * 60 * 60),
             BudgetRenewalPeriod::Yearly => Duration::from_secs(365 * 24 * 60 * 60),
             _ => return None,
+        };
+        let mut renews_at = match self.budget.renews_at {
+            Some(t) => t,
+            None => now,
         };
 
         loop {
@@ -440,7 +443,7 @@ pub struct ConnectionBudget {
     /// The renewal period of the budget.
     pub renewal_period: BudgetRenewalPeriod,
     /// When the budget renews next.
-    pub renews_at: Timestamp,
+    pub renews_at: Option<Timestamp>,
     /// The total budget in millisatoshis.
     pub total_budget_msats: Amount,
     /// The used budget in millisatoshis.
@@ -450,8 +453,8 @@ pub struct ConnectionBudget {
 impl Default for ConnectionBudget {
     fn default() -> Self {
         ConnectionBudget {
-            renewal_period: BudgetRenewalPeriod::Daily,
-            renews_at: Timestamp::now() + Duration::from_secs(24 * 60 * 60),
+            renewal_period: BudgetRenewalPeriod::Never,
+            renews_at: None,
             total_budget_msats: Amount::from(1_000_000), // 1_000_000 msats
             used_budget_msats: Amount::ZERO,
         }
