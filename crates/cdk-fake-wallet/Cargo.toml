@@ -19,6 +19,5 @@ tracing = { version = "0.1", default-features = false, features = ["attributes",
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-lightning = "0.0.124"
 tokio-stream = "0.1.15"
 rand = "0.8.5"
