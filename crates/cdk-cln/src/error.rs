@@ -14,6 +14,9 @@ pub enum Error {
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
+    /// Invalid payment hash
+    #[error("Invalid hash")]
+    InvalidHash,
     /// Cln Error
     #[error(transparent)]
     Cln(#[from] cln_rpc::Error),

@@ -8,8 +8,8 @@ use cdk::{
     cdk_lightning::MintLightning,
     mint::{FeeReserve, Mint},
     nuts::{CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings},
+    types::LnKey,
 };
-use cdk_axum::LnKey;
 use cdk_cln::Cln as CdkCln;
 use futures::StreamExt;
 use ln_regtest_rs::{

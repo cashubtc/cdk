@@ -11,9 +11,10 @@ use crate::dhke::hash_to_curve;
 use crate::mint::{self, MintKeySetInfo, MintQuote};
 use crate::nuts::nut07::State;
 use crate::nuts::{
-    nut07, BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs,
-    PublicKey,
+    nut07, BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState,
+    Proof, Proofs, PublicKey,
 };
+use crate::types::LnKey;
 
 /// Mint Memory Database
 #[derive(Debug, Clone, Default)]
@@ -27,6 +28,7 @@ pub struct MintMemoryDatabase {
     quote_proofs: Arc<Mutex<HashMap<String, Vec<PublicKey>>>>,
     blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
     quote_signatures: Arc<RwLock<HashMap<String, Vec<BlindSignature>>>>,
+    melt_requests: Arc<RwLock<HashMap<String, (MeltBolt11Request, LnKey)>>>,
 }
 
 impl MintMemoryDatabase {
@@ -42,6 +44,7 @@ impl MintMemoryDatabase {
         quote_proofs: HashMap<String, Vec<PublicKey>>,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
         quote_signatures: HashMap<String, Vec<BlindSignature>>,
+        melt_request: Vec<(MeltBolt11Request, LnKey)>,
     ) -> Result<Self, Error> {
         let mut proofs = HashMap::new();
         let mut proof_states = HashMap::new();
@@ -57,6 +60,11 @@ impl MintMemoryDatabase {
             proofs.insert(y, proof);
             proof_states.insert(y, State::Spent);
         }
+
+        let melt_requests = melt_request
+            .into_iter()
+            .map(|(request, ln_key)| (request.quote.clone(), (request, ln_key)))
+            .collect();
 
         Ok(Self {
             active_keysets: Arc::new(RwLock::new(active_keysets)),
@@ -74,6 +82,7 @@ impl MintMemoryDatabase {
             blinded_signatures: Arc::new(RwLock::new(blinded_signatures)),
             quote_proofs: Arc::new(Mutex::new(quote_proofs)),
             quote_signatures: Arc::new(RwLock::new(quote_signatures)),
+            melt_requests: Arc::new(RwLock::new(melt_requests)),
         })
     }
 }
@@ -223,6 +232,27 @@ impl MintDatabase for MintMemoryDatabase {
         self.melt_quotes.write().await.remove(quote_id);
 
         Ok(())
+    }
+
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err> {
+        let mut melt_requests = self.melt_requests.write().await;
+        melt_requests.insert(melt_request.quote.clone(), (melt_request, ln_key));
+        Ok(())
+    }
+
+    async fn get_melt_request(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+        let melt_requests = self.melt_requests.read().await;
+
+        let melt_request = melt_requests.get(quote_id);
+
+        Ok(melt_request.cloned())
     }
 
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<String>) -> Result<(), Self::Err> {

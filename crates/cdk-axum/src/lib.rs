@@ -13,7 +13,7 @@ use axum::Router;
 use cdk::cdk_lightning::{self, MintLightning};
 use cdk::mint::Mint;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::types::LnKey;
 use router_handlers::*;
 
 mod router_handlers;
@@ -65,21 +65,4 @@ pub struct MintState {
     mint: Arc<Mint>,
     mint_url: MintUrl,
     quote_ttl: u64,
-}
-
-/// Key used in hashmap of ln backends to identify what unit and payment method
-/// it is for
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct LnKey {
-    /// Unit of Payment backend
-    pub unit: CurrencyUnit,
-    /// Method of payment backend
-    pub method: PaymentMethod,
-}
-
-impl LnKey {
-    /// Create new [`LnKey`]
-    pub fn new(unit: CurrencyUnit, method: PaymentMethod) -> Self {
-        Self { unit, method }
-    }
 }

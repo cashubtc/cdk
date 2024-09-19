@@ -26,6 +26,9 @@ pub enum Error {
     /// Unsupported unit
     #[error("Unsupported unit")]
     UnsupportedUnit,
+    /// Payment state is unknown
+    #[error("Payment state is unknown")]
+    UnknownPaymentState,
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),
@@ -83,10 +86,16 @@ pub trait MintLightning {
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err>;
 
     /// Check the status of an incoming payment
-    async fn check_invoice_status(
+    async fn check_incoming_invoice_status(
         &self,
         request_lookup_id: &str,
     ) -> Result<MintQuoteState, Self::Err>;
+
+    /// Check the status of an outgoing payment
+    async fn check_outgoing_payment(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err>;
 }
 
 /// Create invoice response
@@ -104,7 +113,7 @@ pub struct CreateInvoiceResponse {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PayInvoiceResponse {
     /// Payment hash
-    pub payment_hash: String,
+    pub payment_lookup_id: String,
     /// Payment Preimage
     pub payment_preimage: Option<String>,
     /// Status

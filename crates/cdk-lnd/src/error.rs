@@ -14,9 +14,15 @@ pub enum Error {
     /// Connection error
     #[error("LND connection error")]
     Connection,
+    /// Invalid hash
+    #[error("Invalid hash")]
+    InvalidHash,
     /// Payment failed
     #[error("LND payment failed")]
     PaymentFailed,
+    /// Unknown payment status
+    #[error("LND unknown payment status")]
+    UnknownPaymentStatus,
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {

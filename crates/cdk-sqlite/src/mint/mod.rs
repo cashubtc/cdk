@@ -12,10 +12,11 @@ use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut05::QuoteState;
 use cdk::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState,
+    PaymentMethod, Proof, Proofs, PublicKey, State,
 };
 use cdk::secret::Secret;
+use cdk::types::LnKey;
 use cdk::{mint, Amount};
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
@@ -1121,6 +1122,86 @@ WHERE keyset_id=?;
             }
         }
     }
+
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO melt_request
+(id, inputs, outputs, method, unit)
+VALUES (?, ?, ?, ?, ?);
+        "#,
+        )
+        .bind(melt_request.quote)
+        .bind(serde_json::to_string(&melt_request.inputs)?)
+        .bind(serde_json::to_string(&melt_request.outputs)?)
+        .bind(ln_key.method.to_string())
+        .bind(ln_key.unit.to_string())
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite Could not update keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    async fn get_melt_request(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM melt_request
+WHERE id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let (request, key) = sqlite_row_to_melt_request(rec)?;
+
+                Ok(Some((request, key)))
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Ok(None);
+                }
+                _ => {
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
+                    }
+                }
+            },
+        }
+    }
 }
 
 fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
@@ -1258,4 +1339,25 @@ fn sqlite_row_to_blind_signature(row: SqliteRow) -> Result<BlindSignature, Error
         c: PublicKey::from_slice(&row_c)?,
         dleq: None,
     })
+}
+
+fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request, LnKey), Error> {
+    let quote_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_inputs: String = row.try_get("inputs").map_err(Error::from)?;
+    let row_outputs: Option<String> = row.try_get("outputs").map_err(Error::from)?;
+    let row_method: String = row.try_get("method").map_err(Error::from)?;
+    let row_unit: String = row.try_get("unit").map_err(Error::from)?;
+
+    let melt_request = MeltBolt11Request {
+        quote: quote_id,
+        inputs: serde_json::from_str(&row_inputs)?,
+        outputs: row_outputs.and_then(|o| serde_json::from_str(&o).ok()),
+    };
+
+    let ln_key = LnKey {
+        unit: CurrencyUnit::from_str(&row_unit)?,
+        method: PaymentMethod::from_str(&row_method)?,
+    };
+
+    Ok((melt_request, ln_key))
 }

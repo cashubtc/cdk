@@ -11,6 +11,9 @@ pub enum Error {
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
+    /// Strikers error
+    #[error(transparent)]
+    StrikeRs(#[from] strike_rs::Error),
     /// Anyhow error
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),

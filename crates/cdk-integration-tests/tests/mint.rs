@@ -1,20 +1,19 @@
 //! Mint tests
 
-use cdk::amount::{Amount, SplitTarget};
-use cdk::dhke::construct_proofs;
-use cdk::util::unix_time;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::OnceCell;
-
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
+use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
+use cdk::dhke::construct_proofs;
 use cdk::nuts::{
     CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey,
     SpendingConditions, SwapRequest,
 };
+use cdk::util::unix_time;
 use cdk::Mint;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
 

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
+use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::instrument;
@@ -13,6 +14,7 @@ use tracing::instrument;
 use self::nut05::QuoteState;
 use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
+use crate::cdk_lightning::to_unit;
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
@@ -993,6 +995,117 @@ impl Mint {
         Ok(())
     }
 
+    /// Check melt has expected fees
+    #[instrument(skip_all)]
+    pub async fn check_melt_expected_ln_fees(
+        &self,
+        melt_quote: &MeltQuote,
+        melt_request: &MeltBolt11Request,
+    ) -> Result<Option<Amount>, Error> {
+        let invoice = Bolt11Invoice::from_str(&melt_quote.request)?;
+
+        let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
+            .expect("Quote unit is checked above that it can convert to msat");
+
+        let invoice_amount_msats: Amount = invoice
+            .amount_milli_satoshis()
+            .ok_or(Error::InvoiceAmountUndefined)?
+            .into();
+
+        let partial_amount = match invoice_amount_msats > quote_msats {
+            true => {
+                let partial_msats = invoice_amount_msats - quote_msats;
+
+                Some(
+                    to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
+                        .map_err(|_| Error::UnitUnsupported)?,
+                )
+            }
+            false => None,
+        };
+
+        let amount_to_pay = match partial_amount {
+            Some(amount_to_pay) => amount_to_pay,
+            None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &melt_quote.unit)
+                .map_err(|_| Error::UnitUnsupported)?,
+        };
+
+        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+            tracing::error!("Proof inputs in melt quote overflowed");
+            Error::AmountOverflow
+        })?;
+
+        if amount_to_pay + melt_quote.fee_reserve > inputs_amount_quote_unit {
+            tracing::debug!(
+                "Not enough inputs provided: {} msats needed {} msats",
+                inputs_amount_quote_unit,
+                amount_to_pay
+            );
+
+            return Err(Error::TransactionUnbalanced(
+                inputs_amount_quote_unit.into(),
+                amount_to_pay.into(),
+                melt_quote.fee_reserve.into(),
+            ));
+        }
+
+        Ok(partial_amount)
+    }
+
+    /// Verify melt request is valid
+    /// Check to see if there is a corresponding mint quote for a melt.
+    /// In this case the mint can settle the payment internally and no ln payment is
+    /// needed
+    #[instrument(skip_all)]
+    pub async fn handle_internal_melt_mint(
+        &self,
+        melt_quote: &MeltQuote,
+        melt_request: &MeltBolt11Request,
+    ) -> Result<Option<Amount>, Error> {
+        let mint_quote = match self
+            .localstore
+            .get_mint_quote_by_request(&melt_quote.request)
+            .await
+        {
+            Ok(Some(mint_quote)) => mint_quote,
+            // Not an internal melt -> mint
+            Ok(None) => return Ok(None),
+            Err(err) => {
+                tracing::debug!("Error attempting to get mint quote: {}", err);
+                return Err(Error::Internal);
+            }
+        };
+
+        // Mint quote has already been settled, proofs should not be burned or held.
+        if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
+            return Err(Error::RequestAlreadyPaid);
+        }
+
+        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+            tracing::error!("Proof inputs in melt quote overflowed");
+            Error::AmountOverflow
+        })?;
+
+        let mut mint_quote = mint_quote;
+
+        if mint_quote.amount > inputs_amount_quote_unit {
+            tracing::debug!(
+                "Not enough inuts provided: {} needed {}",
+                inputs_amount_quote_unit,
+                mint_quote.amount
+            );
+            return Err(Error::InsufficientFunds);
+        }
+
+        mint_quote.state = MintQuoteState::Paid;
+
+        let amount = melt_quote.amount;
+
+        self.update_mint_quote(mint_quote).await?;
+
+        Ok(Some(amount))
+    }
+
     /// Verify melt request is valid
     #[instrument(skip_all)]
     pub async fn verify_melt_request(
@@ -1005,12 +1118,15 @@ impl Mint {
             .await?;
 
         match state {
-            MeltQuoteState::Unpaid => (),
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => (),
             MeltQuoteState::Pending => {
                 return Err(Error::PendingQuote);
             }
             MeltQuoteState::Paid => {
                 return Err(Error::PaidQuote);
+            }
+            MeltQuoteState::Unknown => {
+                return Err(Error::UnknownPaymentState);
             }
         }
 
@@ -1456,6 +1572,8 @@ mod tests {
     use bitcoin::Network;
     use secp256k1::Secp256k1;
 
+    use crate::types::LnKey;
+
     use super::*;
 
     #[test]
@@ -1561,6 +1679,7 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+        melt_requests: Vec<(MeltBolt11Request, LnKey)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
@@ -1575,6 +1694,7 @@ mod tests {
                 config.quote_proofs,
                 config.blinded_signatures,
                 config.quote_signatures,
+                config.melt_requests,
             )
             .unwrap(),
         );
