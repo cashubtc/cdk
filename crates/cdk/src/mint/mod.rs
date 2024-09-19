@@ -662,6 +662,7 @@ impl Mint {
                     .map(|p| p.blinded_secret)
                     .collect::<Vec<PublicKey>>(),
                 &blind_signatures,
+                Some(mint_request.quote.clone()),
             )
             .await?;
 
@@ -895,6 +896,7 @@ impl Mint {
                     .map(|o| o.blinded_secret)
                     .collect::<Vec<PublicKey>>(),
                 &promises,
+                None,
             )
             .await?;
 
@@ -1227,6 +1229,7 @@ impl Mint {
                             .map(|o| o.blinded_secret)
                             .collect::<Vec<PublicKey>>(),
                         &change_sigs,
+                        Some(quote.id.clone()),
                     )
                     .await?;
 
@@ -1553,6 +1556,7 @@ mod tests {
         spent_proofs: Proofs,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
         quote_proofs: HashMap<String, Vec<PublicKey>>,
+        quote_signatures: HashMap<String, Vec<BlindSignature>>,
         mint_url: &'a str,
         seed: &'a [u8],
         mint_info: MintInfo,
@@ -1570,6 +1574,7 @@ mod tests {
                 config.spent_proofs,
                 config.quote_proofs,
                 config.blinded_signatures,
+                config.quote_signatures,
             )
             .unwrap(),
         );

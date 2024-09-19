@@ -36,6 +36,8 @@ const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
 const QUOTE_PROOFS_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
     MultimapTableDefinition::new("quote_proofs");
+const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<&str, &str> =
+    MultimapTableDefinition::new("quote_signatures");
 
 const DATABASE_VERSION: u32 = 4;
 
@@ -132,6 +134,7 @@ impl MintRedbDatabase {
                         let _ = write_txn.open_table(PROOFS_STATE_TABLE)?;
                         let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
                         let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
+                        let _ = write_txn.open_multimap_table(QUOTE_SIGNATURES_TABLE)?;
 
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
@@ -636,6 +639,7 @@ impl MintDatabase for MintRedbDatabase {
         &self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
@@ -643,17 +647,22 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(BLINDED_SIGNATURES)
                 .map_err(Error::from)?;
+            let mut quote_sigs_table = write_txn
+                .open_multimap_table(QUOTE_SIGNATURES_TABLE)
+                .map_err(Error::from)?;
 
             for (blinded_message, blind_signature) in blinded_messages.iter().zip(blind_signatures)
             {
+                let blind_sig = serde_json::to_string(&blind_signature).map_err(Error::from)?;
                 table
-                    .insert(
-                        blinded_message.to_bytes(),
-                        serde_json::to_string(&blind_signature)
-                            .map_err(Error::from)?
-                            .as_str(),
-                    )
+                    .insert(blinded_message.to_bytes(), blind_sig.as_str())
                     .map_err(Error::from)?;
+
+                if let Some(quote_id) = &quote_id {
+                    quote_sigs_table
+                        .insert(quote_id.as_str(), blind_sig.as_str())
+                        .map_err(Error::from)?;
+                }
             }
         }
 
