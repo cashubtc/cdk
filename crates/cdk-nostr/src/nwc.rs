@@ -1,7 +1,7 @@
 //! Nostr Wallet Connect [NIP-47](https://github.com/nostr-protocol/nips/blob/main/nip-47.md) implementation for a [`MultiMintWallet`].
 
-// #![warn(missing_docs)]
-// #![warn(rustdoc::bare_urls)]
+#![warn(missing_docs)]
+#![warn(rustdoc::bare_urls)]
 
 use std::{str::FromStr, sync::Arc, time::Duration};
 
@@ -14,12 +14,16 @@ use lightning_invoice::Bolt11Invoice;
 use nostr_database::{MemoryDatabase, MemoryDatabaseOptions};
 use nostr_sdk::{
     nips::{nip04, nip47},
-    Alphabet, Client, EventBuilder, EventSource, Filter, JsonUtil, Keys, Kind, PublicKey,
-    SecretKey, SingleLetterTag, Tag, TagStandard, Timestamp,
+    Alphabet, Client, EventBuilder, EventSource, Filter, FilterOptions, JsonUtil, Keys, Kind,
+    PublicKey, SecretKey, SingleLetterTag, Tag, TagStandard, Timestamp,
 };
 use tokio::sync::{Mutex, RwLock};
 use url::Url;
 
+/// Nostr Wallet Connect implementation for a [`MultiMintWallet`].
+///
+/// This struct is used to create a Wallet Connect service that can be used to pay invoices and check balances.
+/// The [`WalletConnection`]s must be stored externally and passed to the [`NostrWalletConnect`] instance.
 #[derive(Clone)]
 pub struct NostrWalletConnect {
     connections: Arc<RwLock<Vec<WalletConnection>>>,
@@ -31,6 +35,7 @@ pub struct NostrWalletConnect {
 }
 
 impl NostrWalletConnect {
+    /// Creates a new instance of [`NostrWalletConnect`].
     pub fn new(
         connections: Vec<WalletConnection>,
         wallet: MultiMintWallet,
@@ -57,8 +62,35 @@ impl NostrWalletConnect {
         }
     }
 
-    // TODO implement background check for requests (wait until 1 event is received)
+    /// Adds a new connection to the list of connections.
+    pub async fn add_connection(&self, connection: WalletConnection) {
+        let mut connections = self.connections.write().await;
+        if connections
+            .iter()
+            .any(|conn| conn.keys.public_key() == connection.keys.public_key())
+        {
+            return;
+        }
+        connections.push(connection);
+    }
 
+    /// Waits until 1 event is received from the relays and processes it.
+    pub async fn background_check_for_requests(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<PaymentDetails>, Error> {
+        self.ensure_relays_connected().await?;
+        let filters = self.filters().await;
+        let events = self
+            .client
+            .pool()
+            .get_events_of(filters, timeout, FilterOptions::WaitForEventsAfterEOSE(1))
+            .await
+            .map_err(|e| nostr_sdk::client::Error::RelayPool(e))?;
+        self.handle_events(events).await
+    }
+
+    /// Checks for new requests from the relays.
     pub async fn check_for_requests(&self) -> Result<Vec<PaymentDetails>, Error> {
         self.ensure_relays_connected().await?;
         let filters = self.filters().await;
@@ -66,15 +98,10 @@ impl NostrWalletConnect {
             .client
             .get_events_of(filters, EventSource::relays(None))
             .await?;
-        let mut payments = Vec::new();
-        for event in events {
-            if let Some(details) = self.handle_event(event).await? {
-                payments.push(details);
-            }
-        }
-        Ok(payments)
+        self.handle_events(events).await
     }
 
+    /// Gets the connection with the given secret key.
     pub async fn get_connection(&self, secret: SecretKey) -> Result<WalletConnection, Error> {
         let conn = self
             .find_connection(secret)
@@ -83,10 +110,12 @@ impl NostrWalletConnect {
         Ok(conn.clone())
     }
 
+    /// Gets all the connections.
     pub async fn get_connections(&self) -> Vec<WalletConnection> {
         self.connections.read().await.clone()
     }
 
+    /// Publishes a Wallet Connect info event.
     pub async fn publish_info(&self) -> Result<(), Error> {
         let event = EventBuilder::new(Kind::WalletConnectInfo, "pay_invoice get_balance", vec![])
             .to_event(&self.keys)?;
@@ -94,6 +123,7 @@ impl NostrWalletConnect {
         Ok(())
     }
 
+    /// Updates the budget of a connection.
     pub async fn update_budget(
         &self,
         secret: SecretKey,
@@ -159,6 +189,19 @@ impl NostrWalletConnect {
         Err(Error::InsufficientFunds)
     }
 
+    async fn handle_events(
+        &self,
+        events: Vec<nostr_sdk::Event>,
+    ) -> Result<Vec<PaymentDetails>, Error> {
+        let mut payments = Vec::new();
+        for event in events {
+            if let Some(details) = self.handle_event(event).await? {
+                payments.push(details);
+            }
+        }
+        Ok(payments)
+    }
+
     async fn handle_event(&self, event: nostr_sdk::Event) -> Result<Option<PaymentDetails>, Error> {
         let mut connections = self.connections.write().await;
         let connection = connections
@@ -189,6 +232,9 @@ impl NostrWalletConnect {
         )
         .to_event(&self.keys)?;
         self.client.send_event(res_event).await?;
+        let mut last_check = self.last_check.lock().await;
+        *last_check = event.created_at();
+        drop(last_check);
         Ok(payment)
     }
 
@@ -301,15 +347,21 @@ impl NostrWalletConnect {
     }
 }
 
+/// A Wallet Connection.
 #[derive(Debug, Clone)]
 pub struct WalletConnection {
+    /// The connection keys.
     pub keys: Keys,
+    /// The relays to use.
     pub relays: Vec<Url>,
+    /// The budget of the connection.
     pub budget: ConnectionBudget,
+    /// The current usage of the connection.
     pub usage: ConnectionUsage,
 }
 
 impl WalletConnection {
+    /// Creates a new instance of [`WalletConnection`].
     pub fn new(
         secret: SecretKey,
         relays: Vec<Url>,
@@ -350,6 +402,7 @@ impl WalletConnection {
             )
     }
 
+    /// Gets the next budget renewal timestamp.
     pub fn budget_renews_at(&self) -> Option<Timestamp> {
         let mut last_renewed_at = self.usage.last_renewed_at;
         let period = match self.budget.renewal_period {
@@ -369,6 +422,7 @@ impl WalletConnection {
         }
     }
 
+    /// Gets the Wallet Connect URI for the given service public key.
     pub fn uri(&self, service_pubkey: PublicKey) -> Result<String, Error> {
         let mut url = Url::parse(&format!("nostr+walletconnect://{}", service_pubkey))?;
         for relay in &self.relays {
@@ -380,60 +434,108 @@ impl WalletConnection {
     }
 }
 
+/// A Wallet Connection Budget.
 #[derive(Debug, Clone, Copy)]
 pub struct ConnectionBudget {
+    /// The renewal period of the budget.
     pub renewal_period: BudgetRenewalPeriod,
+    /// The total budget in millisatoshis.
     pub total_budget_msats: Amount,
 }
 
+impl Default for ConnectionBudget {
+    fn default() -> Self {
+        ConnectionBudget {
+            renewal_period: BudgetRenewalPeriod::Daily,
+            total_budget_msats: Amount::from(1_000_000), // 1_000_000 msats
+        }
+    }
+}
+
+/// A Budget Renewal Period.
 #[derive(Debug, Clone, Copy)]
 pub enum BudgetRenewalPeriod {
+    /// Daily (24 hours).
     Daily,
+    /// Weekly (7 days).
     Weekly,
+    /// Monthly (30 days).
     Monthly,
+    /// Yearly (365 days).
     Yearly,
+    /// Never.
     Never,
 }
 
+/// Current usage of a connection.
 #[derive(Debug, Clone, Copy)]
 pub struct ConnectionUsage {
+    /// The total used millisatoshis.
     pub total_used_msats: Amount,
+    /// The timestamp when the budget was last renewed.
     pub last_renewed_at: Timestamp,
 }
 
+impl Default for ConnectionUsage {
+    fn default() -> Self {
+        ConnectionUsage {
+            total_used_msats: Amount::ZERO,
+            last_renewed_at: Timestamp::now(),
+        }
+    }
+}
+
+/// Payment Details for a `pay_invoice` request.
 #[derive(Debug, Clone)]
 pub struct PaymentDetails {
+    /// The preimage of the payment.
     pub preimage: String,
+    /// The payment hash.
     pub payment_hash: String,
+    /// The total amount paid in millisatoshis.
     pub total_amount: Amount,
 }
 
+/// Errors that can occur when using the Nostr Wallet Connect service.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// CDK Amount error.
     #[error(transparent)]
     Amount(#[from] cdk::amount::Error),
+    /// Budget exceeded error.
     #[error("Budget exceeded")]
     BudgetExceeded,
+    /// Client error.
     #[error(transparent)]
     Client(#[from] nostr_sdk::client::Error),
+    /// Connection not found error.
     #[error("Connection not found")]
     ConnectionNotFound,
+    /// Error creating an event.
     #[error(transparent)]
     EventBuilder(#[from] nostr_sdk::event::builder::Error),
+    /// Insufficient funds error.
     #[error("Insufficient funds")]
     InsufficientFunds,
+    /// Invalid invoice error.
     #[error("Invalid invoice")]
     InvalidInvoice,
+    /// Error parsing an invoice.
     #[error(transparent)]
-    Invoice(#[from] lightning_invoice::ParseOrSemanticError),
+    InvoiceParse(#[from] lightning_invoice::ParseOrSemanticError),
+    /// Nostr key error.
     #[error(transparent)]
     Key(#[from] nostr_sdk::key::Error),
+    /// NIP-04 error.
     #[error(transparent)]
     Nip04(#[from] nip04::Error),
+    /// NIP-47 error.
     #[error(transparent)]
     Nip47(#[from] nip47::Error),
+    /// URL parse error.
     #[error(transparent)]
     Url(#[from] url::ParseError),
+    /// CDK Wallet error.
     #[error(transparent)]
     Wallet(#[from] cdk::Error),
 }
