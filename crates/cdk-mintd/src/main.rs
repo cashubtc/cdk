@@ -49,8 +49,12 @@ async fn main() -> anyhow::Result<()> {
     let default_filter = "debug";
 
     let sqlx_filter = "sqlx=warn";
+    let hyper_filter = "hyper=warn";
 
-    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+    let env_filter = EnvFilter::new(format!(
+        "{},{},{}",
+        default_filter, sqlx_filter, hyper_filter
+    ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 

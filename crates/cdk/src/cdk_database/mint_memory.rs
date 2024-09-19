@@ -26,6 +26,7 @@ pub struct MintMemoryDatabase {
     proof_state: Arc<Mutex<HashMap<[u8; 33], nut07::State>>>,
     quote_proofs: Arc<Mutex<HashMap<String, Vec<PublicKey>>>>,
     blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
+    quote_signatures: Arc<RwLock<HashMap<String, Vec<BlindSignature>>>>,
 }
 
 impl MintMemoryDatabase {
@@ -40,6 +41,7 @@ impl MintMemoryDatabase {
         spent_proofs: Proofs,
         quote_proofs: HashMap<String, Vec<PublicKey>>,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
+        quote_signatures: HashMap<String, Vec<BlindSignature>>,
     ) -> Result<Self, Error> {
         let mut proofs = HashMap::new();
         let mut proof_states = HashMap::new();
@@ -71,6 +73,7 @@ impl MintMemoryDatabase {
             proof_state: Arc::new(Mutex::new(proof_states)),
             blinded_signatures: Arc::new(RwLock::new(blinded_signatures)),
             quote_proofs: Arc::new(Mutex::new(quote_proofs)),
+            quote_signatures: Arc::new(RwLock::new(quote_signatures)),
         })
     }
 }
@@ -320,11 +323,17 @@ impl MintDatabase for MintMemoryDatabase {
         &self,
         blinded_message: &[PublicKey],
         blind_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err> {
         let mut current_blinded_signatures = self.blinded_signatures.write().await;
 
         for (blinded_message, blind_signature) in blinded_message.iter().zip(blind_signatures) {
             current_blinded_signatures.insert(blinded_message.to_bytes(), blind_signature.clone());
+        }
+
+        if let Some(quote_id) = quote_id {
+            let mut current_quote_signatures = self.quote_signatures.write().await;
+            current_quote_signatures.insert(quote_id, blind_signatures.to_vec());
         }
 
         Ok(())

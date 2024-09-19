@@ -11,7 +11,7 @@ use lightning_invoice::Bolt11Invoice;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use super::{Error, PROOFS_STATE_TABLE, PROOFS_TABLE};
+use super::{Error, PROOFS_STATE_TABLE, PROOFS_TABLE, QUOTE_SIGNATURES_TABLE};
 
 const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
 const PENDING_PROOFS_TABLE: TableDefinition<[u8; 33], &str> =
@@ -32,6 +32,7 @@ pub fn migrate_02_to_03(db: Arc<Database>) -> Result<u32, Error> {
 pub fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
     let write_txn = db.begin_write()?;
     let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
+    let _ = write_txn.open_multimap_table(QUOTE_SIGNATURES_TABLE)?;
     Ok(4)
 }
 

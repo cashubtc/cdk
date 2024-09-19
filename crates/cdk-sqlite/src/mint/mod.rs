@@ -971,20 +971,22 @@ WHERE y=?;
         &self,
         blinded_messages: &[PublicKey],
         blinded_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
             let res = sqlx::query(
                 r#"
 INSERT INTO blind_signature
-(y, amount, keyset_id, c)
-VALUES (?, ?, ?, ?);
+(y, amount, keyset_id, c, quote_id)
+VALUES (?, ?, ?, ?, ?);
         "#,
             )
             .bind(message.to_bytes().to_vec())
             .bind(u64::from(signature.amount) as i64)
             .bind(signature.keyset_id.to_string())
             .bind(signature.c.to_bytes().to_vec())
+            .bind(quote_id.clone())
             .execute(&mut transaction)
             .await;
 
