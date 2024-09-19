@@ -130,7 +130,7 @@ impl NostrWalletConnect {
     pub async fn update_budget(
         &self,
         secret: SecretKey,
-        amount: Amount,
+        amount_msats: Amount,
         period: BudgetRenewalPeriod,
     ) -> Result<(), Error> {
         let mut connections = self.connections.write().await;
@@ -138,10 +138,8 @@ impl NostrWalletConnect {
             .iter_mut()
             .find(|conn| conn.keys.secret_key().ok() == Some(&secret))
             .ok_or(Error::ConnectionNotFound)?;
-        conn.budget = ConnectionBudget {
-            renewal_period: period,
-            total_budget_msats: amount,
-        };
+        conn.budget.renewal_period = period;
+        conn.budget.total_budget_msats = amount_msats;
         Ok(())
     }
 
@@ -218,7 +216,7 @@ impl NostrWalletConnect {
         let remaining_budget = connection.check_and_update_remaining_budget();
         let (response, payment) = self.handle_request(request, remaining_budget).await;
         if let Some(payment) = &payment {
-            connection.usage.total_used_msats += payment.total_amount;
+            connection.budget.used_budget_msats += payment.total_amount;
         }
         let encrypted_response = nip04::encrypt(
             connection.keys.secret_key()?,
@@ -359,53 +357,38 @@ pub struct WalletConnection {
     pub relay: Url,
     /// The budget of the connection.
     pub budget: ConnectionBudget,
-    /// The current usage of the connection.
-    pub usage: ConnectionUsage,
 }
 
 impl WalletConnection {
     /// Creates a new instance of [`WalletConnection`].
-    pub fn new(
-        secret: SecretKey,
-        relay: Url,
-        budget: ConnectionBudget,
-        usage: ConnectionUsage,
-    ) -> Self {
+    pub fn new(secret: SecretKey, relay: Url, budget: ConnectionBudget) -> Self {
         WalletConnection {
             keys: Keys::new(secret),
             relay,
             budget,
-            usage,
         }
     }
 
     /// Creates a new instance of [`WalletConnection`] from a Wallet Connect URI.
-    pub fn from_uri(
-        uri: NostrWalletConnectURI,
-        budget: ConnectionBudget,
-        usage: ConnectionUsage,
-    ) -> Self {
+    pub fn from_uri(uri: NostrWalletConnectURI, budget: ConnectionBudget) -> Self {
         WalletConnection {
             keys: Keys::new(uri.secret),
             relay: uri.relay_url,
             budget,
-            usage,
         }
     }
 
     fn check_and_update_remaining_budget(&mut self) -> Amount {
         if let Some(renews_at) = self.budget_renews_at() {
             if renews_at < Timestamp::now() {
-                self.usage = ConnectionUsage {
-                    total_used_msats: Amount::ZERO,
-                    last_renewed_at: renews_at,
-                };
+                self.budget.used_budget_msats = Amount::ZERO;
+                self.budget.renews_at = renews_at;
             }
         }
-        if self.usage.total_used_msats >= self.budget.total_budget_msats {
+        if self.budget.used_budget_msats >= self.budget.total_budget_msats {
             return Amount::ZERO;
         }
-        self.budget.total_budget_msats - self.usage.total_used_msats
+        self.budget.total_budget_msats - self.budget.used_budget_msats
     }
 
     fn filter(&self, service_pubkey: PublicKey, since: Timestamp) -> Filter {
@@ -421,7 +404,8 @@ impl WalletConnection {
 
     /// Gets the next budget renewal timestamp.
     pub fn budget_renews_at(&self) -> Option<Timestamp> {
-        let mut last_renewed_at = self.usage.last_renewed_at;
+        let now = Timestamp::now();
+        let mut renews_at = self.budget.renews_at;
         let period = match self.budget.renewal_period {
             BudgetRenewalPeriod::Daily => Duration::from_secs(24 * 60 * 60),
             BudgetRenewalPeriod::Weekly => Duration::from_secs(7 * 24 * 60 * 60),
@@ -431,11 +415,10 @@ impl WalletConnection {
         };
 
         loop {
-            let next_renewal = last_renewed_at + period;
-            if next_renewal > Timestamp::now() {
-                return Some(next_renewal);
+            if renews_at > now {
+                return Some(renews_at);
             }
-            last_renewed_at = next_renewal;
+            renews_at = renews_at + period;
         }
     }
 
@@ -456,15 +439,21 @@ impl WalletConnection {
 pub struct ConnectionBudget {
     /// The renewal period of the budget.
     pub renewal_period: BudgetRenewalPeriod,
+    /// When the budget renews next.
+    pub renews_at: Timestamp,
     /// The total budget in millisatoshis.
     pub total_budget_msats: Amount,
+    /// The used budget in millisatoshis.
+    pub used_budget_msats: Amount,
 }
 
 impl Default for ConnectionBudget {
     fn default() -> Self {
         ConnectionBudget {
             renewal_period: BudgetRenewalPeriod::Daily,
+            renews_at: Timestamp::now() + Duration::from_secs(24 * 60 * 60),
             total_budget_msats: Amount::from(1_000_000), // 1_000_000 msats
+            used_budget_msats: Amount::ZERO,
         }
     }
 }
@@ -482,24 +471,6 @@ pub enum BudgetRenewalPeriod {
     Yearly,
     /// Never.
     Never,
-}
-
-/// Current usage of a connection.
-#[derive(Debug, Clone, Copy)]
-pub struct ConnectionUsage {
-    /// The total used millisatoshis.
-    pub total_used_msats: Amount,
-    /// The timestamp when the budget was last renewed.
-    pub last_renewed_at: Timestamp,
-}
-
-impl Default for ConnectionUsage {
-    fn default() -> Self {
-        ConnectionUsage {
-            total_used_msats: Amount::ZERO,
-            last_renewed_at: Timestamp::now(),
-        }
-    }
 }
 
 /// Payment Details for a `pay_invoice` request.

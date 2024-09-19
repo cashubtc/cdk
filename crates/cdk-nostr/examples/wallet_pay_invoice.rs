@@ -8,7 +8,7 @@ use cdk::{
     nuts::CurrencyUnit,
     wallet::{MultiMintWallet, Wallet},
 };
-use cdk_nostr::nwc::{ConnectionBudget, ConnectionUsage, NostrWalletConnect, WalletConnection};
+use cdk_nostr::nwc::{ConnectionBudget, NostrWalletConnect, WalletConnection};
 use nostr_sdk::{nips::nip47::NostrWalletConnectURI, Keys};
 use url::Url;
 
@@ -58,7 +58,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 total_budget_msats: amount * 1000.into(),
                 ..Default::default()
             },
-            ConnectionUsage::default(),
         )],
         MultiMintWallet::new(vec![wallet]),
         service_keys.secret_key()?.clone(),
