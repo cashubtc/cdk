@@ -1,0 +1,458 @@
+//! Nostr Wallet Connect [NIP-47](https://github.com/nostr-protocol/nips/blob/main/nip-47.md) implementation for a [`MultiMintWallet`].
+
+// #![warn(missing_docs)]
+// #![warn(rustdoc::bare_urls)]
+
+use std::{str::FromStr, sync::Arc, time::Duration};
+
+use cdk::{
+    amount::Amount,
+    nuts::CurrencyUnit,
+    wallet::{MultiMintWallet, Wallet},
+};
+use lightning_invoice::Bolt11Invoice;
+use nostr_database::{MemoryDatabase, MemoryDatabaseOptions};
+use nostr_sdk::{
+    nips::{nip04, nip47},
+    Alphabet, Client, EventBuilder, EventSource, Filter, JsonUtil, Keys, Kind, PublicKey,
+    SecretKey, SingleLetterTag, Tag, TagStandard, Timestamp,
+};
+use tokio::sync::{Mutex, RwLock};
+use url::Url;
+
+#[derive(Clone)]
+pub struct NostrWalletConnect {
+    connections: Arc<RwLock<Vec<WalletConnection>>>,
+    wallet: MultiMintWallet,
+
+    client: Client,
+    keys: Keys,
+    last_check: Arc<Mutex<Timestamp>>,
+}
+
+impl NostrWalletConnect {
+    pub fn new(
+        connections: Vec<WalletConnection>,
+        wallet: MultiMintWallet,
+        service_key: SecretKey,
+    ) -> Self {
+        let keys = Keys::new(service_key);
+        let client = Client::builder()
+            .signer(&keys)
+            .database(MemoryDatabase::with_opts(MemoryDatabaseOptions {
+                events: true,
+                ..Default::default()
+            }))
+            .build();
+        let mut connections = connections;
+        connections.iter_mut().for_each(|conn| {
+            conn.check_and_update_remaining_budget();
+        });
+        NostrWalletConnect {
+            connections: Arc::new(RwLock::new(connections)),
+            wallet,
+            client,
+            keys,
+            last_check: Arc::new(Mutex::new(Timestamp::now())),
+        }
+    }
+
+    // TODO implement background check for requests (wait until 1 event is received)
+
+    pub async fn check_for_requests(&self) -> Result<Vec<PaymentDetails>, Error> {
+        self.ensure_relays_connected().await?;
+        let filters = self.filters().await;
+        let events = self
+            .client
+            .get_events_of(filters, EventSource::relays(None))
+            .await?;
+        let mut payments = Vec::new();
+        for event in events {
+            if let Some(details) = self.handle_event(event).await? {
+                payments.push(details);
+            }
+        }
+        Ok(payments)
+    }
+
+    pub async fn get_connection(&self, secret: SecretKey) -> Result<WalletConnection, Error> {
+        let conn = self
+            .find_connection(secret)
+            .await
+            .ok_or(Error::ConnectionNotFound)?;
+        Ok(conn.clone())
+    }
+
+    pub async fn get_connections(&self) -> Vec<WalletConnection> {
+        self.connections.read().await.clone()
+    }
+
+    pub async fn publish_info(&self) -> Result<(), Error> {
+        let event = EventBuilder::new(Kind::WalletConnectInfo, "pay_invoice get_balance", vec![])
+            .to_event(&self.keys)?;
+        self.client.send_event(event).await?;
+        Ok(())
+    }
+
+    pub async fn update_budget(
+        &self,
+        secret: SecretKey,
+        amount: Amount,
+        period: BudgetRenewalPeriod,
+    ) -> Result<(), Error> {
+        let mut connections = self.connections.write().await;
+        let conn = connections
+            .iter_mut()
+            .find(|conn| conn.keys.secret_key().ok() == Some(&secret))
+            .ok_or(Error::ConnectionNotFound)?;
+        conn.budget = ConnectionBudget {
+            renewal_period: period,
+            total_budget_msats: amount,
+        };
+        Ok(())
+    }
+
+    async fn ensure_relays_connected(&self) -> Result<(), Error> {
+        let connections = self.connections.read().await;
+        let urls = connections
+            .iter()
+            .map(|conn| conn.relays.clone())
+            .flatten()
+            .collect::<Vec<_>>();
+        self.client.add_relays(urls).await?;
+        self.client
+            .connect_with_timeout(Duration::from_secs(5))
+            .await;
+        Ok(())
+    }
+
+    async fn filters(&self) -> Vec<Filter> {
+        let last_check = *self.last_check.lock().await;
+        let connections = self.connections.read().await;
+        connections
+            .iter()
+            .map(|conn| conn.filter(self.keys.public_key(), last_check))
+            .collect()
+    }
+
+    async fn find_connection(&self, secret: SecretKey) -> Option<WalletConnection> {
+        let connections = self.connections.read().await;
+        connections
+            .iter()
+            .find(|conn| conn.keys.secret_key().ok() == Some(&secret))
+            .cloned()
+    }
+
+    async fn get_wallet_to_send(&self, amount: Amount) -> Result<Wallet, Error> {
+        let wallets = self.wallet.get_wallets().await;
+        for wallet in wallets {
+            let keyset = wallet.get_active_mint_keyset().await?;
+            let balance = match keyset.unit {
+                CurrencyUnit::Msat => wallet.total_balance().await?,
+                CurrencyUnit::Sat => wallet.total_balance().await? * 1000.into(),
+                _ => continue,
+            };
+            if balance >= amount {
+                return Ok(wallet);
+            }
+        }
+        Err(Error::InsufficientFunds)
+    }
+
+    async fn handle_event(&self, event: nostr_sdk::Event) -> Result<Option<PaymentDetails>, Error> {
+        let mut connections = self.connections.write().await;
+        let connection = connections
+            .iter_mut()
+            .find(|conn| conn.keys.public_key() == event.author())
+            .ok_or(Error::ConnectionNotFound)?;
+        let request = nip47::Request::from_json(nip04::decrypt(
+            connection.keys.secret_key()?,
+            &self.keys.public_key(),
+            event.content(),
+        )?)?;
+        let remaining_budget = connection.check_and_update_remaining_budget();
+        let (response, payment) = self.handle_request(request, remaining_budget).await;
+        if let Some(payment) = &payment {
+            connection.usage.total_used_msats += payment.total_amount;
+        }
+        let encrypted_response = nip04::encrypt(
+            connection.keys.secret_key()?,
+            &self.keys.public_key(),
+            response.as_json(),
+        )?;
+        let res_event = EventBuilder::new(
+            Kind::WalletConnectResponse,
+            encrypted_response,
+            vec![Tag::from_standardized(TagStandard::public_key(
+                event.author(),
+            ))],
+        )
+        .to_event(&self.keys)?;
+        self.client.send_event(res_event).await?;
+        Ok(payment)
+    }
+
+    async fn handle_request(
+        &self,
+        request: nip47::Request,
+        remaining_budget: Amount,
+    ) -> (nip47::Response, Option<PaymentDetails>) {
+        match request.params {
+            nip47::RequestParams::PayInvoice(params) => {
+                match self.pay_invoice(params.invoice, remaining_budget).await {
+                    Ok(details) => (
+                        nip47::Response {
+                            result_type: nip47::Method::PayInvoice,
+                            error: None,
+                            result: Some(nip47::ResponseResult::PayInvoice(
+                                nip47::PayInvoiceResponseResult {
+                                    preimage: details.preimage.clone(),
+                                },
+                            )),
+                        },
+                        Some(details),
+                    ),
+                    Err(e) => (
+                        nip47::Response {
+                            result_type: nip47::Method::PayInvoice,
+                            error: Some(e.into()),
+                            result: None,
+                        },
+                        None,
+                    ),
+                }
+            }
+            nip47::RequestParams::GetBalance => match self.get_balance().await {
+                Ok(balance) => (
+                    nip47::Response {
+                        result_type: nip47::Method::GetBalance,
+                        error: None,
+                        result: Some(nip47::ResponseResult::GetBalance(
+                            nip47::GetBalanceResponseResult {
+                                balance: balance.into(),
+                            },
+                        )),
+                    },
+                    None,
+                ),
+                Err(e) => (
+                    nip47::Response {
+                        result_type: nip47::Method::GetBalance,
+                        error: Some(e.into()),
+                        result: None,
+                    },
+                    None,
+                ),
+            },
+            _ => (
+                nip47::Response {
+                    result_type: request.method,
+                    error: Some(nip47::NIP47Error {
+                        code: nip47::ErrorCode::NotImplemented,
+                        message: "Method not implemented".to_string(),
+                    }),
+                    result: None,
+                },
+                None,
+            ),
+        }
+    }
+
+    async fn get_balance(&self) -> Result<Amount, Error> {
+        let msat_balance = Amount::try_sum(
+            self.wallet
+                .get_balances(&CurrencyUnit::Msat)
+                .await
+                .unwrap_or_default()
+                .into_values(),
+        )?;
+        let sat_balance = Amount::try_sum(
+            self.wallet
+                .get_balances(&CurrencyUnit::Sat)
+                .await
+                .unwrap_or_default()
+                .into_values(),
+        )?;
+        Ok(msat_balance + (sat_balance * 1000.into()))
+    }
+
+    async fn pay_invoice(
+        &self,
+        invoice: String,
+        remaining_budget: Amount,
+    ) -> Result<PaymentDetails, Error> {
+        let invoice = Bolt11Invoice::from_str(&invoice)?;
+        let amount = Amount::from(
+            invoice
+                .amount_milli_satoshis()
+                .ok_or(Error::InvalidInvoice)?,
+        );
+        if amount > remaining_budget {
+            return Err(Error::BudgetExceeded);
+        }
+        let wallet = self.get_wallet_to_send(amount).await?;
+        let quote = wallet.melt_quote(invoice.to_string(), None).await?;
+        let melted = wallet.melt(&quote.id).await?;
+        Ok(PaymentDetails {
+            preimage: melted.preimage.clone().unwrap_or_default(),
+            payment_hash: invoice.payment_hash().to_string(),
+            total_amount: melted.total_amount(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletConnection {
+    pub keys: Keys,
+    pub relays: Vec<Url>,
+    pub budget: ConnectionBudget,
+    pub usage: ConnectionUsage,
+}
+
+impl WalletConnection {
+    pub fn new(
+        secret: SecretKey,
+        relays: Vec<Url>,
+        budget: ConnectionBudget,
+        usage: ConnectionUsage,
+    ) -> Self {
+        WalletConnection {
+            keys: Keys::new(secret),
+            relays,
+            budget,
+            usage,
+        }
+    }
+
+    fn check_and_update_remaining_budget(&mut self) -> Amount {
+        if let Some(renews_at) = self.budget_renews_at() {
+            if renews_at < Timestamp::now() {
+                self.usage = ConnectionUsage {
+                    total_used_msats: Amount::ZERO,
+                    last_renewed_at: renews_at,
+                };
+            }
+        }
+        if self.usage.total_used_msats >= self.budget.total_budget_msats {
+            return Amount::ZERO;
+        }
+        self.budget.total_budget_msats - self.usage.total_used_msats
+    }
+
+    fn filter(&self, service_pubkey: PublicKey, since: Timestamp) -> Filter {
+        Filter::new()
+            .kind(Kind::WalletConnectRequest)
+            .since(since)
+            .author(self.keys.public_key())
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::P),
+                vec![service_pubkey],
+            )
+    }
+
+    pub fn budget_renews_at(&self) -> Option<Timestamp> {
+        let mut last_renewed_at = self.usage.last_renewed_at;
+        let period = match self.budget.renewal_period {
+            BudgetRenewalPeriod::Daily => Duration::from_secs(24 * 60 * 60),
+            BudgetRenewalPeriod::Weekly => Duration::from_secs(7 * 24 * 60 * 60),
+            BudgetRenewalPeriod::Monthly => Duration::from_secs(30 * 24 * 60 * 60),
+            BudgetRenewalPeriod::Yearly => Duration::from_secs(365 * 24 * 60 * 60),
+            _ => return None,
+        };
+
+        loop {
+            let next_renewal = last_renewed_at + period;
+            if next_renewal > Timestamp::now() {
+                return Some(next_renewal);
+            }
+            last_renewed_at = next_renewal;
+        }
+    }
+
+    pub fn uri(&self, service_pubkey: PublicKey) -> Result<String, Error> {
+        let mut url = Url::parse(&format!("nostr+walletconnect://{}", service_pubkey))?;
+        for relay in &self.relays {
+            url.query_pairs_mut().append_pair("relay", relay.as_str());
+        }
+        url.query_pairs_mut()
+            .append_pair("secret", self.keys.secret_key()?.to_string().as_str());
+        Ok(url.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionBudget {
+    pub renewal_period: BudgetRenewalPeriod,
+    pub total_budget_msats: Amount,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BudgetRenewalPeriod {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionUsage {
+    pub total_used_msats: Amount,
+    pub last_renewed_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaymentDetails {
+    pub preimage: String,
+    pub payment_hash: String,
+    pub total_amount: Amount,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Amount(#[from] cdk::amount::Error),
+    #[error("Budget exceeded")]
+    BudgetExceeded,
+    #[error(transparent)]
+    Client(#[from] nostr_sdk::client::Error),
+    #[error("Connection not found")]
+    ConnectionNotFound,
+    #[error(transparent)]
+    EventBuilder(#[from] nostr_sdk::event::builder::Error),
+    #[error("Insufficient funds")]
+    InsufficientFunds,
+    #[error("Invalid invoice")]
+    InvalidInvoice,
+    #[error(transparent)]
+    Invoice(#[from] lightning_invoice::ParseOrSemanticError),
+    #[error(transparent)]
+    Key(#[from] nostr_sdk::key::Error),
+    #[error(transparent)]
+    Nip04(#[from] nip04::Error),
+    #[error(transparent)]
+    Nip47(#[from] nip47::Error),
+    #[error(transparent)]
+    Url(#[from] url::ParseError),
+    #[error(transparent)]
+    Wallet(#[from] cdk::Error),
+}
+
+impl Into<nip47::NIP47Error> for Error {
+    fn into(self) -> nip47::NIP47Error {
+        match self {
+            Error::BudgetExceeded => nip47::NIP47Error {
+                code: nip47::ErrorCode::QuotaExceeded,
+                message: "Budget exceeded".to_string(),
+            },
+            Error::InsufficientFunds => nip47::NIP47Error {
+                code: nip47::ErrorCode::InsufficientBalance,
+                message: "Insufficient funds".to_string(),
+            },
+            e => nip47::NIP47Error {
+                code: nip47::ErrorCode::Internal,
+                message: e.to_string(),
+            },
+        }
+    }
+}

@@ -9,7 +9,7 @@ use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::client::HttpClient;
 use cdk::wallet::{MultiMintWallet, Wallet};
-use cdk_nostr::WalletNostrDatabase;
+use cdk_nostr::wallet::WalletNostrDatabase;
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};

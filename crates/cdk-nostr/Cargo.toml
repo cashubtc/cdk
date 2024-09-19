@@ -16,7 +16,11 @@ cdk = { path = "../cdk", version = "0.4.0", default-features = false, features =
     "wallet",
 ] }
 itertools = "0.13"
-nostr-sdk = { version = "0.34", default-features = false, features = ["nip44"] }
+lightning-invoice = "0.32"
+nostr-sdk = { version = "0.34", default-features = false, features = [
+    "nip44",
+    "nip47",
+] }
 nostr-database = "0.34"
 serde = "1"
 serde_json = "1"
