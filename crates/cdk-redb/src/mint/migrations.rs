@@ -8,7 +8,7 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, Proof, State};
 use cdk::Amount;
 use lightning_invoice::Bolt11Invoice;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use super::{Error, PROOFS_STATE_TABLE, PROOFS_TABLE};
@@ -17,6 +17,8 @@ const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("min
 const PENDING_PROOFS_TABLE: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("pending_proofs");
 const SPENT_PROOFS_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("spent_proofs");
+const QUOTE_PROOFS_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+    MultimapTableDefinition::new("quote_proofs");
 
 pub fn migrate_01_to_02(db: Arc<Database>) -> Result<u32, Error> {
     migrate_mint_quotes_01_to_02(db)?;
@@ -26,6 +28,11 @@ pub fn migrate_01_to_02(db: Arc<Database>) -> Result<u32, Error> {
 pub fn migrate_02_to_03(db: Arc<Database>) -> Result<u32, Error> {
     migrate_mint_proofs_02_to_03(db)?;
     Ok(3)
+}
+pub fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
+    let write_txn = db.begin_write()?;
+    let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
+    Ok(4)
 }
 
 /// Mint Quote Info
