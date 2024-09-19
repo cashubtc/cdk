@@ -3,7 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use cdk::{
     amount::Amount,
@@ -13,7 +13,10 @@ use cdk::{
 use lightning_invoice::Bolt11Invoice;
 use nostr_database::{MemoryDatabase, MemoryDatabaseOptions};
 use nostr_sdk::{
-    nips::{nip04, nip47},
+    nips::{
+        nip04,
+        nip47::{self, NostrWalletConnectURI},
+    },
     Alphabet, Client, EventBuilder, EventSource, Filter, FilterOptions, JsonUtil, Keys, Kind,
     PublicKey, SecretKey, SingleLetterTag, Tag, TagStandard, Timestamp,
 };
@@ -146,9 +149,8 @@ impl NostrWalletConnect {
         let connections = self.connections.read().await;
         let urls = connections
             .iter()
-            .map(|conn| conn.relays.clone())
-            .flatten()
-            .collect::<Vec<_>>();
+            .map(|conn| conn.relay.clone())
+            .collect::<HashSet<_>>();
         self.client.add_relays(urls).await?;
         self.client
             .connect_with_timeout(Duration::from_secs(5))
@@ -226,9 +228,10 @@ impl NostrWalletConnect {
         let res_event = EventBuilder::new(
             Kind::WalletConnectResponse,
             encrypted_response,
-            vec![Tag::from_standardized(TagStandard::public_key(
-                event.author(),
-            ))],
+            vec![
+                Tag::from_standardized(TagStandard::public_key(event.author())),
+                Tag::from_standardized(TagStandard::event(event.id())),
+            ],
         )
         .to_event(&self.keys)?;
         self.client.send_event(res_event).await?;
@@ -352,8 +355,8 @@ impl NostrWalletConnect {
 pub struct WalletConnection {
     /// The connection keys.
     pub keys: Keys,
-    /// The relays to use.
-    pub relays: Vec<Url>,
+    /// The relay to use.
+    pub relay: Url,
     /// The budget of the connection.
     pub budget: ConnectionBudget,
     /// The current usage of the connection.
@@ -364,13 +367,27 @@ impl WalletConnection {
     /// Creates a new instance of [`WalletConnection`].
     pub fn new(
         secret: SecretKey,
-        relays: Vec<Url>,
+        relay: Url,
         budget: ConnectionBudget,
         usage: ConnectionUsage,
     ) -> Self {
         WalletConnection {
             keys: Keys::new(secret),
-            relays,
+            relay,
+            budget,
+            usage,
+        }
+    }
+
+    /// Creates a new instance of [`WalletConnection`] from a Wallet Connect URI.
+    pub fn from_uri(
+        uri: NostrWalletConnectURI,
+        budget: ConnectionBudget,
+        usage: ConnectionUsage,
+    ) -> Self {
+        WalletConnection {
+            keys: Keys::new(uri.secret),
+            relay: uri.relay_url,
             budget,
             usage,
         }
@@ -423,14 +440,14 @@ impl WalletConnection {
     }
 
     /// Gets the Wallet Connect URI for the given service public key.
-    pub fn uri(&self, service_pubkey: PublicKey) -> Result<String, Error> {
-        let mut url = Url::parse(&format!("nostr+walletconnect://{}", service_pubkey))?;
-        for relay in &self.relays {
-            url.query_pairs_mut().append_pair("relay", relay.as_str());
-        }
-        url.query_pairs_mut()
-            .append_pair("secret", self.keys.secret_key()?.to_string().as_str());
-        Ok(url.to_string())
+    pub fn uri(&self, service_pubkey: PublicKey, lud16: Option<String>) -> Result<String, Error> {
+        let uri = NostrWalletConnectURI::new(
+            service_pubkey,
+            self.relay.clone(),
+            self.keys.secret_key()?.clone(),
+            lud16,
+        );
+        Ok(uri.to_string())
     }
 }
 
@@ -532,9 +549,6 @@ pub enum Error {
     /// NIP-47 error.
     #[error(transparent)]
     Nip47(#[from] nip47::Error),
-    /// URL parse error.
-    #[error(transparent)]
-    Url(#[from] url::ParseError),
     /// CDK Wallet error.
     #[error(transparent)]
     Wallet(#[from] cdk::Error),
