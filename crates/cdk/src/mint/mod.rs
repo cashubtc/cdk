@@ -783,7 +783,7 @@ impl Mint {
             .collect::<Result<Vec<PublicKey>, _>>()?;
 
         self.localstore
-            .add_proofs(swap_request.inputs.clone())
+            .add_proofs(swap_request.inputs.clone(), None)
             .await?;
         self.check_ys_spendable(&input_ys, State::Pending).await?;
 
@@ -1024,7 +1024,10 @@ impl Mint {
         }
 
         self.localstore
-            .add_proofs(melt_request.inputs.clone())
+            .add_proofs(
+                melt_request.inputs.clone(),
+                Some(melt_request.quote.clone()),
+            )
             .await?;
         self.check_ys_spendable(&ys, State::Pending).await?;
 
@@ -1549,6 +1552,7 @@ mod tests {
         pending_proofs: Proofs,
         spent_proofs: Proofs,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
+        quote_proofs: HashMap<String, Vec<PublicKey>>,
         mint_url: &'a str,
         seed: &'a [u8],
         mint_info: MintInfo,
@@ -1564,6 +1568,7 @@ mod tests {
                 config.melt_quotes,
                 config.pending_proofs,
                 config.spent_proofs,
+                config.quote_proofs,
                 config.blinded_signatures,
             )
             .unwrap(),

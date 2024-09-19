@@ -24,6 +24,7 @@ pub struct MintMemoryDatabase {
     melt_quotes: Arc<RwLock<HashMap<String, mint::MeltQuote>>>,
     proofs: Arc<RwLock<HashMap<[u8; 33], Proof>>>,
     proof_state: Arc<Mutex<HashMap<[u8; 33], nut07::State>>>,
+    quote_proofs: Arc<Mutex<HashMap<String, Vec<PublicKey>>>>,
     blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
 }
 
@@ -37,6 +38,7 @@ impl MintMemoryDatabase {
         melt_quotes: Vec<mint::MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
+        quote_proofs: HashMap<String, Vec<PublicKey>>,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
     ) -> Result<Self, Error> {
         let mut proofs = HashMap::new();
@@ -68,6 +70,7 @@ impl MintMemoryDatabase {
             proofs: Arc::new(RwLock::new(proofs)),
             proof_state: Arc::new(Mutex::new(proof_states)),
             blinded_signatures: Arc::new(RwLock::new(blinded_signatures)),
+            quote_proofs: Arc::new(Mutex::new(quote_proofs)),
         })
     }
 }
@@ -219,13 +222,26 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<String>) -> Result<(), Self::Err> {
         let mut db_proofs = self.proofs.write().await;
 
+        let mut ys = Vec::with_capacity(proofs.capacity());
+
         for proof in proofs {
-            let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
-            db_proofs.insert(secret_point.to_bytes(), proof);
+            let y = hash_to_curve(&proof.secret.to_bytes())?;
+            ys.push(y);
+
+            let y = y.to_bytes();
+
+            db_proofs.insert(y, proof);
         }
+
+        if let Some(quote_id) = quote_id {
+            let mut db_quote_proofs = self.quote_proofs.lock().await;
+
+            db_quote_proofs.insert(quote_id, ys);
+        }
+
         Ok(())
     }
 

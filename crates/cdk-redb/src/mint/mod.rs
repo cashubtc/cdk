@@ -16,11 +16,11 @@ use cdk::nuts::{
 };
 use cdk::{cdk_database, mint};
 use migrations::migrate_01_to_02;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
-use crate::mint::migrations::migrate_02_to_03;
+use crate::mint::migrations::{migrate_02_to_03, migrate_03_to_04};
 
 mod migrations;
 
@@ -34,8 +34,10 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 // Key is hex blinded_message B_ value is blinded_signature
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
+const QUOTE_PROOFS_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+    MultimapTableDefinition::new("quote_proofs");
 
-const DATABASE_VERSION: u32 = 3;
+const DATABASE_VERSION: u32 = 4;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
@@ -79,6 +81,10 @@ impl MintRedbDatabase {
 
                             if current_file_version == 2 {
                                 current_file_version = migrate_02_to_03(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 3 {
+                                current_file_version = migrate_03_to_04(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
@@ -125,6 +131,7 @@ impl MintRedbDatabase {
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_STATE_TABLE)?;
                         let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
+                        let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
 
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
@@ -483,19 +490,29 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<String>) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            let mut quote_proofs_table = write_txn
+                .open_multimap_table(QUOTE_PROOFS_TABLE)
+                .map_err(Error::from)?;
             for proof in proofs {
                 let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
-                if table.get(y.to_bytes()).map_err(Error::from)?.is_none() {
+                let y = y.to_bytes();
+                if table.get(y).map_err(Error::from)?.is_none() {
                     table
                         .insert(
-                            y.to_bytes(),
+                            y,
                             serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
                         )
+                        .map_err(Error::from)?;
+                }
+
+                if let Some(quote_id) = &quote_id {
+                    quote_proofs_table
+                        .insert(quote_id.as_str(), y)
                         .map_err(Error::from)?;
                 }
             }

@@ -70,17 +70,18 @@
           lnd
           clightning
           bitcoind
+          sqlx-cli
         ] ++ libsDarwin;
 
         # WASM deps
-        WASMInputs = with pkgs; [
-        ];
+        # WASMInputs = with pkgs; [
+        # ];
 
-        nativeBuildInputs = with pkgs; [
-          # Add additional build inputs here
-        ] ++ lib.optionals isDarwin [
-          # Additional darwin specific native inputs can be set here
-        ];
+        # nativeBuildInputs = with pkgs; [
+        # Add additional build inputs here
+        #] ++ lib.optionals isDarwin [
+        # Additional darwin specific native inputs can be set here
+        # ];
       in
       {
         checks = {

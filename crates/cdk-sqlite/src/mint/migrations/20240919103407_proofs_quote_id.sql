@@ -1,0 +1,1 @@
+ALTER TABLE proof ADD COLUMN quote_id TEXT;
