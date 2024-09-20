@@ -17,8 +17,8 @@ use nostr_sdk::{
         nip04,
         nip47::{self, NostrWalletConnectURI},
     },
-    Alphabet, Client, EventBuilder, EventSource, Filter, FilterOptions, JsonUtil, Keys, Kind,
-    PublicKey, SecretKey, SingleLetterTag, Tag, TagStandard, Timestamp,
+    Alphabet, Client, EventBuilder, EventId, EventSource, Filter, FilterOptions, JsonUtil, Keys,
+    Kind, PublicKey, SecretKey, SingleLetterTag, Tag, TagStandard, Timestamp,
 };
 use tokio::sync::{Mutex, RwLock};
 use url::Url;
@@ -35,6 +35,7 @@ pub struct NostrWalletConnect {
     client: Client,
     keys: Keys,
     last_check: Arc<Mutex<Timestamp>>,
+    processed_events: Arc<Mutex<HashSet<EventId>>>,
 }
 
 impl NostrWalletConnect {
@@ -62,6 +63,7 @@ impl NostrWalletConnect {
             client,
             keys,
             last_check: Arc::new(Mutex::new(Timestamp::now())),
+            processed_events: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -203,6 +205,12 @@ impl NostrWalletConnect {
     }
 
     async fn handle_event(&self, event: nostr_sdk::Event) -> Result<Option<PaymentDetails>, Error> {
+        let event_id = event.id();
+        let mut processed_events = self.processed_events.lock().await;
+        if processed_events.contains(&event_id) {
+            return Ok(None);
+        }
+
         let mut connections = self.connections.write().await;
         let connection = connections
             .iter_mut()
@@ -228,14 +236,17 @@ impl NostrWalletConnect {
             encrypted_response,
             vec![
                 Tag::from_standardized(TagStandard::public_key(event.author())),
-                Tag::from_standardized(TagStandard::event(event.id())),
+                Tag::from_standardized(TagStandard::event(event_id)),
             ],
         )
         .to_event(&self.keys)?;
         self.client.send_event(res_event).await?;
+
         let mut last_check = self.last_check.lock().await;
         *last_check = event.created_at();
         drop(last_check);
+
+        processed_events.insert(event_id);
         Ok(payment)
     }
 
