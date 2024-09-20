@@ -1391,6 +1391,11 @@ impl Wallet {
             return Err(Error::UnknownQuote);
         };
 
+        let proofs_total = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        if proofs_total < quote_info.amount + quote_info.fee_reserve {
+            return Err(Error::InsufficientFunds);
+        }
+
         let ys = proofs
             .iter()
             .map(|p| p.y())
@@ -1410,7 +1415,7 @@ impl Wallet {
             active_keyset_id,
             count,
             self.xpriv,
-            quote_info.fee_reserve,
+            proofs_total - quote_info.amount,
         )?;
 
         let melt_response = self
