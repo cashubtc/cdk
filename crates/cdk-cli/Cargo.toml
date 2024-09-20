@@ -35,7 +35,7 @@ tracing = { version = "0.1", default-features = false, features = [
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 rand = "0.8.5"
 home = "0.5.5"
-nostr-sdk = { version = "0.34.0", default-features = false, features = [
+nostr-sdk = { version = "0.35", default-features = false, features = [
     "nip04",
     "nip44",
 ] }

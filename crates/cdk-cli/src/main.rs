@@ -106,7 +106,14 @@ async fn main() -> Result<()> {
             (Some(nsec), Some(relay)) => {
                 let keys = Keys::new(nsec);
                 let relays = vec![relay];
-                Arc::new(WalletNostrDatabase::remote("cdk-cli".to_string(), keys, relays).await?)
+                Arc::new(
+                    WalletNostrDatabase::remote(
+                        "cdk-cli".to_string(),
+                        keys.secret_key().clone(),
+                        relays,
+                    )
+                    .await?,
+                )
             }
             (None, None) => match args.engine.as_str() {
                 "sqlite" => {

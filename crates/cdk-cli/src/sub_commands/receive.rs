@@ -184,7 +184,9 @@ async fn nostr_receive(
 
     let client = nostr_sdk::Client::default();
 
-    client.add_relays(relays).await?;
+    for relay in &relays {
+        client.add_relay(relay).await?;
+    }
 
     client.connect().await;
 
@@ -203,8 +205,8 @@ async fn nostr_receive(
     let keys = Keys::from_str(&(nostr_signing_key).to_secret_hex())?;
 
     for event in events {
-        if event.kind() == Kind::EncryptedDirectMessage {
-            if let Ok(msg) = nip04::decrypt(keys.secret_key()?, &event.author(), event.content()) {
+        if event.kind == Kind::EncryptedDirectMessage {
+            if let Ok(msg) = nip04::decrypt(keys.secret_key(), &event.pubkey, event.content) {
                 if let Some(token) = cdk::wallet::util::token_from_text(&msg) {
                     tokens.insert(token.to_string());
                 }
