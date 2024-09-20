@@ -1,4 +1,5 @@
 import "./misc/justfile.custom.just"
+import "./misc/test.just"
 
 alias b := build
 alias c := check
