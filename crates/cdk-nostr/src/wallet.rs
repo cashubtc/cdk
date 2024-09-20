@@ -213,7 +213,8 @@ impl WalletNostrDatabase {
             ),
             ..Default::default()
         }];
-        let events = self.get_events(filters, true).await?;
+        let mut events = self.get_events(filters, true).await?;
+        events.sort(); // Ensure events are sorted by timestamp
         Ok(events
             .into_iter()
             .map(|event| ProofsEvent::from_event(&event, &self.keys))
