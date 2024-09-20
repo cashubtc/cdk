@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mint_quote = wallet.mint_quote(amount, None).await?;
     println!("Request: {}", mint_quote.request);
-    println!(
+    print!(
         "Press enter to mint {} satoshis at {} (quote id: {})",
         mint_quote.amount, mint_url, mint_quote.id
     );

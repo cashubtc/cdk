@@ -328,12 +328,14 @@ impl NostrWalletConnect {
         invoice: String,
         remaining_budget: Amount,
     ) -> Result<PaymentDetails, Error> {
+        tracing::debug!("Paying invoice: {}", invoice);
         let invoice = Bolt11Invoice::from_str(&invoice)?;
         let amount = Amount::from(
             invoice
                 .amount_milli_satoshis()
                 .ok_or(Error::InvalidInvoice)?,
         );
+        tracing::debug!("amount={}, remaining_budget={}", amount, remaining_budget);
         if amount > remaining_budget {
             return Err(Error::BudgetExceeded);
         }
