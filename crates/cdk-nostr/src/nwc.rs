@@ -84,6 +84,10 @@ impl NostrWalletConnect {
         &self,
         timeout: Duration,
     ) -> Result<Vec<PaymentDetails>, Error> {
+        let connections = self.connections.read().await;
+        if connections.is_empty() {
+            return Ok(Vec::new());
+        }
         self.ensure_relays_connected().await?;
         let filters = self.filters().await;
         let events = self
@@ -97,6 +101,10 @@ impl NostrWalletConnect {
 
     /// Checks for new requests from the relays.
     pub async fn check_for_requests(&self) -> Result<Vec<PaymentDetails>, Error> {
+        let connections = self.connections.read().await;
+        if connections.is_empty() {
+            return Ok(Vec::new());
+        }
         self.ensure_relays_connected().await?;
         let filters = self.filters().await;
         let events = self
@@ -122,6 +130,10 @@ impl NostrWalletConnect {
 
     /// Publishes a Wallet Connect info event.
     pub async fn publish_info(&self) -> Result<(), Error> {
+        let connections = self.connections.read().await;
+        if connections.is_empty() {
+            return Ok(());
+        }
         let event = EventBuilder::new(Kind::WalletConnectInfo, "pay_invoice get_balance", vec![])
             .to_event(&self.keys)?;
         self.client.send_event(event).await?;
