@@ -69,7 +69,7 @@ WHERE unit IS ?;
         "#,
         )
         .bind(unit.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -83,7 +83,7 @@ AND id IS ?;
         )
         .bind(unit.to_string())
         .bind(id.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -255,7 +255,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id)
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -268,7 +268,7 @@ WHERE id=?;
         )
         .bind(state.to_string())
         .bind(quote_id)
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -389,7 +389,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id)
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -402,7 +402,7 @@ WHERE id=?;
         )
         .bind(state.to_string())
         .bind(quote_id)
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -505,7 +505,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(proof.c.to_bytes().to_vec())
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
             .bind("UNSPENT")
-            .execute(&mut transaction)
+            .execute(&mut *transaction)
             .await
             .map_err(Error::from)
             {
@@ -530,7 +530,7 @@ WHERE y=?;
         "#,
             )
             .bind(y.to_bytes().to_vec())
-            .fetch_one(&mut transaction)
+            .fetch_one(&mut *transaction)
             .await;
 
             match rec {
@@ -561,7 +561,7 @@ WHERE y=?;
         "#,
             )
             .bind(y.to_bytes().to_vec())
-            .fetch_one(&mut transaction)
+            .fetch_one(&mut *transaction)
             .await;
 
             match rec {
@@ -630,7 +630,7 @@ WHERE y=?;
         "#,
             )
             .bind(&y)
-            .fetch_one(&mut transaction)
+            .fetch_one(&mut *transaction)
             .await;
 
             match rec {
@@ -656,7 +656,7 @@ WHERE y=?;
                 )
                 .bind(&proofs_state)
                 .bind(y)
-                .execute(&mut transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(Error::from)?;
             }
@@ -684,7 +684,7 @@ VALUES (?, ?, ?, ?);
             .bind(u64::from(signature.amount) as i64)
             .bind(signature.keyset_id.to_string())
             .bind(signature.c.to_bytes().to_vec())
-            .execute(&mut transaction)
+            .execute(&mut *transaction)
             .await
             .map_err(Error::from)?;
         }

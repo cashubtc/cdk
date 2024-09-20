@@ -48,7 +48,7 @@
 
 
         # DB MSRV stable
-        db_msrv_toolchain = pkgs.rust-bin.stable."1.66.0".default.override {
+        db_msrv_toolchain = pkgs.rust-bin.stable."1.74.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
 
