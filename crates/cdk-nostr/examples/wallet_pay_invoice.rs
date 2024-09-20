@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connect_uri = NostrWalletConnectURI::new(
         service_keys.public_key(),
         relay_url,
-        connection_keys.secret_key()?.clone(),
+        connection_keys.secret_key().clone(),
         None,
     );
     println!("Connect URI: {}", connect_uri);
@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )],
         MultiMintWallet::new(vec![wallet]),
-        service_keys.secret_key()?.clone(),
+        service_keys.secret_key().clone(),
     );
     println!("Waiting for payment requests...");
     let payments = nwc

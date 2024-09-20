@@ -138,7 +138,7 @@ impl NostrWalletConnect {
         let mut connections = self.connections.write().await;
         let conn = connections
             .iter_mut()
-            .find(|conn| conn.keys.secret_key().ok() == Some(&secret))
+            .find(|conn| conn.keys.secret_key() == &secret)
             .ok_or(Error::ConnectionNotFound)?;
         conn.budget.renewal_period = period;
         conn.budget.total_budget_msats = amount_msats;
@@ -151,10 +151,14 @@ impl NostrWalletConnect {
             .iter()
             .map(|conn| conn.relay.clone())
             .collect::<HashSet<_>>();
-        self.client.add_relays(urls).await?;
-        self.client
-            .connect_with_timeout(Duration::from_secs(5))
-            .await;
+        for url in &urls {
+            self.client.add_relay(url.clone()).await?;
+            if let Ok(relay) = self.client.relay(url).await {
+                if !relay.is_connected().await {
+                    relay.connect(Some(Duration::from_secs(5))).await;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -171,7 +175,7 @@ impl NostrWalletConnect {
         let connections = self.connections.read().await;
         connections
             .iter()
-            .find(|conn| conn.keys.secret_key().ok() == Some(&secret))
+            .find(|conn| conn.keys.secret_key() == &secret)
             .cloned()
     }
 
@@ -205,7 +209,7 @@ impl NostrWalletConnect {
     }
 
     async fn handle_event(&self, event: nostr_sdk::Event) -> Result<Option<PaymentDetails>, Error> {
-        let event_id = event.id();
+        let event_id = event.id;
         let mut processed_events = self.processed_events.lock().await;
         if processed_events.contains(&event_id) {
             return Ok(None);
@@ -214,20 +218,21 @@ impl NostrWalletConnect {
         let mut connections = self.connections.write().await;
         let connection = connections
             .iter_mut()
-            .find(|conn| conn.keys.public_key() == event.author())
+            .find(|conn| conn.keys.public_key() == event.pubkey)
             .ok_or(Error::ConnectionNotFound)?;
         let request = nip47::Request::from_json(nip04::decrypt(
-            connection.keys.secret_key()?,
+            connection.keys.secret_key(),
             &self.keys.public_key(),
-            event.content(),
+            &event.content,
         )?)?;
         let remaining_budget = connection.check_and_update_remaining_budget();
         let (response, payment) = self.handle_request(request, remaining_budget).await;
+        processed_events.insert(event_id);
         if let Some(payment) = &payment {
             connection.budget.used_budget_msats += payment.total_amount;
         }
         let encrypted_response = nip04::encrypt(
-            connection.keys.secret_key()?,
+            connection.keys.secret_key(),
             &self.keys.public_key(),
             response.as_json(),
         )?;
@@ -235,7 +240,7 @@ impl NostrWalletConnect {
             Kind::WalletConnectResponse,
             encrypted_response,
             vec![
-                Tag::from_standardized(TagStandard::public_key(event.author())),
+                Tag::from_standardized(TagStandard::public_key(event.pubkey)),
                 Tag::from_standardized(TagStandard::event(event_id)),
             ],
         )
@@ -243,10 +248,7 @@ impl NostrWalletConnect {
         self.client.send_event(res_event).await?;
 
         let mut last_check = self.last_check.lock().await;
-        *last_check = event.created_at();
-        drop(last_check);
-
-        processed_events.insert(event_id);
+        *last_check = event.created_at;
         Ok(payment)
     }
 
@@ -443,7 +445,7 @@ impl WalletConnection {
         let uri = NostrWalletConnectURI::new(
             service_pubkey,
             self.relay.clone(),
-            self.keys.secret_key()?.clone(),
+            self.keys.secret_key().clone(),
             lud16,
         );
         Ok(uri.to_string())

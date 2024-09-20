@@ -15,15 +15,17 @@ bitcoin = { version = "0.32.2", default-features = false }
 cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = [
     "wallet",
 ] }
+hkdf = "0.12.4"
 itertools = "0.13"
 lightning-invoice = "0.32"
-nostr-sdk = { version = "0.34", default-features = false, features = [
+nostr-sdk = { version = "0.35", default-features = false, features = [
     "nip44",
     "nip47",
 ] }
-nostr-database = "0.34"
+nostr-database = "0.35"
 serde = "1"
 serde_json = "1"
+sha2 = "0.10.8"
 thiserror = "1"
 tokio = "1"
 tracing = "0.1"

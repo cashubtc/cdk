@@ -24,13 +24,18 @@ use cdk::{
     wallet::{MeltQuote, MintQuote},
     Amount,
 };
+use hkdf::Hkdf;
 use itertools::Itertools;
 use nostr_database::{DatabaseError, MemoryDatabase, MemoryDatabaseOptions, NostrDatabase};
 use nostr_sdk::{
-    client, nips::nip44, Client, Event, EventBuilder, EventSource, Filter, Kind, SingleLetterTag,
-    Tag, TagKind, Timestamp,
+    client,
+    nips::nip44,
+    secp256k1::{ecdh::shared_secret_point, Parity},
+    Client, Event, EventBuilder, EventSource, Filter, Kind, SingleLetterTag, Tag, TagKind,
+    Timestamp,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use tokio::sync::{Mutex, MutexGuard};
 use url::Url;
 
@@ -80,15 +85,18 @@ impl WalletNostrDatabase {
     /// Create a new [`WalletNostrDatabase`] with a local event database
     pub async fn local<D>(
         id: String,
-        keys: nostr_sdk::Keys,
+        key: nostr_sdk::SecretKey,
         relays: Vec<Url>,
         nostr_db: D,
     ) -> Result<Self, Error>
     where
         D: NostrDatabase + 'static,
     {
+        let keys = nostr_sdk::Keys::new(key);
         let client = Client::builder().signer(&keys).database(nostr_db).build();
-        client.add_relays(relays).await?;
+        for relay in relays {
+            client.add_relay(relay).await?;
+        }
         let mut self_ = Self {
             client,
             keys,
@@ -111,9 +119,10 @@ impl WalletNostrDatabase {
     /// Create a new [`WalletNostrDatabase`] from remote relays
     pub async fn remote(
         id: String,
-        keys: nostr_sdk::Keys,
+        key: nostr_sdk::SecretKey,
         relays: Vec<Url>,
     ) -> Result<Self, Error> {
+        let keys = nostr_sdk::Keys::new(key);
         let client = Client::builder()
             .signer(&keys)
             .database(MemoryDatabase::with_opts(MemoryDatabaseOptions {
@@ -121,7 +130,9 @@ impl WalletNostrDatabase {
                 max_events: None,
             }))
             .build();
-        client.add_relays(relays).await?;
+        for relay in relays {
+            client.add_relay(relay).await?;
+        }
         let mut self_ = Self {
             client,
             keys,
@@ -179,7 +190,7 @@ impl WalletNostrDatabase {
         }];
         let events = self.get_events(filters, false).await?;
         if let Some(event) = events.first() {
-            self.client.delete_event(event.id()).await?;
+            self.client.delete_event(event.id).await?;
             Ok(())
         } else {
             Err(Error::EventNotFound(event_id))
@@ -319,7 +330,7 @@ impl WalletNostrDatabase {
     #[tracing::instrument(skip(self))]
     pub async fn save_transaction(&self, tx: Transaction) -> Result<EventId, Error> {
         let event = tx.to_event(&self.id, &self.keys)?;
-        let id = event.id();
+        let id = event.id;
         self.save_event(event).await?;
         let mut info = self.info.lock().await;
         tx.update_balance(info.1.balance.get_or_insert(Amount::ZERO));
@@ -345,7 +356,9 @@ impl WalletNostrDatabase {
         events.sort(); // Ensure events are sorted by timestamp
         for event in events {
             let event = ProofsEvent::from_event(&event, &self.keys)?;
-            self.wallet_db.add_mint(event.url.clone(), None).await?;
+            if self.wallet_db.get_mint(event.url.clone()).await?.is_none() {
+                self.wallet_db.add_mint(event.url.clone(), None).await?;
+            }
             self.wallet_db
                 .update_proofs(
                     event
@@ -695,7 +708,7 @@ impl Default for WalletInfo {
 impl WalletInfo {
     /// Parses a [`WalletInfo`] from an [`Event`]
     pub fn from_event(event: &Event, keys: &nostr_sdk::Keys) -> Result<Self, Error> {
-        let id_tag = event.tags().iter().find(|tag| {
+        let id_tag = event.tags.iter().find(|tag| {
             tag.kind()
                 == TagKind::SingleLetter(
                     SingleLetterTag::from_char(ID_TAG).expect("ID_TAG is not a single letter tag"),
@@ -710,12 +723,12 @@ impl WalletInfo {
             ..Default::default()
         };
         let content: Vec<Tag> = serde_json::from_str(&nip44::decrypt(
-            keys.secret_key()?,
+            keys.secret_key(),
             &keys.public_key(),
             &event.content,
         )?)?;
         let mut tags = Vec::new();
-        tags.extend(event.tags().to_vec());
+        tags.extend(event.tags.to_vec());
         tags.extend(content);
         for tag in tags {
             match tag.kind().to_string().as_str() {
@@ -767,7 +780,7 @@ impl WalletInfo {
                             .ok_or(Error::EmptyTag(COUNTER_TAG.to_string()))?,
                     )?;
                     let counter = tag
-                        .as_vec()
+                        .as_slice()
                         .last()
                         .ok_or(Error::EmptyTag(COUNTER_TAG.to_string()))?
                         .parse::<u32>()?;
@@ -817,7 +830,7 @@ impl WalletInfo {
         let event = EventBuilder::new(
             WALLET_INFO_KIND,
             nip44::encrypt(
-                keys.secret_key()?,
+                keys.secret_key(),
                 &keys.public_key(),
                 serde_json::to_string(&content)?,
                 nip44::Version::V2,
@@ -849,7 +862,7 @@ impl ProofsEvent {
     /// Parses a [`ProofsEvent`] from an [`Event`]
     pub fn from_event(event: &Event, keys: &nostr_sdk::Keys) -> Result<Self, Error> {
         Ok(serde_json::from_str(&nip44::decrypt(
-            keys.secret_key()?,
+            keys.secret_key(),
             &keys.public_key(),
             &event.content,
         )?)?)
@@ -863,7 +876,7 @@ impl ProofsEvent {
         let event = EventBuilder::new(
             PROOFS_KIND,
             nip44::encrypt(
-                keys.secret_key()?,
+                keys.secret_key(),
                 &keys.public_key(),
                 serde_json::to_string(&self)?,
                 nip44::Version::V2,
@@ -905,12 +918,12 @@ impl Transaction {
         let mut payment_hash: Option<PaymentHash> = None;
 
         let content: Vec<Tag> = serde_json::from_str(&nip44::decrypt(
-            keys.secret_key()?,
+            keys.secret_key(),
             &keys.public_key(),
             &event.content,
         )?)?;
         let mut tags = Vec::new();
-        tags.extend(event.tags().to_vec());
+        tags.extend(event.tags.to_vec());
         tags.extend(content);
         for tag in tags {
             match tag.kind().to_string().as_str() {
@@ -936,7 +949,7 @@ impl Transaction {
                 }
                 PROOFS_TAG => {
                     proofs = tag
-                        .as_vec()
+                        .as_slice()
                         .iter()
                         .skip(1)
                         .map(|y| PublicKey::from_str(y))
@@ -950,7 +963,7 @@ impl Transaction {
                 }
                 t => {
                     if t == EVENT_TAG.to_string().as_str() {
-                        let mut parts = tag.as_vec().into_iter();
+                        let mut parts = tag.as_slice().into_iter();
                         event_id = Some(EventId::from_str(
                             parts.next().ok_or(Error::EmptyTag(EVENT_TAG.to_string()))?,
                         )?);
@@ -1016,7 +1029,7 @@ impl Transaction {
         let event = EventBuilder::new(
             TX_HISTORY_KIND,
             nip44::encrypt(
-                keys.secret_key()?,
+                keys.secret_key(),
                 &keys.public_key(),
                 serde_json::to_string(&content)?,
                 nip44::Version::V2,
@@ -1079,8 +1092,8 @@ impl TransactionEvent {
     /// Parses a [`TransactionEvent`] from an [`Event`]
     pub fn from_event(event: &Event, keys: &nostr_sdk::Keys) -> Result<Self, Error> {
         Ok(Self {
-            event_id: event.id(),
-            created_at: event.created_at(),
+            event_id: event.id,
+            created_at: event.created_at,
             tx: Transaction::from_event(event, keys)?,
         })
     }
@@ -1095,6 +1108,26 @@ fn wallet_link_tag(wallet_id: &str, keys: &nostr_sdk::Keys) -> Result<Tag, Error
 
 fn wallet_link_tag_value(wallet_id: &str, keys: &nostr_sdk::Keys) -> String {
     format!("{}:{}:{}", WALLET_INFO_KIND, keys.public_key(), wallet_id)
+}
+
+/// Derive a wallet from a secret key, public key, and password.
+///
+/// If the wallet is shared, provide the public key of the other party. If the wallet is not shared, provide the public key of the wallet.
+/// The password is optional and can be used to derive a wallet with a different key.
+pub fn derive_wallet_nsec(
+    secret_key: nostr_sdk::SecretKey,
+    public_key: nostr_sdk::PublicKey,
+    password: Option<String>,
+) -> Result<SecretKey, Error> {
+    let mut ssp = shared_secret_point(&public_key.public_key(Parity::Even), &secret_key)
+        .as_slice()
+        .to_owned();
+    ssp.resize(32, 0); // toss the Y part
+    let shared_point: [u8; 32] = ssp.try_into().expect("shared_point is not 32 bytes");
+    let (shared_key, _hkdf) =
+        Hkdf::<Sha256>::extract(password.as_deref().map(|s| s.as_bytes()), &shared_point);
+
+    Ok(SecretKey::from_slice(&shared_key)?)
 }
 
 /// [`WalletNostrDatabase`]` error

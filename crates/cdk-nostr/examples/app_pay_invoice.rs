@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         amount: None,
     });
     let event = request.to_event(&connect_uri)?;
-    let event_id = event.id();
+    let event_id = event.id;
     client.send_event(event).await?;
 
     loop {
