@@ -202,6 +202,24 @@ impl WalletNostrDatabase {
         self.info.lock().await.1.clone()
     }
 
+    /// Get all of the wallet's [`ProofsEvent`]s
+    pub async fn get_proofs_events(&self) -> Result<Vec<ProofsEvent>, Error> {
+        self.ensure_relays_connected().await;
+        let filters = vec![Filter {
+            authors: filter_value!(self.keys.public_key()),
+            kinds: filter_value!(PROOFS_KIND),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
+            ),
+            ..Default::default()
+        }];
+        let events = self.get_events(filters, true).await?;
+        Ok(events
+            .into_iter()
+            .map(|event| ProofsEvent::from_event(&event, &self.keys))
+            .collect::<Result<Vec<ProofsEvent>, Error>>()?)
+    }
+
     /// Get a transaction by its [`EventId`]
     #[tracing::instrument(skip(self))]
     pub async fn get_transaction(&self, event_id: EventId) -> Result<TransactionEvent, Error> {
