@@ -43,9 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mint_quote = wallet.mint_quote(amount, None).await?;
     println!("Request: {}", mint_quote.request);
-    print!(
-        "Press enter to mint {} satoshis at {} (quote id: {})",
-        mint_quote.amount, mint_url, mint_quote.id
+    println!(
+        "Press enter to mint {} {} at {} (quote id: {})...",
+        mint_quote.amount, mint_quote.unit, mint_url, mint_quote.id
     );
     let _ = std::io::stdin().read_line(&mut String::new());
     let amount = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
