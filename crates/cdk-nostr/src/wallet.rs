@@ -1110,15 +1110,15 @@ fn wallet_link_tag_value(wallet_id: &str, keys: &nostr_sdk::Keys) -> String {
     format!("{}:{}:{}", WALLET_INFO_KIND, keys.public_key(), wallet_id)
 }
 
-/// Derive a wallet from a secret key, public key, and password.
+/// Derive a wallet secret key from a secret key, public key, and password.
 ///
 /// If the wallet is shared, provide the public key of the other party. If the wallet is not shared, provide the public key of the wallet.
 /// The password is optional and can be used to derive a wallet with a different key.
-pub fn derive_wallet_nsec(
+pub fn derive_wallet_secret(
     secret_key: nostr_sdk::SecretKey,
     public_key: nostr_sdk::PublicKey,
     password: Option<String>,
-) -> Result<SecretKey, Error> {
+) -> Result<nostr_sdk::SecretKey, Error> {
     let mut ssp = shared_secret_point(&public_key.public_key(Parity::Even), &secret_key)
         .as_slice()
         .to_owned();
@@ -1126,8 +1126,7 @@ pub fn derive_wallet_nsec(
     let shared_point: [u8; 32] = ssp.try_into().expect("shared_point is not 32 bytes");
     let (shared_key, _hkdf) =
         Hkdf::<Sha256>::extract(password.as_deref().map(|s| s.as_bytes()), &shared_point);
-
-    Ok(SecretKey::from_slice(&shared_key)?)
+    Ok(nostr_sdk::SecretKey::from_slice(&shared_key)?)
 }
 
 /// [`WalletNostrDatabase`]` error
