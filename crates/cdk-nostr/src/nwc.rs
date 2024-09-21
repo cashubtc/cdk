@@ -77,6 +77,7 @@ impl NostrWalletConnect {
             return Ok(());
         }
         connections.push(connection);
+        drop(connections);
         self.publish_info().await?;
         Ok(())
     }
