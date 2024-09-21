@@ -140,6 +140,17 @@ impl NostrWalletConnect {
         Ok(())
     }
 
+    /// Removes a connection from the list of connections.
+    pub async fn remove_connection(&self, secret: SecretKey) -> Result<(), Error> {
+        let mut connections = self.connections.write().await;
+        let index = connections
+            .iter()
+            .position(|conn| conn.keys.secret_key() == &secret)
+            .ok_or(Error::ConnectionNotFound)?;
+        connections.remove(index);
+        Ok(())
+    }
+
     /// Updates the budget of a connection.
     pub async fn update_budget(
         &self,
