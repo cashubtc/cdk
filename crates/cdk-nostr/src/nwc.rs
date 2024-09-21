@@ -7,6 +7,7 @@ use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use cdk::{
     amount::Amount,
+    cdk_lightning::to_unit,
     nuts::CurrencyUnit,
     wallet::{MultiMintWallet, Wallet},
 };
@@ -217,16 +218,18 @@ impl NostrWalletConnect {
             .cloned()
     }
 
-    async fn get_wallet_to_send(&self, amount: Amount) -> Result<Wallet, Error> {
+    async fn get_wallet_to_send(&self, amount_msats: Amount) -> Result<Wallet, Error> {
         let wallets = self.wallet.get_wallets().await;
         for wallet in wallets {
-            let keyset = wallet.get_active_mint_keyset().await?;
-            let balance = match keyset.unit {
-                CurrencyUnit::Msat => wallet.total_balance().await?,
-                CurrencyUnit::Sat => wallet.total_balance().await? * 1000.into(),
-                _ => continue,
+            let balance = match to_unit(
+                wallet.total_balance().await?,
+                &wallet.unit,
+                &CurrencyUnit::Msat,
+            ) {
+                Ok(b) => b,
+                Err(_) => continue,
             };
-            if balance >= amount {
+            if balance >= amount_msats {
                 return Ok(wallet);
             }
         }
@@ -265,11 +268,11 @@ impl NostrWalletConnect {
             &self.keys.public_key(),
             &event.content,
         )?)?;
-        let remaining_budget = connection.check_and_update_remaining_budget();
-        let (response, payment) = self.handle_request(request, remaining_budget).await;
+        let remaining_budget_msats = connection.check_and_update_remaining_budget();
+        let (response, payment) = self.handle_request(request, remaining_budget_msats).await;
         processed_events.insert(event_id);
         if let Some(payment) = &payment {
-            connection.budget.used_budget_msats += payment.total_amount;
+            connection.budget.used_budget_msats += payment.total_amount_msats;
         }
         let encrypted_response = nip04::encrypt(
             connection.keys.secret_key(),
@@ -295,11 +298,14 @@ impl NostrWalletConnect {
     async fn handle_request(
         &self,
         request: nip47::Request,
-        remaining_budget: Amount,
+        remaining_budget_msats: Amount,
     ) -> (nip47::Response, Option<PaymentDetails>) {
         match request.params {
             nip47::RequestParams::PayInvoice(params) => {
-                match self.pay_invoice(params.invoice, remaining_budget).await {
+                match self
+                    .pay_invoice(params.invoice, remaining_budget_msats)
+                    .await
+                {
                     Ok(details) => (
                         nip47::Response {
                             result_type: nip47::Method::PayInvoice,
@@ -379,26 +385,30 @@ impl NostrWalletConnect {
     async fn pay_invoice(
         &self,
         invoice: String,
-        remaining_budget: Amount,
+        remaining_budget_msats: Amount,
     ) -> Result<PaymentDetails, Error> {
         tracing::debug!("Paying invoice: {}", invoice);
         let invoice = Bolt11Invoice::from_str(&invoice)?;
-        let amount = Amount::from(
+        let amount_msats = Amount::from(
             invoice
                 .amount_milli_satoshis()
                 .ok_or(Error::InvalidInvoice)?,
         );
-        tracing::debug!("amount={}, remaining_budget={}", amount, remaining_budget);
-        if amount > remaining_budget {
+        tracing::debug!(
+            "amount={}, remaining_budget_msats={}",
+            amount_msats,
+            remaining_budget_msats
+        );
+        if amount_msats > remaining_budget_msats {
             return Err(Error::BudgetExceeded);
         }
-        let wallet = self.get_wallet_to_send(amount).await?;
+        let wallet = self.get_wallet_to_send(amount_msats).await?;
         let quote = wallet.melt_quote(invoice.to_string(), None).await?;
         let melted = wallet.melt(&quote.id).await?;
         Ok(PaymentDetails {
             preimage: melted.preimage.clone().unwrap_or_default(),
             payment_hash: invoice.payment_hash().to_string(),
-            total_amount: melted.total_amount(),
+            total_amount_msats: to_unit(melted.total_amount(), &wallet.unit, &CurrencyUnit::Msat)?,
         })
     }
 }
@@ -538,7 +548,7 @@ pub struct PaymentDetails {
     /// The payment hash.
     pub payment_hash: String,
     /// The total amount paid in millisatoshis.
-    pub total_amount: Amount,
+    pub total_amount_msats: Amount,
 }
 
 /// Errors that can occur when using the Nostr Wallet Connect service.
@@ -571,6 +581,9 @@ pub enum Error {
     /// Nostr key error.
     #[error(transparent)]
     Key(#[from] nostr_sdk::key::Error),
+    /// CDK Lightning error.
+    #[error(transparent)]
+    Lightning(#[from] cdk::cdk_lightning::Error),
     /// NIP-04 error.
     #[error(transparent)]
     Nip04(#[from] nip04::Error),
