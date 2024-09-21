@@ -4,8 +4,7 @@ use anyhow::Result;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::amount::Amount;
-use cdk::cdk_lightning::to_unit;
+use cdk::amount::{to_unit, Amount};
 use cdk::error::{Error, ErrorResponse};
 use cdk::nuts::nut05::MeltBolt11Response;
 use cdk::nuts::{

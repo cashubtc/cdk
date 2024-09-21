@@ -6,8 +6,7 @@
 use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use cdk::{
-    amount::Amount,
-    cdk_lightning::to_unit,
+    amount::{to_unit, Amount},
     nuts::CurrencyUnit,
     wallet::{MultiMintWallet, Wallet},
 };

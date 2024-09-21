@@ -8,6 +8,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::nuts::CurrencyUnit;
+
 /// Amount Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -17,6 +19,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Cannot convert units
+    #[error("Cannot convert units")]
+    CannotConvertUnits,
 }
 
 /// Amount can be any unit
@@ -215,6 +220,30 @@ pub enum SplitTarget {
     Value(Amount),
     /// Specific amounts to split into **MUST** equal amount being split
     Values(Vec<Amount>),
+}
+
+/// Msats in sat
+pub const MSAT_IN_SAT: u64 = 1000;
+
+/// Helper function to convert units
+pub fn to_unit<T>(
+    amount: T,
+    current_unit: &CurrencyUnit,
+    target_unit: &CurrencyUnit,
+) -> Result<Amount, Error>
+where
+    T: Into<u64>,
+{
+    let amount = amount.into();
+    match (current_unit, target_unit) {
+        (CurrencyUnit::Sat, CurrencyUnit::Sat) => Ok(amount.into()),
+        (CurrencyUnit::Msat, CurrencyUnit::Msat) => Ok(amount.into()),
+        (CurrencyUnit::Sat, CurrencyUnit::Msat) => Ok((amount * MSAT_IN_SAT).into()),
+        (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok((amount / MSAT_IN_SAT).into()),
+        (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount.into()),
+        (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount.into()),
+        _ => Err(Error::CannotConvertUnits),
+    }
 }
 
 #[cfg(test)]

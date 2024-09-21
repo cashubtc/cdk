@@ -11,10 +11,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use cdk::amount::Amount;
+use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
-    Settings,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint;
 use cdk::mint::FeeReserve;
