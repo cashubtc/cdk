@@ -580,9 +580,6 @@ pub enum Error {
     /// Nostr key error.
     #[error(transparent)]
     Key(#[from] nostr_sdk::key::Error),
-    /// CDK Lightning error.
-    #[error(transparent)]
-    Lightning(#[from] cdk::cdk_lightning::Error),
     /// NIP-04 error.
     #[error(transparent)]
     Nip04(#[from] nip04::Error),
