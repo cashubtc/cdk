@@ -89,6 +89,8 @@ impl NostrWalletConnect {
             tracing::debug!("No connections found");
             return Ok(Vec::new());
         }
+        drop(connections);
+
         self.ensure_relays_connected().await?;
         let filters = self.filters().await;
         let events = self
@@ -107,6 +109,8 @@ impl NostrWalletConnect {
             tracing::debug!("No connections found");
             return Ok(Vec::new());
         }
+        drop(connections);
+
         self.ensure_relays_connected().await?;
         let filters = self.filters().await;
         let events = self
@@ -176,12 +180,15 @@ impl NostrWalletConnect {
             .iter()
             .map(|conn| conn.relay.clone())
             .collect::<HashSet<_>>();
+        tracing::debug!("Relays: {:?}", urls);
         for url in &urls {
             if let Ok(relay) = self.client.relay(url).await {
                 if !relay.is_connected().await {
+                    tracing::debug!("Reconnecting to relay: {}", url);
                     relay.connect(Some(Duration::from_secs(5))).await;
                 }
             } else {
+                tracing::debug!("Adding relay: {}", url);
                 self.client.add_relay(url).await?;
                 self.client
                     .relay(url)
