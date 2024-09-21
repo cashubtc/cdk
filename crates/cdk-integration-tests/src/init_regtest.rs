@@ -4,7 +4,7 @@ use anyhow::Result;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::{
-    cdk_database::mint_memory::MintMemoryDatabase,
+    cdk_database::{self, MintDatabase},
     cdk_lightning::MintLightning,
     mint::{FeeReserve, Mint},
     nuts::{CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings},
@@ -140,7 +140,10 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
     .await?)
 }
 
-pub async fn create_mint() -> Result<Mint> {
+pub async fn create_mint<D>(database: D) -> Result<Mint>
+where
+    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+{
     let nuts = cdk::nuts::Nuts::new()
         .nut07(true)
         .nut08(true)
@@ -161,7 +164,7 @@ pub async fn create_mint() -> Result<Mint> {
         &get_mint_url(),
         &mnemonic.to_seed_normalized(""),
         mint_info,
-        Arc::new(MintMemoryDatabase::default()),
+        Arc::new(database),
         supported_units,
     )
     .await?;
@@ -169,7 +172,10 @@ pub async fn create_mint() -> Result<Mint> {
     Ok(mint)
 }
 
-pub async fn start_cln_mint() -> Result<()> {
+pub async fn start_cln_mint<D>(addr: &str, port: u16, database: D) -> Result<()>
+where
+    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+{
     let default_filter = "debug";
 
     let sqlx_filter = "sqlx=warn";
@@ -183,7 +189,7 @@ pub async fn start_cln_mint() -> Result<()> {
     // Parse input
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let mint = create_mint().await?;
+    let mint = create_mint(database).await?;
     let cln_client = init_cln_client().await?;
 
     let cln_backend = create_cln_backend(&cln_client).await?;
@@ -240,14 +246,9 @@ pub async fn start_cln_mint() -> Result<()> {
         });
     }
     println!("Staring Axum server");
-    axum::Server::bind(
-        &format!("{}:{}", "127.0.0.1", 8085)
-            .as_str()
-            .parse()
-            .unwrap(),
-    )
-    .serve(mint_service.into_make_service())
-    .await?;
+    axum::Server::bind(&format!("{}:{}", addr, port).as_str().parse().unwrap())
+        .serve(mint_service.into_make_service())
+        .await?;
 
     Ok(())
 }

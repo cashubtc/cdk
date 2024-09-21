@@ -642,7 +642,8 @@ impl Mint {
 
             self.localstore
                 .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                .await?;
+                .await
+                .unwrap();
             return Err(Error::BlindedMessageAlreadySigned);
         }
 
