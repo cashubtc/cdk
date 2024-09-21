@@ -42,7 +42,7 @@ if [[ ! -d "$cdk_itests" ]]; then
 fi
 
 echo "Temp directory created: $cdk_itests"
-export MINT_DATABASE="SQLITE";
+export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
 cargo build --bin cdk-integration-tests 
@@ -85,9 +85,6 @@ cargo test -p cdk-integration-tests --test regtest
 
 # Capture the exit status of cargo test
 test_status=$?
-
-# Source PIDs from file
-source "$cdk_itests/pids.txt"
 
 # Exit with the status of the tests
 exit $test_status

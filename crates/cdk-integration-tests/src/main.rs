@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
             let redb_db = MintRedbDatabase::new(&get_temp_dir().join("mint")).unwrap();
             start_cln_mint(addr, port, redb_db).await?;
         }
-        _ => panic!("Unknown mint db type"),
+        _ => panic!("Unknown mint db type: {}", mint_db_kind),
     };
 
     Ok(())
