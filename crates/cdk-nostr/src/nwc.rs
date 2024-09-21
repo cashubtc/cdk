@@ -68,15 +68,17 @@ impl NostrWalletConnect {
     }
 
     /// Adds a new connection to the list of connections.
-    pub async fn add_connection(&self, connection: WalletConnection) {
+    pub async fn add_connection(&self, connection: WalletConnection) -> Result<(), Error> {
         let mut connections = self.connections.write().await;
         if connections
             .iter()
             .any(|conn| conn.keys.public_key() == connection.keys.public_key())
         {
-            return;
+            return Ok(());
         }
         connections.push(connection);
+        self.publish_info().await?;
+        Ok(())
     }
 
     /// Waits until 1 event is received from the relays and processes it.
@@ -93,12 +95,13 @@ impl NostrWalletConnect {
 
         self.ensure_relays_connected().await?;
         let filters = self.filters().await;
-        let events = self
+        let mut events = self
             .client
             .pool()
             .get_events_of(filters, timeout, FilterOptions::WaitForEventsAfterEOSE(1))
             .await
             .map_err(|e| nostr_sdk::client::Error::RelayPool(e))?;
+        events.sort();
         self.handle_events(events).await
     }
 
@@ -113,10 +116,11 @@ impl NostrWalletConnect {
 
         self.ensure_relays_connected().await?;
         let filters = self.filters().await;
-        let events = self
+        let mut events = self
             .client
-            .get_events_of(filters, EventSource::relays(None))
+            .get_events_of(filters, EventSource::relays(Some(Duration::from_secs(60))))
             .await?;
+        events.sort();
         self.handle_events(events).await
     }
 
@@ -132,6 +136,28 @@ impl NostrWalletConnect {
     /// Gets all the connections.
     pub async fn get_connections(&self) -> Vec<WalletConnection> {
         self.connections.read().await.clone()
+    }
+
+    /// Processes a request event with the given ID.
+    pub async fn process_event(&self, id: EventId) -> Result<Option<PaymentDetails>, Error> {
+        let connections = self.connections.read().await;
+        if connections.is_empty() {
+            tracing::debug!("No connections found");
+            return Ok(None);
+        }
+        drop(connections);
+
+        self.ensure_relays_connected().await?;
+        let filters = self.filters().await.into_iter().map(|f| f.id(id)).collect();
+        let events = self
+            .client
+            .get_events_of(filters, EventSource::relays(Some(Duration::from_secs(60))))
+            .await?;
+        if let Some(event) = events.into_iter().next() {
+            self.handle_event(event).await
+        } else {
+            Ok(None)
+        }
     }
 
     /// Publishes a Wallet Connect info event.
