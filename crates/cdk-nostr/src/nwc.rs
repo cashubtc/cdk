@@ -86,6 +86,7 @@ impl NostrWalletConnect {
     ) -> Result<Vec<PaymentDetails>, Error> {
         let connections = self.connections.read().await;
         if connections.is_empty() {
+            tracing::debug!("No connections found");
             return Ok(Vec::new());
         }
         self.ensure_relays_connected().await?;
@@ -103,6 +104,7 @@ impl NostrWalletConnect {
     pub async fn check_for_requests(&self) -> Result<Vec<PaymentDetails>, Error> {
         let connections = self.connections.read().await;
         if connections.is_empty() {
+            tracing::debug!("No connections found");
             return Ok(Vec::new());
         }
         self.ensure_relays_connected().await?;
@@ -175,11 +177,17 @@ impl NostrWalletConnect {
             .map(|conn| conn.relay.clone())
             .collect::<HashSet<_>>();
         for url in &urls {
-            self.client.add_relay(url.clone()).await?;
             if let Ok(relay) = self.client.relay(url).await {
                 if !relay.is_connected().await {
                     relay.connect(Some(Duration::from_secs(5))).await;
                 }
+            } else {
+                self.client.add_relay(url).await?;
+                self.client
+                    .relay(url)
+                    .await?
+                    .connect(Some(Duration::from_secs(5)))
+                    .await;
             }
         }
         Ok(())
@@ -235,8 +243,10 @@ impl NostrWalletConnect {
         let event_id = event.id;
         let mut processed_events = self.processed_events.lock().await;
         if processed_events.contains(&event_id) {
+            tracing::debug!("NWC event already processed: {}", event_id);
             return Ok(None);
         }
+        tracing::debug!("Processing NWC event: {}", event_id);
 
         let mut connections = self.connections.write().await;
         let connection = connections
@@ -433,7 +443,6 @@ impl WalletConnection {
         Filter::new()
             .kind(Kind::WalletConnectRequest)
             .since(since)
-            .author(self.keys.public_key())
             .custom_tag(
                 SingleLetterTag::lowercase(Alphabet::P),
                 vec![service_pubkey],
