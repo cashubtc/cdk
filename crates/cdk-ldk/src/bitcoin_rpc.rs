@@ -1,4 +1,4 @@
-use bitcoin::{block::Header, string::FromHexStr, BlockHash, CompactTarget, Transaction, Work};
+use bitcoin::{block::Header, BlockHash, CompactTarget, Transaction, Work};
 use bitcoincore_rpc::{json::EstimateMode, RpcApi};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning_block_sync::{
@@ -25,13 +25,14 @@ impl BitcoinClient {
 impl FeeEstimator for BitcoinClient {
     fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
         let blocks = match confirmation_target {
-            ConfirmationTarget::OnChainSweep => 6,
+            ConfirmationTarget::UrgentOnChainSweep => 1,
             ConfirmationTarget::MinAllowedAnchorChannelRemoteFee => 6,
             ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => 6,
             ConfirmationTarget::AnchorChannelFee => 6,
             ConfirmationTarget::NonAnchorChannelFee => 6,
             ConfirmationTarget::ChannelCloseMinimum => 6,
             ConfirmationTarget::OutputSpendingFee => 6,
+            ConfirmationTarget::MaximumFeeEstimate => 1,
         };
         // LDK will wrap this to the minimum fee rate
         match self
@@ -53,7 +54,7 @@ impl FeeEstimator for BitcoinClient {
 impl BroadcasterInterface for BitcoinClient {
     fn broadcast_transactions(&self, txs: &[&Transaction]) {
         for tx in txs {
-            let txid = tx.txid();
+            let txid = tx.compute_txid();
             tracing::debug!("Broadcasting transaction: {}", txid);
             match self.client.send_raw_transaction(*tx) {
                 Ok(_) => tracing::info!("Transaction broadcasted: {}", txid),
@@ -91,7 +92,7 @@ impl BlockSource for BitcoinClient {
                         .ok_or(BlockSourceError::persistent("no previous block hash"))?,
                     merkle_root: res.merkle_root,
                     time: res.time as u32,
-                    bits: CompactTarget::from_hex_str_no_prefix(&res.bits)
+                    bits: CompactTarget::from_unprefixed_hex(&res.bits)
                         .map_err(|e| BlockSourceError::persistent(e))?,
                     nonce: res.nonce,
                 },
