@@ -2,6 +2,7 @@ pub extern crate bitcoin;
 pub extern crate lightning;
 
 pub mod bitcoin_rpc;
+pub(crate) mod db;
 pub mod error;
 pub mod ln;
 
