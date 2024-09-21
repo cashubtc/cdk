@@ -776,6 +776,7 @@ impl Node {
     pub async fn get_info(&self) -> Result<NodeInfo, Error> {
         let node_id = self.keys_manager.get_node_id(Recipient::Node).unwrap();
         let channels = self.channel_manager.list_channels();
+        #[allow(deprecated)]
         let channel_balances = channels
             .iter()
             .map(|c| (c.channel_id, Amount::from(c.balance_msat / 1000)))
@@ -965,6 +966,7 @@ impl Node {
             channel_id,
             counterparty_node_id: channel.counterparty.node_id,
             funding_txo: channel.funding_txo.map(|o| o.into_bitcoin_outpoint()),
+            #[allow(deprecated)]
             balance: Amount::from(channel.balance_msat / 1000),
             inbound_capacity: Amount::from(channel.inbound_capacity_msat / 1000),
             is_ready: channel.is_channel_ready,
@@ -1080,7 +1082,7 @@ impl Node {
                 &secp,
             )
             .map_err(|_| Error::Ldk("Error spending outputs".to_string()))?;
-        let txid = tx.txid();
+        let txid = tx.compute_txid();
         tracing::info!("Sweeping outputs in txid {}", txid);
         self.bitcoin_client.broadcast_transactions(&[&tx]);
 
