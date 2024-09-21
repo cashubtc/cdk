@@ -33,14 +33,23 @@ impl Melted {
         proofs: Proofs,
         change_proofs: Option<Proofs>,
     ) -> Result<Self, Error> {
+        tracing::debug!(
+            "Melted::from_proofs: amount={}, proofs={:?}, change_proofs={:?}",
+            amount,
+            proofs,
+            change_proofs
+        );
         let proofs_amount = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        tracing::debug!("Melted::from_proofs: proofs_amount={}", proofs_amount);
         let change_amount = match &change_proofs {
             Some(change_proofs) => Amount::try_sum(change_proofs.iter().map(|p| p.amount))?,
             None => Amount::ZERO,
         };
+        tracing::debug!("Melted::from_proofs: change_amount={}", change_amount);
         let fee_paid = proofs_amount
             .checked_sub(amount + change_amount)
             .ok_or(Error::AmountOverflow)?;
+        tracing::debug!("Melted::from_proofs: fee_paid={}", fee_paid);
 
         Ok(Self {
             state,
@@ -53,6 +62,11 @@ impl Melted {
 
     /// Total amount melted
     pub fn total_amount(&self) -> Amount {
+        tracing::debug!(
+            "Melted::total_amount: amount={}, fee_paid={}",
+            self.amount,
+            self.fee_paid
+        );
         self.amount + self.fee_paid
     }
 }
