@@ -20,11 +20,8 @@ use bitcoin::{
 use cdk::{
     amount::Amount,
     cdk_lightning::{
-        self, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-        PaymentQuoteResponse, Settings,
-    },
-    lightning_invoice::{
-        payment::payment_parameters_from_invoice, utils::create_invoice_from_channelmanager,
+        self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+        Settings,
     },
     mint::MeltQuote,
     nuts::{
@@ -44,15 +41,18 @@ use lightning::{
         chainmonitor::ChainMonitor,
         ChannelMonitorUpdateStatus, Filter, Listen, Watch,
     },
-    events::{Event, PaymentPurpose},
+    events::{Event, PaymentPurpose, ReplayEvent},
     ln::{
+        bolt11_payment::payment_parameters_from_invoice,
         channelmanager::{
             ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, Retry,
         },
+        invoice_utils::create_invoice_from_channelmanager,
         msgs::SocketAddress,
         peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager},
         script::ShutdownScript,
-        ChannelId, PaymentHash, PaymentPreimage,
+        types::ChannelId,
+        PaymentHash, PaymentPreimage,
     },
     onion_message::messenger::OnionMessenger,
     routing::{
@@ -134,6 +134,7 @@ type NodeOnionMessenger = OnionMessenger<
     Arc<NodeRouter>,
     IgnoringMessageHandler,
     IgnoringMessageHandler,
+    IgnoringMessageHandler,
 >;
 
 type NodeP2PSync = P2PGossipSync<Arc<NodeNetworkGraph>, NodeGossipVerifier, Arc<NodeLogger>>;
@@ -170,6 +171,7 @@ pub struct Node {
     keys_manager: Arc<KeysManager>,
     logger: Arc<NodeLogger>,
     network: Network,
+    onion_messenger: Arc<NodeOnionMessenger>,
     peer_manager: Arc<NodePeerManager>,
     persister: Arc<FilesystemStore>,
     scorer: Arc<std::sync::RwLock<NodeScorer>>,
@@ -436,19 +438,21 @@ impl Node {
             None,
             logger.clone(),
         ));
+        let onion_messenger = Arc::new(NodeOnionMessenger::new(
+            keys_manager.clone(),
+            keys_manager.clone(),
+            logger.clone(),
+            channel_manager.clone(),
+            router.clone(),
+            IgnoringMessageHandler {},
+            IgnoringMessageHandler {},
+            IgnoringMessageHandler {},
+        ));
         let peer_manager = Arc::new(PeerManager::new(
             MessageHandler {
                 chan_handler: channel_manager.clone(),
                 route_handler: gossip_sync.clone(),
-                onion_message_handler: Arc::new(OnionMessenger::new(
-                    keys_manager.clone(),
-                    keys_manager.clone(),
-                    logger.clone(),
-                    channel_manager.clone(),
-                    router.clone(),
-                    IgnoringMessageHandler {},
-                    IgnoringMessageHandler {},
-                )),
+                onion_message_handler: onion_messenger.clone(),
                 custom_message_handler: IgnoringMessageHandler {},
             },
             unix_time() as u32,
@@ -493,6 +497,7 @@ impl Node {
             keys_manager,
             logger,
             network,
+            onion_messenger,
             peer_manager,
             persister,
             scorer,
@@ -522,6 +527,7 @@ impl Node {
         let persister = self.persister.clone();
         let chain_monitor = self.chain_monitor.clone();
         let channel_manager = self.channel_manager.clone();
+        let onion_messenger = self.onion_messenger.clone();
         let gossip_sync = self.gossip_sync.clone();
         let peer_manager = self.peer_manager.clone();
         let logger = self.logger.clone();
@@ -533,6 +539,7 @@ impl Node {
                 |e| async { self_clone.handle_event(e).await },
                 chain_monitor,
                 channel_manager,
+                Some(onion_messenger),
                 GossipSync::p2p(gossip_sync),
                 peer_manager,
                 logger,
@@ -582,10 +589,12 @@ impl Node {
         });
     }
 
-    async fn handle_event(&self, event: Event) {
+    // TODO: Implement error handling
+    async fn handle_event(&self, event: Event) -> Result<(), ReplayEvent> {
         tracing::debug!("Handling event: {:?}", event);
         if let Err(e) = self.db.save_event(event.clone()).await {
-            tracing::warn!("Error saving event: {:?}", e);
+            tracing::error!("Error saving event: {:?}", e);
+            return Err(ReplayEvent());
         }
         match event {
             Event::FundingGenerationReady {
@@ -700,23 +709,25 @@ impl Node {
                 ..
             } => {
                 tracing::warn!("Payment failed: {:?} {:?}", payment_hash, reason);
-                match self.db.get_payment(PaymentHash(payment_hash.0)).await {
-                    Ok(payment) => {
-                        if let Some(payment) = payment {
-                            let _ = self
-                                .inflight_payments
-                                .write()
-                                .await
-                                .remove(&PaymentHash(payment_hash.0))
-                                .map(|tx| {
-                                    let _ = tx.send(payment);
-                                });
+                if let Some(payment_hash) = payment_hash {
+                    match self.db.get_payment(payment_hash).await {
+                        Ok(payment) => {
+                            if let Some(payment) = payment {
+                                let _ = self
+                                    .inflight_payments
+                                    .write()
+                                    .await
+                                    .remove(&payment_hash)
+                                    .map(|tx| {
+                                        let _ = tx.send(payment);
+                                    });
+                            }
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Error getting payment: {:?}", e);
-                    }
-                };
+                        Err(e) => {
+                            tracing::warn!("Error getting payment: {:?}", e);
+                        }
+                    };
+                }
             }
             Event::SpendableOutputs {
                 outputs,
@@ -738,7 +749,8 @@ impl Node {
                 self.channel_manager.process_pending_htlc_forwards();
             }
             _ => tracing::warn!("Unhandled event: {:?}", event),
-        }
+        };
+        Ok(())
     }
 
     pub fn announce_node(
@@ -791,19 +803,19 @@ impl Node {
             .collect();
         let spendable_balance = self.get_spendable_output_balance().await?;
         let inbound_liquidity = self.get_inbound_liquidity()?;
-        let claimable_balance = self
-            .chain_monitor
-            .get_claimable_balances(
-                &self
-                    .channel_manager
-                    .list_channels()
-                    .iter()
-                    .filter(|c| c.is_usable)
-                    .collect::<Vec<_>>(),
-            )
-            .into_iter()
-            .map(|b| Amount::from(b.claimable_amount_satoshis()))
-            .sum();
+        let claimable_balance = Amount::try_sum(
+            self.chain_monitor
+                .get_claimable_balances(
+                    &self
+                        .channel_manager
+                        .list_channels()
+                        .iter()
+                        .filter(|c| c.is_usable)
+                        .collect::<Vec<_>>(),
+                )
+                .into_iter()
+                .map(|b| Amount::from(b.claimable_amount_satoshis())),
+        )?;
         let next_claimable_height = self
             .chain_monitor
             .get_claimable_balances(
@@ -911,7 +923,7 @@ impl Node {
         drop(opened_channel_ids);
 
         self.channel_manager
-            .funding_transaction_generated(&channel_id, &node_id, funding_tx)
+            .funding_transaction_generated(channel_id, node_id, funding_tx)
             .map_err(|e| Error::Ldk(format!("{:?}", e)))?;
 
         let new_channel_id = rx
@@ -999,8 +1011,9 @@ impl Node {
             methods: vec![MintMethodSettings {
                 method: PaymentMethod::Bolt11,
                 unit: CurrencyUnit::Sat,
-                min_amount: Some(settings.mint_settings.min_amount),
-                max_amount: Some(settings.mint_settings.max_amount),
+                description: false,
+                min_amount: settings.mint_settings.min_amount,
+                max_amount: settings.mint_settings.max_amount,
             }],
             disabled: false,
         }
@@ -1012,8 +1025,8 @@ impl Node {
             methods: vec![MeltMethodSettings {
                 method: PaymentMethod::Bolt11,
                 unit: CurrencyUnit::Sat,
-                min_amount: Some(settings.melt_settings.min_amount),
-                max_amount: Some(settings.melt_settings.max_amount),
+                min_amount: settings.melt_settings.min_amount,
+                max_amount: settings.melt_settings.max_amount,
             }],
             disabled: false,
         }
@@ -1031,12 +1044,14 @@ impl Node {
                             .flat_map(|a| a)
                             .map(|o| match o {
                                 SpendableOutputDescriptor::StaticOutput { output, .. } => {
-                                    output.value
+                                    output.value.to_sat()
                                 }
                                 SpendableOutputDescriptor::DelayedPaymentOutput(o) => {
-                                    o.output.value
+                                    o.output.value.to_sat()
                                 }
-                                SpendableOutputDescriptor::StaticPaymentOutput(o) => o.output.value,
+                                SpendableOutputDescriptor::StaticPaymentOutput(o) => {
+                                    o.output.value.to_sat()
+                                }
                             })
                             .sum::<u64>(),
                     )
@@ -1053,7 +1068,7 @@ impl Node {
 
         let fee_rate = self
             .bitcoin_client
-            .get_est_sat_per_1000_weight(ConfirmationTarget::OnChainSweep);
+            .get_est_sat_per_1000_weight(ConfirmationTarget::OutputSpendingFee);
         let cur_height = self.channel_manager.current_best_block().height;
         let locktime = LockTime::from_height(cur_height).map_or(LockTime::ZERO, |l| l.into());
         let tx = self
@@ -1129,17 +1144,21 @@ impl MintLightning for Node {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: false,
-            mint_settings: MintMeltSettings {
-                min_amount: Amount::from(1),
-                max_amount: Amount::from(10_000_000),
-                enabled: true,
+            mint_settings: MintMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: CurrencyUnit::Sat,
+                description: false,
+                min_amount: Some(Amount::from(1)),
+                max_amount: Some(Amount::from(10_000_000)),
             },
-            melt_settings: MintMeltSettings {
-                min_amount: Amount::from(1),
-                max_amount: Amount::from(10_000_000),
-                enabled: true,
+            melt_settings: MeltMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: CurrencyUnit::Sat,
+                min_amount: Some(Amount::from(1)),
+                max_amount: Some(Amount::from(10_000_000)),
             },
             unit: CurrencyUnit::Sat,
+            invoice_description: false,
         }
     }
 
@@ -1197,6 +1216,7 @@ impl MintLightning for Node {
                     / 1000
                     / 100,
             ), // TODO: estimate fee
+            state: MeltQuoteState::Unpaid, // TODO: is this right?
         })
     }
 
@@ -1246,6 +1266,7 @@ impl MintLightning for Node {
                 MeltQuoteState::Unpaid
             },
             total_spent: payment.spent,
+            unit: CurrencyUnit::Sat,
         })
     }
 

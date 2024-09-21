@@ -1,6 +1,8 @@
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error(transparent)]
+    Amount(#[from] cdk::amount::Error),
+    #[error(transparent)]
     Bip32(#[from] bitcoin::bip32::Error),
     #[error("Block source error")]
     BlockSource(lightning_block_sync::BlockSourceError),
@@ -18,6 +20,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Ldk(String),
+    #[error(transparent)]
+    LightningIo(#[from] lightning::io::Error),
     #[error("No spendable outputs")]
     NoSpendableOutputs,
     #[error(transparent)]
