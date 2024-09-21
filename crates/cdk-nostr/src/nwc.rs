@@ -167,6 +167,8 @@ impl NostrWalletConnect {
         if connections.is_empty() {
             return Ok(());
         }
+        drop(connections);
+
         self.ensure_relays_connected().await?;
         let event = EventBuilder::new(Kind::WalletConnectInfo, "pay_invoice get_balance", vec![])
             .to_event(&self.keys)?;
@@ -208,6 +210,8 @@ impl NostrWalletConnect {
             .iter()
             .map(|conn| conn.relay.clone())
             .collect::<HashSet<_>>();
+        drop(connections);
+
         tracing::debug!("Relays: {:?}", urls);
         for url in &urls {
             if let Ok(relay) = self.client.relay(url).await {
