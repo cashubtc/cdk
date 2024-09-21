@@ -167,6 +167,7 @@ impl NostrWalletConnect {
         if connections.is_empty() {
             return Ok(());
         }
+        self.ensure_relays_connected().await?;
         let event = EventBuilder::new(Kind::WalletConnectInfo, "pay_invoice get_balance", vec![])
             .to_event(&self.keys)?;
         self.client.send_event(event).await?;
