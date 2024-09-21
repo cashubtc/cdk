@@ -77,8 +77,9 @@ impl JsMintInfo {
         description_long: Option<String>,
         contact: Option<Vec<JsContactInfo>>,
         nuts: JsValue,
-        mint_icon_url: Option<String>,
+        icon_url: Option<String>,
         motd: Option<String>,
+        time: Option<u64>,
     ) -> Result<JsMintInfo> {
         Ok(JsMintInfo {
             inner: MintInfo {
@@ -90,8 +91,9 @@ impl JsMintInfo {
                 contact: contact
                     .map(|contacts| contacts.iter().map(|c| c.deref().clone()).collect()),
                 nuts: serde_wasm_bindgen::from_value(nuts).map_err(into_err)?,
-                mint_icon_url,
+                icon_url,
                 motd,
+                time,
             },
         })
     }
@@ -143,14 +145,20 @@ impl JsMintInfo {
 
     /// Get mint icon url
     #[wasm_bindgen(getter)]
-    pub fn mint_icon_url(&self) -> Option<String> {
-        self.inner.mint_icon_url.clone()
+    pub fn icon_url(&self) -> Option<String> {
+        self.inner.icon_url.clone()
     }
 
     /// Get motd
     #[wasm_bindgen(getter)]
     pub fn motd(&self) -> Option<String> {
         self.inner.motd.clone()
+    }
+
+    /// Get time
+    #[wasm_bindgen(getter)]
+    pub fn time(&self) -> Option<u64> {
+        self.inner.time
     }
 }
 

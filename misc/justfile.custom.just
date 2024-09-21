@@ -44,6 +44,7 @@ clippy-each:
   "-p cdk-axum"
   "-p cdk-fake-wallet"
   "-p cdk-strike"
+  "-p cdk-lnd"
   "--bin cdk-cli"
   "--bin cdk-mintd"
   )
@@ -52,5 +53,56 @@ clippy-each:
     echo  "Checking '$arg'"
     cargo check $arg
     cargo clippy $arg -- -D warnings
+    echo
+  done
+
+release m="":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  args=(
+    "-p cdk-redb"
+    "-p cdk-sqlite"
+    "-p cdk-axum"
+    "-p cdk-rexie"
+    "-p cdk-cln"
+    "-p cdk-lnd"
+    "-p cdk-strike"
+    "-p cdk-phoenixd"
+    "-p cdk-lnbits"
+    "-p cdk-fake-wallet"
+    "-p cdk-cli"
+    "-p cdk-mintd"
+  )
+
+  for arg in "${args[@]}";
+  do
+    echo "Publishing '$arg'"
+    cargo publish $arg {{m}}
+    echo
+  done
+
+check-docs:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  args=(
+    "-p cdk"
+    "-p cdk-redb"
+    "-p cdk-sqlite"
+    "-p cdk-axum"
+    "-p cdk-rexie"
+    "-p cdk-cln"
+    "-p cdk-lnd"
+    "-p cdk-strike"
+    "-p cdk-phoenixd"
+    "-p cdk-lnbits"
+    "-p cdk-fake-wallet"
+    "-p cdk-cli"
+    "-p cdk-mintd"
+  )
+
+  for arg in "${args[@]}"; do
+    echo  "Checking '$arg' docs"
+    cargo doc $arg --all-features
     echo
   done

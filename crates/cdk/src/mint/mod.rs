@@ -1,11 +1,11 @@
 //! Cashu Mint
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
-use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use error::Error;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::instrument;
@@ -14,13 +14,14 @@ use self::nut05::QuoteState;
 use self::nut11::EnforceSigFlag;
 use crate::cdk_database::{self, MintDatabase};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
+use crate::error::Error;
+use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::*;
 use crate::util::unix_time;
 use crate::Amount;
 
-pub mod error;
 pub mod types;
 
 pub use types::{MeltQuote, MintQuote};
@@ -37,7 +38,7 @@ pub struct Mint {
     /// Active Mint Keysets
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
-    xpriv: ExtendedPrivKey,
+    xpriv: Xpriv,
 }
 
 impl Mint {
@@ -51,8 +52,7 @@ impl Mint {
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
-        let xpriv =
-            ExtendedPrivKey::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
+        let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
         let mut active_keysets = HashMap::new();
         let keysets_infos = localstore.get_keyset_infos().await?;
@@ -154,10 +154,8 @@ impl Mint {
             }
         }
 
-        let mint_url = MintUrl::from(mint_url);
-
         Ok(Self {
-            mint_url,
+            mint_url: MintUrl::from_str(mint_url)?,
             keysets: Arc::new(RwLock::new(active_keysets)),
             secp_ctx,
             xpriv,
@@ -213,18 +211,26 @@ impl Mint {
                     .max_amount
                     .map_or(false, |max_amount| amount > max_amount)
                 {
-                    return Err(Error::MintOverLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
 
                 if settings
                     .min_amount
                     .map_or(false, |min_amount| amount < min_amount)
                 {
-                    return Err(Error::MintUnderLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
             }
             None => {
-                return Err(Error::UnsupportedUnit);
+                return Err(Error::UnitUnsupported);
             }
         }
 
@@ -253,8 +259,9 @@ impl Mint {
 
         let paid = quote.state == MintQuoteState::Paid;
 
-        // Since the pending state is not part of the NUT it should not be part of the response.
-        // In practice the wallet should not be checking the state of a quote while waiting for the mint response.
+        // Since the pending state is not part of the NUT it should not be part of the
+        // response. In practice the wallet should not be checking the state of
+        // a quote while waiting for the mint response.
         let state = match quote.state {
             MintQuoteState::Pending => MintQuoteState::Paid,
             s => s,
@@ -359,18 +366,26 @@ impl Mint {
                     .max_amount
                     .map_or(false, |max_amount| amount > max_amount)
                 {
-                    return Err(Error::MeltOverLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
 
                 if settings
                     .min_amount
                     .map_or(false, |min_amount| amount < min_amount)
                 {
-                    return Err(Error::MeltUnderLimit);
+                    return Err(Error::AmountOutofLimitRange(
+                        settings.min_amount.unwrap_or_default(),
+                        settings.max_amount.unwrap_or_default(),
+                        amount,
+                    ));
                 }
             }
             None => {
-                return Err(Error::UnsupportedUnit);
+                return Err(Error::UnitUnsupported);
             }
         }
 
@@ -380,7 +395,15 @@ impl Mint {
             amount,
             fee_reserve,
             expiry,
-            request_lookup_id,
+            request_lookup_id.clone(),
+        );
+
+        tracing::debug!(
+            "New melt quote {} for {} {} with request id {}",
+            quote.id,
+            amount,
+            unit,
+            request_lookup_id
         );
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -391,21 +414,30 @@ impl Mint {
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
-        let mut sum_fee = 0;
+        let mut proofs_per_keyset = HashMap::new();
+        let mut fee_per_keyset = HashMap::new();
 
         for proof in proofs {
-            let input_fee_ppk = self
-                .localstore
-                .get_keyset_info(&proof.keyset_id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                fee_per_keyset.entry(proof.keyset_id)
+            {
+                let mint_keyset_info = self
+                    .localstore
+                    .get_keyset_info(&proof.keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?;
+                e.insert(mint_keyset_info.input_fee_ppk);
+            }
 
-            sum_fee += input_fee_ppk.input_fee_ppk;
+            proofs_per_keyset
+                .entry(proof.keyset_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
         }
 
-        let fee = (sum_fee + 999) / 1000;
+        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
-        Ok(Amount::from(fee))
+        Ok(fee)
     }
 
     /// Check melt quote status
@@ -451,7 +483,8 @@ impl Mint {
         Ok(())
     }
 
-    /// Retrieve the public keys of the active keyset for distribution to wallet clients
+    /// Retrieve the public keys of the active keyset for distribution to wallet
+    /// clients
     #[instrument(skip(self))]
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         self.ensure_keyset_loaded(keyset_id).await?;
@@ -462,16 +495,27 @@ impl Mint {
         })
     }
 
-    /// Retrieve the public keys of the active keyset for distribution to wallet clients
+    /// Retrieve the public keys of the active keyset for distribution to wallet
+    /// clients
     #[instrument(skip_all)]
     pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
-        let keyset_infos = self.localstore.get_keyset_infos().await?;
-        for keyset_info in keyset_infos {
-            self.ensure_keyset_loaded(&keyset_info.id).await?;
+        let active_keysets = self.localstore.get_active_keysets().await?;
+
+        let active_keysets: HashSet<&Id> = active_keysets.values().collect();
+
+        for id in active_keysets.iter() {
+            self.ensure_keyset_loaded(id).await?;
         }
+
         let keysets = self.keysets.read().await;
         Ok(KeysResponse {
-            keysets: keysets.values().map(|k| k.clone().into()).collect(),
+            keysets: keysets
+                .values()
+                .filter_map(|k| match active_keysets.contains(&k.id) {
+                    true => Some(k.clone().into()),
+                    false => None,
+                })
+                .collect(),
         })
     }
 
@@ -545,6 +589,18 @@ impl Mint {
         &self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
+        // Check quote is known and not expired
+        match self.localstore.get_mint_quote(&mint_request.quote).await? {
+            Some(quote) => {
+                if quote.expiry < unix_time() {
+                    return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
+                }
+            }
+            None => {
+                return Err(Error::UnknownQuote);
+            }
+        }
+
         let state = self
             .localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)
@@ -586,7 +642,8 @@ impl Mint {
 
             self.localstore
                 .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                .await?;
+                .await
+                .unwrap();
             return Err(Error::BlindedMessageAlreadySigned);
         }
 
@@ -650,9 +707,10 @@ impl Mint {
 
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
-        let Some(key_pair) = keyset.keys.get(amount) else {
-            // No key for amount
-            return Err(Error::AmountKey);
+
+        let key_pair = match keyset.keys.get(amount) {
+            Some(key_pair) => key_pair,
+            None => return Err(Error::AmountKey),
         };
 
         let c = sign_message(&key_pair.secret_key, blinded_secret)?;
@@ -694,20 +752,22 @@ impl Mint {
             return Err(Error::BlindedMessageAlreadySigned);
         }
 
-        let proofs_total = swap_request.input_amount();
+        let proofs_total = swap_request.input_amount()?;
 
-        let output_total = swap_request.output_amount();
+        let output_total = swap_request.output_amount()?;
 
         let fee = self.get_proofs_fee(&swap_request.inputs).await?;
 
-        if proofs_total < output_total + fee {
+        let total_with_fee = output_total.checked_add(fee).ok_or(Error::AmountOverflow)?;
+
+        if proofs_total != total_with_fee {
             tracing::info!(
-                "Swap request without enough inputs: {}, outputs {}, fee {}",
+                "Swap request unbalanced: {}, outputs {}, fee {}",
                 proofs_total,
                 output_total,
                 fee
             );
-            return Err(Error::InsufficientInputs(
+            return Err(Error::TransactionUnbalanced(
                 proofs_total.into(),
                 output_total.into(),
                 fee.into(),
@@ -851,8 +911,9 @@ impl Mint {
             // Checks and verifes known secret kinds.
             // If it is an unknown secret kind it will be treated as a normal secret.
             // Spending conditions will **not** be check. It is up to the wallet to ensure
-            // only supported secret kinds are used as there is no way for the mint to enforce
-            // only signing supported secrets as they are blinded at that point.
+            // only supported secret kinds are used as there is no way for the mint to
+            // enforce only signing supported secrets as they are blinded at
+            // that point.
             match secret.kind {
                 Kind::P2PK => {
                     proof.verify_p2pk()?;
@@ -866,8 +927,10 @@ impl Mint {
         self.ensure_keyset_loaded(&proof.keyset_id).await?;
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
-        let Some(keypair) = keyset.keys.get(&proof.amount) else {
-            return Err(Error::AmountKey);
+
+        let keypair = match keyset.keys.get(&proof.amount) {
+            Some(key_pair) => key_pair,
+            None => return Err(Error::AmountKey),
         };
 
         verify_message(&keypair.secret_key, proof.c, proof.secret.as_bytes())?;
@@ -975,24 +1038,25 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let proofs_total = melt_request.proofs_amount();
+        let proofs_total = melt_request.proofs_amount()?;
 
         let fee = self.get_proofs_fee(&melt_request.inputs).await?;
 
         let required_total = quote.amount + quote.fee_reserve + fee;
 
+        // Check that the inputs proofs are greater then total.
+        // Transaction does not need to be balanced as wallet may not want change.
         if proofs_total < required_total {
             tracing::info!(
-                "Swap request without enough inputs: {}, quote amount {}, fee_reserve: {} fee {}",
+                "Swap request unbalanced: {}, outputs {}, fee {}",
                 proofs_total,
                 quote.amount,
-                quote.fee_reserve,
                 fee
             );
-            return Err(Error::InsufficientInputs(
+            return Err(Error::TransactionUnbalanced(
                 proofs_total.into(),
-                (quote.amount + quote.fee_reserve).into(),
-                fee.into(),
+                quote.amount.into(),
+                (fee + quote.fee_reserve).into(),
             ));
         }
 
@@ -1050,8 +1114,9 @@ impl Mint {
     }
 
     /// Process unpaid melt request
-    /// In the event that a melt request fails and the lighthing payment is not made
-    /// The [`Proofs`] should be returned to an unspent state and the quote should be unpaid
+    /// In the event that a melt request fails and the lighthing payment is not
+    /// made The [`Proofs`] should be returned to an unspent state and the
+    /// quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
         let input_ys = melt_request
@@ -1072,7 +1137,8 @@ impl Mint {
     }
 
     /// Process melt request marking [`Proofs`] as spent
-    /// The melt request must be verifyed using [`Self::verify_melt_request`] before calling [`Self::process_melt_request`]
+    /// The melt request must be verifyed using [`Self::verify_melt_request`]
+    /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
     pub async fn process_melt_request(
         &self,
@@ -1105,7 +1171,7 @@ impl Mint {
         let mut change = None;
 
         // Check if there is change to return
-        if melt_request.proofs_amount() > total_spent {
+        if melt_request.proofs_amount()? > total_spent {
             // Check if wallet provided change outputs
             if let Some(outputs) = melt_request.outputs.clone() {
                 let blinded_messages: Vec<PublicKey> =
@@ -1125,7 +1191,7 @@ impl Mint {
                     return Err(Error::BlindedMessageAlreadySigned);
                 }
 
-                let change_target = melt_request.proofs_amount() - total_spent;
+                let change_target = melt_request.proofs_amount()? - total_spent;
                 let mut amounts = change_target.split();
                 let mut change_sigs = Vec::with_capacity(amounts.len());
 
@@ -1255,7 +1321,7 @@ impl Mint {
                 .get_blind_signatures_for_keyset(&keyset.id)
                 .await?;
 
-            let total = blinded.iter().map(|b| b.amount).sum();
+            let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
 
             total_issued.insert(keyset.id, total);
         }
@@ -1273,14 +1339,13 @@ impl Mint {
         for keyset in keysets {
             let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
 
-            let total_spent = proofs
-                .iter()
-                .zip(state)
-                .filter_map(|(p, s)| match s == Some(State::Spent) {
-                    true => Some(p.amount),
-                    false => None,
-                })
-                .sum();
+            let total_spent =
+                Amount::try_sum(proofs.iter().zip(state).filter_map(|(p, s)| {
+                    match s == Some(State::Spent) {
+                        true => Some(p.amount),
+                        false => None,
+                    }
+                }))?;
 
             total_redeemed.insert(keyset.id, total_spent);
         }
@@ -1343,7 +1408,7 @@ impl From<MintKeySetInfo> for KeySetInfo {
 #[instrument(skip_all)]
 fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
-    xpriv: ExtendedPrivKey,
+    xpriv: Xpriv,
     derivation_path: DerivationPath,
     derivation_path_index: Option<u32>,
     unit: CurrencyUnit,
@@ -1433,7 +1498,7 @@ mod tests {
     fn mint_mod_generate_keyset_from_xpriv() {
         let seed = "test_seed".as_bytes();
         let network = Network::Bitcoin;
-        let xpriv = ExtendedPrivKey::new_master(network, seed).expect("Failed to create xpriv");
+        let xpriv = Xpriv::new_master(network, seed).expect("Failed to create xpriv");
         let keyset = MintKeySet::generate_from_xpriv(
             &Secp256k1::new(),
             xpriv,
@@ -1555,7 +1620,10 @@ mod tests {
 
     #[tokio::test]
     async fn mint_mod_rotate_keyset() -> Result<(), Error> {
-        let config: MintConfig = Default::default();
+        let config = MintConfig::<'_> {
+            mint_url: "http://example.com",
+            ..Default::default()
+        };
         let mint = create_mint(config).await?;
 
         let keysets = mint.keysets().await.unwrap();
@@ -1583,6 +1651,11 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_over_pay_fee() -> anyhow::Result<()> {
         Ok(())
     }
 }

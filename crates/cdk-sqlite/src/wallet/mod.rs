@@ -9,8 +9,8 @@ use cdk::amount::Amount;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, Proofs,
-    PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, PublicKey,
+    SpendingConditions, State,
 };
 use cdk::secret::Secret;
 use cdk::types::ProofInfo;
@@ -53,6 +53,23 @@ impl WalletSqliteDatabase {
             .await
             .expect("Could not run migrations");
     }
+
+    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), cdk_database::Error> {
+        sqlx::query(
+            r#"
+    UPDATE proof
+    SET state=?
+    WHERE y IS ?;
+            "#,
+        )
+        .bind(state.to_string())
+        .bind(y.to_bytes().to_vec())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -73,8 +90,9 @@ impl WalletDatabase for WalletSqliteDatabase {
             description_long,
             contact,
             nuts,
-            mint_icon_url,
+            icon_url,
             motd,
+            time,
         ) = match mint_info {
             Some(mint_info) => {
                 let MintInfo {
@@ -85,8 +103,9 @@ impl WalletDatabase for WalletSqliteDatabase {
                     description_long,
                     contact,
                     nuts,
-                    mint_icon_url,
+                    icon_url,
                     motd,
+                    time,
                 } = mint_info;
 
                 (
@@ -97,18 +116,19 @@ impl WalletDatabase for WalletSqliteDatabase {
                     description_long,
                     contact.map(|c| serde_json::to_string(&c).ok()),
                     serde_json::to_string(&nuts).ok(),
-                    mint_icon_url,
+                    icon_url,
                     motd,
+                    time,
                 )
             }
-            None => (None, None, None, None, None, None, None, None, None),
+            None => (None, None, None, None, None, None, None, None, None, None),
         };
 
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint
-(mint_url, name, pubkey, version, description, description_long, contact, nuts, mint_icon_url, motd)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+(mint_url, name, pubkey, version, description, description_long, contact, nuts, icon_url, motd, mint_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(mint_url.to_string())
@@ -119,8 +139,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(description_long)
         .bind(contact)
         .bind(nuts)
-        .bind(mint_icon_url)
+        .bind(icon_url)
         .bind(motd)
+        .bind(time.map(|v| v as i64))
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -182,12 +203,15 @@ FROM mint
 
         let mints = rec
             .into_iter()
-            .map(|row| {
+            .flat_map(|row| {
                 let mint_url: String = row.get("mint_url");
 
+                // Attempt to parse mint_url and convert mint_info
+                let mint_result = MintUrl::from_str(&mint_url).ok();
                 let mint_info = sqlite_row_to_mint_info(&row).ok();
 
-                (mint_url.into(), mint_info)
+                // Combine mint_result and mint_info into an Option tuple
+                mint_result.map(|mint| (mint, mint_info))
             })
             .collect();
 
@@ -513,15 +537,18 @@ WHERE id=?
         Ok(())
     }
 
-    #[instrument(skip_all)]
-    async fn add_proofs(&self, proof_info: Vec<ProofInfo>) -> Result<(), Self::Err> {
-        for proof in proof_info {
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Self::Err> {
+        for proof in added {
             sqlx::query(
                 r#"
-INSERT OR REPLACE INTO proof
-(y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        "#,
+    INSERT OR REPLACE INTO proof
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            "#,
             )
             .bind(proof.y.to_bytes().to_vec())
             .bind(proof.mint_url.to_string())
@@ -545,6 +572,44 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             .execute(&self.pool)
             .await
             .map_err(Error::from)?;
+        }
+
+        // TODO: Generate a IN clause
+        for y in removed_ys {
+            sqlx::query(
+                r#"
+    DELETE FROM proof
+    WHERE y = ?
+            "#,
+            )
+            .bind(y.to_bytes().to_vec())
+            .execute(&self.pool)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        Ok(())
+    }
+
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        for y in ys {
+            self.set_proof_state(y, State::Pending).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        for y in ys {
+            self.set_proof_state(y, State::Reserved).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        for y in ys {
+            self.set_proof_state(y, State::Unspent).await?;
         }
 
         Ok(())
@@ -600,43 +665,6 @@ FROM proof;
             false => Ok(proofs),
             true => return Ok(vec![]),
         }
-    }
-
-    #[instrument(skip_all)]
-    async fn remove_proofs(&self, proofs: &Proofs) -> Result<(), Self::Err> {
-        // TODO: Generate a IN clause
-        for proof in proofs {
-            sqlx::query(
-                r#"
-DELETE FROM proof
-WHERE y = ?
-        "#,
-            )
-            .bind(proof.y()?.to_bytes().to_vec())
-            .execute(&self.pool)
-            .await
-            .map_err(Error::from)?;
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self, y))]
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
-UPDATE proof
-SET state=?
-WHERE y IS ?;
-        "#,
-        )
-        .bind(state.to_string())
-        .bind(y.to_bytes().to_vec())
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
@@ -745,8 +773,9 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
     let description_long: Option<String> = row.try_get("description_long").map_err(Error::from)?;
     let row_contact: Option<String> = row.try_get("contact").map_err(Error::from)?;
     let row_nuts: Option<String> = row.try_get("nuts").map_err(Error::from)?;
-    let mint_icon_url: Option<String> = row.try_get("mint_icon_url").map_err(Error::from)?;
+    let icon_url: Option<String> = row.try_get("icon_url").map_err(Error::from)?;
     let motd: Option<String> = row.try_get("motd").map_err(Error::from)?;
+    let time: Option<i64> = row.try_get("mint_time").map_err(Error::from)?;
 
     Ok(MintInfo {
         name,
@@ -758,8 +787,9 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
         nuts: row_nuts
             .and_then(|n| serde_json::from_str(&n).ok())
             .unwrap_or_default(),
-        mint_icon_url,
+        icon_url,
         motd,
+        time: time.map(|t| t as u64),
     })
 }
 
@@ -790,7 +820,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
 
     Ok(MintQuote {
         id: row_id,
-        mint_url: row_mint_url.into(),
+        mint_url: MintUrl::from_str(&row_mint_url)?,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
@@ -848,7 +878,7 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
     Ok(ProofInfo {
         proof,
         y: PublicKey::from_slice(&y)?,
-        mint_url: row_mint_url.into(),
+        mint_url: MintUrl::from_str(&row_mint_url)?,
         state: State::from_str(&row_state)?,
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,

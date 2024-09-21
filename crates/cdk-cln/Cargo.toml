@@ -1,21 +1,21 @@
 [package]
 name = "cdk-cln"
-version = { workspace = true }
+version = "0.4.0"
 edition = "2021"
 authors = ["CDK Developers"]
-homepage.workspace = true
-repository.workspace = true
-rust-version.workspace = true # MSRV
-license.workspace = true
+license = "MIT"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.63.0" # MSRV
 description = "CDK ln backend for cln"
 
 [dependencies]
-async-trait.workspace = true
-bitcoin.workspace = true
-cdk = { workspace = true, default-features = false, features = ["mint"] }
+async-trait = "0.1"
+bitcoin = { version = "0.32.2", default-features = false }
+cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = ["mint"] }
 cln-rpc = "0.1.9"
-futures.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-thiserror.workspace = true
-uuid.workspace = true
+futures = { version = "0.3.28", default-features = false }
+tokio = { version = "1", default-features = false }
+tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }

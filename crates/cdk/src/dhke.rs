@@ -7,8 +7,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{
     Parity, PublicKey as NormalizedPublicKey, Scalar, Secp256k1, XOnlyPublicKey,
 };
+use thiserror::Error;
 
-use crate::error::Error;
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::nuts::nut12::ProofDleq;
 use crate::nuts::{BlindSignature, Keys, Proof, Proofs};
@@ -18,7 +18,26 @@ use crate::SECP256K1;
 
 const DOMAIN_SEPARATOR: &[u8; 28] = b"Secp256k1_HashToCurve_Cashu_";
 
-/// Deterministically maps a message to a public key point on the secp256k1 curve, utilizing a domain separator to ensure uniqueness.
+/// NUT00 Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Token could not be validated
+    #[error("Token not verified")]
+    TokenNotVerified,
+    /// No valid point on curve
+    #[error("No valid point found")]
+    NoValidPoint,
+    /// Secp256k1 error
+    #[error(transparent)]
+    Secp256k1(#[from] bitcoin::secp256k1::Error),
+    // TODO: Remove use anyhow
+    /// Custom Error
+    #[error("`{0}`")]
+    Custom(String),
+}
+
+/// Deterministically maps a message to a public key point on the secp256k1
+/// curve, utilizing a domain separator to ensure uniqueness.
 ///
 /// For definationn in NUT see [NUT-00](https://github.com/cashubtc/nuts/blob/main/00.md)
 pub fn hash_to_curve(message: &[u8]) -> Result<PublicKey, Error> {
@@ -101,12 +120,23 @@ pub fn construct_proofs(
     secrets: Vec<Secret>,
     keys: &Keys,
 ) -> Result<Proofs, Error> {
+    if (promises.len() != rs.len()) || (promises.len() != secrets.len()) {
+        tracing::error!(
+            "Promises: {}, RS: {}, secrets:{}",
+            promises.len(),
+            rs.len(),
+            secrets.len()
+        );
+        return Err(Error::Custom(
+            "Lengths of promises, rs, and secrets must be equal".to_string(),
+        ));
+    }
     let mut proofs = vec![];
     for ((blinded_signature, r), secret) in promises.into_iter().zip(rs).zip(secrets) {
         let blinded_c: PublicKey = blinded_signature.c;
         let a: PublicKey = keys
             .amount_key(blinded_signature.amount)
-            .ok_or(Error::CustomError("Could not get proofs".to_string()))?;
+            .ok_or(Error::Custom("Could not get proofs".to_string()))?;
 
         let unblinded_signature: PublicKey = unblind_message(&blinded_c, &r, &a)?;
 

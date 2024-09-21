@@ -2,7 +2,8 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/13.md>
 
-use bitcoin::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+use thiserror::Error;
 use tracing::instrument;
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
@@ -10,14 +11,33 @@ use super::nut01::SecretKey;
 use super::nut02::Id;
 use crate::amount::SplitTarget;
 use crate::dhke::blind_message;
-use crate::error::Error;
 use crate::secret::Secret;
 use crate::util::hex;
 use crate::{Amount, SECP256K1};
 
+/// NUT13 Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// DHKE error
+    #[error(transparent)]
+    DHKE(#[from] crate::dhke::Error),
+    /// Amount Error
+    #[error(transparent)]
+    Amount(#[from] crate::amount::Error),
+    /// NUT00 Error
+    #[error(transparent)]
+    NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    NUT02(#[from] crate::nuts::nut02::Error),
+    /// Bip32 Error
+    #[error(transparent)]
+    Bip32(#[from] bitcoin::bip32::Error),
+}
+
 impl Secret {
     /// Create new [`Secret`] from xpriv
-    pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
+    pub fn from_xpriv(xpriv: Xpriv, keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let path = derive_path_from_keyset_id(keyset_id)?
             .child(ChildNumber::from_hardened_idx(counter)?)
             .child(ChildNumber::from_normal_idx(0)?);
@@ -31,7 +51,7 @@ impl Secret {
 
 impl SecretKey {
     /// Create new [`SecretKey`] from xpriv
-    pub fn from_xpriv(xpriv: ExtendedPrivKey, keyset_id: Id, counter: u32) -> Result<Self, Error> {
+    pub fn from_xpriv(xpriv: Xpriv, keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let path = derive_path_from_keyset_id(keyset_id)?
             .child(ChildNumber::from_hardened_idx(counter)?)
             .child(ChildNumber::from_normal_idx(1)?);
@@ -48,7 +68,7 @@ impl PreMintSecrets {
     pub fn from_xpriv(
         keyset_id: Id,
         counter: u32,
-        xpriv: ExtendedPrivKey,
+        xpriv: Xpriv,
         amount: Amount,
         amount_split_target: &SplitTarget,
     ) -> Result<Self, Error> {
@@ -82,7 +102,7 @@ impl PreMintSecrets {
     pub fn from_xpriv_blank(
         keyset_id: Id,
         counter: u32,
-        xpriv: ExtendedPrivKey,
+        xpriv: Xpriv,
         amount: Amount,
     ) -> Result<Self, Error> {
         if amount <= Amount::ZERO {
@@ -117,10 +137,11 @@ impl PreMintSecrets {
         Ok(pre_mint_secrets)
     }
 
-    /// Generate blinded messages from predetermined secrets and blindings factor
+    /// Generate blinded messages from predetermined secrets and blindings
+    /// factor
     pub fn restore_batch(
         keyset_id: Id,
-        xpriv: ExtendedPrivKey,
+        xpriv: Xpriv,
         start_count: u32,
         end_count: u32,
     ) -> Result<Self, Error> {
@@ -173,7 +194,7 @@ mod tests {
             "half depart obvious quality work element tank gorilla view sugar picture humble";
         let mnemonic = Mnemonic::from_str(seed).unwrap();
         let seed: [u8; 64] = mnemonic.to_seed("");
-        let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, &seed).unwrap();
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &seed).unwrap();
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
 
         let test_secrets = [
@@ -195,7 +216,7 @@ mod tests {
             "half depart obvious quality work element tank gorilla view sugar picture humble";
         let mnemonic = Mnemonic::from_str(seed).unwrap();
         let seed: [u8; 64] = mnemonic.to_seed("");
-        let xpriv = ExtendedPrivKey::new_master(Network::Bitcoin, &seed).unwrap();
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &seed).unwrap();
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
 
         let test_rs = [

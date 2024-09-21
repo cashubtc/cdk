@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-use base64::engine::{general_purpose, GeneralPurpose};
-use base64::{alphabet, Engine as _};
+use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
+use bitcoin::base64::{alphabet, Engine as _};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -74,7 +74,7 @@ impl Token {
     }
 
     /// Total value of [`Token`]
-    pub fn value(&self) -> Amount {
+    pub fn value(&self) -> Result<Amount, Error> {
         match self {
             Self::TokenV3(token) => token.value(),
             Self::TokenV4(token) => token.value(),
@@ -119,7 +119,7 @@ impl FromStr for Token {
         };
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
 
         match is_v3 {
@@ -207,11 +207,13 @@ impl TokenV3 {
     }
 
     #[inline]
-    fn value(&self) -> Amount {
-        self.token
-            .iter()
-            .map(|t| t.proofs.iter().map(|p| p.amount).sum())
-            .sum()
+    fn value(&self) -> Result<Amount, Error> {
+        Ok(Amount::try_sum(
+            self.token
+                .iter()
+                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .collect::<Result<Vec<Amount>, _>>()?,
+        )?)
     }
 
     #[inline]
@@ -232,7 +234,7 @@ impl FromStr for TokenV3 {
         let s = s.strip_prefix("cashuA").ok_or(Error::UnsupportedToken)?;
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
         let decoded_str = String::from_utf8(decoded)?;
         let token: TokenV3 = serde_json::from_str(&decoded_str)?;
@@ -305,11 +307,13 @@ impl TokenV4 {
     }
 
     #[inline]
-    fn value(&self) -> Amount {
-        self.token
-            .iter()
-            .map(|t| t.proofs.iter().map(|p| p.amount).sum())
-            .sum()
+    fn value(&self) -> Result<Amount, Error> {
+        Ok(Amount::try_sum(
+            self.token
+                .iter()
+                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .collect::<Result<Vec<Amount>, _>>()?,
+        )?)
     }
 
     #[inline]
@@ -340,7 +344,7 @@ impl FromStr for TokenV4 {
         let s = s.strip_prefix("cashuB").ok_or(Error::UnsupportedToken)?;
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent);
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
         let token: TokenV4 = ciborium::from_reader(&decoded[..])?;
         Ok(token)
@@ -464,7 +468,7 @@ mod tests {
         let token_str_multi_keysets = "cashuBo2F0gqJhaUgA_9SLj17PgGFwgaNhYQFhc3hAYWNjMTI0MzVlN2I4NDg0YzNjZjE4NTAxNDkyMThhZjkwZjcxNmE1MmJmNGE1ZWQzNDdlNDhlY2MxM2Y3NzM4OGFjWCECRFODGd5IXVW-07KaZCvuWHk3WrnnpiDhHki6SCQh88-iYWlIAK0mjE0fWCZhcIKjYWECYXN4QDEzMjNkM2Q0NzA3YTU4YWQyZTIzYWRhNGU5ZjFmNDlmNWE1YjRhYzdiNzA4ZWIwZDYxZjczOGY0ODMwN2U4ZWVhY1ghAjRWqhENhLSsdHrr2Cw7AFrKUL9Ffr1XN6RBT6w659lNo2FhAWFzeEA1NmJjYmNiYjdjYzY0MDZiM2ZhNWQ1N2QyMTc0ZjRlZmY4YjQ0MDJiMTc2OTI2ZDNhNTdkM2MzZGNiYjU5ZDU3YWNYIQJzEpxXGeWZN5qXSmJjY8MzxWyvwObQGr5G1YCCgHicY2FtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1Y3NhdA==";
 
         let token = Token::from_str(token_str_multi_keysets).unwrap();
-        let amount = token.value();
+        let amount = token.value()?;
 
         assert_eq!(amount, Amount::from(4));
 
@@ -490,6 +494,16 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_tokenv4_from_tokenv3() -> anyhow::Result<()> {
+        let token_v3_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
+        let token_v3 = TokenV3::from_str(token_v3_str)?;
+        let token_v4 = TokenV4::try_from(token_v3).expect("TokenV3 should be converted to TokenV4");
+        let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqRhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-phZPakYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZYWT2";
+        assert_eq!(token_v4.to_string(), token_v4_expected);
         Ok(())
     }
 

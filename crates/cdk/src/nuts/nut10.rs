@@ -6,8 +6,18 @@ use std::str::FromStr;
 
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
+use thiserror::Error;
 
-use crate::error::Error;
+/// NUT13 Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Secret error
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
+    /// Serde Json error
+    #[error(transparent)]
+    SerdeJsonError(#[from] serde_json::Error),
+}
 
 ///  NUT10 Secret Kind
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

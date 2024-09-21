@@ -41,10 +41,14 @@ impl From<Wallet> for JsWallet {
 #[wasm_bindgen(js_class = Wallet)]
 impl JsWallet {
     #[wasm_bindgen(constructor)]
-    pub async fn new(mints_url: String, unit: JsCurrencyUnit, seed: Vec<u8>) -> Self {
+    pub async fn new(mints_url: String, unit: JsCurrencyUnit, seed: Vec<u8>) -> Result<JsWallet> {
         let db = WalletRexieDatabase::new().await.unwrap();
 
-        Wallet::new(&mints_url, unit.into(), Arc::new(db), &seed, None).into()
+        Ok(
+            Wallet::new(&mints_url, unit.into(), Arc::new(db), &seed, None)
+                .map_err(into_err)?
+                .into(),
+        )
     }
 
     #[wasm_bindgen(js_name = totalBalance)]
@@ -82,10 +86,14 @@ impl JsWallet {
     }
 
     #[wasm_bindgen(js_name = mintQuote)]
-    pub async fn mint_quote(&mut self, amount: u64) -> Result<JsMintQuote> {
+    pub async fn mint_quote(
+        &mut self,
+        amount: u64,
+        description: Option<String>,
+    ) -> Result<JsMintQuote> {
         let quote = self
             .inner
-            .mint_quote(amount.into())
+            .mint_quote(amount.into(), description)
             .await
             .map_err(into_err)?;
 

@@ -20,9 +20,58 @@
 ### Removed
 
 -->
+#[Unreleased]
+### Changed
+- cdk: Bump `bitcoin` to `0.32.2` ([prusnak]).
+- cdk: Bump `lightning-invoice` to `0.32.2` ([prusnak]).
+- cdk: Bump `lightning` to `0.0.124` ([prusnak]).
+- cdk: `PaymentMethod` as a `non_exhaustive` enum ([thesimplekid]).
+- cdk: `CurrencyUnit` as a `non_exhaustive` enum ([thesimpekid]).
+
+### Added
+- cdk: Added description to `MintQuoteBolt11Request` ([lollerfirst]).
+- cdk(wallet): Added description to `mint_quote` ([lollerfirst]).
+- cdk: Add `amount` and `fee_paid` to `Melted` ([davidcaseria]).
+- cdk: Add `from_proofs` on `Melted` ([davidcaseria]). 
+- cdk: Add unit on `PaymentResponse` ([thesimplekid]).
+
+### Removed
+- cdk: Remove `MintMeltSettings` since it is no longer used ([lollerfirst]).
+- cdk: `PaymentMethod::Custom` ([thesimplekid]).
 
 
-## [Unreleased]
+
+#[0.4.0]
+### Summary
+
+### Changed
+- cdk: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-axum: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-strike: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-lnbits: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-phoenixd: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-fake-wallet: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-cln: Reduce MSRV to 1.63.0 ([thesimplekid]).
+- cdk-sqlite: Reduce MSRV to 1.66.0 ([thesimplekid]).
+- cdk-redb: Reduce MSRV to 1.66.0 ([thesimplekid]).
+- cdk: Format url base lowercase ([callebtc]).
+- cdk: Use CDK error type instead of mint and wallet specific ([thesimplekid]).
+- cdk-cli: Tokenv4 error print diagnostic notation ([ok300]).
+- cdk-redb: Remove use of mutex ([thesimplekid]).
+
+### Added
+- cdk: Multiple error types ([thesimplekid]).
+
+
+### Fixed
+- cdk(mint): use checked addition on amount to ensure there is no overflow ([thesimplekid]).
+
+### Removed
+- cdk(wallet): Removed CDK wallet error ([thesimplekid]).
+- cdk(mint): Removed CDK mint error ([thesimplekid]).
+
+
+## [0.3.0]
 
 ### Summary
 
@@ -39,9 +88,10 @@
 - cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
 - cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnprc]).
 - cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
-- cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimeplkid]).
+- cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimplekid]).
 - cdk(cdk-lightning): Use `Amount` type instead of `u64` ([thesimplekid]).
 - cdk(cdk-lightning): `CreateInvoice` requires unit argument ([thesimplekid]).
+- cdk(cdk/multi_mint_wallet): `get_balances` returns a `BTreeMap` instead of `HashMap` ([thesimplekid]).
 
 ### Added
 - cdk(NUT-11): Add `Copy` on `SigFlag` ([thesimplekid]).
@@ -55,6 +105,8 @@
 - cdk(cdk-database/mint) Add `get_proofs_by_keyset_id` ([thesimplekid]).
 - cdk(wallet/mint): Add `mint_icon_url` ([cjbeery24]).
 - cdk: Add `MintUrl` that sanatizes mint url by removing trailing `/` ([cjbeery24]).
+- cdk(cdk-database/mint): Add `update_proofs` that both adds new `ProofInfo`s to the db and deletes ([davidcaseria]).
+- cdk(cdk-database/mint): Add `set_pending_proofs`, `reserve_proofs`, and `set_unspent_proofs` ([davidcaseria]).
 
 
 ### Fixed
@@ -68,6 +120,7 @@
 - cdk(wallet): Remove unused argument `SplitTarget` on `melt` ([thesimplekid]).
 - cdk(cdk-database/mint): Remove `get_spent_proofs`, `get_spent_proofs_by_ys`,`get_pending_proofs`, `get_pending_proofs_by_ys`, and `remove_pending_proofs` ([thesimplekid]).
 - cdk: Remove `UncheckedUrl` in favor of `MintUrl` ([cjbeery24]).
+- cdk(cdk-database/mint): Remove `set_proof_state`, `remove_proofs` and `add_proofs` ([davidcaseria]).
 
 ## [v0.2.0]
 
@@ -117,3 +170,8 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [davidcaseria]: https://github.com/davidcaseria
 [vnprc]: https://github.com/vnprc
 [cjbeery24]: https://github.com/cjbeery24
+[callebtc]: https://github.com/callebtc
+[ok300]: https://github.com/ok300
+[lollerfirst]: https://github.com/lollerfirst
+[prusnak]: https://github.com/prusnak
+

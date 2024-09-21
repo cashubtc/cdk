@@ -7,19 +7,23 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
+use cdk::cdk_lightning::MintLightning;
+use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MintInfo, MintQuoteState, Nuts, PaymentMethod};
+use cdk::nuts::{
+    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
+    Nuts, PaymentMethod, PreMintSecrets, Proofs,
+};
+use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};
 use cdk_axum::LnKey;
 use cdk_fake_wallet::FakeWallet;
 use futures::StreamExt;
+use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
-pub const MINT_URL: &str = "http://127.0.0.1:8088";
-const LISTEN_ADDR: &str = "127.0.0.1";
-const LISTEN_PORT: u16 = 8088;
+pub mod init_regtest;
 
 pub fn create_backends_fake_wallet(
 ) -> HashMap<LnKey, Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>> {
@@ -35,8 +39,8 @@ pub fn create_backends_fake_wallet(
 
     let wallet = Arc::new(FakeWallet::new(
         fee_reserve.clone(),
-        MintMeltSettings::default(),
-        MintMeltSettings::default(),
+        MintMethodSettings::default(),
+        MeltMethodSettings::default(),
     ));
 
     ln_backends.insert(ln_key, wallet.clone());
@@ -49,6 +53,7 @@ pub async fn start_mint(
         LnKey,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     >,
+    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
 ) -> Result<()> {
     let nuts = Nuts::new()
         .nut07(true)
@@ -63,11 +68,8 @@ pub async fn start_mint(
 
     let mnemonic = Mnemonic::generate(12)?;
 
-    let mut supported_units = HashMap::new();
-    supported_units.insert(CurrencyUnit::Sat, (0, 64));
-
     let mint = Mint::new(
-        MINT_URL,
+        &get_mint_url(),
         &mnemonic.to_seed_normalized(""),
         mint_info,
         Arc::new(MintMemoryDatabase::default()),
@@ -75,12 +77,12 @@ pub async fn start_mint(
     )
     .await?;
 
-    let quote_ttl = 2000;
+    let quote_ttl = 100000;
 
     let mint_arc = Arc::new(mint);
 
     let v1_service = cdk_axum::create_mint_router(
-        MINT_URL,
+        &get_mint_url(),
         Arc::clone(&mint_arc),
         ln_backends.clone(),
         quote_ttl,
@@ -115,11 +117,14 @@ pub async fn start_mint(
             }
         });
     }
-    let listener =
-        tokio::net::TcpListener::bind(format!("{}:{}", LISTEN_ADDR, LISTEN_PORT)).await?;
 
-    println!("Starting mint");
-    axum::serve(listener, mint_service).await?;
+    axum::Server::bind(
+        &format!("{}:{}", get_mint_addr(), get_mint_port())
+            .as_str()
+            .parse()?,
+    )
+    .serve(mint_service.into_make_service())
+    .await?;
 
     Ok(())
 }
@@ -143,8 +148,13 @@ async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result
     Ok(())
 }
 
-pub async fn wallet_mint(wallet: Arc<Wallet>, amount: Amount) -> Result<()> {
-    let quote = wallet.mint_quote(amount).await?;
+pub async fn wallet_mint(
+    wallet: Arc<Wallet>,
+    amount: Amount,
+    split_target: SplitTarget,
+    description: Option<String>,
+) -> Result<()> {
+    let quote = wallet.mint_quote(amount, description).await?;
 
     loop {
         let status = wallet.mint_quote_state(&quote.id).await?;
@@ -156,9 +166,61 @@ pub async fn wallet_mint(wallet: Arc<Wallet>, amount: Amount) -> Result<()> {
 
         sleep(Duration::from_secs(2)).await;
     }
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+
+    let receive_amount = wallet.mint(&quote.id, split_target, None).await?;
 
     println!("Minted: {}", receive_amount);
 
     Ok(())
+}
+
+pub async fn mint_proofs(
+    mint_url: &str,
+    amount: Amount,
+    keyset_id: Id,
+    mint_keys: &KeySet,
+    description: Option<String>,
+) -> anyhow::Result<Proofs> {
+    println!("Minting for ecash");
+    println!();
+
+    let wallet_client = HttpClient::new();
+
+    let mint_quote = wallet_client
+        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat, description)
+        .await?;
+
+    println!("Please pay: {}", mint_quote.request);
+
+    loop {
+        let status = wallet_client
+            .get_mint_quote_status(mint_url.parse()?, &mint_quote.quote)
+            .await?;
+
+        if status.state == MintQuoteState::Paid {
+            break;
+        }
+        println!("{:?}", status.state);
+
+        sleep(Duration::from_secs(2)).await;
+    }
+
+    let premint_secrets = PreMintSecrets::random(keyset_id, amount, &SplitTarget::default())?;
+
+    let mint_response = wallet_client
+        .post_mint(
+            mint_url.parse()?,
+            &mint_quote.quote,
+            premint_secrets.clone(),
+        )
+        .await?;
+
+    let pre_swap_proofs = construct_proofs(
+        mint_response.signatures,
+        premint_secrets.rs(),
+        premint_secrets.secrets(),
+        &mint_keys.clone().keys,
+    )?;
+
+    Ok(pre_swap_proofs)
 }

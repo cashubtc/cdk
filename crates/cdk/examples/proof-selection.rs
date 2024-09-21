@@ -20,11 +20,11 @@ async fn main() {
 
     let localstore = WalletMemoryDatabase::default();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
     for amount in [64] {
         let amount = Amount::from(amount);
-        let quote = wallet.mint_quote(amount).await.unwrap();
+        let quote = wallet.mint_quote(amount, None).await.unwrap();
 
         println!("Pay request: {}", quote.request);
 

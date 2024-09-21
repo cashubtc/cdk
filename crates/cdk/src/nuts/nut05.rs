@@ -21,6 +21,9 @@ pub enum Error {
     /// Unknown Quote State
     #[error("Unknown quote state")]
     UnknownState,
+    /// Amount overflow
+    #[error("Amount Overflow")]
+    AmountOverflow,
 }
 
 /// Melt quote request [NUT-05]
@@ -210,8 +213,9 @@ pub struct MeltBolt11Request {
 
 impl MeltBolt11Request {
     /// Total [`Amount`] of [`Proofs`]
-    pub fn proofs_amount(&self) -> Amount {
-        self.inputs.iter().map(|proof| proof.amount).sum()
+    pub fn proofs_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
+            .map_err(|_| Error::AmountOverflow)
     }
 }
 
@@ -238,7 +242,7 @@ impl From<MeltQuoteBolt11Response> for MeltBolt11Response {
 }
 
 /// Melt Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -266,7 +270,7 @@ impl Settings {
     ) -> Option<MeltMethodSettings> {
         for method_settings in self.methods.iter() {
             if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
-                return Some(method_settings.clone());
+                return Some(*method_settings);
             }
         }
 

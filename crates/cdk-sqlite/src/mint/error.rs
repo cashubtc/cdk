@@ -32,6 +32,9 @@ pub enum Error {
     /// BIP32 Error
     #[error(transparent)]
     BIP32(#[from] bitcoin::bip32::Error),
+    /// Mint Url Error
+    #[error(transparent)]
+    MintUrl(#[from] cdk::mint_url::Error),
     /// Could Not Initialize Database
     #[error("Could not initialize database")]
     CouldNotInitialize,

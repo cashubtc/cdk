@@ -58,7 +58,8 @@ impl HttpClient {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Create new [`HttpClient`] with a proxy for specific TLDs.
-    /// Specifying `None` for `host_matcher` will use the proxy for all requests.
+    /// Specifying `None` for `host_matcher` will use the proxy for all
+    /// requests.
     pub fn with_proxy(
         proxy: Url,
         host_matcher: Option<&str>,
@@ -128,10 +129,15 @@ impl HttpClient {
         mint_url: Url,
         amount: Amount,
         unit: CurrencyUnit,
+        description: Option<String>,
     ) -> Result<MintQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11"])?;
 
-        let request = MintQuoteBolt11Request { amount, unit };
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit,
+            description,
+        };
 
         let res = self
             .inner
@@ -202,7 +208,7 @@ impl HttpClient {
     }
 
     /// Melt Quote [NUT-05]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_melt_quote(
         &self,
         mint_url: Url,

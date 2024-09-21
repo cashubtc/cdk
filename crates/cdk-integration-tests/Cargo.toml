@@ -1,31 +1,41 @@
 [package]
 name = "cdk-integration-tests"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
-homepage.workspace = true
-repository.workspace = true
-rust-version.workspace = true # MSRV
-license.workspace = true
+license = "MIT"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.63.0" # MSRV
 
 
 [features]
 
 
 [dependencies]
-axum.workspace = true
-rand.workspace = true
-bip39 = { workspace = true, features = ["rand"] }
-anyhow.workspace = true
-cdk = { workspace = true, features = ["mint", "wallet"] }
-cdk-axum.workspace = true
-cdk-fake-wallet.workspace = true
-tower-http.workspace = true
-futures.workspace = true
+axum = "0.6.20"
+rand = "0.8.5"
+bip39 = { version = "2.0", features = ["rand"] }
+anyhow = "1"
+cdk = { path = "../cdk", version = "0.4.0", features = ["mint", "wallet"] }
+cdk-cln = { path = "../cdk-cln", version = "0.4.0" }
+cdk-axum = { path = "../cdk-axum"}
+cdk-sqlite = { path = "../cdk-sqlite"}
+cdk-redb = { path = "../cdk-redb"}
+cdk-fake-wallet = { path = "../cdk-fake-wallet" }
+tower-http = { version = "0.4.4", features = ["cors"] }
+futures = { version = "0.3.28", default-features = false, features = ["executor"] }
+once_cell = "1.19.0"
+uuid = { version = "1", features = ["v4"] }
+# ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
+ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "1d88d3d0b" }
+lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { workspace = true, features = [
+tokio = { version = "1", features = [
     "rt-multi-thread",
     "time",
     "macros",
@@ -33,18 +43,15 @@ tokio = { workspace = true, features = [
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
 instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
-axum.workspace = true
-rand.workspace = true
-bip39 = { workspace = true, features = ["rand"] }
-anyhow.workspace = true
-cdk = { workspace = true, features = ["mint", "wallet"] }
-cdk-axum.workspace = true
-cdk-fake-wallet.workspace = true
-tower-http.workspace = true
-# cdk-redb.workspace = true
-# cdk-sqlite.workspace = true
+rand = "0.8.5"
+bip39 = { version= "2.0", features = ["rand"] }
+anyhow = "1"
+cdk = { path = "../cdk", features = ["mint", "wallet"] }
+cdk-axum = { path = "../cdk-axum" }
+cdk-fake-wallet = { path = "../cdk-fake-wallet" }
+tower-http = { version = "0.4.4", features = ["cors"] }

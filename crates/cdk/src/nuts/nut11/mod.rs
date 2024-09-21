@@ -588,7 +588,8 @@ where
 pub enum SigFlag {
     #[default]
     /// Requires valid signatures on all inputs.
-    /// It is the default signature flag and will be applied even if the `sigflag` tag is absent.
+    /// It is the default signature flag and will be applied even if the
+    /// `sigflag` tag is absent.
     SigInputs,
     /// Requires valid signatures on all inputs and on all outputs.
     SigAll,
@@ -615,7 +616,8 @@ impl FromStr for SigFlag {
 }
 
 #[cfg(feature = "mint")]
-/// Get the signature flag that should be enforced for a set of proofs and the public keys that signatures are valid for
+/// Get the signature flag that should be enforced for a set of proofs and the
+/// public keys that signatures are valid for
 pub(crate) fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
     let mut sig_flag = SigFlag::SigInputs;
     let mut pubkeys = HashSet::new();
