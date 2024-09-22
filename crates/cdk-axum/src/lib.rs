@@ -14,9 +14,21 @@ use cdk::cdk_lightning::{self, MintLightning};
 use cdk::mint::Mint;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use moka::future::Cache;
 use router_handlers::*;
+use std::time::Duration;
 
 mod router_handlers;
+
+/// CDK Mint State
+#[derive(Clone)]
+pub struct MintState {
+    ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    mint: Arc<Mint>,
+    mint_url: MintUrl,
+    quote_ttl: u64,
+    cache: Cache<String, String, std::hash::RandomState>,
+}
 
 /// Create mint [`Router`] with required endpoints for cashu mint
 pub async fn create_mint_router(
@@ -30,25 +42,30 @@ pub async fn create_mint_router(
         mint,
         mint_url: MintUrl::from_str(mint_url)?,
         quote_ttl,
+        cache: Cache::builder()
+            .max_capacity(10_000)
+            .time_to_live(Duration::from_secs(60 * 60 * 24))
+            .time_to_idle(Duration::from_secs(60 * 60 * 24))
+            .build_with_hasher(std::hash::RandomState::default()),
     };
 
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
         .route("/keysets", get(get_keysets))
         .route("/keys/:keyset_id", get(get_keyset_pubkeys))
-        .route("/swap", post(post_swap))
+        .route("/swap", post(cache_post_swap))
         .route("/mint/quote/bolt11", post(get_mint_bolt11_quote))
         .route(
             "/mint/quote/bolt11/:quote_id",
             get(get_check_mint_bolt11_quote),
         )
-        .route("/mint/bolt11", post(post_mint_bolt11))
+        .route("/mint/bolt11", post(cache_post_mint_bolt11))
         .route("/melt/quote/bolt11", post(get_melt_bolt11_quote))
         .route(
             "/melt/quote/bolt11/:quote_id",
             get(get_check_melt_bolt11_quote),
         )
-        .route("/melt/bolt11", post(post_melt_bolt11))
+        .route("/melt/bolt11", post(cache_post_melt_bolt11))
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
@@ -56,15 +73,6 @@ pub async fn create_mint_router(
     let mint_router = Router::new().nest("/v1", v1_router).with_state(state);
 
     Ok(mint_router)
-}
-
-/// CDK Mint State
-#[derive(Clone)]
-pub struct MintState {
-    ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
-    mint: Arc<Mint>,
-    mint_url: MintUrl,
-    quote_ttl: u64,
 }
 
 /// Key used in hashmap of ln backends to identify what unit and payment method
