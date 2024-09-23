@@ -190,7 +190,7 @@ pub enum Error {
     #[error(transparent)]
     HexError(#[from] hex::Error),
     #[cfg(feature = "wallet")]
-    /// From hex error
+    /// From reqwest error
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
 

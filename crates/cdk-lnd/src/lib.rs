@@ -111,6 +111,7 @@ impl MintLightning for Lnd {
         Ok(futures::stream::unfold(stream, |mut stream| async move {
             match stream.message().await {
                 Ok(Some(msg)) => {
+                    println!("Got paid: {:?}", msg);
                     if msg.state == 1 {
                         Some((hex::encode(msg.r_hash), stream))
                     } else {

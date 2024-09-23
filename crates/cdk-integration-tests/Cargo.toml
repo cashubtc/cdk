@@ -20,6 +20,7 @@ bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
 cdk = { path = "../cdk", version = "0.4.0", features = ["mint", "wallet"] }
 cdk-cln = { path = "../cdk-cln", version = "0.4.0" }
+cdk-lnd = { path = "../cdk-lnd", version = "0.4.0" }
 cdk-axum = { path = "../cdk-axum"}
 cdk-sqlite = { path = "../cdk-sqlite"}
 cdk-redb = { path = "../cdk-redb"}
@@ -31,7 +32,7 @@ uuid = { version = "1", features = ["v4"] }
 serde = "1"
 serde_json = "1"
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
-ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "1d88d3d0b" }
+ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "77324c5" }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
