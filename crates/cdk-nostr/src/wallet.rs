@@ -31,8 +31,8 @@ use nostr_sdk::{
     client,
     nips::nip44,
     secp256k1::{ecdh::shared_secret_point, Parity},
-    Client, Event, EventBuilder, EventSource, Filter, Kind, SingleLetterTag, Tag, TagKind,
-    Timestamp,
+    Client, Event, EventBuilder, EventSource, Filter, Kind, RelaySendOptions, SingleLetterTag, Tag,
+    TagKind, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -253,6 +253,7 @@ impl WalletNostrDatabase {
         if sync_relays {
             self.ensure_relays_connected().await;
         }
+
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(TX_HISTORY_KIND),
@@ -263,7 +264,8 @@ impl WalletNostrDatabase {
             limit,
             ..Default::default()
         }];
-        let events = self.get_events(filters, sync_relays).await?;
+        let events = self.get_events(filters, sync_relays).await?; // Events are reverse timestamp sorted
+
         Ok(events
             .into_iter()
             .map(|event| TransactionEvent::from_event(&event, &self.keys))
@@ -369,12 +371,13 @@ impl WalletNostrDatabase {
         Ok(id)
     }
 
-    /// Sync proofs from Nostr
+    /// Sync proofs from database (and optionally relays) to wallet database.
     #[tracing::instrument(skip(self))]
     pub async fn sync_proofs(&self, sync_relays: bool) -> Result<(), Error> {
         if sync_relays {
             self.ensure_relays_connected().await;
         }
+
         let filters = vec![Filter {
             authors: filter_value!(self.keys.public_key()),
             kinds: filter_value!(PROOFS_KIND),
@@ -385,6 +388,17 @@ impl WalletNostrDatabase {
         }];
         let mut events = self.get_events(filters, sync_relays).await?;
         events.sort(); // Ensure events are sorted by timestamp
+
+        if sync_relays {
+            if let Err(e) = self
+                .client
+                .batch_event(events.clone(), RelaySendOptions::default())
+                .await
+            {
+                tracing::warn!("Failed to sync proofs to relays: {}", e);
+            }
+        }
+
         for event in events {
             let event = ProofsEvent::from_event(&event, &self.keys)?;
             if self.wallet_db.get_mint(event.url.clone()).await?.is_none() {
@@ -404,6 +418,29 @@ impl WalletNostrDatabase {
                 )
                 .await?;
             self.wallet_db.reserve_proofs(event.reserved).await?;
+        }
+        Ok(())
+    }
+
+    /// Sync transactions with relays.
+    #[tracing::instrument(skip(self))]
+    pub async fn sync_transactions(&self) -> Result<(), Error> {
+        self.ensure_relays_connected().await;
+        let filters = vec![Filter {
+            authors: filter_value!(self.keys.public_key()),
+            kinds: filter_value!(TX_HISTORY_KIND),
+            generic_tags: filter_value!(
+                SingleLetterTag::from_char(ID_LINK_TAG).expect("ID_LINK_TAG is not a single letter tag") => wallet_link_tag_value(&self.id, &self.keys),
+            ),
+            ..Default::default()
+        }];
+        let events = self.get_events(filters, true).await?;
+        if let Err(e) = self
+            .client
+            .batch_event(events, RelaySendOptions::default())
+            .await
+        {
+            tracing::warn!("Failed to sync transactions to relays: {}", e);
         }
         Ok(())
     }
