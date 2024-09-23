@@ -352,7 +352,19 @@ impl WalletNostrDatabase {
         let id = event.id;
         self.save_event(event).await?;
         let mut info = self.info.lock().await;
-        tx.update_balance(info.1.balance.get_or_insert(Amount::ZERO));
+        let mut wallet_balance = Amount::try_sum(
+            self.get_proofs(
+                None,
+                Some(CurrencyUnit::Sat),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await?
+            .into_iter()
+            .map(|info| info.proof.amount),
+        )?;
+        tx.update_balance(&mut wallet_balance);
+        info.1.balance = Some(wallet_balance);
         self.save_info_with_lock(&mut info).await?;
         Ok(id)
     }
@@ -1151,6 +1163,9 @@ pub fn derive_wallet_secret(
 /// [`WalletNostrDatabase`]` error
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// Amount error
+    #[error(transparent)]
+    Amount(#[from] cdk::amount::Error),
     /// Client error
     #[error(transparent)]
     Client(#[from] client::Error),
