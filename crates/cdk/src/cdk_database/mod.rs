@@ -231,6 +231,8 @@ pub trait MintDatabase {
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<String>) -> Result<(), Self::Err>;
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get ys by quote id
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get [`Proofs`] state

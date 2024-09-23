@@ -543,6 +543,26 @@ impl MintDatabase for MintRedbDatabase {
         Ok(proofs)
     }
 
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_multimap_table(QUOTE_PROOFS_TABLE)
+            .map_err(Error::from)?;
+
+        let ys = table.get(quote_id).map_err(Error::from)?;
+
+        let proof_ys = ys.fold(Vec::new(), |mut acc, y| {
+            if let Ok(y) = y {
+                if let Ok(pubkey) = PublicKey::from_slice(&y.value()) {
+                    acc.push(pubkey);
+                }
+            }
+            acc
+        });
+
+        Ok(proof_ys)
+    }
+
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
