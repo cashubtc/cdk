@@ -17,10 +17,10 @@ use bitcoin::{
 use cdk::{
     amount::Amount,
     cdk_lightning::{
-        self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
-        Settings,
+        self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
+        PaymentQuoteResponse, Settings,
     },
-    mint::MeltQuote,
+    mint::{FeeReserve, MeltQuote},
     nuts::{
         nut04::Settings as MintSettings, nut05::Settings as MeltSettings, CurrencyUnit,
         MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
@@ -165,6 +165,7 @@ pub struct Node {
     chain_monitor: Arc<NodeChainMonitor>,
     channel_manager: Arc<NodeChannelManager>,
     db: NodeDatabase,
+    fee_reserve: FeeReserve,
     gossip_sync: Arc<NodeP2PSync>,
     keys_manager: Arc<KeysManager>,
     logger: Arc<NodeLogger>,
@@ -187,6 +188,7 @@ impl Node {
         rpc_client: BitcoinClient,
         seed: [u8; 32],
         config: UserConfig,
+        fee_reserve: FeeReserve,
         p2p_addr: Option<SocketAddr>,
     ) -> Result<Self, Error> {
         // Create utils
@@ -491,6 +493,7 @@ impl Node {
             chain_monitor,
             channel_manager,
             db,
+            fee_reserve,
             gossip_sync,
             keys_manager,
             logger,
@@ -1199,24 +1202,27 @@ impl MintLightning for Node {
         &self,
         melt_quote_request: &MeltQuoteBolt11Request,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
+        let amount = to_unit(
+            Amount::from(
+                melt_quote_request
+                    .request
+                    .amount_milli_satoshis()
+                    .ok_or(map_err("No amount"))?,
+            ),
+            &CurrencyUnit::Msat,
+            &CurrencyUnit::Sat,
+        )?;
+
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+        let fee = relative_fee_reserve.max(absolute_fee_reserve);
+
         Ok(PaymentQuoteResponse {
             request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
-            amount: Amount::from(
-                melt_quote_request
-                    .request
-                    .amount_milli_satoshis()
-                    .unwrap_or_default()
-                    / 1000,
-            ),
-            fee: Amount::from(
-                melt_quote_request
-                    .request
-                    .amount_milli_satoshis()
-                    .unwrap_or_default()
-                    / 1000
-                    / 100,
-            ), // TODO: estimate fee
-            state: MeltQuoteState::Unpaid, // TODO: is this right?
+            amount,
+            fee: fee.into(),
+            state: MeltQuoteState::Unpaid,
         })
     }
 
@@ -1228,13 +1234,34 @@ impl MintLightning for Node {
     ) -> Result<PayInvoiceResponse, Self::Err> {
         tracing::info!("Paying invoice: {}", melt_quote.request);
         let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let (payment_hash, recipient_onion, mut route_params) =
+            payment_parameters_from_invoice(&bolt11)
+                .map_err(|_| map_err("Error extracting payment parameters"))?;
+
+        if let Some(payment) = self.db.get_payment(payment_hash).await.map_err(map_err)? {
+            let inflight_payments = self.inflight_payments.read().await;
+            let is_inflight = inflight_payments.contains_key(&payment_hash);
+            drop(inflight_payments);
+            let status = match (payment.paid, is_inflight) {
+                (true, _) => MeltQuoteState::Paid,
+                (false, true) => MeltQuoteState::Pending,
+                (false, false) => MeltQuoteState::Unpaid,
+            };
+            if status != MeltQuoteState::Unpaid {
+                return Ok(PayInvoiceResponse {
+                    payment_hash: payment_hash.to_string(),
+                    payment_preimage: payment.pre_image.map(|p| hex::encode(p)),
+                    status,
+                    total_spent: payment.amount,
+                    unit: CurrencyUnit::Sat,
+                });
+            }
+        }
+
         let amount_msats = partial_amount
             .map(|a| Into::<u64>::into(a) * 1000)
             .or(bolt11.amount_milli_satoshis())
             .ok_or(map_err("No amount"))?;
-        let (payment_hash, recipient_onion, mut route_params) =
-            payment_parameters_from_invoice(&bolt11)
-                .map_err(|_| map_err("Error extracting payment parameters"))?;
         self.db
             .insert_payment(&bolt11, Amount::from(amount_msats / 1000))
             .await
