@@ -92,20 +92,16 @@ pub async fn get_mint_bolt11_quote(
             into_response(Error::UnitUnsupported)
         })?;
 
-    let amount =
-        to_unit(payload.amount, &payload.unit, &ln.get_settings().unit).map_err(|err| {
-            tracing::error!("Backend does not support unit: {}", err);
-            into_response(Error::UnitUnsupported)
-        })?;
-
     let quote_expiry = unix_time() + state.quote_ttl;
+
     if payload.description.is_some() && !ln.get_settings().invoice_description {
         tracing::error!("Backend does not support invoice description");
         return Err(into_response(Error::InvoiceDescriptionUnsupported));
     }
+
     let create_invoice_response = ln
         .create_invoice(
-            amount,
+            payload.amount,
             &payload.unit,
             payload.description.unwrap_or("".to_string()),
             quote_expiry,
@@ -359,7 +355,7 @@ pub async fn post_melt_bolt11(
                         .map_err(|_| into_response(Error::UnitUnsupported))?,
                 };
 
-                if amount_to_pay + quote.fee_reserve != inputs_amount_quote_unit {
+                if amount_to_pay + quote.fee_reserve > inputs_amount_quote_unit {
                     tracing::debug!(
                         "Not enough inuts provided: {} msats needed {} msats",
                         inputs_amount_quote_unit,
@@ -369,6 +365,7 @@ pub async fn post_melt_bolt11(
                     if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
                         tracing::error!("Could not reset melt quote state: {}", err);
                     }
+
                     return Err(into_response(Error::TransactionUnbalanced(
                         inputs_amount_quote_unit.into(),
                         amount_to_pay.into(),
@@ -419,8 +416,15 @@ pub async fn post_melt_bolt11(
             }
 
             // Convert from unit of backend to quote unit
-            let amount_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit)
-                .map_err(|_| into_response(Error::UnitUnsupported))?;
+            let amount_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit).map_err(|_| {
+                tracing::error!(
+                    "Could not convert from {} to {} in melt.",
+                    pre.unit,
+                    quote.unit
+                );
+
+                into_response(Error::UnitUnsupported)
+            })?;
 
             (pre.payment_preimage, amount_spent)
         }

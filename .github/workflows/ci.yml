@@ -54,7 +54,6 @@ jobs:
             -p cdk-phoenixd,
             -p cdk-strike,
             -p cdk-lnbits,
-            -p cdk-integration-tests,
             -p cdk-fake-wallet,
             --bin cdk-cli,
             --bin cdk-mintd
@@ -74,6 +73,35 @@ jobs:
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
         run: nix develop -i -L .#stable --command cargo test ${{ matrix.build-args }}
+
+  itest:
+    name: "Integration tests"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build-args:
+          [
+            -p cdk-integration-tests,
+          ]
+        database: 
+          [
+          REDB,
+          SQLITE,
+          MEMORY
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
+      - name: Test
+        run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
 
   msrv-build:
     name: "MSRV build"

@@ -228,9 +228,11 @@ pub trait MintDatabase {
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     /// Add spent [`Proofs`]
-    async fn add_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
+    async fn add_proofs(&self, proof: Proofs, quote_id: Option<String>) -> Result<(), Self::Err>;
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get ys by quote id
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get [`Proofs`] state
@@ -250,6 +252,7 @@ pub trait MintDatabase {
         &self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err>;
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(

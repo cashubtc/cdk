@@ -42,7 +42,7 @@ async fn new_mint(fee: u64) -> Mint {
 
     let mnemonic = Mnemonic::generate(12).unwrap();
 
-    let mint = Mint::new(
+    Mint::new(
         MINT_URL,
         &mnemonic.to_seed_normalized(""),
         mint_info,
@@ -50,9 +50,7 @@ async fn new_mint(fee: u64) -> Mint {
         supported_units,
     )
     .await
-    .unwrap();
-
-    mint
+    .unwrap()
 }
 
 async fn initialize() -> &'static Mint {

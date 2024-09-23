@@ -1391,6 +1391,11 @@ impl Wallet {
             return Err(Error::UnknownQuote);
         };
 
+        let proofs_total = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        if proofs_total < quote_info.amount + quote_info.fee_reserve {
+            return Err(Error::InsufficientFunds);
+        }
+
         let ys = proofs
             .iter()
             .map(|p| p.y())
@@ -1410,7 +1415,7 @@ impl Wallet {
             active_keyset_id,
             count,
             self.xpriv,
-            quote_info.fee_reserve,
+            proofs_total - quote_info.amount,
         )?;
 
         let melt_response = self
@@ -1442,12 +1447,27 @@ impl Wallet {
             .ok_or(Error::NoActiveKeyset)?;
 
         let change_proofs = match melt_response.change {
-            Some(change) => Some(construct_proofs(
-                change,
-                premint_secrets.rs(),
-                premint_secrets.secrets(),
-                &active_keys,
-            )?),
+            Some(change) => {
+                let num_change_proof = change.len();
+
+                let num_change_proof = match (
+                    premint_secrets.len() < num_change_proof,
+                    premint_secrets.secrets().len() < num_change_proof,
+                ) {
+                    (true, _) | (_, true) => {
+                        tracing::error!("Mismatch in change promises to change");
+                        premint_secrets.len()
+                    }
+                    _ => num_change_proof,
+                };
+
+                Some(construct_proofs(
+                    change,
+                    premint_secrets.rs()[..num_change_proof].to_vec(),
+                    premint_secrets.secrets()[..num_change_proof].to_vec(),
+                    &active_keys,
+                )?)
+            }
             None => None,
         };
 
