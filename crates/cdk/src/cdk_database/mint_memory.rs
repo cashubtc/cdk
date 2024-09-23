@@ -262,6 +262,15 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(proofs)
     }
 
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err> {
+        let quote_proofs = &__self.quote_proofs.lock().await;
+
+        match quote_proofs.get(quote_id) {
+            Some(ys) => Ok(ys.clone()),
+            None => Ok(vec![]),
+        }
+    }
+
     async fn update_proofs_states(
         &self,
         ys: &[PublicKey],

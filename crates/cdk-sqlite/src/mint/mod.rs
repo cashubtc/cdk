@@ -814,6 +814,52 @@ WHERE y=?;
         Ok(proofs)
     }
 
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM proof
+WHERE quote_id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_all(&mut transaction)
+        .await;
+
+        let ys = match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let proofs = rec
+                    .into_iter()
+                    .map(sqlite_row_to_proof)
+                    .collect::<Result<Vec<Proof>, _>>()?;
+
+                proofs
+                    .iter()
+                    .map(|p| p.y())
+                    .collect::<Result<Vec<PublicKey>, _>>()?
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+
+                    vec![]
+                }
+                _ => {
+                    if let Err(err) = transaction.rollback().await {
+                        tracing::error!("Could not rollback sql transaction: {}", err);
+                    }
+                    return Err(Error::SQLX(err).into());
+                }
+            },
+        };
+
+        Ok(ys)
+    }
+
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
