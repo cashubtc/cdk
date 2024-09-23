@@ -746,14 +746,14 @@ FROM keyset;
         }
     }
 
-    async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<String>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for proof in proofs {
             if let Err(err) = sqlx::query(
                 r#"
 INSERT INTO proof
-(y, amount, keyset_id, secret, c, witness, state)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(y, amount, keyset_id, secret, c, witness, state, quote_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
             )
             .bind(proof.y()?.to_bytes().to_vec())
@@ -763,6 +763,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(proof.c.to_bytes().to_vec())
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
             .bind("UNSPENT")
+            .bind(quote_id.clone())
             .execute(&mut transaction)
             .await
             .map_err(Error::from)
@@ -774,6 +775,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 
         Ok(())
     }
+
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -810,6 +812,52 @@ WHERE y=?;
         transaction.commit().await.map_err(Error::from)?;
 
         Ok(proofs)
+    }
+
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM proof
+WHERE quote_id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_all(&mut transaction)
+        .await;
+
+        let ys = match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let proofs = rec
+                    .into_iter()
+                    .map(sqlite_row_to_proof)
+                    .collect::<Result<Vec<Proof>, _>>()?;
+
+                proofs
+                    .iter()
+                    .map(|p| p.y())
+                    .collect::<Result<Vec<PublicKey>, _>>()?
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+
+                    vec![]
+                }
+                _ => {
+                    if let Err(err) = transaction.rollback().await {
+                        tracing::error!("Could not rollback sql transaction: {}", err);
+                    }
+                    return Err(Error::SQLX(err).into());
+                }
+            },
+        };
+
+        Ok(ys)
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
@@ -969,20 +1017,22 @@ WHERE y=?;
         &self,
         blinded_messages: &[PublicKey],
         blinded_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
             let res = sqlx::query(
                 r#"
 INSERT INTO blind_signature
-(y, amount, keyset_id, c)
-VALUES (?, ?, ?, ?);
+(y, amount, keyset_id, c, quote_id)
+VALUES (?, ?, ?, ?, ?);
         "#,
             )
             .bind(message.to_bytes().to_vec())
             .bind(u64::from(signature.amount) as i64)
             .bind(signature.keyset_id.to_string())
             .bind(signature.c.to_bytes().to_vec())
+            .bind(quote_id.clone())
             .execute(&mut transaction)
             .await;
 
