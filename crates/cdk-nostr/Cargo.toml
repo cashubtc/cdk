@@ -30,3 +30,6 @@ thiserror = "1"
 tokio = "1"
 tracing = "0.1"
 url = "2.3"
+
+[dev-dependencies]
+tokio-stream = "0.1"

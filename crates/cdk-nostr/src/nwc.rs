@@ -490,6 +490,7 @@ impl WalletConnection {
     fn filter(&self, service_pubkey: PublicKey, since: Timestamp) -> Filter {
         Filter::new()
             .kind(Kind::WalletConnectRequest)
+            .author(self.keys.public_key())
             .since(since)
             .custom_tag(
                 SingleLetterTag::lowercase(Alphabet::P),
