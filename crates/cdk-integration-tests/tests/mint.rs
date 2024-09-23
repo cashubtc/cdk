@@ -1,13 +1,8 @@
 //! Mint tests
 
-use axum::body::Body;
-use axum::http::Request;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::dhke::construct_proofs;
 use cdk::util::unix_time;
-use cdk_axum::create_mint_router;
-use cdk_integration_tests::create_backends_fake_wallet;
-use tower_service::Service;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -16,8 +11,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::nuts::{
-    CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey,
-    SpendingConditions, SwapRequest,
+    CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey, SpendingConditions, SwapRequest
 };
 use cdk::Mint;
 
@@ -372,48 +366,3 @@ async fn test_mint_enforce_fee() -> Result<()> {
     Ok(())
 }
 
-async fn test_mint_cached_response() -> Result<()> {
-    let mint = Arc::new(new_mint(0).await);
-    let ln_backends = create_backends_fake_wallet();
-    let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
-    let keyset_id = Id::from(&keys);
-    let router_v1 = create_mint_router(MINT_URL, mint.clone(), ln_backends, 10000).await?;
-    let request_lookup = uuid::Uuid::new_v4().to_string();
-
-    let mint_quote = mint
-        .new_mint_quote(
-            MINT_URL.parse()?,
-            "".to_string(),
-            CurrencyUnit::Sat,
-            1010.into(),
-            unix_time() + 36000,
-            request_lookup.to_string(),
-        )
-        .await?;
-
-    mint.pay_mint_quote_for_request_id(&request_lookup).await?;
-    let keyset_id = Id::from(&keys);
-
-    let premint = PreMintSecrets::random(keyset_id, 1010.into(), &SplitTarget::default())?;
-
-    let mint_request = MintBolt11Request {
-        quote: mint_quote.id,
-        outputs: premint.blinded_messages(),
-    };
-
-    let request_body = serde_json::to_string(&mint_request)?;
-    let request = Request::builder()
-        .uri("/v1/mint/bolt11") // Make sure this matches your route
-        .method("POST")
-        .header("content-type", "application/json")
-        .body(Body::from(request_body))
-        .unwrap();
-    
-
-    // Play mint request 2 times
-    let mut service = router_v1.into_make_service();
-    let response: Response<Body> = service.poll_ready().call(request).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    Ok(())
-}
