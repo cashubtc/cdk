@@ -11,7 +11,8 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::nuts::{
-    CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey, SpendingConditions, SwapRequest
+    CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey,
+    SpendingConditions, SwapRequest,
 };
 use cdk::Mint;
 
@@ -365,4 +366,3 @@ async fn test_mint_enforce_fee() -> Result<()> {
 
     Ok(())
 }
-

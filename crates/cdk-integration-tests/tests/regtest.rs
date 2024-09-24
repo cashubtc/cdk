@@ -259,7 +259,7 @@ async fn test_internal_payment() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cached_mint() -> Result<()> {
     let lnd_client = init_lnd_client().await.unwrap();
-    
+
     let wallet = Wallet::new(
         &get_mint_url(),
         CurrencyUnit::Sat,
@@ -287,10 +287,23 @@ async fn test_cached_mint() -> Result<()> {
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
     let http_client = HttpClient::new();
-    let premint_secrets = PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
+    let premint_secrets =
+        PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
 
-    let response = http_client.post_mint(Url::parse(get_mint_url().as_str())?, &quote.id, premint_secrets.clone()).await?;
-    let response1 = http_client.post_mint(Url::parse(get_mint_url().as_str())?, &quote.id, premint_secrets).await?;
+    let response = http_client
+        .post_mint(
+            Url::parse(get_mint_url().as_str())?,
+            &quote.id,
+            premint_secrets.clone(),
+        )
+        .await?;
+    let response1 = http_client
+        .post_mint(
+            Url::parse(get_mint_url().as_str())?,
+            &quote.id,
+            premint_secrets,
+        )
+        .await?;
 
     assert!(response == response1);
     Ok(())
