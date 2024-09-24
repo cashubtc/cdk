@@ -413,7 +413,9 @@ where
     }
 
     fn type_name() -> TypeName {
-        TypeName::new(&format!("Bincode<{}>", type_name::<T>()))
+        // Backwards compatibility hack
+        let name = type_name::<T>().replace("cdk_ldk::db", "cdk_ldk::ln");
+        TypeName::new(&format!("Bincode<{}>", name))
     }
 }
 
