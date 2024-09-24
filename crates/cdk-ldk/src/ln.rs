@@ -1069,7 +1069,7 @@ impl Node {
     pub async fn reopen_channel_from_spendable_outputs(
         &self,
         node_id: PublicKey,
-    ) -> Result<(ChannelId, Amount), Error> {
+    ) -> Result<ReopenChannel, Error> {
         let secp = Secp256k1::new();
         let outputs = self.db.get_all_spendable_outputs().await?;
         if outputs.is_empty() {
@@ -1108,14 +1108,18 @@ impl Node {
             .spend_spendable_outputs(
                 &outputs.values().flat_map(|a| a).collect::<Vec<_>>(),
                 Vec::new(),
-                pending_channel.funding_script,
+                pending_channel.funding_script.clone(),
                 fee_rate,
                 Some(locktime),
                 &secp,
             )
             .map_err(|_| Error::Ldk("Error spending outputs".to_string()))?;
         let channel_id = self.fund_channel(pending_channel.channel_id, tx).await?;
-        Ok((channel_id, amount))
+        Ok(ReopenChannel {
+            channel_id,
+            funding_script: pending_channel.funding_script,
+            amount,
+        })
     }
 
     pub async fn sweep_spendable_outputs(&self, script: ScriptBuf) -> Result<Txid, Error> {
@@ -1194,6 +1198,12 @@ pub struct NodeInfo {
 pub struct PendingChannel {
     pub channel_id: ChannelId,
     pub funding_script: ScriptBuf,
+}
+
+pub struct ReopenChannel {
+    pub channel_id: ChannelId,
+    pub funding_script: ScriptBuf,
+    pub amount: Amount,
 }
 
 #[async_trait]
