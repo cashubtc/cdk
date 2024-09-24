@@ -11,8 +11,8 @@ use std::{
 
 use async_trait::async_trait;
 use bitcoin::{
-    absolute::LockTime, key::Secp256k1, secp256k1::PublicKey, BlockHash, Network, OutPoint,
-    ScriptBuf, Transaction, Txid,
+    absolute::LockTime, hashes::sha256::Hash, key::Secp256k1, secp256k1::PublicKey, BlockHash,
+    Network, OutPoint, ScriptBuf, Transaction, Txid, WScriptHash,
 };
 use cdk::{
     amount::Amount,
@@ -1064,6 +1064,58 @@ impl Node {
                     )
                 });
         Ok(spendable_balance)
+    }
+
+    pub async fn reopen_channel_from_spendable_outputs(
+        &self,
+        node_id: PublicKey,
+    ) -> Result<ChannelId, Error> {
+        let secp = Secp256k1::new();
+        let outputs = self.db.get_all_spendable_outputs().await?;
+        if outputs.is_empty() {
+            return Err(Error::NoSpendableOutputs);
+        }
+
+        let fee_rate = self
+            .bitcoin_client
+            .get_est_sat_per_1000_weight(ConfirmationTarget::OutputSpendingFee);
+        let cur_height = self.channel_manager.current_best_block().height;
+        let locktime = LockTime::from_height(cur_height).map_or(LockTime::ZERO, |l| l.into());
+
+        let test_script =
+            ScriptBuf::new_p2wsh(&WScriptHash::from_raw_hash(*Hash::from_bytes_ref(&[0; 32])));
+        let (test_psbt, _) = SpendableOutputDescriptor::create_spendable_outputs_psbt(
+            &secp,
+            &outputs.values().flat_map(|a| a).collect::<Vec<_>>(),
+            Vec::new(),
+            test_script,
+            fee_rate,
+            Some(locktime),
+        )
+        .map_err(|_| Error::Ldk("Error creating spendable PSBT".to_string()))?;
+        let sweep_value = test_psbt
+            .unsigned_tx
+            .output
+            .first()
+            .ok_or(Error::Ldk("No outputs".to_string()))?
+            .value
+            .to_sat();
+
+        let pending_channel = self
+            .open_channel(node_id, Amount::from(sweep_value))
+            .await?;
+        let tx = self
+            .keys_manager
+            .spend_spendable_outputs(
+                &outputs.values().flat_map(|a| a).collect::<Vec<_>>(),
+                Vec::new(),
+                pending_channel.funding_script,
+                fee_rate,
+                Some(locktime),
+                &secp,
+            )
+            .map_err(|_| Error::Ldk("Error spending outputs".to_string()))?;
+        self.fund_channel(pending_channel.channel_id, tx).await
     }
 
     pub async fn sweep_spendable_outputs(&self, script: ScriptBuf) -> Result<Txid, Error> {
