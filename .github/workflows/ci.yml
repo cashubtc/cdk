@@ -83,6 +83,12 @@ jobs:
           [
             -p cdk-integration-tests,
           ]
+        database: 
+          [
+          REDB,
+          SQLITE,
+          MEMORY
+          ]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -95,7 +101,7 @@ jobs:
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
-        run: nix develop -i -L .#stable --command just itest
+        run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
 
   msrv-build:
     name: "MSRV build"
