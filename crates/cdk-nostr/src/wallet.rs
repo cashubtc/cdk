@@ -152,6 +152,34 @@ impl WalletNostrDatabase {
         Ok(self_)
     }
 
+    #[cfg(test)]
+    fn test() -> Self {
+        let keys = nostr_sdk::Keys::generate();
+        let client = Client::builder()
+            .signer(&keys)
+            .database(MemoryDatabase::with_opts(MemoryDatabaseOptions {
+                events: true,
+                max_events: None,
+            }))
+            .build();
+        let id = "test".to_string();
+        let info = Arc::new(Mutex::new((
+            Timestamp::now(),
+            WalletInfo {
+                id: id.clone(),
+                ..Default::default()
+            },
+        )));
+        let wallet_db = WalletMemoryDatabase::default();
+        Self {
+            client,
+            keys,
+            id,
+            info,
+            wallet_db,
+        }
+    }
+
     async fn ensure_relays_connected(&self) {
         let relays = self.client.relays().await;
         for relay in relays.values() {
@@ -190,7 +218,7 @@ impl WalletNostrDatabase {
         }];
         let events = self.get_events(filters, false).await?;
         if let Some(event) = events.first() {
-            self.client.delete_event(event.id).await?;
+            self.delete_event(event.id).await?;
             Ok(())
         } else {
             Err(Error::EventNotFound(event_id))
@@ -390,11 +418,7 @@ impl WalletNostrDatabase {
         events.sort(); // Ensure events are sorted by timestamp
 
         if sync_relays {
-            if let Err(e) = self
-                .client
-                .batch_event(events.clone(), RelaySendOptions::default())
-                .await
-            {
+            if let Err(e) = self.save_events(events.clone()).await {
                 tracing::warn!("Failed to sync proofs to relays: {}", e);
             }
         }
@@ -435,11 +459,7 @@ impl WalletNostrDatabase {
             ..Default::default()
         }];
         let events = self.get_events(filters, true).await?;
-        if let Err(e) = self
-            .client
-            .batch_event(events, RelaySendOptions::default())
-            .await
-        {
+        if let Err(e) = self.save_events(events).await {
             tracing::warn!("Failed to sync transactions to relays: {}", e);
         }
         Ok(())
@@ -462,11 +482,30 @@ impl WalletNostrDatabase {
         self.save_info_with_lock(&mut info).await
     }
 
+    async fn delete_event(&self, event_id: EventId) -> Result<(), Error> {
+        #[cfg(test)]
+        if self.client.relays().await.is_empty() {
+            self.client
+                .database()
+                .delete(Filter::new().id(event_id))
+                .await?;
+            return Ok(());
+        }
+
+        self.client.delete_event(event_id).await?;
+        Ok(())
+    }
+
     async fn get_events(
         &self,
         filters: Vec<Filter>,
         sync_relays: bool,
     ) -> Result<Vec<Event>, Error> {
+        #[cfg(test)]
+        if self.client.relays().await.is_empty() {
+            return Ok(self.client.database().query(filters).await?);
+        }
+
         if sync_relays {
             self.ensure_relays_connected().await;
         }
@@ -484,8 +523,30 @@ impl WalletNostrDatabase {
     }
 
     async fn save_event(&self, event: Event) -> Result<(), Error> {
+        #[cfg(test)]
+        if self.client.relays().await.is_empty() {
+            self.client.database().save_event(&event).await?;
+            return Ok(());
+        }
+
         self.ensure_relays_connected().await;
         self.client.send_event(event).await?;
+        Ok(())
+    }
+
+    async fn save_events(&self, events: Vec<Event>) -> Result<(), Error> {
+        #[cfg(test)]
+        if self.client.relays().await.is_empty() {
+            for event in events {
+                self.client.database().save_event(&event).await?;
+            }
+            return Ok(());
+        }
+
+        self.ensure_relays_connected().await;
+        self.client
+            .batch_event(events, RelaySendOptions::default())
+            .await?;
         Ok(())
     }
 }
@@ -956,7 +1017,7 @@ impl ProofsEvent {
 }
 
 /// Tx history
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Transaction {
     /// Direction (in for received, out for sent)
     pub direction: Direction,
@@ -1263,4 +1324,40 @@ pub enum Error {
     /// Wallet database error
     #[error(transparent)]
     WalletDatabase(#[from] cdk_database::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk::amount::Amount;
+
+    use crate::wallet::{Direction, Error};
+
+    use super::{Transaction, WalletNostrDatabase};
+
+    #[tokio::test]
+    async fn save_and_delete_transaction() {
+        let db = WalletNostrDatabase::test();
+        let tx = Transaction {
+            direction: Direction::Incoming,
+            amount: Amount::from(100),
+            event_id: None,
+            relay: None,
+            price: None,
+            proofs: Vec::new(),
+            payment_hash: None,
+        };
+
+        let event_id = db.save_transaction(tx.clone()).await.unwrap();
+        let db_tx = db.get_transaction(event_id).await.unwrap();
+        assert_eq!(tx, db_tx.tx);
+
+        db.delete_transaction(event_id).await.unwrap();
+        let err = db.get_transaction(event_id).await.unwrap_err();
+        match err {
+            Error::EventNotFound(id) => {
+                assert_eq!(id, event_id);
+            }
+            _ => panic!("Unexpected error: {:?}", err),
+        }
+    }
 }
