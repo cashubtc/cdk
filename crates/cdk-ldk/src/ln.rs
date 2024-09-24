@@ -1114,11 +1114,13 @@ impl Node {
                 &secp,
             )
             .map_err(|_| Error::Ldk("Error spending outputs".to_string()))?;
+        let txid = tx.compute_txid();
         let channel_id = self.fund_channel(pending_channel.channel_id, tx).await?;
         Ok(ReopenChannel {
             channel_id,
             funding_script: pending_channel.funding_script,
             amount,
+            txid,
         })
     }
 
@@ -1204,6 +1206,7 @@ pub struct ReopenChannel {
     pub channel_id: ChannelId,
     pub funding_script: ScriptBuf,
     pub amount: Amount,
+    pub txid: Txid,
 }
 
 #[async_trait]
