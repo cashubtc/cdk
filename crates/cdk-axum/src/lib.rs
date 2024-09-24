@@ -27,7 +27,7 @@ pub struct MintState {
     mint: Arc<Mint>,
     mint_url: MintUrl,
     quote_ttl: u64,
-    cache: Cache<String, String, std::hash::RandomState>,
+    cache: Cache<String, String>,
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint
