@@ -868,6 +868,10 @@ impl Node {
     }
 
     pub async fn connect_peer(&self, node_id: PublicKey, addr: SocketAddr) -> Result<(), Error> {
+        if self.peer_manager.peer_by_node_id(&node_id).is_some() {
+            return Ok(());
+        }
+
         match lightning_net_tokio::connect_outbound(self.peer_manager.clone(), node_id, addr).await
         {
             Some(_) => {
