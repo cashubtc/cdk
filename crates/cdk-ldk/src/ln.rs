@@ -1069,7 +1069,7 @@ impl Node {
     pub async fn reopen_channel_from_spendable_outputs(
         &self,
         node_id: PublicKey,
-    ) -> Result<ChannelId, Error> {
+    ) -> Result<(ChannelId, Amount), Error> {
         let secp = Secp256k1::new();
         let outputs = self.db.get_all_spendable_outputs().await?;
         if outputs.is_empty() {
@@ -1100,10 +1100,9 @@ impl Node {
             .ok_or(Error::Ldk("No outputs".to_string()))?
             .value
             .to_sat();
+        let amount = Amount::from(sweep_value);
 
-        let pending_channel = self
-            .open_channel(node_id, Amount::from(sweep_value))
-            .await?;
+        let pending_channel = self.open_channel(node_id, amount).await?;
         let tx = self
             .keys_manager
             .spend_spendable_outputs(
@@ -1115,7 +1114,8 @@ impl Node {
                 &secp,
             )
             .map_err(|_| Error::Ldk("Error spending outputs".to_string()))?;
-        self.fund_channel(pending_channel.channel_id, tx).await
+        let channel_id = self.fund_channel(pending_channel.channel_id, tx).await?;
+        Ok((channel_id, amount))
     }
 
     pub async fn sweep_spendable_outputs(&self, script: ScriptBuf) -> Result<Txid, Error> {
