@@ -46,7 +46,7 @@ pub async fn create_mint_router(
             .max_capacity(10_000)
             .time_to_live(Duration::from_secs(60 * 60 * 24))
             .time_to_idle(Duration::from_secs(60 * 60 * 24))
-            .build_with_hasher(std::hash::RandomState::default()),
+            .build(),
     };
 
     let v1_router = Router::new()
