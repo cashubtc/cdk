@@ -692,8 +692,7 @@ impl WalletDatabase for WalletNostrDatabase {
                 deleted: removed_proofs.iter().map(|info| info.y).collect(),
                 reserved: vec![],
             };
-            self.client
-                .send_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
+            self.save_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
                 .await
                 .map_err(|e| map_err(e.into()))?;
         }
@@ -720,8 +719,7 @@ impl WalletDatabase for WalletNostrDatabase {
                 deleted: vec![],
                 reserved: ys.clone(),
             };
-            self.client
-                .send_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
+            self.save_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
                 .await
                 .map_err(|e| map_err(e.into()))?;
         }
@@ -1328,7 +1326,16 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
-    use cdk::amount::Amount;
+    use std::str::FromStr;
+
+    use cdk::{
+        amount::Amount,
+        cdk_database::WalletDatabase,
+        mint_url::MintUrl,
+        nuts::{CurrencyUnit, Id, Proof, PublicKey, State},
+        secret::Secret,
+        types::ProofInfo,
+    };
 
     use crate::wallet::{Direction, Error};
 
@@ -1359,5 +1366,30 @@ mod tests {
             }
             _ => panic!("Unexpected error: {:?}", err),
         }
+    }
+
+    #[tokio::test]
+    async fn save_and_delete_proof_events() {
+        let db = WalletNostrDatabase::test();
+        let id = Id::from_str("00123456789abcde").unwrap();
+        let pk = PublicKey::from_hex(
+            "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        .unwrap();
+        let proof = ProofInfo::new(
+            Proof::new(Amount::from(1), id, Secret::generate(), pk),
+            MintUrl::from_str("https://example.com").unwrap(),
+            State::Spent,
+            CurrencyUnit::Sat,
+        )
+        .unwrap();
+        db.update_proofs(vec![proof.clone()], vec![]).await.unwrap();
+
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert_eq!(proof, proofs[0]);
+
+        db.update_proofs(vec![], vec![proof.y]).await.unwrap();
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert!(proofs.is_empty());
     }
 }
