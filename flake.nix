@@ -137,6 +137,7 @@
               cargo update -p backtrace --precise 0.3.58
               # For wasm32-unknown-unknown target 
               cargo update -p bumpalo --precise 3.12.0
+              cargo update -p moka --precise 0.11.1
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
