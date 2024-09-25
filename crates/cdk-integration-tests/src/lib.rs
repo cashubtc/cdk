@@ -78,6 +78,8 @@ pub async fn start_mint(
     .await?;
 
     let quote_ttl = 100000;
+    let cache_time_to_live = 3600;
+    let cache_time_to_idle = 3600;
 
     let mint_arc = Arc::new(mint);
 
@@ -86,6 +88,8 @@ pub async fn start_mint(
         Arc::clone(&mint_arc),
         ln_backends.clone(),
         quote_ttl,
+        cache_time_to_live,
+        cache_time_to_idle,
     )
     .await?;
 

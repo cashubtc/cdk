@@ -36,6 +36,8 @@ pub async fn create_mint_router(
     mint: Arc<Mint>,
     ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     quote_ttl: u64,
+    cache_ttl: u64,
+    cache_tti: u64,
 ) -> Result<Router> {
     let state = MintState {
         ln,
@@ -44,8 +46,8 @@ pub async fn create_mint_router(
         quote_ttl,
         cache: Cache::builder()
             .max_capacity(10_000)
-            .time_to_live(Duration::from_secs(60 * 60 * 24))
-            .time_to_idle(Duration::from_secs(60 * 60 * 24))
+            .time_to_live(Duration::from_secs(cache_ttl))
+            .time_to_idle(Duration::from_secs(cache_tti))
             .build(),
     };
 
