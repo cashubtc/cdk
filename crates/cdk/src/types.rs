@@ -155,6 +155,22 @@ impl LnKey {
     }
 }
 
+/// Secs wuotes are valid
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuoteTTL {
+    /// Seconds mint quote is valid
+    pub mint_ttl: u64,
+    /// Seconds melt quote is valid
+    pub melt_ttl: u64,
+}
+
+impl QuoteTTL {
+    /// Create new [`QuoteTTL`]
+    pub fn new(mint_ttl: u64, melt_ttl: u64) -> QuoteTTL {
+        Self { mint_ttl, melt_ttl }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
