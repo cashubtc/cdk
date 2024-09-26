@@ -25,6 +25,9 @@ pub enum Error {
     /// Payment failed
     #[error("Payment failed")]
     PaymentFailed,
+    /// Payment pending
+    #[error("Payment pending")]
+    PaymentPending,
     /// Invoice already paid
     #[error("Request already paid")]
     RequestAlreadyPaid,
@@ -66,6 +69,9 @@ pub enum Error {
     /// Quote has already been paid
     #[error("Quote is already paid")]
     PaidQuote,
+    /// Payment state is unknown
+    #[error("Payment state is unknown")]
+    UnknownPaymentState,
     /// Melting is disabled
     #[error("Minting is disabled")]
     MeltingDisabled,
@@ -352,6 +358,11 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::TokenPending => ErrorResponse {
+                code: ErrorCode::TokenPending,
+                error: Some(err.to_string()),
+                detail: None,
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),
@@ -380,6 +391,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::AmountOutofLimitRange => {
                 Self::AmountOutofLimitRange(Amount::default(), Amount::default(), Amount::default())
             }
+            ErrorCode::TokenPending => Self::TokenPending,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -390,6 +402,8 @@ impl From<ErrorResponse> for Error {
 pub enum ErrorCode {
     /// Token is already spent
     TokenAlreadySpent,
+    /// Token Pending
+    TokenPending,
     /// Quote is not paid
     QuoteNotPaid,
     /// Quote is not expired
@@ -432,6 +446,7 @@ impl ErrorCode {
             11002 => Self::TransactionUnbalanced,
             11005 => Self::UnitUnsupported,
             11006 => Self::AmountOutofLimitRange,
+            11007 => Self::TokenPending,
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
             20000 => Self::LightningError,
@@ -454,6 +469,7 @@ impl ErrorCode {
             Self::TransactionUnbalanced => 11002,
             Self::UnitUnsupported => 11005,
             Self::AmountOutofLimitRange => 11006,
+            Self::TokenPending => 11007,
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
             Self::LightningError => 20000,

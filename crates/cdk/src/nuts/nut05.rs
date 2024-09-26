@@ -48,6 +48,10 @@ pub enum QuoteState {
     Paid,
     /// Paying quote is in progress
     Pending,
+    /// Unknown state
+    Unknown,
+    /// Failed
+    Failed,
 }
 
 impl fmt::Display for QuoteState {
@@ -56,6 +60,8 @@ impl fmt::Display for QuoteState {
             Self::Unpaid => write!(f, "UNPAID"),
             Self::Paid => write!(f, "PAID"),
             Self::Pending => write!(f, "PENDING"),
+            Self::Unknown => write!(f, "UNKNOWN"),
+            Self::Failed => write!(f, "FAILED"),
         }
     }
 }
@@ -68,6 +74,8 @@ impl FromStr for QuoteState {
             "PENDING" => Ok(Self::Pending),
             "PAID" => Ok(Self::Paid),
             "UNPAID" => Ok(Self::Unpaid),
+            "UNKNOWN" => Ok(Self::Unknown),
+            "FAILED" => Ok(Self::Failed),
             _ => Err(Error::UnknownState),
         }
     }
