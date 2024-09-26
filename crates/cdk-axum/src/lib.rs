@@ -13,7 +13,7 @@ use axum::Router;
 use cdk::cdk_lightning::{self, MintLightning};
 use cdk::mint::Mint;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::types::LnKey;
 use moka::future::Cache;
 use router_handlers::*;
 use std::time::Duration;
@@ -77,19 +77,12 @@ pub async fn create_mint_router(
     Ok(mint_router)
 }
 
-/// Key used in hashmap of ln backends to identify what unit and payment method
-/// it is for
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct LnKey {
-    /// Unit of Payment backend
-    pub unit: CurrencyUnit,
-    /// Method of payment backend
-    pub method: PaymentMethod,
+/// CDK Mint State
+#[derive(Clone)]
+pub struct MintState {
+    ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    mint: Arc<Mint>,
+    mint_url: MintUrl,
+    quote_ttl: u64,
 }
 
-impl LnKey {
-    /// Create new [`LnKey`]
-    pub fn new(unit: CurrencyUnit, method: PaymentMethod) -> Self {
-        Self { unit, method }
-    }
-}

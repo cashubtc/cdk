@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
@@ -12,17 +12,18 @@ use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
-    Nuts, PaymentMethod, PreMintSecrets, Proofs,
+    Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
+use cdk::types::LnKey;
 use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};
-use cdk_axum::LnKey;
 use cdk_fake_wallet::FakeWallet;
 use futures::StreamExt;
 use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
+pub mod init_fake_wallet;
 pub mod init_regtest;
 
 pub fn create_backends_fake_wallet(
@@ -41,6 +42,9 @@ pub fn create_backends_fake_wallet(
         fee_reserve.clone(),
         MintMethodSettings::default(),
         MeltMethodSettings::default(),
+        HashMap::default(),
+        HashSet::default(),
+        0,
     ));
 
     ln_backends.insert(ln_key, wallet.clone());
@@ -227,4 +231,41 @@ pub async fn mint_proofs(
     )?;
 
     Ok(pre_swap_proofs)
+}
+
+// Get all pending from wallet and attempt to swap
+// Will panic if there are no pending
+// Will return Ok if swap fails as expected
+pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await?;
+
+    assert!(!pending.is_empty());
+
+    let swap = wallet
+        .swap(
+            None,
+            SplitTarget::None,
+            pending.into_iter().map(|p| p.proof).collect(),
+            None,
+            false,
+        )
+        .await;
+
+    match swap {
+        Ok(_swap) => {
+            bail!("These proofs should be pending")
+        }
+        Err(err) => match err {
+            cdk::error::Error::TokenPending => (),
+            _ => {
+                println!("{:?}", err);
+                bail!("Wrong error")
+            }
+        },
+    }
+
+    Ok(())
 }

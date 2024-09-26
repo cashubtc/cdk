@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, MeltQuoteState, Proof, Proofs, PublicKey, SpendingConditions, State,
+    CurrencyUnit, MeltQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SpendingConditions,
+    State,
 };
 use crate::Amount;
 
@@ -134,6 +135,23 @@ impl ProofInfo {
         }
 
         true
+    }
+}
+
+/// Key used in hashmap of ln backends to identify what unit and payment method
+/// it is for
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LnKey {
+    /// Unit of Payment backend
+    pub unit: CurrencyUnit,
+    /// Method of payment backend
+    pub method: PaymentMethod,
+}
+
+impl LnKey {
+    /// Create new [`LnKey`]
+    pub fn new(unit: CurrencyUnit, method: PaymentMethod) -> Self {
+        Self { unit, method }
     }
 }
 

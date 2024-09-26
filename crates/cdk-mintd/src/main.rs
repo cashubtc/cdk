@@ -3,7 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -14,13 +14,13 @@ use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{FeeReserve, Mint};
+use cdk::mint::{FeeReserve, MeltQuote, Mint};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
-    MintVersion, MppMethodSettings, Nuts, PaymentMethod,
+    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
+    MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
 };
-use cdk_axum::LnKey;
+use cdk::types::LnKey;
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
 use cdk_lnbits::LNbits;
@@ -331,6 +331,9 @@ async fn main() -> anyhow::Result<()> {
                     fee_reserve.clone(),
                     MintMethodSettings::default(),
                     MeltMethodSettings::default(),
+                    HashMap::default(),
+                    HashSet::default(),
+                    0,
                 ));
 
                 ln_backends.insert(ln_key, wallet);
@@ -440,8 +443,13 @@ async fn main() -> anyhow::Result<()> {
     // it is possible that a mint quote was paid but the mint has not been updated
     // this will check and update the mint state of those quotes
     for ln in ln_backends.values() {
-        check_pending_quotes(Arc::clone(&mint), Arc::clone(ln)).await?;
+        check_pending_mint_quotes(Arc::clone(&mint), Arc::clone(ln)).await?;
     }
+
+    // Checks the status of all pending melt quotes
+    // Pending melt quotes where the payment has gone through inputs are burnt
+    // Pending melt quotes where the paynment has **failed** inputs are reset to unspent
+    check_pending_melt_quotes(Arc::clone(&mint), &ln_backends).await?;
 
     let mint_url = settings.info.url;
     let listen_addr = settings.info.listen_host;
@@ -478,7 +486,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Spawn task to wait for invoces to be paid and update mint quotes
-
     for (_, ln) in ln_backends {
         let mint = Arc::clone(&mint);
         tokio::spawn(async move {
@@ -521,7 +528,7 @@ async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result
 }
 
 /// Used on mint start up to check status of all pending mint quotes
-async fn check_pending_quotes(
+async fn check_pending_mint_quotes(
     mint: Arc<Mint>,
     ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
 ) -> Result<()> {
@@ -535,10 +542,10 @@ async fn check_pending_quotes(
     for quote in unpaid_quotes {
         tracing::trace!("Checking status of mint quote: {}", quote.id);
         let lookup_id = quote.request_lookup_id;
-        match ln.check_invoice_status(&lookup_id).await {
+        match ln.check_incoming_invoice_status(&lookup_id).await {
             Ok(state) => {
                 if state != quote.state {
-                    tracing::trace!("Mintquote status changed: {}", quote.id);
+                    tracing::trace!("Mint quote status changed: {}", quote.id);
                     mint.localstore
                         .update_mint_quote_state(&quote.id, state)
                         .await?;
@@ -552,6 +559,93 @@ async fn check_pending_quotes(
         }
     }
 
+    Ok(())
+}
+
+async fn check_pending_melt_quotes(
+    mint: Arc<Mint>,
+    ln_backends: &HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+) -> Result<()> {
+    let melt_quotes = mint.localstore.get_melt_quotes().await?;
+    let pending_quotes: Vec<MeltQuote> = melt_quotes
+        .into_iter()
+        .filter(|q| q.state == MeltQuoteState::Pending || q.state == MeltQuoteState::Unknown)
+        .collect();
+
+    for pending_quote in pending_quotes {
+        let melt_request_ln_key = mint.localstore.get_melt_request(&pending_quote.id).await?;
+
+        let (melt_request, ln_key) = match melt_request_ln_key {
+            None => (
+                None,
+                LnKey {
+                    unit: pending_quote.unit,
+                    method: PaymentMethod::Bolt11,
+                },
+            ),
+            Some((melt_request, ln_key)) => (Some(melt_request), ln_key),
+        };
+
+        let ln_backend = match ln_backends.get(&ln_key) {
+            Some(ln_backend) => ln_backend,
+            None => {
+                tracing::warn!("No backend for ln key: {:?}", ln_key);
+                continue;
+            }
+        };
+
+        let pay_invoice_response = ln_backend
+            .check_outgoing_payment(&pending_quote.request_lookup_id)
+            .await?;
+
+        match melt_request {
+            Some(melt_request) => {
+                match pay_invoice_response.status {
+                    MeltQuoteState::Paid => {
+                        if let Err(err) = mint
+                            .process_melt_request(
+                                &melt_request,
+                                pay_invoice_response.payment_preimage,
+                                pay_invoice_response.total_spent,
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                "Could not process melt request for pending quote: {}",
+                                melt_request.quote
+                            );
+                            tracing::error!("{}", err);
+                        }
+                    }
+                    MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
+                        // Payment has not been made we want to unset
+                        tracing::info!("Lightning payment for quote {} failed.", pending_quote.id);
+                        if let Err(err) = mint.process_unpaid_melt(&melt_request).await {
+                            tracing::error!("Could not reset melt quote state: {}", err);
+                        }
+                    }
+                    MeltQuoteState::Pending => {
+                        tracing::warn!(
+                            "LN payment pending, proofs are stuck as pending for quote: {}",
+                            melt_request.quote
+                        );
+                        // Quote is still pending we do not want to do anything
+                        // continue to check next quote
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "There is no stored melt request for pending melt quote: {}",
+                    pending_quote.id
+                );
+
+                mint.localstore
+                    .update_melt_quote_state(&pending_quote.id, pay_invoice_response.status)
+                    .await?;
+            }
+        };
+    }
     Ok(())
 }
 
