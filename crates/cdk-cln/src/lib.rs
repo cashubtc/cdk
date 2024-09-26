@@ -112,7 +112,7 @@ impl MintLightning for Cln {
 
                     last_pay_idx = invoice.pay_index;
 
-                    break Some((invoice.label, (cln_client, last_pay_idx)));
+                    break Some((invoice.payment_hash.to_string(), (cln_client, last_pay_idx)));
                 }
             },
         )
@@ -158,12 +158,13 @@ impl MintLightning for Cln {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
+        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let pay_state = self
+            .check_outgoing_payment(&bolt11.payment_hash().to_string())
+            .await?;
 
-        let pay_state =
-            check_pay_invoice_status(&mut cln_client, melt_quote.request.to_string()).await?;
-
-        match pay_state {
+        match pay_state.status {
+            MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => (),
             MeltQuoteState::Paid => {
                 tracing::debug!("Melt attempted on invoice already paid");
                 return Err(Self::Err::InvoiceAlreadyPaid);
@@ -172,9 +173,9 @@ impl MintLightning for Cln {
                 tracing::debug!("Melt attempted on invoice already pending");
                 return Err(Self::Err::InvoicePaymentPending);
             }
-            MeltQuoteState::Unpaid => (),
         }
 
+        let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client
             .call(Request::Pay(PayRequest {
                 bolt11: melt_quote.request.to_string(),
@@ -206,19 +207,18 @@ impl MintLightning for Cln {
                     })
                     .transpose()?,
             }))
-            .await
-            .map_err(Error::from)?;
+            .await;
 
         let response = match cln_response {
-            cln_rpc::Response::Pay(pay_response) => {
+            Ok(cln_rpc::Response::Pay(pay_response)) => {
                 let status = match pay_response.status {
                     PayStatus::COMPLETE => MeltQuoteState::Paid,
                     PayStatus::PENDING => MeltQuoteState::Pending,
-                    PayStatus::FAILED => MeltQuoteState::Unpaid,
+                    PayStatus::FAILED => MeltQuoteState::Failed,
                 };
                 PayInvoiceResponse {
                     payment_preimage: Some(hex::encode(pay_response.payment_preimage.to_vec())),
-                    payment_hash: pay_response.payment_hash.to_string(),
+                    payment_lookup_id: pay_response.payment_hash.to_string(),
                     status,
                     total_spent: to_unit(
                         pay_response.amount_sent_msat.msat(),
@@ -229,8 +229,11 @@ impl MintLightning for Cln {
                 }
             }
             _ => {
-                tracing::warn!("CLN returned wrong response kind");
-                return Err(cdk_lightning::Error::from(Error::WrongClnResponse));
+                tracing::error!(
+                    "Error attempting to pay invoice: {}",
+                    bolt11.payment_hash().to_string()
+                );
+                return Err(Error::WrongClnResponse.into());
             }
         };
 
@@ -273,9 +276,10 @@ impl MintLightning for Cln {
             cln_rpc::Response::Invoice(invoice_res) => {
                 let request = Bolt11Invoice::from_str(&invoice_res.bolt11)?;
                 let expiry = request.expires_at().map(|t| t.as_secs());
+                let payment_hash = request.payment_hash();
 
                 Ok(CreateInvoiceResponse {
-                    request_lookup_id: label,
+                    request_lookup_id: payment_hash.to_string(),
                     request,
                     expiry,
                 })
@@ -287,16 +291,16 @@ impl MintLightning for Cln {
         }
     }
 
-    async fn check_invoice_status(
+    async fn check_incoming_invoice_status(
         &self,
-        request_lookup_id: &str,
+        payment_hash: &str,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
         let cln_response = cln_client
             .call(Request::ListInvoices(ListinvoicesRequest {
-                payment_hash: None,
-                label: Some(request_lookup_id.to_string()),
+                payment_hash: Some(payment_hash.to_string()),
+                label: None,
                 invstring: None,
                 offer_id: None,
                 index: None,
@@ -315,7 +319,7 @@ impl MintLightning for Cln {
                     None => {
                         tracing::info!(
                             "Check invoice called on unknown look up id: {}",
-                            request_lookup_id
+                            payment_hash
                         );
                         return Err(Error::WrongClnResponse.into());
                     }
@@ -328,6 +332,51 @@ impl MintLightning for Cln {
         };
 
         Ok(status)
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_hash: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        let mut cln_client = self.cln_client.lock().await;
+
+        let cln_response = cln_client
+            .call(Request::ListPays(ListpaysRequest {
+                payment_hash: Some(payment_hash.parse().map_err(|_| Error::InvalidHash)?),
+                bolt11: None,
+                status: None,
+            }))
+            .await
+            .map_err(Error::from)?;
+
+        match cln_response {
+            cln_rpc::Response::ListPays(pays_response) => match pays_response.pays.first() {
+                Some(pays_response) => {
+                    let status = cln_pays_status_to_mint_state(pays_response.status);
+
+                    Ok(PayInvoiceResponse {
+                        payment_lookup_id: pays_response.payment_hash.to_string(),
+                        payment_preimage: pays_response.preimage.map(|p| hex::encode(p.to_vec())),
+                        status,
+                        total_spent: pays_response
+                            .amount_sent_msat
+                            .map_or(Amount::ZERO, |a| a.msat().into()),
+                        unit: CurrencyUnit::Msat,
+                    })
+                }
+                None => Ok(PayInvoiceResponse {
+                    payment_lookup_id: payment_hash.to_string(),
+                    payment_preimage: None,
+                    status: MeltQuoteState::Unknown,
+                    total_spent: Amount::ZERO,
+                    unit: CurrencyUnit::Msat,
+                }),
+            },
+            _ => {
+                tracing::warn!("CLN returned wrong response kind");
+                Err(Error::WrongClnResponse.into())
+            }
+        }
     }
 }
 
@@ -369,37 +418,10 @@ fn cln_invoice_status_to_mint_state(status: ListinvoicesInvoicesStatus) -> MintQ
     }
 }
 
-async fn check_pay_invoice_status(
-    cln_client: &mut cln_rpc::ClnRpc,
-    bolt11: String,
-) -> Result<MeltQuoteState, cdk_lightning::Error> {
-    let cln_response = cln_client
-        .call(Request::ListPays(ListpaysRequest {
-            bolt11: Some(bolt11),
-            payment_hash: None,
-            status: None,
-        }))
-        .await
-        .map_err(Error::from)?;
-
-    let state = match cln_response {
-        cln_rpc::Response::ListPays(pay_response) => {
-            let pay = pay_response.pays.first();
-
-            match pay {
-                Some(pay) => match pay.status {
-                    ListpaysPaysStatus::COMPLETE => MeltQuoteState::Paid,
-                    ListpaysPaysStatus::PENDING => MeltQuoteState::Pending,
-                    ListpaysPaysStatus::FAILED => MeltQuoteState::Unpaid,
-                },
-                None => MeltQuoteState::Unpaid,
-            }
-        }
-        _ => {
-            tracing::warn!("CLN returned wrong response kind. When checking pay status");
-            return Err(cdk_lightning::Error::from(Error::WrongClnResponse));
-        }
-    };
-
-    Ok(state)
+fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
+    match status {
+        ListpaysPaysStatus::PENDING => MeltQuoteState::Pending,
+        ListpaysPaysStatus::COMPLETE => MeltQuoteState::Paid,
+        ListpaysPaysStatus::FAILED => MeltQuoteState::Failed,
+    }
 }

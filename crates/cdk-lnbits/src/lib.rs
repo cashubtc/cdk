@@ -12,6 +12,7 @@ use axum::Router;
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    MSAT_IN_SAT,
 };
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
@@ -188,7 +189,7 @@ impl MintLightning for LNbits {
         let total_spent = Amount::from((invoice_info.amount + invoice_info.fee).unsigned_abs());
 
         Ok(PayInvoiceResponse {
-            payment_hash: pay_response.payment_hash,
+            payment_lookup_id: pay_response.payment_hash,
             payment_preimage: Some(invoice_info.payment_hash),
             status,
             total_spent,
@@ -242,13 +243,13 @@ impl MintLightning for LNbits {
         })
     }
 
-    async fn check_invoice_status(
+    async fn check_incoming_invoice_status(
         &self,
-        request_lookup_id: &str,
+        payment_hash: &str,
     ) -> Result<MintQuoteState, Self::Err> {
         let paid = self
             .lnbits_api
-            .is_invoice_paid(request_lookup_id)
+            .is_invoice_paid(payment_hash)
             .await
             .map_err(|err| {
                 tracing::error!("Could not check invoice status");
@@ -262,6 +263,43 @@ impl MintLightning for LNbits {
         };
 
         Ok(state)
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_hash: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        let payment = self
+            .lnbits_api
+            .get_payment_info(payment_hash)
+            .await
+            .map_err(|err| {
+                tracing::error!("Could not check invoice status");
+                tracing::error!("{}", err.to_string());
+                Self::Err::Anyhow(anyhow!("Could not check invoice status"))
+            })?;
+
+        let pay_response = PayInvoiceResponse {
+            payment_lookup_id: payment.details.payment_hash,
+            payment_preimage: Some(payment.preimage),
+            status: lnbits_to_melt_status(&payment.details.status, payment.details.pending),
+            total_spent: Amount::from(
+                payment.details.amount.unsigned_abs()
+                    + payment.details.fee.unsigned_abs() / MSAT_IN_SAT,
+            ),
+            unit: self.get_settings().unit,
+        };
+
+        Ok(pay_response)
+    }
+}
+
+fn lnbits_to_melt_status(status: &str, pending: bool) -> MeltQuoteState {
+    match (status, pending) {
+        ("success", false) => MeltQuoteState::Paid,
+        ("failed", false) => MeltQuoteState::Unpaid,
+        (_, false) => MeltQuoteState::Unknown,
+        (_, true) => MeltQuoteState::Pending,
     }
 }
 

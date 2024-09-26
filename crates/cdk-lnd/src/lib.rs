@@ -25,6 +25,7 @@ use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
 use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
+use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
 use fedimint_tonic_lnd::lnrpc::FeeLimit;
 use fedimint_tonic_lnd::Client;
 use futures::{Stream, StreamExt};
@@ -205,7 +206,7 @@ impl MintLightning for Lnd {
         };
 
         Ok(PayInvoiceResponse {
-            payment_hash: hex::encode(payment_response.payment_hash),
+            payment_lookup_id: hex::encode(payment_response.payment_hash),
             payment_preimage,
             status,
             total_spent: total_amount.into(),
@@ -250,7 +251,7 @@ impl MintLightning for Lnd {
         })
     }
 
-    async fn check_invoice_status(
+    async fn check_incoming_invoice_status(
         &self,
         request_lookup_id: &str,
     ) -> Result<MintQuoteState, Self::Err> {
@@ -280,5 +281,69 @@ impl MintLightning for Lnd {
             3 => Ok(MintQuoteState::Unpaid),
             _ => Err(Self::Err::Anyhow(anyhow!("Invalid status"))),
         }
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_hash: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        let track_request = fedimint_tonic_lnd::routerrpc::TrackPaymentRequest {
+            payment_hash: hex::decode(payment_hash).map_err(|_| Error::InvalidHash)?,
+            no_inflight_updates: true,
+        };
+        let mut payment_stream = self
+            .client
+            .lock()
+            .await
+            .router()
+            .track_payment_v2(track_request)
+            .await
+            .unwrap()
+            .into_inner();
+
+        while let Some(update_result) = payment_stream.next().await {
+            match update_result {
+                Ok(update) => {
+                    let status = update.status();
+
+                    let response = match status {
+                        PaymentStatus::Unknown => PayInvoiceResponse {
+                            payment_lookup_id: payment_hash.to_string(),
+                            payment_preimage: Some(update.payment_preimage),
+                            status: MeltQuoteState::Unknown,
+                            total_spent: Amount::ZERO,
+                            unit: self.get_settings().unit,
+                        },
+                        PaymentStatus::InFlight => {
+                            // Continue waiting for the next update
+                            continue;
+                        }
+                        PaymentStatus::Succeeded => PayInvoiceResponse {
+                            payment_lookup_id: payment_hash.to_string(),
+                            payment_preimage: Some(update.payment_preimage),
+                            status: MeltQuoteState::Paid,
+                            total_spent: Amount::from((update.value_sat + update.fee_sat) as u64),
+                            unit: CurrencyUnit::Sat,
+                        },
+                        PaymentStatus::Failed => PayInvoiceResponse {
+                            payment_lookup_id: payment_hash.to_string(),
+                            payment_preimage: Some(update.payment_preimage),
+                            status: MeltQuoteState::Failed,
+                            total_spent: Amount::ZERO,
+                            unit: self.get_settings().unit,
+                        },
+                    };
+
+                    return Ok(response);
+                }
+                Err(_) => {
+                    // Handle the case where the update itself is an error (e.g., stream failure)
+                    return Err(Error::UnknownPaymentStatus.into());
+                }
+            }
+        }
+
+        // If the stream is exhausted without a final status
+        Err(Error::UnknownPaymentStatus.into())
     }
 }

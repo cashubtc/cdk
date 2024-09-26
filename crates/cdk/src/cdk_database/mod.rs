@@ -17,11 +17,15 @@ use crate::mint::MintQuote as MintMintQuote;
 #[cfg(feature = "wallet")]
 use crate::mint_url::MintUrl;
 #[cfg(feature = "mint")]
+use crate::nuts::MeltBolt11Request;
+#[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof, Proofs};
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::nuts::{CurrencyUnit, Id, PublicKey, State};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
+#[cfg(feature = "mint")]
+use crate::types::LnKey;
 #[cfg(feature = "wallet")]
 use crate::types::ProofInfo;
 #[cfg(feature = "wallet")]
@@ -219,6 +223,18 @@ pub trait MintDatabase {
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
+
+    /// Add melt request
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err>;
+    /// Get melt request
+    async fn get_melt_request(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err>;
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;

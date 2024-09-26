@@ -174,24 +174,18 @@ impl MintLightning for Phoenixd {
             .pay_bolt11_invoice(&melt_quote.request, partial_amount.map(|a| a.into()))
             .await?;
 
-        // The pay response does not include the fee paided to Aciq so we check it here
+        // The pay invoice response does not give the needed fee info so we have to check.
         let check_outgoing_response = self
-            .check_outgoing_invoice(&pay_response.payment_id)
+            .check_outgoing_payment(&pay_response.payment_id)
             .await?;
-
-        if check_outgoing_response.state != MeltQuoteState::Paid {
-            return Err(anyhow!("Invoice is not paid").into());
-        }
-
-        let total_spent_sats = check_outgoing_response.fee + check_outgoing_response.amount;
 
         let bolt11: Bolt11Invoice = melt_quote.request.parse()?;
 
         Ok(PayInvoiceResponse {
-            payment_hash: bolt11.payment_hash().to_string(),
+            payment_lookup_id: bolt11.payment_hash().to_string(),
             payment_preimage: Some(pay_response.payment_preimage),
             status: MeltQuoteState::Paid,
-            total_spent: total_spent_sats,
+            total_spent: check_outgoing_response.total_spent,
             unit: CurrencyUnit::Sat,
         })
     }
@@ -225,7 +219,10 @@ impl MintLightning for Phoenixd {
         })
     }
 
-    async fn check_invoice_status(&self, payment_hash: &str) -> Result<MintQuoteState, Self::Err> {
+    async fn check_incoming_invoice_status(
+        &self,
+        payment_hash: &str,
+    ) -> Result<MintQuoteState, Self::Err> {
         let invoice = self.phoenixd_api.get_incoming_invoice(payment_hash).await?;
 
         let state = match invoice.is_paid {
@@ -235,33 +232,45 @@ impl MintLightning for Phoenixd {
 
         Ok(state)
     }
-}
 
-impl Phoenixd {
-    /// Check the status of an outgooing invoice
-    // TODO: This should likely bee added to the trait. Both CLN and PhD use a form
-    // of it
-    async fn check_outgoing_invoice(
+    /// Check the status of an outgoing invoice
+    async fn check_outgoing_payment(
         &self,
-        payment_hash: &str,
-    ) -> Result<PaymentQuoteResponse, Error> {
-        let res = self.phoenixd_api.get_outgoing_invoice(payment_hash).await?;
+        payment_id: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        let res = self.phoenixd_api.get_outgoing_invoice(payment_id).await;
 
-        // Phenixd gives fees in msats so we need to round up to the nearst sat
-        let fee_sats = (res.fees + 999) / MSAT_IN_SAT;
+        let state = match res {
+            Ok(res) => {
+                let status = match res.is_paid {
+                    true => MeltQuoteState::Paid,
+                    false => MeltQuoteState::Unpaid,
+                };
 
-        let state = match res.is_paid {
-            true => MeltQuoteState::Paid,
-            false => MeltQuoteState::Unpaid,
+                let total_spent = res.sent + (res.fees + 999) / MSAT_IN_SAT;
+
+                PayInvoiceResponse {
+                    payment_lookup_id: res.payment_hash,
+                    payment_preimage: Some(res.preimage),
+                    status,
+                    total_spent: total_spent.into(),
+                    unit: CurrencyUnit::Sat,
+                }
+            }
+            Err(err) => match err {
+                phoenixd_rs::Error::NotFound => PayInvoiceResponse {
+                    payment_lookup_id: payment_id.to_string(),
+                    payment_preimage: None,
+                    status: MeltQuoteState::Unknown,
+                    total_spent: Amount::ZERO,
+                    unit: CurrencyUnit::Sat,
+                },
+                _ => {
+                    return Err(Error::from(err).into());
+                }
+            },
         };
 
-        let quote_response = PaymentQuoteResponse {
-            request_lookup_id: res.payment_hash,
-            amount: res.sent.into(),
-            fee: fee_sats.into(),
-            state,
-        };
-
-        Ok(quote_response)
+        Ok(state)
     }
 }

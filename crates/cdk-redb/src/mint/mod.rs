@@ -11,9 +11,10 @@ use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
 use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
+    Proofs, PublicKey, State,
 };
+use cdk::types::LnKey;
 use cdk::{cdk_database, mint};
 use migrations::migrate_01_to_02;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
@@ -38,6 +39,8 @@ const QUOTE_PROOFS_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
     MultimapTableDefinition::new("quote_proofs");
 const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("quote_signatures");
+
+const MELT_REQUESTS: TableDefinition<&str, (&str, &str)> = TableDefinition::new("melt_requests");
 
 const DATABASE_VERSION: u32 = 4;
 
@@ -734,5 +737,46 @@ impl MintDatabase for MintRedbDatabase {
                 }
             })
             .collect())
+    }
+
+    /// Add melt request
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
+
+        table
+            .insert(
+                melt_request.quote.as_str(),
+                (
+                    serde_json::to_string(&melt_request)?.as_str(),
+                    serde_json::to_string(&ln_key)?.as_str(),
+                ),
+            )
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+    /// Get melt request
+    async fn get_melt_request(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
+
+        match table.get(quote_id).map_err(Error::from)? {
+            Some(melt_request) => {
+                let (melt_request_str, ln_key_str) = melt_request.value();
+                let melt_request = serde_json::from_str(melt_request_str)?;
+                let ln_key = serde_json::from_str(ln_key_str)?;
+
+                Ok(Some((melt_request, ln_key)))
+            }
+            None => Ok(None),
+        }
     }
 }
