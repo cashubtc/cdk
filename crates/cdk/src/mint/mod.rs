@@ -13,8 +13,8 @@ use tracing::instrument;
 
 use self::nut05::QuoteState;
 use self::nut11::EnforceSigFlag;
+use crate::amount::to_unit;
 use crate::cdk_database::{self, MintDatabase};
-use crate::cdk_lightning::to_unit;
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
