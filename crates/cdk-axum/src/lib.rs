@@ -76,13 +76,3 @@ pub async fn create_mint_router(
 
     Ok(mint_router)
 }
-
-/// CDK Mint State
-#[derive(Clone)]
-pub struct MintState {
-    ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
-    mint: Arc<Mint>,
-    mint_url: MintUrl,
-    quote_ttl: u64,
-}
-

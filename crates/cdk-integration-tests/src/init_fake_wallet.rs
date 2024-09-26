@@ -63,7 +63,8 @@ where
     );
 
     let quote_ttl = 100000;
-
+    let cache_ttl = 3600;
+    let cache_tti = 3600;
     let mint_arc = Arc::new(mint);
 
     let v1_service = cdk_axum::create_mint_router(
@@ -71,6 +72,8 @@ where
         Arc::clone(&mint_arc),
         ln_backends.clone(),
         quote_ttl,
+        cache_ttl,
+        cache_tti,
     )
     .await
     .unwrap();
