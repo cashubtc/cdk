@@ -681,7 +681,7 @@ impl Node {
                     .update_payment(
                         payment_hash,
                         payment_preimage,
-                        Amount::from(fee_paid_msat.unwrap_or_default()),
+                        Amount::from(fee_paid_msat.unwrap_or_default() / 1000),
                     )
                     .await
                 {
@@ -1318,7 +1318,7 @@ impl MintLightning for Node {
             };
             if status != MeltQuoteState::Unpaid {
                 return Ok(PayInvoiceResponse {
-                    payment_hash: payment_hash.to_string(),
+                    payment_lookup_id: payment_hash.to_string(),
                     payment_preimage: payment.pre_image.map(|p| hex::encode(p)),
                     status,
                     total_spent: payment.amount,
@@ -1354,7 +1354,7 @@ impl MintLightning for Node {
 
         let payment = rx.await.map_err(map_err)?;
         Ok(PayInvoiceResponse {
-            payment_hash: payment_hash.to_string(),
+            payment_lookup_id: payment_hash.to_string(),
             payment_preimage: payment.pre_image.map(|p| hex::encode(p)),
             status: if payment.pre_image.is_some() {
                 MeltQuoteState::Paid
@@ -1378,7 +1378,7 @@ impl MintLightning for Node {
         }))
     }
 
-    async fn check_invoice_status(
+    async fn check_incoming_invoice_status(
         &self,
         request_lookup_id: &str,
     ) -> Result<MintQuoteState, Self::Err> {
@@ -1400,6 +1400,54 @@ impl MintLightning for Node {
         } else {
             MintQuoteState::Unpaid
         })
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_lookup_id: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        let payment_hash = PaymentHash(
+            hex::decode(payment_lookup_id)
+                .map_err(map_err)?
+                .try_into()
+                .map_err(|_| map_err("Invalid payment_lookup_id"))?,
+        );
+        if self
+            .inflight_payments
+            .read()
+            .await
+            .contains_key(&payment_hash)
+        {
+            return Ok(PayInvoiceResponse {
+                payment_lookup_id: payment_hash.to_string(),
+                payment_preimage: None,
+                status: MeltQuoteState::Pending,
+                total_spent: Amount::ZERO,
+                unit: CurrencyUnit::Sat,
+            });
+        }
+
+        if let Some(payment) = self.db.get_payment(payment_hash).await.map_err(map_err)? {
+            Ok(PayInvoiceResponse {
+                payment_lookup_id: payment_hash.to_string(),
+                payment_preimage: payment.pre_image.map(|p| hex::encode(p)),
+                status: if payment.paid {
+                    MeltQuoteState::Paid
+                } else {
+                    MeltQuoteState::Unpaid
+                },
+                total_spent: payment.spent,
+                unit: CurrencyUnit::Sat,
+            })
+        } else {
+            Ok(PayInvoiceResponse {
+                payment_lookup_id: payment_hash.to_string(),
+                payment_preimage: None,
+                status: MeltQuoteState::Unknown,
+                total_spent: Amount::ZERO,
+                unit: CurrencyUnit::Sat,
+            })
+        }
     }
 }
 
