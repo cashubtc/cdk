@@ -15,12 +15,13 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
 };
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
@@ -43,8 +44,6 @@ pub struct Lnd {
     macaroon_file: PathBuf,
     client: Arc<Mutex<Client>>,
     fee_reserve: FeeReserve,
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
 }
@@ -56,8 +55,6 @@ impl Lnd {
         cert_file: PathBuf,
         macaroon_file: PathBuf,
         fee_reserve: FeeReserve,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
     ) -> Result<Self, Error> {
         let client = fedimint_tonic_lnd::connect(address.to_string(), &cert_file, &macaroon_file)
             .await
@@ -72,8 +69,6 @@ impl Lnd {
             macaroon_file,
             client: Arc::new(Mutex::new(client)),
             fee_reserve,
-            mint_settings,
-            melt_settings,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         })
@@ -88,8 +83,8 @@ impl MintLightning for Lnd {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            bolt12_mint: false,
+            bolt12_melt: false,
             invoice_description: true,
         }
     }
@@ -104,7 +99,7 @@ impl MintLightning for Lnd {
 
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
         let mut client =
             fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
                 .await
@@ -146,7 +141,7 @@ impl MintLightning for Lnd {
                 match msg {
                     Ok(Some(msg)) => {
                         if msg.state == 1 {
-                            Some((hex::encode(msg.r_hash), (stream, cancel_token, is_active)))
+                            Some(((hex::encode(msg.r_hash), Amount::ZERO), (stream, cancel_token, is_active)))
                         } else {
                             None
                         }
@@ -210,10 +205,13 @@ impl MintLightning for Lnd {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let payment_request = melt_quote.request;
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
 
         let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
-            payment_request,
+            payment_request: bolt11.to_string(),
             fee_limit: max_fee.map(|f| {
                 let limit = Limit::Fixed(u64::from(f) as i64);
 
@@ -392,5 +390,34 @@ impl MintLightning for Lnd {
 
         // If the stream is exhausted without a final status
         Err(Error::UnknownPaymentStatus.into())
+    }
+
+    async fn get_bolt12_payment_quote(
+        &self,
+        _melt_quote_request: &MeltQuoteBolt12Request,
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
+        todo!()
+    }
+
+    /// Pay a bolt12 offer
+    async fn pay_bolt12_offer(
+        &self,
+        _melt_quote: mint::MeltQuote,
+        _amount: Option<Amount>,
+        _max_fee_amount: Option<Amount>,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        todo!()
+    }
+
+    /// Create bolt12 offer
+    async fn create_bolt12_offer(
+        &self,
+        _amount: Option<Amount>,
+        _unit: &CurrencyUnit,
+        _description: String,
+        _unix_expiry: u64,
+        _single_use: bool,
+    ) -> Result<CreateOfferResponse, Self::Err> {
+        todo!()
     }
 }

@@ -64,6 +64,8 @@ enum Commands {
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
     Mint(sub_commands::mint::MintSubCommand),
+    /// Remint
+    ReMint(sub_commands::remint_bolt12::ReMintSubCommand),
     /// Burn Spent tokens
     Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
@@ -83,7 +85,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
-    let default_filter = args.log_level;
+    let default_filter = "warn";
 
     let sqlx_filter = "sqlx=warn";
 
@@ -218,6 +220,15 @@ async fn main() -> Result<()> {
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::ReMint(sub_command_args) => {
+            sub_commands::remint_bolt12::remint(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+            )
+            .await
         }
     }
 }

@@ -20,6 +20,7 @@ tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7.11", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 thiserror = "1"
+lightning = { version = "0.0.125", default-features = false, features = ["std"]}
 # phoenixd-rs = "0.3.0"
-phoenixd-rs = { git = "https://github.com/thesimplekid/phoenixd-rs", rev = "22a44f0"}
+phoenixd-rs = { git = "https://github.com/thesimplekid/phoenixd-rs", rev = "91dc766f"}
 uuid = { version = "1", features = ["v4"] }

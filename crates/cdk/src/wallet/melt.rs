@@ -1,12 +1,14 @@
 use std::str::FromStr;
 
+use lightning::offers::offer::Offer;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
 use crate::nuts::nut00::ProofsMethods;
 use crate::{
+    amount::amount_for_offer,
     dhke::construct_proofs,
-    nuts::{CurrencyUnit, MeltQuoteBolt11Response, PreMintSecrets, Proofs, State},
+    nuts::{CurrencyUnit, MeltQuoteBolt11Response, PaymentMethod, PreMintSecrets, Proofs, State},
     types::{Melted, ProofInfo},
     util::unix_time,
     Amount, Error, Wallet,
@@ -70,6 +72,53 @@ impl Wallet {
             id: quote_res.quote,
             amount,
             request,
+            payment_method: PaymentMethod::Bolt11,
+            unit: self.unit,
+            fee_reserve: quote_res.fee_reserve,
+            state: quote_res.state,
+            expiry: quote_res.expiry,
+            payment_preimage: quote_res.payment_preimage,
+        };
+
+        self.localstore.add_melt_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
+
+    /// Melt Quote bolt12
+    #[instrument(skip(self, request))]
+    pub async fn melt_bolt12_quote(
+        &self,
+        request: String,
+        amount: Option<Amount>,
+    ) -> Result<MeltQuote, Error> {
+        let offer = Offer::from_str(&request)?;
+
+        let amount = match amount {
+            Some(amount) => amount,
+            None => amount_for_offer(&offer, &self.unit).unwrap(),
+        };
+
+        let quote_res = self
+            .client
+            .post_melt_bolt12_quote(
+                self.mint_url.clone(),
+                self.unit,
+                request.to_string(),
+                Some(amount),
+            )
+            .await
+            .unwrap();
+
+        if quote_res.amount != amount {
+            return Err(Error::IncorrectQuoteAmount);
+        }
+
+        let quote = MeltQuote {
+            id: quote_res.quote,
+            amount,
+            request,
+            payment_method: PaymentMethod::Bolt12,
             unit: self.unit,
             fee_reserve: quote_res.fee_reserve,
             state: quote_res.state,
@@ -146,15 +195,28 @@ impl Wallet {
             proofs_total - quote_info.amount,
         )?;
 
-        let melt_response = self
-            .client
-            .post_melt(
-                self.mint_url.clone(),
-                quote_id.to_string(),
-                proofs.clone(),
-                Some(premint_secrets.blinded_messages()),
-            )
-            .await;
+        let melt_response = match quote_info.payment_method {
+            PaymentMethod::Bolt11 => {
+                self.client
+                    .post_melt(
+                        self.mint_url.clone(),
+                        quote_id.to_string(),
+                        proofs.clone(),
+                        Some(premint_secrets.blinded_messages()),
+                    )
+                    .await
+            }
+            PaymentMethod::Bolt12 => {
+                self.client
+                    .post_melt_bolt12(
+                        self.mint_url.clone(),
+                        quote_id.to_string(),
+                        proofs.clone(),
+                        Some(premint_secrets.blinded_messages()),
+                    )
+                    .await
+            }
+        };
 
         let melt_response = match melt_response {
             Ok(melt_response) => melt_response,

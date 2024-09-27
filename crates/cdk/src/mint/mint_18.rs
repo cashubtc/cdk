@@ -1,0 +1,95 @@
+use tracing::instrument;
+
+use crate::{types::LnKey, util::unix_time, Amount, Error};
+
+use super::{
+    nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response},
+    Mint, MintQuote, PaymentMethod,
+};
+
+impl Mint {
+    /// Create new mint bolt11 quote
+    #[instrument(skip_all)]
+    pub async fn get_mint_bolt12_quote(
+        &self,
+        mint_quote_request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response, Error> {
+        let MintQuoteBolt12Request {
+            amount,
+            unit,
+            description,
+            single_use,
+            expiry,
+        } = mint_quote_request;
+
+        let nut18 = &self
+            .mint_info
+            .nuts
+            .nut18
+            .as_ref()
+            .ok_or(Error::UnsupportedUnit)?;
+
+        if nut18.disabled {
+            return Err(Error::MintingDisabled);
+        }
+
+        let ln = self
+            .ln
+            .get(&LnKey::new(unit, PaymentMethod::Bolt12))
+            .ok_or_else(|| {
+                tracing::info!("Bolt11 mint request for unsupported unit");
+
+                Error::UnitUnsupported
+            })?;
+
+        let quote_expiry = match expiry {
+            Some(expiry) => expiry,
+            None => unix_time() + self.quote_ttl.mint_ttl,
+        };
+
+        if description.is_some() && !ln.get_settings().invoice_description {
+            tracing::error!("Backend does not support invoice description");
+            return Err(Error::InvoiceDescriptionUnsupported);
+        }
+
+        let single_use = single_use.unwrap_or(true);
+
+        let create_invoice_response = ln
+            .create_bolt12_offer(
+                amount,
+                &unit,
+                description.unwrap_or("".to_string()),
+                quote_expiry,
+                single_use,
+            )
+            .await
+            .map_err(|err| {
+                tracing::error!("Could not create invoice: {}", err);
+                Error::InvalidPaymentRequest
+            })?;
+
+        let quote = MintQuote::new(
+            self.mint_url.clone(),
+            create_invoice_response.request.to_string(),
+            unit,
+            amount,
+            create_invoice_response.expiry.unwrap_or(0),
+            create_invoice_response.request_lookup_id.clone(),
+            Amount::ZERO,
+            Amount::ZERO,
+            Some(single_use),
+        );
+
+        tracing::debug!(
+            "New bolt12 mint quote {} for {} {} with request id {}",
+            quote.id,
+            amount.unwrap_or_default(),
+            unit,
+            create_invoice_response.request_lookup_id,
+        );
+
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote.into())
+    }
+}

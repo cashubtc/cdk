@@ -11,10 +11,10 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut15::Mpp;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
-    KeysetResponse, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    KeysetResponse, MeltBolt11Request, MeltBolt12Request, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MeltQuoteBolt12Request, MintBolt11Request, MintBolt11Response,
+    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::{Amount, Bolt11Invoice};
 
@@ -139,6 +139,37 @@ impl HttpClient {
         }
     }
 
+    /// Mint Quote [NUT-04]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    pub async fn post_mint_bolt12_quote(
+        &self,
+        mint_url: MintUrl,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<MintQuoteBolt11Response, Error> {
+        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt12"])?;
+
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit,
+            description,
+        };
+
+        let res = self.inner.post(url).json(&request).send().await?;
+        println!("{:?}", res);
+
+        let res = res.json::<Value>().await?;
+
+        match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(err) => {
+                tracing::warn!("{}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
+        }
+    }
+
     /// Mint Quote status
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_quote_status(
@@ -223,6 +254,33 @@ impl HttpClient {
         }
     }
 
+    /// Melt Bol12
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
+    pub async fn post_melt_bolt12_quote(
+        &self,
+        mint_url: MintUrl,
+        unit: CurrencyUnit,
+        request: String,
+        amount: Option<Amount>,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt12"])?;
+
+        let request = MeltQuoteBolt12Request {
+            request,
+            unit,
+            amount,
+        };
+
+        let res = self.inner.post(url).json(&request).send().await?;
+
+        let res = res.json::<Value>().await?;
+
+        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        }
+    }
+
     /// Melt Quote Status
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_melt_quote_status(
@@ -275,6 +333,39 @@ impl HttpClient {
                 }
                 Err(ErrorResponse::from_value(res)?.into())
             }
+        }
+    }
+
+    /// Melt Bolt12 [NUT-05]
+    /// [Nut-08] Lightning fee return if outputs defined
+    #[instrument(skip(self, quote, inputs, outputs), fields(mint_url = %mint_url))]
+    pub async fn post_melt_bolt12(
+        &self,
+        mint_url: MintUrl,
+        quote: String,
+        inputs: Vec<Proof>,
+        outputs: Option<Vec<BlindedMessage>>,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let url = mint_url.join_paths(&["v1", "melt", "bolt12"])?;
+
+        let request = MeltBolt12Request {
+            quote,
+            inputs,
+            outputs,
+        };
+
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 

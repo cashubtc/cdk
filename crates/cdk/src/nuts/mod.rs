@@ -19,6 +19,8 @@ pub mod nut13;
 pub mod nut14;
 pub mod nut15;
 pub mod nut18;
+pub mod nut19;
+pub mod nut20;
 
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, PreMint, PreMintSecrets, Proof,
@@ -48,3 +50,4 @@ pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 pub use nut18::{PaymentRequest, PaymentRequestPayload, Transport};
+pub use nut20::{MeltBolt12Request, MeltQuoteBolt12Request};

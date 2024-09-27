@@ -12,6 +12,7 @@ use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinSet;
 use tracing::instrument;
 
+use self::types::PaymentRequest;
 use crate::cdk_database::{self, MintDatabase};
 use crate::cdk_lightning::{self, MintLightning};
 use crate::dhke::{sign_message, verify_message};
@@ -27,6 +28,7 @@ mod check_spendable;
 mod info;
 mod keysets;
 mod melt;
+mod mint_18;
 mod mint_nut04;
 mod swap;
 pub mod types;
@@ -208,7 +210,7 @@ impl Mint {
                         match result {
                             Ok(mut stream) => {
                                 while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id).await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id.0, request_lookup_id.1).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }
@@ -363,13 +365,14 @@ impl Mint {
     pub async fn handle_internal_melt_mint(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request,
+        inputs_amount: Amount,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        let request = match &melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11.to_string(),
+            PaymentRequest::Bolt12 { offer, invoice: _ } => offer.to_string(),
+        };
+
+        let mint_quote = match self.localstore.get_mint_quote_by_request(&request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -384,18 +387,13 @@ impl Mint {
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
-
         let mut mint_quote = mint_quote;
 
-        if mint_quote.amount > inputs_amount_quote_unit {
+        if mint_quote.amount.unwrap_or_default() > inputs_amount {
             tracing::debug!(
                 "Not enough inuts provided: {} needed {}",
-                inputs_amount_quote_unit,
-                mint_quote.amount
+                inputs_amount,
+                mint_quote.amount.unwrap_or_default()
             );
             return Err(Error::InsufficientFunds);
         }
@@ -489,7 +487,7 @@ impl Mint {
 }
 
 /// Mint Fee Reserve
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FeeReserve {
     /// Absolute expected min fee
     pub min_fee_reserve: Amount,

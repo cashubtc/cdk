@@ -12,12 +12,13 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
 };
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
@@ -35,8 +36,6 @@ pub mod error;
 #[derive(Clone)]
 pub struct LNbits {
     lnbits_api: LNBitsClient,
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
     fee_reserve: FeeReserve,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     webhook_url: String,
@@ -51,8 +50,6 @@ impl LNbits {
         admin_api_key: String,
         invoice_api_key: String,
         api_url: String,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
         fee_reserve: FeeReserve,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
         webhook_url: String,
@@ -61,8 +58,6 @@ impl LNbits {
 
         Ok(Self {
             lnbits_api,
-            mint_settings,
-            melt_settings,
             receiver,
             fee_reserve,
             webhook_url,
@@ -80,8 +75,8 @@ impl MintLightning for LNbits {
         Settings {
             mpp: false,
             unit: CurrencyUnit::Sat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            bolt12_mint: false,
+            bolt12_melt: false,
             invoice_description: true,
         }
     }
@@ -97,7 +92,7 @@ impl MintLightning for LNbits {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -134,7 +129,7 @@ impl MintLightning for LNbits {
                             match check {
                                 Ok(state) => {
                                     if state {
-                                        Some((msg, (receiver, lnbits_api, cancel_token, is_active)))
+                                        Some(((msg, Amount::ZERO), (receiver, lnbits_api, cancel_token, is_active)))
                                     } else {
                                         None
                                     }
@@ -198,9 +193,14 @@ impl MintLightning for LNbits {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
+
         let pay_response = self
             .lnbits_api
-            .pay_invoice(&melt_quote.request)
+            .pay_invoice(&bolt11.to_string())
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay invoice");
@@ -328,6 +328,35 @@ impl MintLightning for LNbits {
         };
 
         Ok(pay_response)
+    }
+
+    async fn get_bolt12_payment_quote(
+        &self,
+        _melt_quote_request: &MeltQuoteBolt12Request,
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
+        Err(Error::UnsupportedMethod.into())
+    }
+
+    /// Pay a bolt12 offer
+    async fn pay_bolt12_offer(
+        &self,
+        _melt_quote: mint::MeltQuote,
+        _amount: Option<Amount>,
+        _max_fee_amount: Option<Amount>,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        Err(Error::UnsupportedMethod.into())
+    }
+
+    /// Create bolt12 offer
+    async fn create_bolt12_offer(
+        &self,
+        _amount: Option<Amount>,
+        _unit: &CurrencyUnit,
+        _description: String,
+        _unix_expiry: u64,
+        _single_use: bool,
+    ) -> Result<CreateOfferResponse, Self::Err> {
+        Err(Error::UnsupportedMethod.into())
     }
 }
 

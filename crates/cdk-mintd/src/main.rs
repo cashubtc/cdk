@@ -3,7 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -14,33 +14,22 @@ use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{FeeReserve, MeltQuote, Mint};
-use cdk::mint_url::MintUrl;
-use cdk::nuts::{
-    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
-    MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
-};
-use cdk::types::{LnKey, QuoteTTL};
-use cdk_cln::Cln;
-use cdk_fake_wallet::FakeWallet;
-use cdk_lnbits::LNbits;
-use cdk_lnd::Lnd;
-use cdk_phoenixd::Phoenixd;
+use cdk::mint::{MeltQuote, Mint};
+use cdk::nuts::{ContactInfo, CurrencyUnit, MeltQuoteState, MintVersion, PaymentMethod};
+use cdk::types::LnKey;
+use cdk_mintd::mint::{MintBuilder, MintMeltLimits};
+use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
-use cdk_strike::Strike;
 use clap::Parser;
-use cli::CLIArgs;
-use config::{DatabaseEngine, LnBackend};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
-use url::Url;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
 
-mod cli;
-mod config;
+use cdk_mintd::cli::CLIArgs;
+use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;
@@ -74,6 +63,8 @@ async fn main() -> anyhow::Result<()> {
         None => work_dir.join("config.toml"),
     };
 
+    let mut mint_builder = MintBuilder::new();
+
     let settings = config::Settings::new(&Some(config_file_arg));
 
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
@@ -91,6 +82,8 @@ async fn main() -> anyhow::Result<()> {
                 Arc::new(MintRedbDatabase::new(&redb_path)?)
             }
         };
+
+    mint_builder = mint_builder.with_localstore(localstore);
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -123,323 +116,185 @@ async fn main() -> anyhow::Result<()> {
         CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
     );
 
-    let relative_ln_fee = settings.ln.fee_percent;
-
-    let absolute_ln_fee_reserve = settings.ln.reserve_fee_min;
-
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: absolute_ln_fee_reserve,
-        percent_fee_reserve: relative_ln_fee,
-    };
-
     let mut ln_backends: HashMap<
         LnKey,
         Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     > = HashMap::new();
+    let mut ln_routers = vec![];
 
-    let mut supported_units = HashMap::new();
-    let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
+    let mint_melt_limits = MintMeltLimits {
+        mint_min: settings.ln.min_mint,
+        mint_max: settings.ln.max_mint,
+        melt_min: settings.ln.min_melt,
+        melt_max: settings.ln.max_melt,
+    };
 
-    let mint_url: MintUrl = settings.info.url.parse()?;
-
-    let ln_routers: Vec<Router> = match settings.ln.ln_backend {
+    match settings.ln.ln_backend {
         LnBackend::Cln => {
-            let cln_socket = expand_path(
-                settings
-                    .cln
-                    .expect("Config checked at load that cln is some")
-                    .rpc_path
-                    .to_str()
-                    .ok_or(anyhow!("cln socket not defined"))?,
-            )
-            .ok_or(anyhow!("cln socket not defined"))?;
-            let cln = Arc::new(
-                Cln::new(
-                    cln_socket,
-                    fee_reserve,
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
-                )
-                .await?,
+            let cln_settings = settings
+                .cln
+                .clone()
+                .expect("Config checked at load that cln is some");
+
+            let cln = cln_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
+                .await?;
+            let cln = Arc::new(cln);
+            let ln_key = LnKey {
+                unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Bolt11,
+            };
+            ln_backends.insert(ln_key, cln.clone());
+
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
+                cln.clone(),
             );
 
-            ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11), cln);
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            vec![]
+            let ln_key = LnKey {
+                unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Bolt12,
+            };
+            ln_backends.insert(ln_key, cln.clone());
+
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt12,
+                mint_melt_limits,
+                cln,
+            )
         }
         LnBackend::Strike => {
-            let strike_settings = settings.strike.expect("Checked on config load");
-            let api_key = strike_settings.api_key;
+            let strike_settings = settings.clone().strike.expect("Checked on config load");
 
-            let units = strike_settings
+            for unit in strike_settings
+                .clone()
                 .supported_units
-                .unwrap_or(vec![CurrencyUnit::Sat]);
-
-            let mut routers = vec![];
-
-            for unit in units {
-                // Channel used for strike web hook
-                let (sender, receiver) = tokio::sync::mpsc::channel(8);
-                let webhook_endpoint = format!("/webhook/{}/invoice", unit);
-
-                let webhook_url = mint_url.join(&webhook_endpoint)?;
-
-                let strike = Strike::new(
-                    api_key.clone(),
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
-                    unit,
-                    Arc::new(Mutex::new(Some(receiver))),
-                    webhook_url.to_string(),
-                )
-                .await?;
-
-                let router = strike
-                    .create_invoice_webhook(&webhook_endpoint, sender)
+                .unwrap_or(vec![CurrencyUnit::Sat])
+            {
+                let strike = strike_settings
+                    .setup(&mut ln_routers, &settings, unit)
                     .await?;
-                routers.push(router);
 
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-                ln_backends.insert(ln_key, Arc::new(strike));
-
-                supported_units.insert(unit, (input_fee_ppk, 64));
+                mint_builder = mint_builder.add_ln_backend(
+                    unit,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(strike),
+                );
             }
-
-            routers
         }
         LnBackend::LNbits => {
-            let lnbits_settings = settings.lnbits.expect("Checked on config load");
-            let admin_api_key = lnbits_settings.admin_api_key;
-            let invoice_api_key = lnbits_settings.invoice_api_key;
-
-            // Channel used for lnbits web hook
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-            let webhook_endpoint = "/webhook/lnbits/sat/invoice";
-
-            let webhook_url = mint_url.join(webhook_endpoint)?;
-
-            let lnbits = LNbits::new(
-                admin_api_key,
-                invoice_api_key,
-                lnbits_settings.lnbits_api,
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
-                fee_reserve,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url.to_string(),
-            )
-            .await?;
-
-            let router = lnbits
-                .create_invoice_webhook_router(webhook_endpoint, sender)
+            let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
+            let lnbits = lnbits_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
                 .await?;
 
-            let unit = CurrencyUnit::Sat;
-
-            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-            ln_backends.insert(ln_key, Arc::new(lnbits));
-
-            supported_units.insert(unit, (input_fee_ppk, 64));
-            vec![router]
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
+                Arc::new(lnbits),
+            );
         }
         LnBackend::Phoenixd => {
-            let api_password = settings
-                .clone()
-                .phoenixd
-                .expect("Checked at config load")
-                .api_password;
-
-            let api_url = settings
-                .clone()
-                .phoenixd
-                .expect("Checked at config load")
-                .api_url;
-
-            if fee_reserve.percent_fee_reserve < 0.04 {
-                bail!("Fee reserve is too low needs to be at least 0.02");
-            }
-
-            let webhook_endpoint = "/webhook/phoenixd";
-
-            let mint_url = Url::parse(&settings.info.url)?;
-
-            let webhook_url = mint_url.join(webhook_endpoint)?.to_string();
-
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-
-            let phoenixd = Phoenixd::new(
-                api_password.to_string(),
-                api_url.to_string(),
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
-                fee_reserve,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url,
-            )?;
-
-            let router = phoenixd
-                .create_invoice_webhook(webhook_endpoint, sender)
+            let phd_settings = settings.clone().phoenixd.expect("Checked at config load");
+            let phd = phd_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
                 .await?;
 
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            ln_backends.insert(
-                LnKey {
-                    unit: CurrencyUnit::Sat,
-                    method: PaymentMethod::Bolt11,
-                },
-                Arc::new(phoenixd),
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
+                Arc::new(phd),
             );
-
-            vec![router]
         }
         LnBackend::Lnd => {
-            let lnd_settings = settings.lnd.expect("Checked at config load");
+            let lnd_settings = settings.clone().lnd.expect("Checked at config load");
+            let lnd = lnd_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
+                .await?;
 
-            let address = lnd_settings.address;
-            let cert_file = lnd_settings.cert_file;
-            let macaroon_file = lnd_settings.macaroon_file;
-
-            let lnd = Lnd::new(
-                address,
-                cert_file,
-                macaroon_file,
-                fee_reserve,
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
-            )
-            .await?;
-
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            ln_backends.insert(
-                LnKey {
-                    unit: CurrencyUnit::Sat,
-                    method: PaymentMethod::Bolt11,
-                },
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
                 Arc::new(lnd),
             );
-
-            vec![]
         }
         LnBackend::FakeWallet => {
-            let units = settings.fake_wallet.unwrap_or_default().supported_units;
+            let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
 
-            for unit in units {
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
+            for unit in fake_wallet.clone().supported_units {
+                let fake = fake_wallet
+                    .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
+                    .await?;
 
-                let wallet = Arc::new(FakeWallet::new(
-                    fee_reserve.clone(),
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
-                    HashMap::default(),
-                    HashSet::default(),
-                    0,
-                ));
+                let fake = Arc::new(fake);
 
-                ln_backends.insert(ln_key, wallet);
+                mint_builder = mint_builder.add_ln_backend(
+                    unit,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    fake.clone(),
+                );
 
-                supported_units.insert(unit, (input_fee_ppk, 64));
+                mint_builder = mint_builder.add_ln_backend(
+                    unit,
+                    PaymentMethod::Bolt12,
+                    mint_melt_limits,
+                    fake.clone(),
+                );
             }
-
-            vec![]
         }
     };
 
-    let (nut04_settings, nut05_settings, mpp_settings): (
-        nut04::Settings,
-        nut05::Settings,
-        Vec<MppMethodSettings>,
-    ) = ln_backends.iter().fold(
-        (
-            nut04::Settings::new(vec![], false),
-            nut05::Settings::new(vec![], false),
-            Vec::new(),
-        ),
-        |(mut nut_04, mut nut_05, mut mpp), (key, ln)| {
-            let settings = ln.get_settings();
+    let support_bolt12_mint = ln_backends.iter().any(|(_k, ln)| {
+        let settings = ln.get_settings();
+        settings.bolt12_mint
+    });
 
-            let m = MppMethodSettings {
-                method: key.method,
-                unit: key.unit,
-                mpp: settings.mpp,
-            };
-
-            let n4 = MintMethodSettings {
-                method: key.method,
-                unit: key.unit,
-                min_amount: settings.mint_settings.min_amount,
-                max_amount: settings.mint_settings.max_amount,
-                description: settings.invoice_description,
-            };
-
-            let n5 = MeltMethodSettings {
-                method: key.method,
-                unit: key.unit,
-                min_amount: settings.melt_settings.min_amount,
-                max_amount: settings.melt_settings.max_amount,
-            };
-
-            nut_04.methods.push(n4);
-            nut_05.methods.push(n5);
-            mpp.push(m);
-
-            (nut_04, nut_05, mpp)
-        },
-    );
-
-    let nuts = Nuts::new()
-        .nut04(nut04_settings)
-        .nut05(nut05_settings)
-        .nut07(true)
-        .nut08(true)
-        .nut09(true)
-        .nut10(true)
-        .nut11(true)
-        .nut12(true)
-        .nut14(true)
-        .nut15(mpp_settings);
-
-    let mut mint_info = MintInfo::new()
-        .name(settings.mint_info.name)
-        .version(mint_version)
-        .description(settings.mint_info.description)
-        .nuts(nuts);
+    let support_bolt12_melt = ln_backends.iter().any(|(_k, ln)| {
+        let settings = ln.get_settings();
+        settings.bolt12_melt
+    });
 
     if let Some(long_description) = &settings.mint_info.description_long {
-        mint_info = mint_info.long_description(long_description);
+        mint_builder = mint_builder.with_long_description(long_description.to_string());
     }
 
     if let Some(contact_info) = contact_info {
-        mint_info = mint_info.contact_info(contact_info);
+        for info in contact_info {
+            mint_builder = mint_builder.add_contact_info(info);
+        }
     }
 
     if let Some(pubkey) = settings.mint_info.pubkey {
-        mint_info = mint_info.pubkey(pubkey);
+        mint_builder = mint_builder.with_pubkey(pubkey);
     }
 
     if let Some(icon_url) = &settings.mint_info.icon_url {
-        mint_info = mint_info.icon_url(icon_url);
+        mint_builder = mint_builder.with_icon_url(icon_url.to_string());
     }
 
     if let Some(motd) = settings.mint_info.motd {
-        mint_info = mint_info.motd(motd);
+        mint_builder = mint_builder.with_motd(motd);
     }
 
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
-    let quote_ttl = QuoteTTL::new(10000, 10000);
+    mint_builder = mint_builder
+        .with_name(settings.mint_info.name)
+        .with_mint_url(settings.info.url)
+        .with_version(mint_version)
+        .with_description(settings.mint_info.description)
+        .with_quote_ttl(10000, 10000)
+        .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    let mint = Mint::new(
-        &settings.info.url,
-        &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        localstore,
-        ln_backends.clone(),
-        supported_units,
-    )
-    .await?;
+    let mint = mint_builder.build().await?;
 
     let mint = Arc::new(mint);
 
@@ -471,7 +326,11 @@ async fn main() -> anyhow::Result<()> {
         .seconds_to_extend_cache_by
         .unwrap_or(DEFAULT_CACHE_TTI_SECS);
 
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
+    let include_bolt12 = support_bolt12_mint || support_bolt12_melt;
+
+    let v1_service =
+        cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti, include_bolt12)
+            .await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)
@@ -529,14 +388,14 @@ async fn check_pending_mint_quotes(
     ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
 ) -> Result<()> {
     let mut pending_quotes = mint.get_pending_mint_quotes().await?;
-    tracing::trace!("There are {} pending mint quotes.", pending_quotes.len());
+    tracing::info!("There are {} pending mint quotes.", pending_quotes.len());
     let mut unpaid_quotes = mint.get_unpaid_mint_quotes().await?;
-    tracing::trace!("There are {} unpaid mint quotes.", unpaid_quotes.len());
+    tracing::info!("There are {} unpaid mint quotes.", unpaid_quotes.len());
 
     unpaid_quotes.append(&mut pending_quotes);
 
     for quote in unpaid_quotes {
-        tracing::trace!("Checking status of mint quote: {}", quote.id);
+        tracing::debug!("Checking status of mint quote: {}", quote.id);
         let lookup_id = quote.request_lookup_id;
         match ln.check_incoming_invoice_status(&lookup_id).await {
             Ok(state) => {
@@ -567,8 +426,10 @@ async fn check_pending_melt_quotes(
         .into_iter()
         .filter(|q| q.state == MeltQuoteState::Pending || q.state == MeltQuoteState::Unknown)
         .collect();
+    tracing::info!("There are {} pending melt quotes.", pending_quotes.len());
 
     for pending_quote in pending_quotes {
+        tracing::debug!("Checking status for melt quote {}.", pending_quote.id);
         let melt_request_ln_key = mint.localstore.get_melt_request(&pending_quote.id).await?;
 
         let (melt_request, ln_key) = match melt_request_ln_key {
@@ -599,11 +460,7 @@ async fn check_pending_melt_quotes(
                 match pay_invoice_response.status {
                     MeltQuoteState::Paid => {
                         if let Err(err) = mint
-                            .process_melt_request(
-                                &melt_request,
-                                pay_invoice_response.payment_preimage,
-                                pay_invoice_response.total_spent,
-                            )
+                            .process_melt_request(&melt_request, pay_invoice_response.total_spent)
                             .await
                         {
                             tracing::error!(
@@ -643,21 +500,6 @@ async fn check_pending_melt_quotes(
         };
     }
     Ok(())
-}
-
-fn expand_path(path: &str) -> Option<PathBuf> {
-    if path.starts_with('~') {
-        if let Some(home_dir) = home::home_dir().as_mut() {
-            let remainder = &path[2..];
-            home_dir.push(remainder);
-            let expanded_path = home_dir;
-            Some(expanded_path.clone())
-        } else {
-            None
-        }
-    } else {
-        Some(PathBuf::from(path))
-    }
 }
 
 fn work_dir() -> Result<PathBuf> {

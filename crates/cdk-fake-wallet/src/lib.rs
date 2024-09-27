@@ -7,7 +7,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -16,13 +15,14 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint;
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
 };
 use cdk::util::unix_time;
 use error::Error;
@@ -44,8 +44,6 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<String>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
@@ -57,8 +55,6 @@ impl FakeWallet {
     /// Creat new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
         payment_states: HashMap<String, MeltQuoteState>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
@@ -69,8 +65,6 @@ impl FakeWallet {
             fee_reserve,
             sender,
             receiver: Arc::new(Mutex::new(Some(receiver))),
-            mint_settings,
-            melt_settings,
             payment_states: Arc::new(Mutex::new(payment_states)),
             failed_payment_check: Arc::new(Mutex::new(fail_payment_check)),
             payment_delay,
@@ -112,8 +106,8 @@ impl MintLightning for FakeWallet {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            bolt12_mint: false,
+            bolt12_melt: false,
             invoice_description: true,
         }
     }
@@ -128,10 +122,11 @@ impl MintLightning for FakeWallet {
 
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
         let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
-        Ok(Box::pin(receiver_stream.map(|label| label)))
+        self.wait_invoice_is_active.store(true, Ordering::SeqCst);
+        Ok(Box::pin(receiver_stream.map(|label| (label, Amount::ZERO))))
     }
 
     async fn get_payment_quote(
@@ -173,7 +168,10 @@ impl MintLightning for FakeWallet {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
 
         let payment_hash = bolt11.payment_hash().to_string();
 
@@ -285,6 +283,35 @@ impl MintLightning for FakeWallet {
             total_spent: Amount::ZERO,
             unit: self.get_settings().unit,
         })
+    }
+
+    async fn get_bolt12_payment_quote(
+        &self,
+        _melt_quote_request: &MeltQuoteBolt12Request,
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
+        todo!()
+    }
+
+    /// Pay a bolt12 offer
+    async fn pay_bolt12_offer(
+        &self,
+        _melt_quote: mint::MeltQuote,
+        _amount: Option<Amount>,
+        _max_fee_amount: Option<Amount>,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        todo!()
+    }
+
+    /// Create bolt12 offer
+    async fn create_bolt12_offer(
+        &self,
+        _amount: Option<Amount>,
+        _unit: &CurrencyUnit,
+        _description: String,
+        _unix_expiry: u64,
+        _single_use: bool,
+    ) -> Result<CreateOfferResponse, Self::Err> {
+        todo!()
     }
 }
 

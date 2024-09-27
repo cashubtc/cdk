@@ -229,9 +229,17 @@ pub struct Nuts {
     #[serde(rename = "14")]
     pub nut14: SupportedSettings,
     /// NUT15 Settings
-    #[serde(default)]
     #[serde(rename = "15")]
-    pub nut15: nut15::Settings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut15: Option<nut15::Settings>,
+    /// NUT04 Settings
+    #[serde(rename = "18")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut18: Option<nut04::Settings>,
+    /// NUT05 Settings
+    #[serde(rename = "19")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut19: Option<nut05::Settings>,
 }
 
 impl Nuts {
@@ -315,19 +323,41 @@ impl Nuts {
     /// Nut15 settings
     pub fn nut15(self, mpp_settings: Vec<MppMethodSettings>) -> Self {
         Self {
-            nut15: nut15::Settings {
+            nut15: Some(nut15::Settings {
                 methods: mpp_settings,
-            },
+            }),
+            ..self
+        }
+    }
+
+    /// Nut18 settings
+    pub fn nut18(self, nut04_settings: nut04::Settings) -> Self {
+        Self {
+            nut18: Some(nut04_settings),
+            ..self
+        }
+    }
+
+    /// Nut19 settings
+    pub fn nut19(self, nut05_settings: nut05::Settings) -> Self {
+        Self {
+            nut19: Some(nut05_settings),
             ..self
         }
     }
 }
 
 /// Check state Settings
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SupportedSettings {
     supported: bool,
+}
+
+impl Default for SupportedSettings {
+    fn default() -> Self {
+        Self { supported: true }
+    }
 }
 
 /// Contact Info

@@ -226,11 +226,58 @@ pub struct MeltBolt11Request {
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
-impl MeltBolt11Request {
+/// MeltRequest trait
+pub trait MeltRequestTrait {
+    /// Error for MeltRequest trait
+    type Err: Into<crate::Error>;
+    // async fn verify(&self, service: &MyService) -> Result<Quote, Error>;
+    /// Get id for [`MeltRequest`]
+    fn get_quote_id(&self) -> &str;
+    /// Get inputs for [`MeltRequest`]
+    fn get_inputs(&self) -> &Proofs;
+    /// Get outputs for [`MeltRequest`]
+    fn get_outputs(&self) -> &Option<Vec<BlindedMessage>>;
     /// Total [`Amount`] of [`Proofs`]
-    pub fn proofs_amount(&self) -> Result<Amount, Error> {
+    fn inputs_amount(&self) -> Result<Amount, Self::Err>;
+    /// Total [`Amount`] of outputs
+    fn outputs_amount(&self) -> Result<Amount, Self::Err>;
+    /// [`PaymentMethod`] of request
+    fn get_payment_method(&self) -> PaymentMethod;
+}
+
+impl MeltRequestTrait for MeltBolt11Request {
+    type Err = Error;
+
+    fn get_quote_id(&self) -> &str {
+        &self.quote
+    }
+
+    fn get_inputs(&self) -> &Proofs {
+        &self.inputs
+    }
+
+    fn get_outputs(&self) -> &Option<Vec<BlindedMessage>> {
+        &self.outputs
+    }
+
+    fn inputs_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
             .map_err(|_| Error::AmountOverflow)
+    }
+
+    fn outputs_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(
+            self.outputs
+                .as_ref()
+                .unwrap_or(&vec![])
+                .iter()
+                .map(|proof| proof.amount),
+        )
+        .map_err(|_| Error::AmountOverflow)
+    }
+
+    fn get_payment_method(&self) -> PaymentMethod {
+        PaymentMethod::Bolt11
     }
 }
 

@@ -7,6 +7,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use lightning::offers::offer::Offer;
 use thiserror::Error;
 
 use crate::nuts::CurrencyUnit;
@@ -23,6 +25,12 @@ pub enum Error {
     /// Cannot convert units
     #[error("Cannot convert units")]
     CannotConvertUnits,
+    /// Amount undefinded
+    #[error("Amount undefined")]
+    AmountUndefinded,
+    /// Utf8 parse error
+    #[error(transparent)]
+    Utf8ParseError(#[from] std::string::FromUtf8Error),
 }
 
 /// Amount can be any unit
@@ -298,6 +306,27 @@ where
         (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount.into()),
         _ => Err(Error::CannotConvertUnits),
     }
+}
+
+/// Convert offer to amount in unit
+pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Error> {
+    let offer_amount = offer.amount().ok_or(Error::AmountUndefinded)?;
+
+    let (amount, currency) = match offer_amount {
+        lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
+            (amount_msats, CurrencyUnit::Msat)
+        }
+        lightning::offers::offer::Amount::Currency {
+            iso4217_code,
+            amount,
+        } => (
+            amount,
+            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)
+                .map_err(|_| Error::CannotConvertUnits)?,
+        ),
+    };
+
+    to_unit(amount, &currency, unit).map_err(|_err| Error::CannotConvertUnits)
 }
 
 #[cfg(test)]
