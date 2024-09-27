@@ -1,4 +1,4 @@
-use std::{ops::Deref, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashSet, ops::Deref, str::FromStr, sync::Arc, time::Duration};
 
 use bitcoin::key::Parity;
 use cdk::{
@@ -24,6 +24,7 @@ pub struct NutZapper {
     wallet: MultiMintWallet,
 
     last_timestamp: Arc<Mutex<Timestamp>>,
+    processed_events: Arc<Mutex<HashSet<EventId>>>,
 }
 
 impl NutZapper {
@@ -38,10 +39,15 @@ impl NutZapper {
             keys: Keys::new(key),
             wallet,
             last_timestamp: Arc::new(Mutex::new(start_timestamp.unwrap_or(Timestamp::now()))),
+            processed_events: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     pub async fn claim_zap(&self, event: NutZapEvent) -> Result<Amount, Error> {
+        let mut processed_events = self.processed_events.lock().await;
+        if processed_events.contains(&event.id) {
+            return Err(Error::AlreadyClaimed);
+        }
         let wallet = self
             .wallet
             .get_wallet(&WalletKey::new(event.mint_url, event.unit))
@@ -55,6 +61,7 @@ impl NutZapper {
                 &[],
             )
             .await?;
+        processed_events.insert(event.id);
         Ok(amount)
     }
 
@@ -63,36 +70,35 @@ impl NutZapper {
         timeout: Option<Duration>,
     ) -> Result<Vec<NutZapEvent>, Error> {
         let mut last_timestamp = self.last_timestamp.lock().await;
+        let mint_urls = self
+            .wallet
+            .get_wallets()
+            .await
+            .iter()
+            .map(|w| w.mint_url.clone().to_string())
+            .collect::<Vec<_>>();
+        let filter = Filter::new()
+            .kind(NUT_ZAP_KIND)
+            .since(*last_timestamp)
+            .custom_tag(
+                SingleLetterTag::lowercase(Alphabet::P),
+                vec![self.keys.public_key()],
+            )
+            .custom_tag(SingleLetterTag::lowercase(Alphabet::U), mint_urls);
         let events = self
             .client
-            .get_events_of(
-                vec![Filter::new()
-                    .kind(NUT_ZAP_KIND)
-                    .since(*last_timestamp)
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::P),
-                        vec![self.keys.public_key()],
-                    )
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::U),
-                        self.wallet
-                            .get_wallets()
-                            .await
-                            .iter()
-                            .map(|w| w.mint_url.clone().to_string())
-                            .collect::<Vec<_>>(),
-                    )],
-                nostr_sdk::EventSource::relays(timeout),
-            )
+            .get_events_of(vec![filter], nostr_sdk::EventSource::relays(timeout))
             .await?;
         let max_timestamp = events.iter().map(|e| e.created_at).max();
         if let Some(max_timestamp) = max_timestamp {
             *last_timestamp = max_timestamp;
         }
+        let processed_events = self.processed_events.lock().await;
         Ok(events
             .into_iter()
             .filter_map(|event| match NutZapEvent::try_from(event) {
-                Ok(event) => Some(event),
+                Ok(event) if !processed_events.contains(&event.id) => Some(event),
+                Ok(_) => None,
                 Err(err) => {
                     tracing::error!("Failed to parse event: {}", err);
                     None
@@ -107,7 +113,7 @@ impl NutZapper {
         mint_url: MintUrl,
         amount: Amount,
         unit: CurrencyUnit,
-    ) -> Result<(), Error> {
+    ) -> Result<EventId, Error> {
         let wallet = self
             .wallet
             .get_wallet(&WalletKey::new(mint_url.clone(), unit))
@@ -141,8 +147,8 @@ impl NutZapper {
             proofs,
             zapped_event_id: None,
         };
-        self.client.send_event_builder(event.try_into()?).await?;
-        Ok(())
+        let output = self.client.send_event_builder(event.try_into()?).await?;
+        Ok(output.val)
     }
 }
 
@@ -165,10 +171,9 @@ impl TryInto<EventBuilder> for NutZapEvent {
         tags.push(Tag::from_standardized(TagStandard::public_key(
             self.receiver_pubkey,
         )));
-        tags.push(Tag::custom(
-            TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::U)),
-            vec![self.mint_url.to_string()],
-        ));
+        tags.push(Tag::from_standardized(TagStandard::AbsoluteURL(
+            self.mint_url.to_string().into(),
+        )));
         tags.push(Tag::custom(
             TagKind::custom(UNIT_TAG),
             vec![self.unit.to_string()],
@@ -217,17 +222,14 @@ impl TryFrom<Event> for NutZapEvent {
                     } if !uppercase => {
                         receiver_pubkey = Some(public_key.clone());
                     }
-                    _ => {}
+                    TagStandard::AbsoluteURL(url) => {
+                        mint_url = Some(MintUrl::from_str(url.as_str())?);
+                    }
+                    _ => {
+                        tracing::warn!("Unknown standardized tag: {:?}", tag);
+                    }
                 },
                 None => match tag.kind() {
-                    TagKind::SingleLetter(letter) => match letter.character {
-                        Alphabet::U if letter.is_lowercase() => {
-                            mint_url = Some(MintUrl::from_str(
-                                tag.content().ok_or(Error::InvalidTag("u"))?,
-                            )?);
-                        }
-                        _ => {}
-                    },
                     nostr_sdk::TagKind::Custom(custom) => match custom.to_string().as_str() {
                         PROOF_TAG => {
                             proofs.push(
@@ -245,9 +247,13 @@ impl TryFrom<Event> for NutZapEvent {
                                 .map_err(|_| Error::InvalidTag("unit"))?,
                             );
                         }
-                        _ => {}
+                        _ => {
+                            tracing::warn!("Unknown custom tag: {:?}", tag);
+                        }
                     },
-                    _ => {}
+                    _ => {
+                        tracing::warn!("Unknown tag kind: {:?}", tag);
+                    }
                 },
             }
         }
@@ -270,6 +276,8 @@ impl TryFrom<Event> for NutZapEvent {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("Already claimed")]
+    AlreadyClaimed,
     #[error(transparent)]
     Client(#[from] nostr_sdk::client::Error),
     #[error("Invalid tag: {0}")]
