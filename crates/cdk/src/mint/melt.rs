@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::bail;
-use lightning_invoice::Bolt11Invoice;
+use lightning::offers::offer::Offer;
 use tracing::instrument;
 
 use crate::cdk_lightning;
@@ -16,9 +17,12 @@ use crate::{
     Amount, Error,
 };
 
+use super::nut05::MeltRequestTrait;
+use super::BlindSignature;
+use super::MeltQuoteBolt12Request;
 use super::{
-    CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    Mint, PaymentMethod, PublicKey, State,
+    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Mint, PaymentMethod,
+    PaymentRequest, PublicKey, State,
 };
 
 impl Mint {
@@ -111,8 +115,101 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
+        let request = PaymentRequest::Bolt11 {
+            bolt11: request.clone(),
+        };
+
         let quote = MeltQuote::new(
-            request.to_string(),
+            request,
+            *unit,
+            payment_quote.amount,
+            payment_quote.fee,
+            unix_time() + self.quote_ttl.melt_ttl,
+            payment_quote.request_lookup_id.clone(),
+        );
+
+        tracing::debug!(
+            "New melt quote {} for {} {} with request id {}",
+            quote.id,
+            amount,
+            unit,
+            payment_quote.request_lookup_id
+        );
+
+        self.localstore.add_melt_quote(quote.clone()).await?;
+
+        Ok(quote.into())
+    }
+
+    /// Get melt bolt12 quote
+    #[instrument(skip_all)]
+    pub async fn get_melt_bolt12_quote(
+        &self,
+        melt_request: &MeltQuoteBolt12Request,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let MeltQuoteBolt12Request {
+            request,
+            unit,
+            amount,
+        } = melt_request;
+
+        let offer = Offer::from_str(request).unwrap();
+
+        let amount = match amount {
+            Some(amount) => *amount,
+            None => {
+                let offer_amount = offer.amount().ok_or(Error::InvoiceAmountUndefined)?;
+
+                let (amount, currency) = match offer_amount {
+                    lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
+                        (amount_msats, CurrencyUnit::Msat)
+                    }
+                    lightning::offers::offer::Amount::Currency {
+                        iso4217_code,
+                        amount,
+                    } => (
+                        amount,
+                        CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)?,
+                    ),
+                };
+
+                to_unit(amount, &currency, unit).map_err(|_err| Error::UnsupportedUnit)?
+            }
+        };
+
+        self.check_melt_request_acceptable(amount, *unit, PaymentMethod::Bolt12)?;
+
+        let ln = self
+            .ln
+            .get(&LnKey::new(*unit, PaymentMethod::Bolt12))
+            .ok_or_else(|| {
+                tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
+
+                Error::UnitUnsupported
+            })?;
+
+        let payment_quote = ln
+            .get_bolt12_payment_quote(melt_request)
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for mint quote, {} bolt11, {}",
+                    unit,
+                    err
+                );
+
+                Error::UnitUnsupported
+            })?;
+
+        let offer = Offer::from_str(request)?;
+
+        let payment_request = PaymentRequest::Bolt12 {
+            offer: Box::new(offer),
+            invoice: None,
+        };
+
+        let quote = MeltQuote::new(
+            payment_request,
             *unit,
             payment_quote.amount,
             payment_quote.fee,
@@ -185,70 +282,81 @@ impl Mint {
 
     /// Check melt has expected fees
     #[instrument(skip_all)]
-    pub async fn check_melt_expected_ln_fees(
+    pub async fn check_melt_expected_ln_fees<R>(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request,
-    ) -> Result<Option<Amount>, Error> {
-        let invoice = Bolt11Invoice::from_str(&melt_quote.request)?;
+        melt_request: &R,
+    ) -> Result<Option<Amount>, Error>
+    where
+        R: MeltRequestTrait,
+    {
+        let quote_amount = melt_quote.amount;
 
-        let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
-            .expect("Quote unit is checked above that it can convert to msat");
-
-        let invoice_amount_msats: Amount = invoice
-            .amount_milli_satoshis()
-            .ok_or(Error::InvoiceAmountUndefined)?
-            .into();
-
-        let partial_amount = match invoice_amount_msats > quote_msats {
-            true => {
-                let partial_msats = invoice_amount_msats - quote_msats;
-
-                Some(
-                    to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
+        let request_amount = match &melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => match bolt11.amount_milli_satoshis() {
+                Some(amount) => Some(
+                    to_unit(amount, &CurrencyUnit::Msat, &melt_quote.unit)
                         .map_err(|_| Error::UnitUnsupported)?,
-                )
-            }
-            false => None,
+                ),
+                None => None,
+            },
+            PaymentRequest::Bolt12 { offer, invoice: _ } => match offer.amount() {
+                Some(amount) => {
+                    let (amount, currency) = match amount {
+                        lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
+                            (amount_msats, CurrencyUnit::Msat)
+                        }
+                        lightning::offers::offer::Amount::Currency {
+                            iso4217_code,
+                            amount,
+                        } => (
+                            amount,
+                            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)?,
+                        ),
+                    };
+
+                    Some(
+                        to_unit(amount, &currency, &melt_quote.unit)
+                            .map_err(|_err| Error::UnsupportedUnit)?,
+                    )
+                }
+                None => None,
+            },
         };
 
-        let amount_to_pay = match partial_amount {
-            Some(amount_to_pay) => amount_to_pay,
-            None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                .map_err(|_| Error::UnitUnsupported)?,
-        };
+        let amount_to_pay = request_amount.unwrap_or(quote_amount);
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
+        let inputs_amount = melt_request
+            .inputs_amount()
+            .map_err(|_| Error::AmountOverflow)?;
 
-        if amount_to_pay + melt_quote.fee_reserve > inputs_amount_quote_unit {
+        if amount_to_pay + melt_quote.fee_reserve > inputs_amount {
             tracing::debug!(
                 "Not enough inputs provided: {} msats needed {} msats",
-                inputs_amount_quote_unit,
+                inputs_amount,
                 amount_to_pay
             );
 
             return Err(Error::TransactionUnbalanced(
-                inputs_amount_quote_unit.into(),
+                inputs_amount.into(),
                 amount_to_pay.into(),
                 melt_quote.fee_reserve.into(),
             ));
         }
 
-        Ok(partial_amount)
+        Ok(Some(amount_to_pay))
     }
 
     /// Verify melt request is valid
     #[instrument(skip_all)]
-    pub async fn verify_melt_request(
-        &self,
-        melt_request: &MeltBolt11Request,
-    ) -> Result<MeltQuote, Error> {
+    pub async fn verify_melt_request<R>(&self, melt_request: &R) -> Result<MeltQuote, Error>
+    where
+        R: MeltRequestTrait,
+    {
+        let quote_id = melt_request.get_quote_id();
         let state = self
             .localstore
-            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Pending)
+            .update_melt_quote_state(quote_id, MeltQuoteState::Pending)
             .await?;
 
         match state {
@@ -264,38 +372,36 @@ impl Mint {
             }
         }
 
-        let ys = melt_request
-            .inputs
+        let inputs = melt_request.get_inputs();
+
+        let ys = inputs
             .iter()
             .map(|p| hash_to_curve(&p.secret.to_bytes()))
             .collect::<Result<Vec<PublicKey>, _>>()?;
 
         // Ensure proofs are unique and not being double spent
-        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
+        if inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
             return Err(Error::DuplicateProofs);
         }
 
         self.localstore
-            .add_proofs(
-                melt_request.inputs.clone(),
-                Some(melt_request.quote.clone()),
-            )
+            .add_proofs(inputs.clone(), Some(quote_id.to_string()))
             .await?;
         self.check_ys_spendable(&ys, State::Pending).await?;
 
-        for proof in &melt_request.inputs {
+        for proof in inputs.iter() {
             self.verify_proof(proof).await?;
         }
 
         let quote = self
             .localstore
-            .get_melt_quote(&melt_request.quote)
+            .get_melt_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let proofs_total = melt_request.proofs_amount()?;
+        let proofs_total = Amount::try_sum(inputs.iter().map(|p| p.amount))?;
 
-        let fee = self.get_proofs_fee(&melt_request.inputs).await?;
+        let fee = self.get_proofs_fee(inputs).await?;
 
         let required_total = quote.amount + quote.fee_reserve + fee;
 
@@ -315,8 +421,7 @@ impl Mint {
             ));
         }
 
-        let input_keyset_ids: HashSet<Id> =
-            melt_request.inputs.iter().map(|p| p.keyset_id).collect();
+        let input_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();
 
         let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
 
@@ -329,13 +434,15 @@ impl Mint {
             keyset_units.insert(keyset.unit);
         }
 
-        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
+        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(inputs.clone());
 
         if sig_flag.eq(&SigFlag::SigAll) {
             return Err(Error::SigAllUsedInMelt);
         }
 
-        if let Some(outputs) = &melt_request.outputs {
+        let outputs = melt_request.get_outputs();
+
+        if let Some(outputs) = outputs {
             let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
             for id in output_keysets_ids {
                 let keyset = self
@@ -364,7 +471,7 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        tracing::debug!("Verified melt quote: {}", melt_request.quote);
+        tracing::debug!("Verified melt quote: {}", quote_id);
         Ok(quote)
     }
 
@@ -373,9 +480,12 @@ impl Mint {
     /// made The [`Proofs`] should be returned to an unspent state and the
     /// quote should be unpaid
     #[instrument(skip_all)]
-    pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let input_ys = melt_request
-            .inputs
+    pub async fn process_unpaid_melt<R>(&self, melt_request: &R) -> Result<(), Error>
+    where
+        R: MeltRequestTrait,
+    {
+        let inputs = melt_request.get_inputs();
+        let input_ys = inputs
             .iter()
             .map(|p| hash_to_curve(&p.secret.to_bytes()))
             .collect::<Result<Vec<PublicKey>, _>>()?;
@@ -385,40 +495,36 @@ impl Mint {
             .await?;
 
         self.localstore
-            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Unpaid)
+            .update_melt_quote_state(melt_request.get_quote_id(), MeltQuoteState::Unpaid)
             .await?;
 
         Ok(())
     }
 
-    /// Melt Bolt11
-    #[instrument(skip_all)]
-    pub async fn melt_bolt11(
-        &self,
-        melt_request: &MeltBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
-        use std::sync::Arc;
-        async fn check_payment_state(
-            ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-            melt_quote: &MeltQuote,
-        ) -> anyhow::Result<PayInvoiceResponse> {
-            match ln
-                .check_outgoing_payment(&melt_quote.request_lookup_id)
-                .await
-            {
-                Ok(response) => Ok(response),
-                Err(check_err) => {
-                    // If we cannot check the status of the payment we keep the proofs stuck as pending.
-                    tracing::error!(
-                        "Could not check the status of payment for {},. Proofs stuck as pending",
-                        melt_quote.id
-                    );
-                    tracing::error!("Checking payment error: {}", check_err);
-                    bail!("Could not check payment status")
-                }
+    async fn check_payment_state(
+        ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
+        request_lookup_id: &str,
+    ) -> anyhow::Result<PayInvoiceResponse> {
+        match ln.check_outgoing_payment(request_lookup_id).await {
+            Ok(response) => Ok(response),
+            Err(check_err) => {
+                // If we cannot check the status of the payment we keep the proofs stuck as pending.
+                tracing::error!(
+                    "Could not check the status of payment for {},. Proofs stuck as pending",
+                    request_lookup_id
+                );
+                tracing::error!("Checking payment error: {}", check_err);
+                bail!("Could not check payment status")
             }
         }
+    }
 
+    /// Melt Bolt11
+    #[instrument(skip_all)]
+    pub async fn melt<R>(&self, melt_request: &R) -> Result<MeltQuoteBolt11Response, Error>
+    where
+        R: MeltRequestTrait,
+    {
         let quote = match self.verify_melt_request(melt_request).await {
             Ok(quote) => quote,
             Err(err) => {
@@ -427,7 +533,7 @@ impl Mint {
                 if let Err(err) = self.process_unpaid_melt(melt_request).await {
                     tracing::error!(
                         "Could not reset melt quote {} state: {}",
-                        melt_request.quote,
+                        melt_request.get_quote_id(),
                         err
                     );
                 }
@@ -435,15 +541,19 @@ impl Mint {
             }
         };
 
+        let inputs_amount = melt_request
+            .inputs_amount()
+            .map_err(|_err| Error::AmountOverflow)?;
+
         let settled_internally_amount =
-            match self.handle_internal_melt_mint(&quote, melt_request).await {
+            match self.handle_internal_melt_mint(&quote, inputs_amount).await {
                 Ok(amount) => amount,
                 Err(err) => {
                     tracing::error!("Attempting to settle internally failed");
                     if let Err(err) = self.process_unpaid_melt(melt_request).await {
                         tracing::error!(
                             "Could not reset melt quote {} state: {}",
-                            melt_request.quote,
+                            melt_request.get_quote_id(),
                             err
                         );
                     }
@@ -477,6 +587,7 @@ impl Mint {
                     }
                     _ => None,
                 };
+
                 let ln = match self.ln.get(&LnKey::new(quote.unit, PaymentMethod::Bolt11)) {
                     Some(ln) => ln,
                     None => {
@@ -489,17 +600,26 @@ impl Mint {
                     }
                 };
 
-                let pre = match ln
-                    .pay_invoice(quote.clone(), partial_amount, Some(quote.fee_reserve))
-                    .await
-                {
+                let attempt_to_pay = match melt_request.get_payment_method() {
+                    PaymentMethod::Bolt11 => {
+                        ln.pay_invoice(quote.clone(), partial_amount, Some(quote.fee_reserve))
+                            .await
+                    }
+                    PaymentMethod::Bolt12 => {
+                        ln.pay_bolt12_offer(quote.clone(), partial_amount, Some(quote.fee_reserve))
+                            .await
+                    }
+                };
+
+                let pre = match attempt_to_pay {
                     Ok(pay)
                         if pay.status == MeltQuoteState::Unknown
                             || pay.status == MeltQuoteState::Failed =>
                     {
-                        let check_response = check_payment_state(Arc::clone(ln), &quote)
-                            .await
-                            .map_err(|_| Error::Internal)?;
+                        let check_response =
+                            Self::check_payment_state(Arc::clone(ln), &quote.request_lookup_id)
+                                .await
+                                .map_err(|_| Error::Internal)?;
 
                         if check_response.status == MeltQuoteState::Paid {
                             tracing::warn!("Pay invoice returned {} but check returned {}. Proofs stuck as pending", pay.status.to_string(), check_response.status.to_string());
@@ -523,9 +643,10 @@ impl Mint {
 
                         tracing::error!("Error returned attempting to pay: {} {}", quote.id, err);
 
-                        let check_response = check_payment_state(Arc::clone(ln), &quote)
-                            .await
-                            .map_err(|_| Error::Internal)?;
+                        let check_response =
+                            Self::check_payment_state(Arc::clone(ln), &quote.request_lookup_id)
+                                .await
+                                .map_err(|_| Error::Internal)?;
                         // If there error is something else we want to check the status of the payment ensure it is not pending or has been made.
                         if check_response.status == MeltQuoteState::Paid {
                             tracing::warn!("Pay invoice returned an error but check returned {}. Proofs stuck as pending", check_response.status.to_string());
@@ -541,7 +662,7 @@ impl Mint {
                     MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
                         tracing::info!(
                             "Lightning payment for quote {} failed.",
-                            melt_request.quote
+                            melt_request.get_quote_id()
                         );
                         if let Err(err) = self.process_unpaid_melt(melt_request).await {
                             tracing::error!("Could not reset melt quote state: {}", err);
@@ -551,7 +672,7 @@ impl Mint {
                     MeltQuoteState::Pending => {
                         tracing::warn!(
                             "LN payment pending, proofs are stuck as pending for quote: {}",
-                            melt_request.quote
+                            melt_request.get_quote_id()
                         );
                         return Err(Error::PendingQuote);
                     }
@@ -572,7 +693,7 @@ impl Mint {
                         payment_lookup_id
                     );
 
-                    let mut melt_quote = quote;
+                    let mut melt_quote = quote.clone();
                     melt_quote.request_lookup_id = payment_lookup_id;
 
                     if let Err(err) = self.localstore.add_melt_quote(melt_quote).await {
@@ -586,37 +707,50 @@ impl Mint {
 
         // If we made it here the payment has been made.
         // We process the melt burning the inputs and returning change
-        let res = self
-            .process_melt_request(melt_request, preimage, amount_spent_quote_unit)
+        let change = self
+            .process_melt_request(melt_request, amount_spent_quote_unit)
             .await
             .map_err(|err| {
                 tracing::error!("Could not process melt request: {}", err);
                 err
             })?;
 
-        Ok(res)
+        Ok(MeltQuoteBolt11Response {
+            paid: Some(true),
+            payment_preimage: preimage,
+            change,
+            quote: quote.id,
+            amount: quote.amount,
+            fee_reserve: quote.fee_reserve,
+            state: MeltQuoteState::Paid,
+            expiry: quote.expiry,
+        })
     }
 
     /// Process melt request marking [`Proofs`] as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
-    pub async fn process_melt_request(
+    pub async fn process_melt_request<R>(
         &self,
-        melt_request: &MeltBolt11Request,
-        payment_preimage: Option<String>,
+        melt_request: &R,
         total_spent: Amount,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
-        tracing::debug!("Processing melt quote: {}", melt_request.quote);
+    ) -> Result<Option<Vec<BlindSignature>>, Error>
+    where
+        R: MeltRequestTrait,
+    {
+        let quote_id = melt_request.get_quote_id();
+        tracing::debug!("Processing melt quote: {}", quote_id);
 
         let quote = self
             .localstore
-            .get_melt_quote(&melt_request.quote)
+            .get_melt_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let input_ys = melt_request
-            .inputs
+        let inputs = melt_request.get_inputs();
+
+        let input_ys = inputs
             .iter()
             .map(|p| hash_to_curve(&p.secret.to_bytes()))
             .collect::<Result<Vec<PublicKey>, _>>()?;
@@ -626,15 +760,19 @@ impl Mint {
             .await?;
 
         self.localstore
-            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
+            .update_melt_quote_state(quote_id, MeltQuoteState::Paid)
             .await?;
 
         let mut change = None;
 
+        let inputs_amount = Amount::try_sum(inputs.iter().map(|p| p.amount))?;
+
+        let outputs = melt_request.get_outputs();
+
         // Check if there is change to return
-        if melt_request.proofs_amount()? > total_spent {
+        if inputs_amount > total_spent {
             // Check if wallet provided change outputs
-            if let Some(outputs) = melt_request.outputs.clone() {
+            if let Some(outputs) = outputs {
                 let blinded_messages: Vec<PublicKey> =
                     outputs.iter().map(|b| b.blinded_secret).collect();
 
@@ -652,7 +790,7 @@ impl Mint {
                     return Err(Error::BlindedMessageAlreadySigned);
                 }
 
-                let change_target = melt_request.proofs_amount()? - total_spent;
+                let change_target = inputs_amount - total_spent;
                 let mut amounts = change_target.split();
                 let mut change_sigs = Vec::with_capacity(amounts.len());
 
@@ -669,7 +807,7 @@ impl Mint {
                     amounts.sort_by(|a, b| b.cmp(a));
                 }
 
-                let mut outputs = outputs;
+                let mut outputs = outputs.clone();
 
                 for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
                     blinded_message.amount = *amount;
@@ -693,15 +831,6 @@ impl Mint {
             }
         }
 
-        Ok(MeltQuoteBolt11Response {
-            amount: quote.amount,
-            paid: Some(true),
-            payment_preimage,
-            change,
-            quote: quote.id,
-            fee_reserve: quote.fee_reserve,
-            state: MeltQuoteState::Paid,
-            expiry: quote.expiry,
-        })
+        Ok(change)
     }
 }

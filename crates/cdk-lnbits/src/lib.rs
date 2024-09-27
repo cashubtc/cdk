@@ -14,10 +14,11 @@ use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
+    MeltQuoteState, MintMethodSettings, MintQuoteState,
 };
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
@@ -198,9 +199,14 @@ impl MintLightning for LNbits {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
+
         let pay_response = self
             .lnbits_api
-            .pay_invoice(&melt_quote.request)
+            .pay_invoice(&bolt11.to_string())
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay invoice");
@@ -328,6 +334,23 @@ impl MintLightning for LNbits {
         };
 
         Ok(pay_response)
+    }
+
+    async fn get_bolt12_payment_quote(
+        &self,
+        _melt_quote_request: &MeltQuoteBolt12Request,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        todo!()
+    }
+
+    /// Pay a bolt12 offer
+    async fn pay_bolt12_offer(
+        &self,
+        _melt_quote: mint::MeltQuote,
+        _amount: Option<Amount>,
+        _max_fee_amount: Option<Amount>,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        todo!()
     }
 }
 

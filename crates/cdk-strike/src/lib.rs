@@ -15,8 +15,8 @@ use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
+    MeltQuoteState, MintMethodSettings, MintQuoteState,
 };
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
@@ -306,6 +306,22 @@ impl MintLightning for Strike {
         };
 
         Ok(pay_invoice_response)
+    }
+
+    async fn get_bolt12_payment_quote(
+        &self,
+        _melt_quote_request: &MeltQuoteBolt12Request,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        todo!()
+    }
+
+    async fn pay_bolt12_offer(
+        &self,
+        _melt_quote: mint::MeltQuote,
+        _amount: Option<Amount>,
+        _max_fee_amount: Option<Amount>,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        todo!()
     }
 }
 

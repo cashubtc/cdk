@@ -193,6 +193,9 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
+    /// Bolt12 parse error
+    #[error("BOLT12 Parse error")]
+    Bolt12Parse,
 
     // Crate error conversions
     /// Cashu Url Error
@@ -234,10 +237,19 @@ pub enum Error {
     /// NUT14 Error
     #[error(transparent)]
     NUT14(#[from] crate::nuts::nut14::Error),
+    /// NUT18 Error
+    #[error(transparent)]
+    NUT18(#[from] crate::nuts::nut18::Error),
     /// Database Error
     #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]
     Database(#[from] crate::cdk_database::Error),
+}
+
+impl From<lightning::offers::parse::Bolt12ParseError> for Error {
+    fn from(_err: lightning::offers::parse::Bolt12ParseError) -> Error {
+        Error::Bolt12Parse
+    }
 }
 
 /// CDK Error Response

@@ -17,6 +17,9 @@ pub enum Error {
     /// phd error
     #[error(transparent)]
     Phd(#[from] phoenixd_rs::Error),
+    /// Wrong invoice type
+    #[error("Wrong invoice type")]
+    WrongRequestType,
     /// Anyhow error
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),

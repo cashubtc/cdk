@@ -587,11 +587,7 @@ async fn check_pending_melt_quotes(
                 match pay_invoice_response.status {
                     MeltQuoteState::Paid => {
                         if let Err(err) = mint
-                            .process_melt_request(
-                                &melt_request,
-                                pay_invoice_response.payment_preimage,
-                                pay_invoice_response.total_spent,
-                            )
+                            .process_melt_request(&melt_request, pay_invoice_response.total_spent)
                             .await
                         {
                             tracing::error!(

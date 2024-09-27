@@ -17,6 +17,9 @@ pub enum Error {
     /// Invalid payment hash
     #[error("Invalid hash")]
     InvalidHash,
+    /// Wrong payment type
+    #[error("Wrong payment type")]
+    WrongPaymentType,
     /// Cln Error
     #[error(transparent)]
     Cln(#[from] cln_rpc::Error),

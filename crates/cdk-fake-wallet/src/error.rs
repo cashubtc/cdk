@@ -14,6 +14,9 @@ pub enum Error {
     /// Unknown invoice
     #[error("No channel receiver")]
     NoReceiver,
+    /// Wrong invoice type
+    #[error("Wrong invoice type")]
+    WrongRequestType,
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {

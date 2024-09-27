@@ -14,10 +14,11 @@ use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
+    MeltQuoteState, MintMethodSettings, MintQuoteState,
 };
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -210,17 +211,20 @@ impl MintLightning for Phoenixd {
         partial_amount: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
+
         let pay_response = self
             .phoenixd_api
-            .pay_bolt11_invoice(&melt_quote.request, partial_amount.map(|a| a.into()))
+            .pay_bolt11_invoice(&bolt11.to_string(), partial_amount.map(|a| a.into()))
             .await?;
 
         // The pay invoice response does not give the needed fee info so we have to check.
         let check_outgoing_response = self
             .check_outgoing_payment(&pay_response.payment_id)
             .await?;
-
-        let bolt11: Bolt11Invoice = melt_quote.request.parse()?;
 
         Ok(PayInvoiceResponse {
             payment_lookup_id: bolt11.payment_hash().to_string(),
@@ -313,5 +317,21 @@ impl MintLightning for Phoenixd {
         };
 
         Ok(state)
+    }
+
+    async fn get_bolt12_payment_quote(
+        &self,
+        _melt_quote_request: &MeltQuoteBolt12Request,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        todo!()
+    }
+
+    async fn pay_bolt12_offer(
+        &self,
+        _melt_quote: mint::MeltQuote,
+        _amount: Option<Amount>,
+        _max_fee_amount: Option<Amount>,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        todo!()
     }
 }
