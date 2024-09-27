@@ -18,7 +18,7 @@ use self::nut05::{MeltBolt11Response, QuoteState};
 use self::nut11::EnforceSigFlag;
 use crate::amount::to_unit;
 use crate::cdk_database::{self, MintDatabase};
-use crate::cdk_lightning::{self, to_unit, MintLightning, PayInvoiceResponse};
+use crate::cdk_lightning::{self, MintLightning, PayInvoiceResponse};
 use crate::dhke::{hash_to_curve, sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
