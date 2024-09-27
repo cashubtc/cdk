@@ -31,8 +31,10 @@ pub struct MultiMintWallet {
 /// Wallet Key
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WalletKey {
-    mint_url: MintUrl,
-    unit: CurrencyUnit,
+    /// Mint Url
+    pub mint_url: MintUrl,
+    /// Currency Unit
+    pub unit: CurrencyUnit,
 }
 
 impl fmt::Display for WalletKey {
