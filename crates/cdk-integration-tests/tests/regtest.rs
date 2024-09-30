@@ -292,7 +292,7 @@ async fn test_cached_mint() -> Result<()> {
 
     let response = http_client
         .post_mint(
-            Url::parse(get_mint_url().as_str())?,
+            get_mint_url().as_str().parse()?,
             &quote.id,
             premint_secrets.clone(),
         )
