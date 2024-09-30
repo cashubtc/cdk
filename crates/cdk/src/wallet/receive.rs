@@ -9,7 +9,6 @@ use crate::nuts::{Conditions, Token};
 use crate::{
     amount::SplitTarget,
     dhke::construct_proofs,
-    mint_url::MintUrl,
     nuts::{Proofs, PublicKey, SecretKey, SigFlag, State},
     types::ProofInfo,
     util::hex,
@@ -26,7 +25,6 @@ impl Wallet {
         p2pk_signing_keys: &[SecretKey],
         preimages: &[String],
     ) -> Result<Amount, Error> {
-        let mut received_proofs: HashMap<MintUrl, Proofs> = HashMap::new();
         let mint_url = &self.mint_url;
         // Add mint if it does not exist in the store
         if self
@@ -139,37 +137,29 @@ impl Wallet {
             .await?;
 
         // Proof to keep
-        let p = construct_proofs(
+        let recv_proofs = construct_proofs(
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
             &keys,
         )?;
-        let mint_proofs = received_proofs.entry(mint_url.clone()).or_default();
 
         self.localstore
-            .increment_keyset_counter(&active_keyset_id, p.len() as u32)
+            .increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
             .await?;
 
-        mint_proofs.extend(p);
+        let total_amount = Amount::try_sum(recv_proofs.iter().map(|p| p.amount))?;
 
-        let mut total_amount = Amount::ZERO;
-        for (mint, recv_proofs) in received_proofs {
-            total_amount += Amount::try_sum(recv_proofs.iter().map(|p| p.amount))?;
-            let recv_proof_infos = recv_proofs
-                .into_iter()
-                .map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
-                .collect::<Result<Vec<ProofInfo>, _>>()?;
-            self.localstore
-                .update_proofs(
-                    recv_proof_infos,
-                    proofs_info
-                        .iter()
-                        .filter_map(|p| if p.mint_url == mint { Some(p.y) } else { None })
-                        .collect(),
-                )
-                .await?;
-        }
+        let recv_proof_infos = recv_proofs
+            .into_iter()
+            .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, self.unit))
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
+        self.localstore
+            .update_proofs(
+                recv_proof_infos,
+                proofs_info.into_iter().map(|p| p.y).collect(),
+            )
+            .await?;
 
         Ok(total_amount)
     }
