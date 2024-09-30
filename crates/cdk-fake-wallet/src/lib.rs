@@ -88,6 +88,17 @@ pub struct FakeInvoiceDescription {
     pub check_err: bool,
 }
 
+impl Default for FakeInvoiceDescription {
+    fn default() -> Self {
+        Self {
+            pay_invoice_state: MeltQuoteState::Paid,
+            check_payment_state: MeltQuoteState::Paid,
+            pay_err: false,
+            check_err: false,
+        }
+    }
+}
+
 #[async_trait]
 impl MintLightning for FakeWallet {
     type Err = cdk_lightning::Error;

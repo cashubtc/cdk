@@ -613,7 +613,7 @@ impl Mint {
             .get_blind_signatures_for_quote(quote_id)
             .await?;
 
-        let change = blind_signatures.is_empty().then_some(blind_signatures);
+        let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
         Ok(MeltQuoteBolt11Response {
             quote: quote.id,

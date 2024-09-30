@@ -5,8 +5,8 @@ use bip39::Mnemonic;
 use cdk::{
     amount::SplitTarget,
     cdk_database::WalletMemoryDatabase,
-    nuts::{CurrencyUnit, MeltQuoteState, State},
-    wallet::Wallet,
+    nuts::{CurrencyUnit, MeltQuoteState, PreMintSecrets, State},
+    wallet::{client::HttpClient, Wallet},
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;
@@ -309,5 +309,52 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
 
     attempt_to_swap_pending(&wallet).await?;
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_melt_change_in_quote() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    let _mint_amount = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+
+    let fake_description = FakeInvoiceDescription::default();
+
+    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
+
+    let proofs = wallet.get_proofs().await?;
+
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+
+    let keyset = wallet.get_active_mint_keyset().await?;
+
+    let premint_secrets = PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default())?;
+
+    let client = HttpClient::new();
+
+    let melt_response = client
+        .post_melt(
+            MINT_URL.parse()?,
+            melt_quote.id.clone(),
+            proofs.clone(),
+            Some(premint_secrets.blinded_messages()),
+        )
+        .await?;
+
+    assert!(melt_response.change.is_some());
+
+    let check = wallet.melt_quote_status(&melt_quote.id).await?;
+
+    assert_eq!(melt_response.change, check.change);
     Ok(())
 }
