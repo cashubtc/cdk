@@ -117,7 +117,9 @@ impl Wallet {
             .into_iter()
             .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
-        self.localstore.update_proofs(proofs_info, vec![]).await?;
+        self.localstore
+            .update_proofs(proofs_info.clone(), vec![])
+            .await?;
 
         let mut pre_swap = self
             .create_swap(None, amount_split_target, proofs, None, false)
@@ -152,13 +154,21 @@ impl Wallet {
         mint_proofs.extend(p);
 
         let mut total_amount = Amount::ZERO;
-        for (mint, proofs) in received_proofs {
-            total_amount += Amount::try_sum(proofs.iter().map(|p| p.amount))?;
-            let proofs = proofs
+        for (mint, recv_proofs) in received_proofs {
+            total_amount += Amount::try_sum(recv_proofs.iter().map(|p| p.amount))?;
+            let recv_proof_infos = recv_proofs
                 .into_iter()
                 .map(|proof| ProofInfo::new(proof, mint.clone(), State::Unspent, self.unit))
                 .collect::<Result<Vec<ProofInfo>, _>>()?;
-            self.localstore.update_proofs(proofs, vec![]).await?;
+            self.localstore
+                .update_proofs(
+                    recv_proof_infos,
+                    proofs_info
+                        .iter()
+                        .filter_map(|p| if p.mint_url == mint { Some(p.y) } else { None })
+                        .collect(),
+                )
+                .await?;
         }
 
         Ok(total_amount)
