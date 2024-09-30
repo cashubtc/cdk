@@ -407,4 +407,14 @@ impl MintDatabase for MintMemoryDatabase {
             .cloned()
             .collect())
     }
+
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let ys = self.quote_signatures.read().await;
+
+        Ok(ys.get(quote_id).cloned().unwrap_or_default())
+    }
 }

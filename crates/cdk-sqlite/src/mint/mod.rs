@@ -1202,6 +1202,37 @@ WHERE id=?;
             },
         }
     }
+
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let mut signatures = Vec::new();
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM blind_signature
+WHERE quote_id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_one(&mut transaction)
+        .await;
+
+        if let Ok(row) = rec {
+            let blinded = sqlite_row_to_blind_signature(row)?;
+
+            signatures.push(blinded);
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(signatures)
+    }
 }
 
 fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
