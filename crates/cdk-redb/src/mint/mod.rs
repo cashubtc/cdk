@@ -779,4 +779,34 @@ impl MintDatabase for MintRedbDatabase {
             None => Ok(None),
         }
     }
+
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let quote_proofs_table = read_txn
+            .open_multimap_table(QUOTE_PROOFS_TABLE)
+            .map_err(Error::from)?;
+
+        let ys = quote_proofs_table.get(quote_id).unwrap();
+
+        let ys: Vec<[u8; 33]> = ys.into_iter().flatten().map(|v| v.value()).collect();
+
+        let mut signatures = Vec::new();
+
+        let signatures_table = read_txn
+            .open_table(BLINDED_SIGNATURES)
+            .map_err(Error::from)?;
+
+        for y in ys {
+            if let Some(sig) = signatures_table.get(y).map_err(Error::from)? {
+                let sig = serde_json::from_str(sig.value())?;
+                signatures.push(sig);
+            }
+        }
+
+        Ok(signatures)
+    }
 }
