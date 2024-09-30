@@ -222,7 +222,7 @@ where
         Arc::clone(&mint_arc),
         cache_time_to_live, cache_time_to_idle
     )
-    .awaitawait
+    .await
     .unwrap();
 
     let mint_service = Router::new()
