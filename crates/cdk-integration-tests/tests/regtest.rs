@@ -12,7 +12,6 @@ use cdk_integration_tests::init_regtest::{get_mint_url, init_cln_client, init_ln
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::InvoiceStatus;
 use tokio::time::sleep;
-use url::Url;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
