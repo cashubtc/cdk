@@ -37,7 +37,7 @@ const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
 const QUOTE_PROOFS_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
     MultimapTableDefinition::new("quote_proofs");
-const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<&str, &str> =
+const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
     MultimapTableDefinition::new("quote_signatures");
 
 const MELT_REQUESTS: TableDefinition<&str, (&str, &str)> = TableDefinition::new("melt_requests");
@@ -683,7 +683,7 @@ impl MintDatabase for MintRedbDatabase {
 
                 if let Some(quote_id) = &quote_id {
                     quote_sigs_table
-                        .insert(quote_id.as_str(), blind_sig.as_str())
+                        .insert(quote_id.as_str(), blinded_message.to_bytes())
                         .map_err(Error::from)?;
                 }
             }
@@ -787,7 +787,7 @@ impl MintDatabase for MintRedbDatabase {
     ) -> Result<Vec<BlindSignature>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let quote_proofs_table = read_txn
-            .open_multimap_table(QUOTE_PROOFS_TABLE)
+            .open_multimap_table(QUOTE_SIGNATURES_TABLE)
             .map_err(Error::from)?;
 
         let ys = quote_proofs_table.get(quote_id).unwrap();
