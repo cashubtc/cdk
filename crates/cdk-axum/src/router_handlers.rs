@@ -26,7 +26,10 @@ macro_rules! post_cache_wrapper {
             ) -> Result<Json<$response_type>, Response> {
                 let Json(json_extracted_payload) = payload.clone();
                 let State(mint_state) = state.clone();
-                let cache_key = serde_json::to_string(&json_extracted_payload).unwrap();
+               let cache_key = serde_json::to_string(&json_extracted_payload).map_err(|err| {
+                    into_response(Error::from(err))
+                })?;
+
                 if let Some(cached_response) = mint_state.cache.get(&cache_key) {
                     return Ok(Json(serde_json::from_str(&cached_response).unwrap()));
                 }
