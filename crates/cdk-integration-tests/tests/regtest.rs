@@ -297,11 +297,7 @@ async fn test_cached_mint() -> Result<()> {
         )
         .await?;
     let response1 = http_client
-        .post_mint(
-            get_mint_url().as_str().parse()?,
-            &quote.id,
-            premint_secrets,
-        )
+        .post_mint(get_mint_url().as_str().parse()?, &quote.id, premint_secrets)
         .await?;
 
     assert!(response == response1);
