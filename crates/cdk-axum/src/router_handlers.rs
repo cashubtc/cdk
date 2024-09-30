@@ -3,6 +3,7 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
+use cdk::Error;
 use cdk::nuts::nut05::MeltBolt11Response;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
@@ -26,16 +27,19 @@ macro_rules! post_cache_wrapper {
             ) -> Result<Json<$response_type>, Response> {
                 let Json(json_extracted_payload) = payload.clone();
                 let State(mint_state) = state.clone();
-               let cache_key = serde_json::to_string(&json_extracted_payload).map_err(|err| {
+                let cache_key = serde_json::to_string(&json_extracted_payload).map_err(|err| {
                     into_response(Error::from(err))
                 })?;
 
                 if let Some(cached_response) = mint_state.cache.get(&cache_key) {
-                    return Ok(Json(serde_json::from_str(&cached_response).unwrap()));
+                    return Ok(Json(serde_json::from_str(&cached_response)
+                        .expect("Shouldn't panic: response is json-deserializable.")));
                 }
 
                 let Json(response) = $handler(state, payload).await?;
-                mint_state.cache.insert(cache_key, serde_json::to_string(&response).unwrap()).await;
+                mint_state.cache.insert(cache_key, serde_json::to_string(&response)
+                    .expect("Shouldn't panic: response is json-serializable.")
+                ).await;
                 Ok(Json(response))
             }
         }
