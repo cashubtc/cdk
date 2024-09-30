@@ -14,12 +14,12 @@ use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
     Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
-use cdk::types::LnKey;
+use cdk::types::{LnKey, QuoteTTL};
 use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};
 use cdk_fake_wallet::FakeWallet;
-use futures::StreamExt;
 use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
+use tokio::sync::Notify;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
@@ -72,26 +72,25 @@ pub async fn start_mint(
 
     let mnemonic = Mnemonic::generate(12)?;
 
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
     let mint = Mint::new(
         &get_mint_url(),
         &mnemonic.to_seed_normalized(""),
         mint_info,
+        quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
+        ln_backends.clone(),
         supported_units,
     )
     .await?;
-
-    let quote_ttl = 100000;
     let cache_time_to_live = 3600;
     let cache_time_to_idle = 3600;
 
     let mint_arc = Arc::new(mint);
 
     let v1_service = cdk_axum::create_mint_router(
-        &get_mint_url(),
         Arc::clone(&mint_arc),
-        ln_backends.clone(),
-        quote_ttl,
         cache_time_to_live,
         cache_time_to_idle,
     )
@@ -103,28 +102,12 @@ pub async fn start_mint(
 
     let mint = Arc::clone(&mint_arc);
 
-    for wallet in ln_backends.values() {
-        let wallet_clone = Arc::clone(wallet);
-        let mint = Arc::clone(&mint);
-        tokio::spawn(async move {
-            match wallet_clone.wait_any_invoice().await {
-                Ok(mut stream) => {
-                    while let Some(request_lookup_id) = stream.next().await {
-                        if let Err(err) =
-                            handle_paid_invoice(Arc::clone(&mint), &request_lookup_id).await
-                        {
-                            // nosemgrep: direct-panic
-                            panic!("{:?}", err);
-                        }
-                    }
-                }
-                Err(err) => {
-                    // nosemgrep: direct-panic
-                    panic!("Could not get invoice stream: {}", err);
-                }
-            }
-        });
-    }
+    let shutdown = Arc::new(Notify::new());
+
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        async move { mint.wait_for_paid_invoices(shutdown).await }
+    });
 
     axum::Server::bind(
         &format!("{}:{}", get_mint_addr(), get_mint_port())
@@ -134,25 +117,6 @@ pub async fn start_mint(
     .serve(mint_service.into_make_service())
     .await?;
 
-    Ok(())
-}
-
-/// Update mint quote when called for a paid invoice
-async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result<()> {
-    println!("Invoice with lookup id paid: {}", request_lookup_id);
-    if let Ok(Some(mint_quote)) = mint
-        .localstore
-        .get_mint_quote_by_request_lookup_id(request_lookup_id)
-        .await
-    {
-        println!(
-            "Quote {} paid by lookup id {}",
-            mint_quote.id, request_lookup_id
-        );
-        mint.localstore
-            .update_mint_quote_state(&mint_quote.id, cdk::nuts::MintQuoteState::Paid)
-            .await?;
-    }
     Ok(())
 }
 

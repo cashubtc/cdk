@@ -8,14 +8,14 @@ use cdk::{
     cdk_lightning::MintLightning,
     mint::{FeeReserve, Mint},
     nuts::{CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings},
-    types::LnKey,
+    types::{LnKey, QuoteTTL},
 };
 use cdk_cln::Cln as CdkCln;
-use futures::StreamExt;
 use ln_regtest_rs::{
     bitcoin_client::BitcoinClient, bitcoind::Bitcoind, cln::Clnd, cln_client::ClnClient, lnd::Lnd,
     lnd_client::LndClient,
 };
+use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -140,7 +140,13 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
     .await?)
 }
 
-pub async fn create_mint<D>(database: D) -> Result<Mint>
+pub async fn create_mint<D>(
+    database: D,
+    ln_backends: HashMap<
+        LnKey,
+        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
+    >,
+) -> Result<Mint>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
 {
@@ -160,11 +166,15 @@ where
     let mut supported_units: HashMap<CurrencyUnit, (u64, u8)> = HashMap::new();
     supported_units.insert(CurrencyUnit::Sat, (0, 32));
 
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
     let mint = Mint::new(
         &get_mint_url(),
         &mnemonic.to_seed_normalized(""),
         mint_info,
+        quote_ttl,
         Arc::new(database),
+        ln_backends,
         supported_units,
     )
     .await?;
@@ -189,7 +199,6 @@ where
     // Parse input
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let mint = create_mint(database).await?;
     let cln_client = init_cln_client().await?;
 
     let cln_backend = create_cln_backend(&cln_client).await?;
@@ -204,21 +213,16 @@ where
         Arc::new(cln_backend),
     );
 
-    let quote_ttl = 100000;
+    let mint = create_mint(database, ln_backends.clone()).await?;
     let cache_time_to_live = 3600;
     let cache_time_to_idle = 3600;
-
     let mint_arc = Arc::new(mint);
 
     let v1_service = cdk_axum::create_mint_router(
-        &get_mint_url(),
         Arc::clone(&mint_arc),
-        ln_backends.clone(),
-        quote_ttl,
-        cache_time_to_live,
-        cache_time_to_idle,
+        cache_time_to_live, cache_time_to_idle
     )
-    .await
+    .awaitawait
     .unwrap();
 
     let mint_service = Router::new()
@@ -227,52 +231,18 @@ where
 
     let mint = Arc::clone(&mint_arc);
 
-    for wallet in ln_backends.values() {
-        let wallet_clone = Arc::clone(wallet);
-        let mint = Arc::clone(&mint);
-        tokio::spawn(async move {
-            match wallet_clone.wait_any_invoice().await {
-                Ok(mut stream) => {
-                    while let Some(request_lookup_id) = stream.next().await {
-                        if let Err(err) =
-                            handle_paid_invoice(Arc::clone(&mint), &request_lookup_id).await
-                        {
-                            // nosemgrep: direct-panic
-                            panic!("{:?}", err);
-                        }
-                    }
-                }
-                Err(err) => {
-                    // nosemgrep: direct-panic
-                    panic!("Could not get invoice stream: {}", err);
-                }
-            }
-        });
-    }
+    let shutdown = Arc::new(Notify::new());
+
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        async move { mint.wait_for_paid_invoices(shutdown).await }
+    });
+
     println!("Staring Axum server");
     axum::Server::bind(&format!("{}:{}", addr, port).as_str().parse().unwrap())
         .serve(mint_service.into_make_service())
         .await?;
 
-    Ok(())
-}
-
-/// Update mint quote when called for a paid invoice
-async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result<()> {
-    println!("Invoice with lookup id paid: {}", request_lookup_id);
-    if let Ok(Some(mint_quote)) = mint
-        .localstore
-        .get_mint_quote_by_request_lookup_id(request_lookup_id)
-        .await
-    {
-        println!(
-            "Quote {} paid by lookup id {}",
-            mint_quote.id, request_lookup_id
-        );
-        mint.localstore
-            .update_mint_quote_state(&mint_quote.id, cdk::nuts::MintQuoteState::Paid)
-            .await?;
-    }
     Ok(())
 }
 
