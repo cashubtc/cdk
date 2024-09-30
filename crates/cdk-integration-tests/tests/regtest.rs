@@ -12,7 +12,6 @@ use cdk_integration_tests::init_regtest::{get_mint_url, init_cln_client, init_ln
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::InvoiceStatus;
 use tokio::time::sleep;
-use url::Url;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
@@ -292,14 +291,14 @@ async fn test_cached_mint() -> Result<()> {
 
     let response = http_client
         .post_mint(
-            Url::parse(get_mint_url().as_str())?,
+            get_mint_url().as_str().parse()?,
             &quote.id,
             premint_secrets.clone(),
         )
         .await?;
     let response1 = http_client
         .post_mint(
-            Url::parse(get_mint_url().as_str())?,
+            get_mint_url().as_str().parse()?,
             &quote.id,
             premint_secrets,
         )
