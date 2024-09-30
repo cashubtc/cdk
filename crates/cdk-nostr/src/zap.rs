@@ -139,6 +139,7 @@ impl NutZapper {
             .clone();
         let event = NutZapEvent {
             id: EventId::from_byte_array([0; 32]),
+            created_at: Timestamp::now(),
             sender_pubkey: self.keys.public_key(),
             receiver_pubkey: pubkey,
             content: "".to_string(),
@@ -154,6 +155,7 @@ impl NutZapper {
 
 pub struct NutZapEvent {
     pub id: EventId,
+    pub created_at: Timestamp,
     pub sender_pubkey: PublicKey,
     pub receiver_pubkey: PublicKey,
     pub content: String,
@@ -187,7 +189,7 @@ impl TryInto<EventBuilder> for NutZapEvent {
         if let Some((zapped_event_id, _relay_hint)) = self.zapped_event_id {
             tags.push(Tag::from_standardized(TagStandard::event(zapped_event_id)));
         }
-        Ok(EventBuilder::new(NUT_ZAP_KIND, self.content, tags))
+        Ok(EventBuilder::new(NUT_ZAP_KIND, self.content, tags).custom_created_at(self.created_at))
     }
 }
 
@@ -196,6 +198,7 @@ impl TryFrom<Event> for NutZapEvent {
 
     fn try_from(event: Event) -> Result<Self, Self::Error> {
         let id = event.id;
+        let created_at = event.created_at;
         let sender_pubkey = event.pubkey;
         let content = event.content;
 
@@ -263,6 +266,7 @@ impl TryFrom<Event> for NutZapEvent {
         }
         Ok(Self {
             id,
+            created_at,
             sender_pubkey,
             receiver_pubkey: receiver_pubkey.ok_or(Error::MissingPubkey)?,
             content,
