@@ -202,6 +202,11 @@ impl WalletNostrDatabase {
         Ok(())
     }
 
+    /// Get the [`Client`] for this wallet
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Delete a [`TransactionEvent`] by its [`EventId`].
     ///
     /// *Important*: This will remove the transaction from the wallet's history, but will *not* affect the proofs or balance!
