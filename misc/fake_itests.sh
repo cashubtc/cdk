@@ -82,5 +82,5 @@ cargo test -p cdk-integration-tests --test fake_wallet
 # Capture the exit status of cargo test
 test_status=$?
 
-# Exit with the status of the tests
+# Exit with the status of the testexit $test_status
 exit $test_status
