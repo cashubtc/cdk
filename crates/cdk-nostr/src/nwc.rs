@@ -62,7 +62,7 @@ impl NostrWalletConnect {
             wallet,
             client,
             keys,
-            last_check: Arc::new(Mutex::new(Timestamp::now())),
+            last_check: Arc::new(Mutex::new(Timestamp::now() - 60)),
             processed_events: Arc::new(Mutex::new(HashSet::new())),
         }
     }

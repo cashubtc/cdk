@@ -38,7 +38,7 @@ impl NutZapper {
             client,
             keys: Keys::new(key),
             wallet,
-            last_timestamp: Arc::new(Mutex::new(start_timestamp.unwrap_or(Timestamp::now()))),
+            last_timestamp: Arc::new(Mutex::new(start_timestamp.unwrap_or(Timestamp::now() - 60))),
             processed_events: Arc::new(Mutex::new(HashSet::new())),
         }
     }
