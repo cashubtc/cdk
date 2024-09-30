@@ -372,7 +372,9 @@ impl MintDatabase for MintMemoryDatabase {
 
         if let Some(quote_id) = quote_id {
             let mut current_quote_signatures = self.quote_signatures.write().await;
-            current_quote_signatures.insert(quote_id, blind_signatures.to_vec());
+            current_quote_signatures.insert(quote_id.clone(), blind_signatures.to_vec());
+            let t = current_quote_signatures.get(&quote_id);
+            println!("after insert: {:?}", t);
         }
 
         Ok(())
@@ -406,5 +408,15 @@ impl MintDatabase for MintMemoryDatabase {
             .filter(|b| &b.keyset_id == keyset_id)
             .cloned()
             .collect())
+    }
+
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let ys = self.quote_signatures.read().await;
+
+        Ok(ys.get(quote_id).cloned().unwrap_or_default())
     }
 }

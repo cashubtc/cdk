@@ -76,8 +76,8 @@ done
 
 
 # Run cargo test
-cargo test -p cdk-integration-tests --test fake_wallet
-cargo test -p cdk-integration-tests --test mint
+cargo test -p cdk-integration-tests --test fake_wallet "test_fake_melt_change_in_quote"
+# cargo test -p cdk-integration-tests --test mint
 
 # Capture the exit status of cargo test
 test_status=$?

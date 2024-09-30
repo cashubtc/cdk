@@ -609,6 +609,13 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        let blind_signatures = self
+            .localstore
+            .get_blind_signatures_for_quote(quote_id)
+            .await?;
+
+        let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
+
         Ok(MeltQuoteBolt11Response {
             quote: quote.id,
             paid: Some(quote.state == QuoteState::Paid),
@@ -617,7 +624,7 @@ impl Mint {
             amount: quote.amount,
             fee_reserve: quote.fee_reserve,
             payment_preimage: quote.payment_preimage,
-            change: None,
+            change,
         })
     }
 
