@@ -48,7 +48,7 @@ pub enum Error {
 }
 
 /// Keyset version
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeySetVersion {
     /// Current Version 00
     Version00,
@@ -83,7 +83,7 @@ impl fmt::Display for KeySetVersion {
 /// anyone who knows the set of public keys of a mint. The keyset ID **CAN**
 /// be stored in a Cashu token such that the token can be used to identify
 /// which mint or keyset it was generated from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id {
     version: KeySetVersion,
     id: [u8; Self::BYTELEN],

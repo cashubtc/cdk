@@ -146,6 +146,18 @@ pub struct BlindSignature {
     pub dleq: Option<BlindSignatureDleq>,
 }
 
+impl Ord for BlindSignature {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.amount.cmp(&other.amount)
+    }
+}
+
+impl PartialOrd for BlindSignature {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Witness
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
