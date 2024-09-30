@@ -469,12 +469,7 @@ async fn main() -> anyhow::Result<()> {
         .seconds_to_extend_cache_by
         .unwrap_or(DEFAULT_CACHE_TTI_SECS);
 
-    let v1_service = cdk_axum::create_mint_router(
-        Arc::clone(&mint),
-        cache_ttl,
-        cache_tti,
-    )
-    .await?;
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)

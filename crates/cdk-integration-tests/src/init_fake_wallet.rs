@@ -65,13 +65,9 @@ where
     let cache_tti = 3600;
     let mint_arc = Arc::new(mint);
 
-    let v1_service = cdk_axum::create_mint_router(
-        Arc::clone(&mint_arc),
-        cache_ttl,
-        cache_tti,
-    )
-    .await
-    .unwrap();
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc), cache_ttl, cache_tti)
+        .await
+        .unwrap();
 
     let mint_service = Router::new()
         .merge(v1_service)

@@ -220,7 +220,8 @@ where
 
     let v1_service = cdk_axum::create_mint_router(
         Arc::clone(&mint_arc),
-        cache_time_to_live, cache_time_to_idle
+        cache_time_to_live,
+        cache_time_to_idle,
     )
     .await
     .unwrap();
