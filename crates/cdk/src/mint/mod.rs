@@ -13,8 +13,8 @@ use tokio::task::JoinSet;
 use tracing::instrument;
 
 use crate::cdk_database::{self, MintDatabase};
-use crate::cdk_lightning::{self, MintLightning, PayInvoiceResponse};
-use crate::dhke::{hash_to_curve, sign_message, verify_message};
+use crate::cdk_lightning::{self, MintLightning};
+use crate::dhke::{sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
