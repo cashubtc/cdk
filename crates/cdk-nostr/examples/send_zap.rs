@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Minted {} sats", amount);
 
     let event_id = zapper
-        .zap_from_mint(pubkey, mint_url, amount, CurrencyUnit::Sat)
+        .zap_from_mint(pubkey, mint_url, amount, CurrencyUnit::Sat, None, None)
         .await?;
     println!("Zap event id: {}", event_id);
 

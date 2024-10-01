@@ -113,6 +113,8 @@ impl NutZapper {
         mint_url: MintUrl,
         amount: Amount,
         unit: CurrencyUnit,
+        content: Option<String>,
+        zapped_event_id: Option<(EventId, Option<UncheckedUrl>)>,
     ) -> Result<EventId, Error> {
         let wallet = self
             .wallet
@@ -137,20 +139,41 @@ impl NutZapper {
             .get(&mint_url)
             .ok_or(Error::MissingProofs)?
             .clone();
-        let event = NutZapEvent {
-            id: EventId::from_byte_array([0; 32]),
-            created_at: Timestamp::now(),
-            sender_pubkey: self.keys.public_key(),
-            receiver_pubkey: pubkey,
-            content: "".to_string(),
+        send_zap_proofs(
+            &self.client,
+            pubkey,
             mint_url,
             unit,
             proofs,
-            zapped_event_id: None,
-        };
-        let output = self.client.send_event_builder(event.try_into()?).await?;
-        Ok(output.val)
+            content,
+            zapped_event_id,
+        )
+        .await
     }
+}
+
+pub async fn send_zap_proofs(
+    client: &Client,
+    npub: PublicKey,
+    mint_url: MintUrl,
+    unit: CurrencyUnit,
+    proofs: Vec<Proof>,
+    content: Option<String>,
+    zapped_event_id: Option<(EventId, Option<UncheckedUrl>)>,
+) -> Result<EventId, Error> {
+    let event = NutZapEvent {
+        id: EventId::from_byte_array([0; 32]), // Not used to send event
+        created_at: Timestamp::now(),
+        sender_pubkey: npub, // Not used to send event
+        receiver_pubkey: npub,
+        content: content.unwrap_or_default(),
+        mint_url,
+        unit,
+        proofs,
+        zapped_event_id,
+    };
+    let output = client.send_event_builder(event.try_into()?).await?;
+    Ok(output.val)
 }
 
 pub struct NutZapEvent {
