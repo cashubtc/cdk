@@ -15,10 +15,10 @@ use bitcoin::{
     Network, OutPoint, ScriptBuf, Transaction, Txid, WScriptHash,
 };
 use cdk::{
-    amount::Amount,
+    amount::{to_unit, Amount},
     cdk_lightning::{
-        self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
-        PaymentQuoteResponse, Settings,
+        self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
+        Settings,
     },
     mint::{FeeReserve, MeltQuote},
     nuts::{
