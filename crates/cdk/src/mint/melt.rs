@@ -12,8 +12,8 @@ use crate::dhke::hash_to_curve;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::nut11::EnforceSigFlag;
 use crate::{
-    cdk_lightning::to_unit, mint::SigFlag, nuts::Id, nuts::MeltQuoteState, types::LnKey,
-    util::unix_time, Amount, Error,
+    amount::to_unit, mint::SigFlag, nuts::Id, nuts::MeltQuoteState, types::LnKey, util::unix_time,
+    Amount, Error,
 };
 
 use super::nut05::MeltBolt11Response;

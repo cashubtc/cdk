@@ -9,10 +9,9 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use axum::Router;
-use cdk::amount::Amount;
+use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse,
-    Settings, MSAT_IN_SAT,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint::FeeReserve;
 use cdk::nuts::{

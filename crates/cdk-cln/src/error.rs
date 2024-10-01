@@ -23,6 +23,9 @@ pub enum Error {
     /// Cln Rpc Error
     #[error(transparent)]
     ClnRpc(#[from] cln_rpc::RpcError),
+    /// Amount Error
+    #[error(transparent)]
+    Amount(#[from] cdk::amount::Error),
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {
