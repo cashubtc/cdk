@@ -370,4 +370,47 @@ mod tests {
 
         assert_eq!(total, 10001.into());
     }
+
+    #[test]
+    fn test_amount_to_unit() {
+        let amount = Amount::from(1000);
+        let current_unit = CurrencyUnit::Sat;
+        let target_unit = CurrencyUnit::Msat;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1000000.into());
+
+        let amount = Amount::from(1000);
+        let current_unit = CurrencyUnit::Msat;
+        let target_unit = CurrencyUnit::Sat;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1.into());
+
+        let amount = Amount::from(1);
+        let current_unit = CurrencyUnit::Usd;
+        let target_unit = CurrencyUnit::Usd;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1.into());
+
+        let amount = Amount::from(1);
+        let current_unit = CurrencyUnit::Eur;
+        let target_unit = CurrencyUnit::Eur;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1.into());
+
+        let amount = Amount::from(1);
+        let current_unit = CurrencyUnit::Sat;
+        let target_unit = CurrencyUnit::Eur;
+
+        let converted = to_unit(amount, &current_unit, &target_unit);
+
+        assert!(converted.is_err());
+    }
 }
