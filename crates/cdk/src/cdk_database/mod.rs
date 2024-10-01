@@ -280,4 +280,9 @@ pub trait MintDatabase {
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err>;
 }

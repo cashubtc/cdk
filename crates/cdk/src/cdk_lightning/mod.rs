@@ -41,9 +41,9 @@ pub enum Error {
     /// Parse Error
     #[error(transparent)]
     Parse(#[from] ParseOrSemanticError),
-    /// Cannot convert units
-    #[error("Cannot convert units")]
-    CannotConvertUnits,
+    /// Amount Error
+    #[error(transparent)]
+    Amount(#[from] crate::amount::Error),
 }
 
 /// MintLighting Trait
@@ -150,28 +150,4 @@ pub struct Settings {
     pub unit: CurrencyUnit,
     /// Invoice Description supported
     pub invoice_description: bool,
-}
-
-/// Msats in sat
-pub const MSAT_IN_SAT: u64 = 1000;
-
-/// Helper function to convert units
-pub fn to_unit<T>(
-    amount: T,
-    current_unit: &CurrencyUnit,
-    target_unit: &CurrencyUnit,
-) -> Result<Amount, Error>
-where
-    T: Into<u64>,
-{
-    let amount = amount.into();
-    match (current_unit, target_unit) {
-        (CurrencyUnit::Sat, CurrencyUnit::Sat) => Ok(amount.into()),
-        (CurrencyUnit::Msat, CurrencyUnit::Msat) => Ok(amount.into()),
-        (CurrencyUnit::Sat, CurrencyUnit::Msat) => Ok((amount * MSAT_IN_SAT).into()),
-        (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok((amount / MSAT_IN_SAT).into()),
-        (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount.into()),
-        (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount.into()),
-        _ => Err(Error::CannotConvertUnits),
-    }
 }

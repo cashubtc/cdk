@@ -12,8 +12,8 @@ use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut05::QuoteState;
 use cdk::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState,
-    PaymentMethod, Proof, Proofs, PublicKey, State,
+    BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState,
+    MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };
 use cdk::secret::Secret;
 use cdk::types::LnKey;
@@ -1025,8 +1025,8 @@ WHERE y=?;
             let res = sqlx::query(
                 r#"
 INSERT INTO blind_signature
-(y, amount, keyset_id, c, quote_id)
-VALUES (?, ?, ?, ?, ?);
+(y, amount, keyset_id, c, quote_id, dleq_e, dleq_s)
+VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
             )
             .bind(message.to_bytes().to_vec())
@@ -1034,6 +1034,8 @@ VALUES (?, ?, ?, ?, ?);
             .bind(signature.keyset_id.to_string())
             .bind(signature.c.to_bytes().to_vec())
             .bind(quote_id.clone())
+            .bind(signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()))
+            .bind(signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()))
             .execute(&mut transaction)
             .await;
 
@@ -1202,6 +1204,44 @@ WHERE id=?;
             },
         }
     }
+
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM blind_signature
+WHERE quote_id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_all(&mut transaction)
+        .await;
+
+        match recs {
+            Ok(recs) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let keysets = recs
+                    .into_iter()
+                    .map(sqlite_row_to_blind_signature)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(keysets)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get active keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::from(err).into())
+            }
+        }
+    }
 }
 
 fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
@@ -1332,12 +1372,22 @@ fn sqlite_row_to_blind_signature(row: SqliteRow) -> Result<BlindSignature, Error
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
     let row_c: Vec<u8> = row.try_get("c").map_err(Error::from)?;
+    let row_dleq_e: Option<String> = row.try_get("dleq_e").map_err(Error::from)?;
+    let row_dleq_s: Option<String> = row.try_get("dleq_s").map_err(Error::from)?;
+
+    let dleq = match (row_dleq_e, row_dleq_s) {
+        (Some(e), Some(s)) => Some(BlindSignatureDleq {
+            e: SecretKey::from_hex(e)?,
+            s: SecretKey::from_hex(s)?,
+        }),
+        _ => None,
+    };
 
     Ok(BlindSignature {
         amount: Amount::from(row_amount as u64),
         keyset_id: Id::from_str(&keyset_id)?,
         c: PublicKey::from_slice(&row_c)?,
-        dleq: None,
+        dleq,
     })
 }
 

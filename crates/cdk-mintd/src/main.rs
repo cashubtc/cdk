@@ -20,7 +20,7 @@ use cdk::nuts::{
     nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
 };
-use cdk::types::LnKey;
+use cdk::types::{LnKey, QuoteTTL};
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
 use cdk_lnbits::LNbits;
@@ -32,8 +32,7 @@ use cdk_strike::Strike;
 use clap::Parser;
 use cli::CLIArgs;
 use config::{DatabaseEngine, LnBackend};
-use futures::StreamExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -425,11 +424,15 @@ async fn main() -> anyhow::Result<()> {
 
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
     let mint = Mint::new(
         &settings.info.url,
         &mnemonic.to_seed_normalized(""),
         mint_info,
+        quote_ttl,
         localstore,
+        ln_backends.clone(),
         supported_units,
     )
     .await?;
@@ -449,17 +452,14 @@ async fn main() -> anyhow::Result<()> {
     // Pending melt quotes where the paynment has **failed** inputs are reset to unspent
     check_pending_melt_quotes(Arc::clone(&mint), &ln_backends).await?;
 
-    let mint_url = settings.info.url;
     let listen_addr = settings.info.listen_host;
     let listen_port = settings.info.listen_port;
-    let quote_ttl = settings
+    let _quote_ttl = settings
         .info
         .seconds_quote_is_valid_for
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
 
-    let v1_service =
-        cdk_axum::create_mint_router(&mint_url, Arc::clone(&mint), ln_backends.clone(), quote_ttl)
-            .await?;
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint)).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)
@@ -469,45 +469,35 @@ async fn main() -> anyhow::Result<()> {
         mint_service = mint_service.merge(router);
     }
 
-    // Spawn task to wait for invoces to be paid and update mint quotes
-    for (_, ln) in ln_backends {
-        let mint = Arc::clone(&mint);
-        tokio::spawn(async move {
-            loop {
-                match ln.wait_any_invoice().await {
-                    Ok(mut stream) => {
-                        while let Some(request_lookup_id) = stream.next().await {
-                            if let Err(err) =
-                                handle_paid_invoice(mint.clone(), &request_lookup_id).await
-                            {
-                                tracing::warn!("{:?}", err);
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!("Could not get invoice stream: {}", err);
-                    }
-                }
-            }
-        });
-    }
+    let shutdown = Arc::new(Notify::new());
 
-    axum::Server::bind(
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        async move { mint.wait_for_paid_invoices(shutdown).await }
+    });
+
+    let axum_result = axum::Server::bind(
         &format!("{}:{}", listen_addr, listen_port)
             .as_str()
             .parse()?,
     )
     .serve(mint_service.into_make_service())
-    .await?;
+    .await;
 
-    Ok(())
-}
+    shutdown.notify_waiters();
 
-/// Update mint quote when called for a paid invoice
-async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result<()> {
-    tracing::debug!("Invoice with lookup id paid: {}", request_lookup_id);
-    mint.pay_mint_quote_for_request_id(request_lookup_id)
-        .await?;
+    match axum_result {
+        Ok(_) => {
+            tracing::info!("Axum server stopped with okay status");
+        }
+        Err(err) => {
+            tracing::warn!("Axum server stopped with error");
+            tracing::error!("{}", err);
+
+            bail!("Axum exited with error")
+        }
+    }
+
     Ok(())
 }
 

@@ -5,10 +5,12 @@ use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::dhke::construct_proofs;
+use cdk::mint::MintQuote;
 use cdk::nuts::{
     CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey,
     SpendingConditions, SwapRequest,
 };
+use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
 use std::collections::HashMap;
@@ -36,11 +38,15 @@ async fn new_mint(fee: u64) -> Mint {
 
     let mnemonic = Mnemonic::generate(12).unwrap();
 
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
     Mint::new(
         MINT_URL,
         &mnemonic.to_seed_normalized(""),
         mint_info,
+        quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
+        HashMap::new(),
         supported_units,
     )
     .await
@@ -59,16 +65,16 @@ async fn mint_proofs(
 ) -> Result<Proofs> {
     let request_lookup = uuid::Uuid::new_v4().to_string();
 
-    let mint_quote = mint
-        .new_mint_quote(
-            MINT_URL.parse()?,
-            "".to_string(),
-            CurrencyUnit::Sat,
-            amount,
-            unix_time() + 36000,
-            request_lookup.to_string(),
-        )
-        .await?;
+    let quote = MintQuote::new(
+        mint.mint_url.clone(),
+        "".to_string(),
+        CurrencyUnit::Sat,
+        amount,
+        unix_time() + 36000,
+        request_lookup.to_string(),
+    );
+
+    mint.localstore.add_mint_quote(quote.clone()).await?;
 
     mint.pay_mint_quote_for_request_id(&request_lookup).await?;
     let keyset_id = Id::from(&keys);
@@ -76,7 +82,7 @@ async fn mint_proofs(
     let premint = PreMintSecrets::random(keyset_id, amount, split_target)?;
 
     let mint_request = MintBolt11Request {
-        quote: mint_quote.id,
+        quote: quote.id,
         outputs: premint.blinded_messages(),
     };
 
