@@ -77,6 +77,7 @@ pub struct WalletNostrDatabase {
     keys: nostr_sdk::Keys,
     id: String,
     info: Arc<Mutex<(Timestamp, WalletInfo)>>,
+    last_timestamp: Arc<Mutex<Timestamp>>,
     // In-memory cache
     wallet_db: WalletMemoryDatabase,
 }
@@ -108,6 +109,7 @@ impl WalletNostrDatabase {
                     ..Default::default()
                 },
             ))),
+            last_timestamp: Arc::new(Mutex::new(Timestamp::now())),
             wallet_db: WalletMemoryDatabase::default(),
         };
         let info = self_.refresh_info(false).await?;
@@ -144,6 +146,7 @@ impl WalletNostrDatabase {
                     ..Default::default()
                 },
             ))),
+            last_timestamp: Arc::new(Mutex::new(Timestamp::now())),
             wallet_db: WalletMemoryDatabase::default(),
         };
         let info = self_.refresh_info(true).await?;
@@ -176,6 +179,7 @@ impl WalletNostrDatabase {
             keys,
             id,
             info,
+            last_timestamp: Arc::new(Mutex::new(Timestamp::now())),
             wallet_db,
         }
     }
@@ -383,9 +387,13 @@ impl WalletNostrDatabase {
     /// Save a [`Transaction`]
     #[tracing::instrument(skip(self))]
     pub async fn save_transaction(&self, tx: Transaction) -> Result<EventId, Error> {
-        let event = tx.to_event(&self.id, &self.keys)?;
+        let mut last_timestamp = self.last_timestamp.lock().await;
+        let event = tx.to_event(&self.id, &self.keys, *last_timestamp)?;
         let id = event.id;
+        *last_timestamp = event.created_at;
         self.save_event(event).await?;
+        drop(last_timestamp);
+
         let mut info = self.info.lock().await;
         let mut wallet_balance = Amount::try_sum(
             self.get_proofs(
@@ -697,7 +705,13 @@ impl WalletDatabase for WalletNostrDatabase {
                 deleted: removed_proofs.iter().map(|info| info.y).collect(),
                 reserved: vec![],
             };
-            self.save_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
+            let mut last_timestamp = self.last_timestamp.lock().await;
+            let event = event
+                .to_event(&self.id, &self.keys, *last_timestamp)
+                .map_err(map_err)?;
+            *last_timestamp = event.created_at;
+            drop(last_timestamp);
+            self.save_event(event)
                 .await
                 .map_err(|e| map_err(e.into()))?;
         }
@@ -724,7 +738,13 @@ impl WalletDatabase for WalletNostrDatabase {
                 deleted: vec![],
                 reserved: ys.clone(),
             };
-            self.save_event(event.to_event(&self.id, &self.keys).map_err(map_err)?)
+            let mut last_timestamp = self.last_timestamp.lock().await;
+            let event = event
+                .to_event(&self.id, &self.keys, *last_timestamp)
+                .map_err(map_err)?;
+            *last_timestamp = event.created_at;
+            drop(last_timestamp);
+            self.save_event(event)
                 .await
                 .map_err(|e| map_err(e.into()))?;
         }
@@ -1001,10 +1021,19 @@ impl ProofsEvent {
     }
 
     /// Parses a [`ProofsEvent`] from an [`Event`]
-    pub fn to_event(&self, wallet_id: &str, keys: &nostr_sdk::Keys) -> Result<Event, Error> {
+    pub fn to_event(
+        &self,
+        wallet_id: &str,
+        keys: &nostr_sdk::Keys,
+        last_timestamp: Timestamp,
+    ) -> Result<Event, Error> {
         let mut tags = Vec::new();
         tags.push(wallet_link_tag(wallet_id, keys)?);
 
+        let mut created_at = Timestamp::now();
+        if created_at <= last_timestamp {
+            created_at = last_timestamp + 1;
+        }
         let event = EventBuilder::new(
             PROOFS_KIND,
             nip44::encrypt(
@@ -1014,7 +1043,8 @@ impl ProofsEvent {
                 nip44::Version::V2,
             )?,
             tags,
-        );
+        )
+        .custom_created_at(created_at);
         Ok(event.to_event(keys)?)
     }
 }
@@ -1122,7 +1152,12 @@ impl Transaction {
     }
 
     /// Converts a [`TxHistory`] to an [`Event`]
-    pub fn to_event(&self, wallet_id: &str, keys: &nostr_sdk::Keys) -> Result<Event, Error> {
+    pub fn to_event(
+        &self,
+        wallet_id: &str,
+        keys: &nostr_sdk::Keys,
+        last_timestamp: Timestamp,
+    ) -> Result<Event, Error> {
         let mut content = Vec::new();
         content.push(Tag::parse(&[DIRECTION_TAG, &self.direction.to_string()])?);
         content.push(Tag::parse(&[AMOUNT_TAG, &self.amount.to_string()])?);
@@ -1158,6 +1193,10 @@ impl Transaction {
         let mut tags = Vec::new();
         tags.push(wallet_link_tag(wallet_id, keys)?);
 
+        let mut created_at = Timestamp::now();
+        if created_at <= last_timestamp {
+            created_at = last_timestamp + 1;
+        }
         let event = EventBuilder::new(
             TX_HISTORY_KIND,
             nip44::encrypt(
@@ -1167,7 +1206,8 @@ impl Transaction {
                 nip44::Version::V2,
             )?,
             tags,
-        );
+        )
+        .custom_created_at(created_at);
         Ok(event.to_event(keys)?)
     }
 
