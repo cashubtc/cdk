@@ -1116,6 +1116,11 @@ impl Node {
             .map_err(|_| Error::Ldk("Error spending outputs".to_string()))?;
         let txid = tx.compute_txid();
         let channel_id = self.fund_channel(pending_channel.channel_id, tx).await?;
+
+        self.db
+            .clear_spendable_outputs(outputs.keys().map(|k| *k).collect())
+            .await?;
+
         Ok(ReopenChannel {
             channel_id,
             funding_script: pending_channel.funding_script,
