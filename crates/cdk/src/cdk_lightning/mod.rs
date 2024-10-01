@@ -1,16 +1,13 @@
 //! CDK Mint Lightning
 
 use std::pin::Pin;
-use std::str::FromStr;
 
 use async_trait::async_trait;
 use futures::Stream;
-use lightning::offers::offer::Offer;
 use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::amount::to_unit;
 use crate::nuts::nut18::MeltQuoteBolt12Request;
 use crate::nuts::{
     CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
@@ -180,25 +177,4 @@ pub struct Settings {
     pub unit: CurrencyUnit,
     /// Invoice Description supported
     pub invoice_description: bool,
-}
-
-/// Convert offer to amount in unit
-pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Error> {
-    let offer_amount = offer.amount().ok_or(Error::InvoiceAmountUnknown)?;
-
-    let (amount, currency) = match offer_amount {
-        lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
-            (amount_msats, CurrencyUnit::Msat)
-        }
-        lightning::offers::offer::Amount::Currency {
-            iso4217_code,
-            amount,
-        } => (
-            amount,
-            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)
-                .map_err(|_| Error::UnsupportedUnit)?,
-        ),
-    };
-
-    to_unit(amount, &currency, unit).map_err(|_err| Error::UnsupportedUnit)
 }

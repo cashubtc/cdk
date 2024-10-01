@@ -6,8 +6,8 @@ use anyhow::bail;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
+use crate::amount::amount_for_offer;
 use crate::cdk_lightning;
-use crate::cdk_lightning::amount_for_offer;
 use crate::cdk_lightning::MintLightning;
 use crate::cdk_lightning::PayInvoiceResponse;
 use crate::dhke::hash_to_curve;

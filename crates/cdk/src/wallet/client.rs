@@ -10,10 +10,10 @@ use crate::error::ErrorResponse;
 use crate::nuts::nut15::Mpp;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
-    KeysetResponse, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    KeysetResponse, MeltBolt11Request, MeltBolt12Request, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MeltQuoteBolt12Request, MintBolt11Request, MintBolt11Response,
+    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::{Amount, Bolt11Invoice};
 
@@ -240,6 +240,35 @@ impl HttpClient {
         }
     }
 
+    /// Melt Bol12
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
+    pub async fn post_melt_bolt12_quote(
+        &self,
+        mint_url: Url,
+        unit: CurrencyUnit,
+        request: String,
+        amount: Option<Amount>,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "melt", "quote", "bolt12"])?;
+
+        let request = MeltQuoteBolt12Request {
+            request,
+            unit,
+            amount,
+        };
+
+        let res = self.inner.post(url).json(&request).send().await?;
+
+        println!("{:?}", res);
+
+        let res = res.json::<Value>().await?;
+
+        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        }
+    }
+
     /// Melt Quote Status
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_melt_quote_status(
@@ -292,6 +321,39 @@ impl HttpClient {
                 }
                 Err(ErrorResponse::from_value(res)?.into())
             }
+        }
+    }
+
+    /// Melt Bolt12 [NUT-05]
+    /// [Nut-08] Lightning fee return if outputs defined
+    #[instrument(skip(self, quote, inputs, outputs), fields(mint_url = %mint_url))]
+    pub async fn post_melt_bolt12(
+        &self,
+        mint_url: Url,
+        quote: String,
+        inputs: Vec<Proof>,
+        outputs: Option<Vec<BlindedMessage>>,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "melt", "bolt12"])?;
+
+        let request = MeltBolt12Request {
+            quote,
+            inputs,
+            outputs,
+        };
+
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
+            Ok(melt_quote_response) => Ok(melt_quote_response.into()),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
 

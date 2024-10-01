@@ -3,9 +3,10 @@ use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
-use cdk::nuts::CurrencyUnit;
+use cdk::amount::Amount;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::{MultiMintWallet, WalletKey};
-use cdk::Bolt11Invoice;
+// use cdk::Bolt11Invoice;
 use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;
@@ -15,13 +16,20 @@ pub struct MeltSubCommand {
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,
+    /// Payment method
+    #[arg(short, long, default_value = "bolt11")]
+    method: String,
+    /// Amount
+    #[arg(short, long)]
+    amount: Option<u64>,
 }
 
 pub async fn pay(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &MeltSubCommand,
 ) -> Result<()> {
-    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    println!("{}", sub_command_args.unit);
+    let unit = CurrencyUnit::from_str(&sub_command_args.unit).unwrap();
     let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
 
     println!("Enter mint number to melt from");
@@ -44,22 +52,36 @@ pub async fn pay(
         .await
         .expect("Known wallet");
 
-    println!("Enter bolt11 invoice request");
+    let method = PaymentMethod::from_str(&sub_command_args.method)?;
+    match method {
+        PaymentMethod::Bolt11 => {
+            println!("Enter bolt11 invoice request");
+        }
+        PaymentMethod::Bolt12 => {
+            println!("Enter bolt12 invoice request");
+        }
+        _ => panic!("Unknown payment method"),
+    }
 
     let mut user_input = String::new();
     let stdin = io::stdin();
     io::stdout().flush().unwrap();
     stdin.read_line(&mut user_input)?;
-    let bolt11 = Bolt11Invoice::from_str(user_input.trim())?;
 
-    if bolt11
-        .amount_milli_satoshis()
-        .unwrap()
-        .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * 1000_u64))
-    {
-        bail!("Not enough funds");
-    }
-    let quote = wallet.melt_quote(bolt11.to_string(), None).await?;
+    let quote = match method {
+        PaymentMethod::Bolt11 => {
+            wallet
+                .melt_quote(user_input.trim().to_string(), None)
+                .await?
+        }
+        PaymentMethod::Bolt12 => {
+            let amount = sub_command_args.amount.map(Amount::from);
+            wallet
+                .melt_bolt12_quote(user_input.trim().to_string(), amount)
+                .await?
+        }
+        _ => panic!("Unsupported payment methof"),
+    };
 
     println!("{:?}", quote);
 
