@@ -475,7 +475,7 @@ impl WalletConnection {
     }
 
     fn check_and_update_remaining_budget(&mut self) -> Amount {
-        if let Some(renews_at) = self.budget_renews_at() {
+        if let Some(renews_at) = self.budget.renews_at {
             if renews_at < Timestamp::now() {
                 self.budget.used_budget_msats = Amount::ZERO;
                 self.budget.renews_at = Some(renews_at);
@@ -640,5 +640,35 @@ impl Into<nip47::NIP47Error> for Error {
                 message: e.to_string(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use nostr_sdk::{SecretKey, Timestamp};
+    use url::Url;
+
+    use super::{BudgetRenewalPeriod, ConnectionBudget, WalletConnection};
+
+    #[test]
+    fn test_connection_budget_update() {
+        let mut connection = WalletConnection::new(
+            SecretKey::generate(),
+            Url::from_str("ws://localhost:7777").unwrap(),
+            ConnectionBudget {
+                renewal_period: BudgetRenewalPeriod::Daily,
+                renews_at: Some(Timestamp::now() - (24 * 60 * 60 - 1)),
+                total_budget_msats: 1_000_000.into(),
+                used_budget_msats: 21_000.into(),
+            },
+        );
+        let remaining_amount = connection.check_and_update_remaining_budget();
+        assert_eq!(remaining_amount, 1_000_000.into());
+        assert_eq!(connection.budget.used_budget_msats, 0.into());
+        let new_renews_at = connection.budget_renews_at().unwrap();
+        assert!(new_renews_at > Timestamp::now());
+        assert!(new_renews_at < Timestamp::now() + 24 * 60 * 60);
     }
 }
