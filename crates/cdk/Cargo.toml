@@ -20,7 +20,7 @@ bench = []
 [dependencies]
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
-bitcoin = { version= "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
+bitcoin = { version= "0.32.3", features = ["base64", "serde", "rand", "rand-std"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
