@@ -7,6 +7,7 @@ use lightning::offers::offer::Offer;
 use tracing::instrument;
 
 use crate::cdk_lightning;
+use crate::cdk_lightning::amount_for_offer;
 use crate::cdk_lightning::MintLightning;
 use crate::cdk_lightning::PayInvoiceResponse;
 use crate::dhke::hash_to_curve;
@@ -157,24 +158,7 @@ impl Mint {
 
         let amount = match amount {
             Some(amount) => *amount,
-            None => {
-                let offer_amount = offer.amount().ok_or(Error::InvoiceAmountUndefined)?;
-
-                let (amount, currency) = match offer_amount {
-                    lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
-                        (amount_msats, CurrencyUnit::Msat)
-                    }
-                    lightning::offers::offer::Amount::Currency {
-                        iso4217_code,
-                        amount,
-                    } => (
-                        amount,
-                        CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)?,
-                    ),
-                };
-
-                to_unit(amount, &currency, unit).map_err(|_err| Error::UnsupportedUnit)?
-            }
+            None => amount_for_offer(&offer, unit).map_err(|_| Error::UnsupportedUnit)?,
         };
 
         self.check_melt_request_acceptable(amount, *unit, PaymentMethod::Bolt12)?;

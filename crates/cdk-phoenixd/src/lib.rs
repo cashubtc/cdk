@@ -4,6 +4,7 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -12,7 +13,8 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, amount_for_offer, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
+    PaymentQuoteResponse, Settings,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -20,9 +22,11 @@ use cdk::nuts::{
     CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
     MeltQuoteState, MintMethodSettings, MintQuoteState,
 };
+use cdk::util::hex;
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
 use futures::{Stream, StreamExt};
+use lightning::offers::offer::Offer;
 use phoenixd_rs::webhooks::WebhookResponse;
 use phoenixd_rs::{InvoiceRequest, Phoenixd as PhoenixdApi};
 use tokio::sync::Mutex;
@@ -321,17 +325,68 @@ impl MintLightning for Phoenixd {
 
     async fn get_bolt12_payment_quote(
         &self,
-        _melt_quote_request: &MeltQuoteBolt12Request,
+        melt_quote_request: &MeltQuoteBolt12Request,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        todo!()
+        if CurrencyUnit::Sat != melt_quote_request.unit {
+            return Err(Error::UnsupportedUnit.into());
+        }
+
+        let offer = Offer::from_str(&melt_quote_request.request)
+            .map_err(|_| Error::Anyhow(anyhow!("Invalid offer")))?;
+
+        let amount = match melt_quote_request.amount {
+            Some(amount) => amount,
+            None => amount_for_offer(&offer, &CurrencyUnit::Sat)?,
+        };
+
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+
+        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+
+        let mut fee = match relative_fee_reserve > absolute_fee_reserve {
+            true => relative_fee_reserve,
+            false => absolute_fee_reserve,
+        };
+
+        // Fee in phoenixd is always 0.04 + 4 sat
+        fee += 4;
+
+        Ok(PaymentQuoteResponse {
+            request_lookup_id: hex::encode(offer.id().0),
+            amount,
+            fee: fee.into(),
+            state: MeltQuoteState::Unpaid,
+        })
     }
 
     async fn pay_bolt12_offer(
         &self,
-        _melt_quote: mint::MeltQuote,
-        _amount: Option<Amount>,
+        melt_quote: mint::MeltQuote,
+        amount: Option<Amount>,
         _max_fee_amount: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        todo!()
+        let offer = &match melt_quote.request {
+            PaymentRequest::Bolt12 { offer, invoice: _ } => offer,
+            PaymentRequest::Bolt11 { .. } => return Err(Error::WrongRequestType.into()),
+        };
+
+        let pay_response = self
+            .phoenixd_api
+            .pay_bolt12_offer(offer.to_string(), amount.map(|a| a.into()), None)
+            .await?;
+
+        // The pay invoice response does not give the needed fee info so we have to check.
+        let check_outgoing_response = self
+            .check_outgoing_payment(&pay_response.payment_id)
+            .await?;
+
+        Ok(PayInvoiceResponse {
+            payment_lookup_id: pay_response.payment_id,
+            payment_preimage: Some(pay_response.payment_preimage),
+            status: MeltQuoteState::Paid,
+            total_spent: check_outgoing_response.total_spent,
+            unit: CurrencyUnit::Sat,
+        })
     }
 }
