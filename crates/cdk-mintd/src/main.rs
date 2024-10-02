@@ -517,14 +517,14 @@ async fn check_pending_mint_quotes(
     ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
 ) -> Result<()> {
     let mut pending_quotes = mint.get_pending_mint_quotes().await?;
-    tracing::trace!("There are {} pending mint quotes.", pending_quotes.len());
+    tracing::info!("There are {} pending mint quotes.", pending_quotes.len());
     let mut unpaid_quotes = mint.get_unpaid_mint_quotes().await?;
-    tracing::trace!("There are {} unpaid mint quotes.", unpaid_quotes.len());
+    tracing::info!("There are {} unpaid mint quotes.", unpaid_quotes.len());
 
     unpaid_quotes.append(&mut pending_quotes);
 
     for quote in unpaid_quotes {
-        tracing::trace!("Checking status of mint quote: {}", quote.id);
+        tracing::debug!("Checking status of mint quote: {}", quote.id);
         let lookup_id = quote.request_lookup_id;
         match ln.check_incoming_invoice_status(&lookup_id).await {
             Ok(state) => {
@@ -555,8 +555,10 @@ async fn check_pending_melt_quotes(
         .into_iter()
         .filter(|q| q.state == MeltQuoteState::Pending || q.state == MeltQuoteState::Unknown)
         .collect();
+    tracing::info!("There are {} pending melt quotes.", pending_quotes.len());
 
     for pending_quote in pending_quotes {
+        tracing::debug!("Checking status for melt quote {}.", pending_quote.id);
         let melt_request_ln_key = mint.localstore.get_melt_request(&pending_quote.id).await?;
 
         let (melt_request, ln_key) = match melt_request_ln_key {
