@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
+    PaymentQuoteResponse, Settings,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -339,7 +340,7 @@ impl MintLightning for LNbits {
     async fn get_bolt12_payment_quote(
         &self,
         _melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<PaymentQuoteResponse, Self::Err> {
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
         todo!()
     }
 

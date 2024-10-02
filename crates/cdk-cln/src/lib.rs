@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk::amount::{to_unit, Amount};
+use cdk::amount::{amount_for_offer, to_unit, Amount};
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
+    PaymentQuoteResponse, Settings,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -24,7 +25,8 @@ use cdk::nuts::{
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use cln_rpc::model::requests::{
-    InvoiceRequest, ListinvoicesRequest, ListpaysRequest, PayRequest, WaitanyinvoiceRequest,
+    FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest, PayRequest,
+    WaitanyinvoiceRequest,
 };
 use cln_rpc::model::responses::{
     ListinvoicesInvoices, ListinvoicesInvoicesStatus, ListpaysPaysStatus, PayStatus,
@@ -34,6 +36,8 @@ use cln_rpc::model::Request;
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
 use error::Error;
 use futures::{Stream, StreamExt};
+use lightning::offers::invoice::Bolt12Invoice;
+use lightning::offers::offer::Offer;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -473,9 +477,51 @@ impl MintLightning for Cln {
 
     async fn get_bolt12_payment_quote(
         &self,
-        _melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<PaymentQuoteResponse, Self::Err> {
-        todo!()
+        melt_quote_request: &MeltQuoteBolt12Request,
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
+        let offer =
+            Offer::from_str(&melt_quote_request.request).map_err(|_| Error::UnknownInvoice)?;
+
+        let amount = match melt_quote_request.amount {
+            Some(amount) => amount,
+            None => amount_for_offer(&offer, &CurrencyUnit::Msat)?,
+        };
+
+        let mut cln_client = self.cln_client.lock().await;
+        let cln_response = cln_client
+            .call(Request::FetchInvoice(FetchinvoiceRequest {
+                amount_msat: Some(CLN_Amount::from_msat(amount.into())),
+                offer: melt_quote_request.request.clone(),
+                payer_note: None,
+                quantity: None,
+                recurrence_counter: None,
+                recurrence_label: None,
+                recurrence_start: None,
+                timeout: None,
+            }))
+            .await;
+
+        let amount = to_unit(amount, &CurrencyUnit::Msat, &melt_quote_request.unit)?;
+
+        match cln_response {
+            Ok(cln_rpc::Response::FetchInvoice(invoice_response)) => {
+                let bolt12_invoice =
+                    Bolt12Invoice::try_from(hex::decode(&invoice_response.invoice).unwrap())
+                        .unwrap();
+
+                Ok(Bolt12PaymentQuoteResponse {
+                    request_lookup_id: bolt12_invoice.payment_hash().to_string(),
+                    amount,
+                    fee: Amount::ZERO,
+                    state: MeltQuoteState::Unpaid,
+                    invoice: Some(invoice_response.invoice),
+                })
+            }
+            _ => {
+                tracing::error!("Error attempting to pay invoice for offer",);
+                Err(Error::WrongClnResponse.into())
+            }
+        }
     }
 
     async fn pay_bolt12_offer(

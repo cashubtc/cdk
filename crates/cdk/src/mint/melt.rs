@@ -189,7 +189,7 @@ impl Mint {
 
         let payment_request = PaymentRequest::Bolt12 {
             offer: Box::new(offer),
-            invoice: None,
+            invoice: payment_quote.invoice,
         };
 
         let quote = MeltQuote::new(

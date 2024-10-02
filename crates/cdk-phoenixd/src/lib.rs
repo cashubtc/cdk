@@ -13,7 +13,8 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::{amount_for_offer, to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
+    PaymentQuoteResponse, Settings,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -338,7 +339,7 @@ impl MintLightning for Phoenixd {
     async fn get_bolt12_payment_quote(
         &self,
         melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<PaymentQuoteResponse, Self::Err> {
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
         if CurrencyUnit::Sat != melt_quote_request.unit {
             return Err(Error::UnsupportedUnit.into());
         }
@@ -364,11 +365,12 @@ impl MintLightning for Phoenixd {
         // Fee in phoenixd is always 0.04 + 4 sat
         fee += 4;
 
-        Ok(PaymentQuoteResponse {
+        Ok(Bolt12PaymentQuoteResponse {
             request_lookup_id: hex::encode(offer.id().0),
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
+            invoice: None,
         })
     }
 

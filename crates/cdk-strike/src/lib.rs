@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
+    PaymentQuoteResponse, Settings,
 };
 use cdk::nuts::{
     CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
@@ -311,7 +312,7 @@ impl MintLightning for Strike {
     async fn get_bolt12_payment_quote(
         &self,
         _melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<PaymentQuoteResponse, Self::Err> {
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
         todo!()
     }
 

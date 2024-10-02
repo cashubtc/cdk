@@ -114,7 +114,7 @@ pub trait MintLightning {
     async fn get_bolt12_payment_quote(
         &self,
         melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<PaymentQuoteResponse, Self::Err>;
+    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err>;
 
     /// Pay a bolt12 offer
     async fn pay_bolt12_offer(
@@ -162,6 +162,21 @@ pub struct PaymentQuoteResponse {
     pub fee: Amount,
     /// Status
     pub state: MeltQuoteState,
+}
+
+/// Payment quote response
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bolt12PaymentQuoteResponse {
+    /// Request look up id
+    pub request_lookup_id: String,
+    /// Amount
+    pub amount: Amount,
+    /// Fee required for melt
+    pub fee: Amount,
+    /// Status
+    pub state: MeltQuoteState,
+    /// Bolt12 invoice
+    pub invoice: Option<String>,
 }
 
 /// Ln backend settings
