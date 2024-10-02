@@ -232,7 +232,7 @@ impl MintLightning for Phoenixd {
         Ok(PayInvoiceResponse {
             payment_lookup_id: bolt11.payment_hash().to_string(),
             payment_preimage: Some(pay_response.payment_preimage),
-            status: MeltQuoteState::Paid,
+            status: check_outgoing_response.status,
             total_spent: check_outgoing_response.total_spent,
             unit: CurrencyUnit::Sat,
         })
@@ -370,9 +370,14 @@ impl MintLightning for Phoenixd {
             PaymentRequest::Bolt11 { .. } => return Err(Error::WrongRequestType.into()),
         };
 
+        let amount = match amount {
+            Some(amount) => amount,
+            None => amount_for_offer(&offer, &CurrencyUnit::Sat)?,
+        };
+
         let pay_response = self
             .phoenixd_api
-            .pay_bolt12_offer(offer.to_string(), amount.map(|a| a.into()), None)
+            .pay_bolt12_offer(offer.to_string(), amount.into(), None)
             .await?;
 
         // The pay invoice response does not give the needed fee info so we have to check.
@@ -380,10 +385,17 @@ impl MintLightning for Phoenixd {
             .check_outgoing_payment(&pay_response.payment_id)
             .await?;
 
+        tracing::debug!(
+            "Phd invoice {} for {} with amount {}",
+            check_outgoing_response.status,
+            amount,
+            check_outgoing_response.total_spent - amount
+        );
+
         Ok(PayInvoiceResponse {
             payment_lookup_id: pay_response.payment_id,
             payment_preimage: Some(pay_response.payment_preimage),
-            status: MeltQuoteState::Paid,
+            status: check_outgoing_response.status,
             total_spent: check_outgoing_response.total_spent,
             unit: CurrencyUnit::Sat,
         })
