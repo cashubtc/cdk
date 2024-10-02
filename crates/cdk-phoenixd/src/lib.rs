@@ -4,6 +4,7 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -268,6 +269,19 @@ impl MintLightning for Phoenixd {
         &self,
         payment_id: &str,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        // We can only check the status of the payment if we have the payment id not if we only have a payment hash.
+        // In phd this is a uuid, that we get after getting a response from the pay invoice
+        if let Err(_err) = uuid::Uuid::from_str(payment_id) {
+            tracing::warn!("Could not check status of payment, no payment id");
+            return Ok(PayInvoiceResponse {
+                payment_lookup_id: payment_id.to_string(),
+                payment_preimage: None,
+                status: MeltQuoteState::Unknown,
+                total_spent: Amount::ZERO,
+                unit: CurrencyUnit::Sat,
+            });
+        }
+
         let res = self.phoenixd_api.get_outgoing_invoice(payment_id).await;
 
         let state = match res {
