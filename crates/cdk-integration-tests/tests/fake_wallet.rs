@@ -334,6 +334,8 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
+    sleep(Duration::from_millis(5)).await;
+
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
