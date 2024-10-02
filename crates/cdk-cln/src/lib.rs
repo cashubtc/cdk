@@ -526,11 +526,83 @@ impl MintLightning for Cln {
 
     async fn pay_bolt12_offer(
         &self,
-        _melt_quote: mint::MeltQuote,
+        melt_quote: mint::MeltQuote,
         _amount: Option<Amount>,
-        _max_fee_amount: Option<Amount>,
+        max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        todo!()
+        let bolt12 = &match melt_quote.request {
+            PaymentRequest::Bolt12 { offer: _, invoice } => invoice.ok_or(Error::UnknownInvoice)?,
+            PaymentRequest::Bolt11 { .. } => return Err(Error::WrongPaymentType.into()),
+        };
+
+        let pay_state = self
+            .check_outgoing_payment(&melt_quote.request_lookup_id)
+            .await?;
+
+        match pay_state.status {
+            MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => (),
+            MeltQuoteState::Paid => {
+                tracing::debug!("Melt attempted on invoice already paid");
+                return Err(Self::Err::InvoiceAlreadyPaid);
+            }
+            MeltQuoteState::Pending => {
+                tracing::debug!("Melt attempted on invoice already pending");
+                return Err(Self::Err::InvoicePaymentPending);
+            }
+        }
+
+        let mut cln_client = self.cln_client.lock().await;
+        let cln_response = cln_client
+            .call(Request::Pay(PayRequest {
+                bolt11: bolt12.to_string(),
+                amount_msat: None,
+                label: None,
+                riskfactor: None,
+                maxfeepercent: None,
+                retry_for: None,
+                maxdelay: None,
+                exemptfee: None,
+                localinvreqid: None,
+                exclude: None,
+                maxfee: max_fee
+                    .map(|a| {
+                        let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
+                        Ok::<cln_rpc::primitives::Amount, Self::Err>(CLN_Amount::from_msat(
+                            msat.into(),
+                        ))
+                    })
+                    .transpose()?,
+                description: None,
+                partial_msat: None,
+            }))
+            .await;
+
+        let response = match cln_response {
+            Ok(cln_rpc::Response::Pay(pay_response)) => {
+                let status = match pay_response.status {
+                    PayStatus::COMPLETE => MeltQuoteState::Paid,
+                    PayStatus::PENDING => MeltQuoteState::Pending,
+                    PayStatus::FAILED => MeltQuoteState::Failed,
+                };
+                PayInvoiceResponse {
+                    payment_preimage: Some(hex::encode(pay_response.payment_preimage.to_vec())),
+                    payment_lookup_id: pay_response.payment_hash.to_string(),
+                    status,
+                    total_spent: to_unit(
+                        pay_response.amount_sent_msat.msat(),
+                        &CurrencyUnit::Msat,
+                        &melt_quote.unit,
+                    )?,
+                    unit: melt_quote.unit,
+                }
+            }
+            _ => {
+                tracing::error!("Error attempting to pay invoice: {}", bolt12);
+                return Err(Error::WrongClnResponse.into());
+            }
+        };
+
+        Ok(response)
     }
 }
 
