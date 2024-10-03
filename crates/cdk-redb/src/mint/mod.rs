@@ -17,7 +17,9 @@ use cdk::nuts::{
 use cdk::types::LnKey;
 use cdk::{cdk_database, mint};
 use migrations::migrate_01_to_02;
-use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+use redb::{
+    Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
+};
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
@@ -149,6 +151,39 @@ impl MintRedbDatabase {
         }
 
         let db = Database::create(path)?;
+        // Temporary fix for the quote signature table
+        {
+            let write_txn = db.begin_write()?;
+            {
+                if let Err(_) = write_txn.open_multimap_table(QUOTE_SIGNATURES_TABLE) {
+                    let old_table_def =
+                        MultimapTableDefinition::<&str, &str>::new("quote_signatures");
+                    let old_table = write_txn.open_multimap_table(old_table_def)?;
+                    let data = old_table
+                        .iter()?
+                        .flat_map(|r| match r {
+                            Ok((k, v)) => Some((
+                                k.value().to_string(),
+                                v.into_iter()
+                                    .flat_map(|v| v.ok().map(|v| v.value().to_string()))
+                                    .collect::<Vec<_>>(),
+                            )),
+                            Err(_) => None,
+                        })
+                        .collect::<HashMap<_, _>>();
+                    write_txn.delete_multimap_table(old_table_def)?;
+                    let mut new_table = write_txn.open_multimap_table(QUOTE_SIGNATURES_TABLE)?;
+                    for (k, v) in data {
+                        for v in v {
+                            if let Ok(v) = PublicKey::from_str(v.as_str()) {
+                                new_table.insert(k.as_str(), v.to_bytes())?;
+                            }
+                        }
+                    }
+                }
+            }
+            write_txn.commit()?;
+        }
         Ok(Self { db: Arc::new(db) })
     }
 }
