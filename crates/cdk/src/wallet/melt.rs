@@ -11,7 +11,7 @@ use crate::{
     Amount, Error, Wallet,
 };
 
-use super::{proofs::SelectProofsMethod, MeltQuote};
+use super::{proofs::ProofSelectionMethod, MeltQuote};
 
 impl Wallet {
     /// Melt Quote
@@ -297,7 +297,7 @@ impl Wallet {
             .select_proofs_to_swap(
                 inputs_needed_amount,
                 available_proofs,
-                SelectProofsMethod::Closest,
+                ProofSelectionMethod::Closest,
             )
             .await?;
 

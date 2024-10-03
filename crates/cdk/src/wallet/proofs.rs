@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tracing::instrument;
 
 use crate::{
     amount::SplitTarget,
     dhke::hash_to_curve,
-    nuts::{Proof, ProofState, Proofs, PublicKey, State},
+    fees::calculate_fee,
+    nuts::{Id, Proof, ProofState, Proofs, PublicKey, State},
     types::ProofInfo,
     Amount, Error, Wallet,
 };
@@ -244,7 +245,7 @@ impl Wallet {
         &self,
         amount: Amount,
         proofs: Proofs,
-        method: SelectProofsMethod,
+        method: ProofSelectionMethod,
     ) -> Result<Proofs, Error> {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
@@ -253,7 +254,7 @@ impl Wallet {
             .partition(|p| p.keyset_id == active_keyset_id);
 
         let mut selected_proofs: Proofs = Vec::new();
-        inactive_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
+        sort_proofs(&mut inactive_proofs, ProofSelectionMethod::Largest, amount);
 
         for inactive_proof in inactive_proofs {
             selected_proofs.push(inactive_proof);
@@ -261,6 +262,24 @@ impl Wallet {
             let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {
+                return Ok(selected_proofs);
+            }
+        }
+
+        if method == ProofSelectionMethod::Least {
+            let selected_amount = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+            let keyset_fees = self
+                .get_mint_keysets()
+                .await?
+                .into_iter()
+                .map(|k| (k.id, k.input_fee_ppk))
+                .collect();
+            if let Some(proofs) = select_least_proofs_over_amount(
+                &active_proofs,
+                amount.checked_sub(selected_amount).unwrap_or(Amount::ZERO),
+                keyset_fees,
+            ) {
+                selected_proofs.extend(proofs);
                 return Ok(selected_proofs);
             }
         }
@@ -281,10 +300,13 @@ impl Wallet {
     }
 }
 
-fn sort_proofs(proofs: &mut Proofs, method: SelectProofsMethod, amount: Amount) {
+fn sort_proofs(proofs: &mut Proofs, method: ProofSelectionMethod, amount: Amount) {
     match method {
-        SelectProofsMethod::Largest => proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a)),
-        SelectProofsMethod::Closest => proofs.sort_by(|a: &Proof, b: &Proof| {
+        // Least fallback to largest
+        ProofSelectionMethod::Largest | ProofSelectionMethod::Least => {
+            proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a))
+        }
+        ProofSelectionMethod::Closest => proofs.sort_by(|a: &Proof, b: &Proof| {
             let a_diff = if a.amount > amount {
                 a.amount - amount
             } else {
@@ -297,13 +319,68 @@ fn sort_proofs(proofs: &mut Proofs, method: SelectProofsMethod, amount: Amount) 
             };
             a_diff.cmp(&b_diff)
         }),
-        SelectProofsMethod::Smallest => proofs.sort(),
+        ProofSelectionMethod::Smallest => proofs.sort(),
     }
+}
+
+fn select_least_proofs_over_amount(
+    proofs: &Proofs,
+    amount: Amount,
+    fees: HashMap<Id, u64>,
+) -> Option<Vec<Proof>> {
+    let max_sum = Amount::try_sum(proofs.iter().map(|p| p.amount)).ok()? + 1.into();
+    if max_sum < amount || proofs.is_empty() || amount == Amount::ZERO {
+        return None;
+    }
+    let table_len = Into::<u64>::into(max_sum + 1.into()) as usize;
+    let mut dp = vec![None; table_len];
+    let mut paths = vec![Vec::<Proof>::new(); table_len];
+
+    dp[0] = Some(Amount::ZERO);
+
+    // Fill DP table and track paths
+    for proof in proofs {
+        let max_other_amounts: u64 = (max_sum - proof.amount).into();
+        for t in (0..=max_other_amounts).rev() {
+            if let Some(current_sum) = dp[t as usize] {
+                let new_sum = current_sum + proof.amount;
+                let target_index = (t + Into::<u64>::into(proof.amount)) as usize;
+
+                // If we found a smaller sum or this sum has not been reached yet
+                if dp[target_index].is_none() || dp[target_index].unwrap() > new_sum {
+                    dp[target_index] = Some(new_sum);
+                    paths[target_index] = paths[t as usize].clone();
+                    paths[target_index].push(proof.clone());
+                }
+            }
+        }
+    }
+
+    // Find the smallest sum greater than or equal to the target
+    for t in Into::<u64>::into(amount)..=Into::<u64>::into(max_sum) {
+        if let Some(proofs_amount) = dp[t as usize] {
+            let proofs = &paths[t as usize];
+            let mut proofs_count = HashMap::new();
+            for proof in proofs {
+                proofs_count
+                    .entry(proof.keyset_id)
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+            }
+            let fee = calculate_fee(&proofs_count, &fees).unwrap_or(Amount::ZERO);
+
+            if proofs_amount >= amount + fee {
+                return Some(paths[t as usize].clone());
+            }
+        }
+    }
+
+    None
 }
 
 /// Select proofs method
 #[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum SelectProofsMethod {
+pub enum ProofSelectionMethod {
     /// Select proofs with the largest amount first
     #[default]
     Largest,
@@ -311,17 +388,21 @@ pub enum SelectProofsMethod {
     Closest,
     /// Select proofs with the smallest amount first
     Smallest,
+    /// Select least number of proofs over the amount
+    Least,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::{
         nuts::{Id, Proof, PublicKey},
         secret::Secret,
         Amount,
     };
 
-    use super::{sort_proofs, SelectProofsMethod};
+    use super::{select_least_proofs_over_amount, sort_proofs, ProofSelectionMethod};
 
     #[test]
     fn test_sort_proofs_by_method() {
@@ -360,13 +441,56 @@ mod tests {
             }
         }
 
-        sort_proofs(&mut proofs, SelectProofsMethod::Largest, amount);
+        sort_proofs(&mut proofs, ProofSelectionMethod::Largest, amount);
         assert_proof_order(&proofs, vec![1024, 256, 1]);
 
-        sort_proofs(&mut proofs, SelectProofsMethod::Closest, amount);
+        sort_proofs(&mut proofs, ProofSelectionMethod::Closest, amount);
         assert_proof_order(&proofs, vec![256, 1, 1024]);
 
-        sort_proofs(&mut proofs, SelectProofsMethod::Smallest, amount);
+        sort_proofs(&mut proofs, ProofSelectionMethod::Smallest, amount);
         assert_proof_order(&proofs, vec![1, 256, 1024]);
+
+        // Least should fallback to largest
+        sort_proofs(&mut proofs, ProofSelectionMethod::Least, amount);
+        assert_proof_order(&proofs, vec![1024, 256, 1]);
+    }
+
+    #[test]
+    fn test_select_least_proofs_over_amount() {
+        let amount = Amount::from(1025);
+        let keyset_id = Id::random();
+        let proofs = vec![
+            Proof {
+                amount: 1.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: 256.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: 1024.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+        ];
+
+        let selected_proofs =
+            select_least_proofs_over_amount(&proofs, amount, HashMap::new()).unwrap();
+        assert_eq!(selected_proofs.len(), 2);
+        let amounts: Vec<u64> = selected_proofs.iter().map(|p| p.amount.into()).collect();
+        assert!(amounts.contains(&1024));
+        assert!(amounts.contains(&1));
     }
 }
