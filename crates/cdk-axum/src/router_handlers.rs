@@ -92,6 +92,19 @@ pub async fn get_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
+pub async fn get_mint_bolt12_quote(
+    State(state): State<MintState>,
+    Json(payload): Json<MintQuoteBolt11Request>,
+) -> Result<Json<MintQuoteBolt11Response>, Response> {
+    let quote = state
+        .mint
+        .get_mint_bolt11_quote(payload)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(quote))
+}
+
 pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<String>,
@@ -109,6 +122,22 @@ pub async fn get_check_mint_bolt11_quote(
 }
 
 pub async fn post_mint_bolt11(
+    State(state): State<MintState>,
+    Json(payload): Json<MintBolt11Request>,
+) -> Result<Json<MintBolt11Response>, Response> {
+    let res = state
+        .mint
+        .process_mint_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process mint: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(res))
+}
+
+pub async fn post_mint_bolt12(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request>,
 ) -> Result<Json<MintBolt11Response>, Response> {

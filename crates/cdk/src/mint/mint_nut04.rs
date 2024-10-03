@@ -68,7 +68,7 @@ impl Mint {
 
         let ln = self
             .ln
-            .get(&LnKey::new(unit, PaymentMethod::Bolt11))
+            .get(&LnKey::new(unit, PaymentMethod::Bolt12))
             .ok_or_else(|| {
                 tracing::info!("Bolt11 mint request for unsupported unit");
 
@@ -83,7 +83,7 @@ impl Mint {
         }
 
         let create_invoice_response = ln
-            .create_invoice(
+            .create_bolt12_offer(
                 amount,
                 &unit,
                 description.unwrap_or("".to_string()),
@@ -105,7 +105,7 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New mint quote {} for {} {} with request id {}",
+            "New bolt12 mint quote {} for {} {} with request id {}",
             quote.id,
             amount,
             unit,

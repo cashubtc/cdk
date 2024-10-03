@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::{amount_for_offer, to_unit, Amount};
 use cdk::cdk_lightning::{
-    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -413,5 +413,16 @@ impl MintLightning for Phoenixd {
             total_spent: check_outgoing_response.total_spent,
             unit: CurrencyUnit::Sat,
         })
+    }
+
+    /// Create bolt12 offer
+    async fn create_bolt12_offer(
+        &self,
+        _amount: Amount,
+        _unit: &CurrencyUnit,
+        _description: String,
+        _unix_expiry: u64,
+    ) -> Result<CreateOfferResponse, Self::Err> {
+        todo!()
     }
 }

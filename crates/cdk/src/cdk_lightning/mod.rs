@@ -4,6 +4,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
+use lightning::offers::offer::Offer;
 use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -123,15 +124,35 @@ pub trait MintLightning {
         amount: Option<Amount>,
         max_fee_amount: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err>;
+
+    /// Create bolt12 offer
+    async fn create_bolt12_offer(
+        &self,
+        amount: Amount,
+        unit: &CurrencyUnit,
+        description: String,
+        unix_expiry: u64,
+    ) -> Result<CreateOfferResponse, Self::Err>;
 }
 
 /// Create invoice response
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct CreateInvoiceResponse {
     /// Id that is used to look up the invoice from the ln backend
     pub request_lookup_id: String,
     /// Bolt11 payment request
     pub request: Bolt11Invoice,
+    /// Unix Expiry of Invoice
+    pub expiry: Option<u64>,
+}
+
+/// Create offer response
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CreateOfferResponse {
+    /// Id that is used to look up the invoice from the ln backend
+    pub request_lookup_id: String,
+    /// Bolt11 payment request
+    pub request: Offer,
     /// Unix Expiry of Invoice
     pub expiry: Option<u64>,
 }

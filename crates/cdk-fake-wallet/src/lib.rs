@@ -16,8 +16,8 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
-    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint;
 use cdk::mint::types::PaymentRequest;
@@ -306,6 +306,17 @@ impl MintLightning for FakeWallet {
         _amount: Option<Amount>,
         _max_fee_amount: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        todo!()
+    }
+
+    /// Create bolt12 offer
+    async fn create_bolt12_offer(
+        &self,
+        _amount: Amount,
+        _unit: &CurrencyUnit,
+        _description: String,
+        _unix_expiry: u64,
+    ) -> Result<CreateOfferResponse, Self::Err> {
         todo!()
     }
 }
