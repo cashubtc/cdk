@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 description = "Indexdb storage backend for CDK in the browser"
 license.workspace = true
-homepage = "https://github.com/cashubtc/cdk"
+homepage.workspace = true
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.63.0" # MSRV
 
