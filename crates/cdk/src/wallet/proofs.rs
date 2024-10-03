@@ -235,11 +235,16 @@ impl Wallet {
     }
 
     /// Select proofs to send
+    ///
+    /// This method will first select inactive proofs and then active proofs.
+    /// Inactive proofs are always sorted largest first.
+    /// The active proofs are sorted by the [`SelectProofsMethod`] provided.
     #[instrument(skip_all)]
     pub async fn select_proofs_to_swap(
         &self,
         amount: Amount,
         proofs: Proofs,
+        method: SelectProofsMethod,
     ) -> Result<Proofs, Error> {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
@@ -260,7 +265,7 @@ impl Wallet {
             }
         }
 
-        active_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
+        sort_proofs(&mut active_proofs, method, amount);
 
         for active_proof in active_proofs {
             selected_proofs.push(active_proof);
@@ -273,5 +278,95 @@ impl Wallet {
         }
 
         Err(Error::InsufficientFunds)
+    }
+}
+
+fn sort_proofs(proofs: &mut Proofs, method: SelectProofsMethod, amount: Amount) {
+    match method {
+        SelectProofsMethod::LargestFirst => proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a)),
+        SelectProofsMethod::ClosestFirst => proofs.sort_by(|a: &Proof, b: &Proof| {
+            let a_diff = if a.amount > amount {
+                a.amount - amount
+            } else {
+                amount - a.amount
+            };
+            let b_diff = if b.amount > amount {
+                b.amount - amount
+            } else {
+                amount - b.amount
+            };
+            a_diff.cmp(&b_diff)
+        }),
+        SelectProofsMethod::SmallestFirst => proofs.sort(),
+    }
+}
+
+/// Select proofs method
+#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum SelectProofsMethod {
+    /// Select proofs with the largest amount first
+    #[default]
+    LargestFirst,
+    /// Select proofs closest to the amount first
+    ClosestFirst,
+    /// Select proofs with the smallest amount first
+    SmallestFirst,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        nuts::{Id, Proof, PublicKey},
+        secret::Secret,
+        Amount,
+    };
+
+    use super::{sort_proofs, SelectProofsMethod};
+
+    #[test]
+    fn test_sort_proofs_by_method() {
+        let amount = Amount::from(256);
+        let keyset_id = Id::random();
+        let mut proofs = vec![
+            Proof {
+                amount: 1.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: 256.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: 1024.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+        ];
+
+        fn assert_proof_order(proofs: &Vec<Proof>, order: Vec<u64>) {
+            for (p, a) in proofs.iter().zip(order.iter()) {
+                assert_eq!(p.amount, Amount::from(*a));
+            }
+        }
+
+        sort_proofs(&mut proofs, SelectProofsMethod::LargestFirst, amount);
+        assert_proof_order(&proofs, vec![1024, 256, 1]);
+
+        sort_proofs(&mut proofs, SelectProofsMethod::ClosestFirst, amount);
+        assert_proof_order(&proofs, vec![256, 1, 1024]);
+
+        sort_proofs(&mut proofs, SelectProofsMethod::SmallestFirst, amount);
+        assert_proof_order(&proofs, vec![1, 256, 1024]);
     }
 }

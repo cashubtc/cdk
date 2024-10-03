@@ -11,7 +11,7 @@ use crate::{
     Amount, Error, Wallet,
 };
 
-use super::MeltQuote;
+use super::{proofs::SelectProofsMethod, MeltQuote};
 
 impl Wallet {
     /// Melt Quote
@@ -294,7 +294,11 @@ impl Wallet {
         let available_proofs = self.get_proofs().await?;
 
         let input_proofs = self
-            .select_proofs_to_swap(inputs_needed_amount, available_proofs)
+            .select_proofs_to_swap(
+                inputs_needed_amount,
+                available_proofs,
+                SelectProofsMethod::ClosestFirst,
+            )
             .await?;
 
         self.melt_proofs(quote_id, input_proofs).await

@@ -15,6 +15,8 @@ use crate::Amount;
 use crate::Error;
 use crate::Wallet;
 
+use super::proofs::SelectProofsMethod;
+
 impl Wallet {
     /// Swap
     #[instrument(skip(self, input_proofs))]
@@ -173,7 +175,9 @@ impl Wallet {
             return Err(Error::InsufficientFunds);
         }
 
-        let proofs = self.select_proofs_to_swap(amount, available_proofs).await?;
+        let proofs = self
+            .select_proofs_to_swap(amount, available_proofs, SelectProofsMethod::LargestFirst)
+            .await?;
 
         self.swap(
             Some(amount),

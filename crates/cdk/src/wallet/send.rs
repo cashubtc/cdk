@@ -6,7 +6,7 @@ use crate::{
     Amount, Error, Wallet,
 };
 
-use super::SendKind;
+use super::{proofs::SelectProofsMethod, SendKind};
 
 impl Wallet {
     /// Send specific proofs
@@ -85,8 +85,13 @@ impl Wallet {
 
                     let available_proofs = available_proofs.into_iter().map(|p| p.proof).collect();
 
-                    let proofs_to_swap =
-                        self.select_proofs_to_swap(amount, available_proofs).await?;
+                    let proofs_to_swap = self
+                        .select_proofs_to_swap(
+                            amount,
+                            available_proofs,
+                            SelectProofsMethod::LargestFirst,
+                        )
+                        .await?;
 
                     let proofs_with_conditions = self
                         .swap(
