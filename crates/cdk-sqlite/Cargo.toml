@@ -1,7 +1,7 @@
 [package]
 name = "cdk-sqlite"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 authors.workspace = true
 description = "SQLite storage backend for CDK"
 license = "MIT"

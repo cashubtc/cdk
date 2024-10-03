@@ -1,7 +1,7 @@
 [package]
 name = "cdk-rexie"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 authors.workspace = true
 description = "Indexdb storage backend for CDK in the browser"
 license = "MIT"

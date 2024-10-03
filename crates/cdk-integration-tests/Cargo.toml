@@ -1,7 +1,7 @@
 [package]
 name = "cdk-integration-tests"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 authors.workspace = true
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 license = "MIT"
