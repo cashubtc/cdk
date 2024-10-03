@@ -5,10 +5,7 @@ use tracing::instrument;
 
 use crate::{
     dhke::construct_proofs,
-    nuts::{
-        CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, PreMintSecrets, Proofs, PublicKey,
-        State,
-    },
+    nuts::{CurrencyUnit, MeltQuoteBolt11Response, PreMintSecrets, Proofs, PublicKey, State},
     types::{Melted, ProofInfo},
     util::unix_time,
     Amount, Error, Wallet,
@@ -204,13 +201,8 @@ impl Wallet {
             None => None,
         };
 
-        let state = match melt_response.paid {
-            true => MeltQuoteState::Paid,
-            false => MeltQuoteState::Unpaid,
-        };
-
         let melted = Melted::from_proofs(
-            state,
+            melt_response.state,
             melt_response.payment_preimage,
             quote_info.amount,
             proofs.clone(),

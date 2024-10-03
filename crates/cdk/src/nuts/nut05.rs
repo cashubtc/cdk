@@ -227,28 +227,6 @@ impl MeltBolt11Request {
     }
 }
 
-// TODO: to be deprecated
-/// Melt Response [NUT-05]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltBolt11Response {
-    /// Indicate if payment was successful
-    pub paid: bool,
-    /// Bolt11 preimage
-    pub payment_preimage: Option<String>,
-    /// Change
-    pub change: Option<Vec<BlindSignature>>,
-}
-
-impl From<MeltQuoteBolt11Response> for MeltBolt11Response {
-    fn from(quote_response: MeltQuoteBolt11Response) -> MeltBolt11Response {
-        MeltBolt11Response {
-            paid: quote_response.paid.unwrap(),
-            payment_preimage: quote_response.payment_preimage,
-            change: quote_response.change,
-        }
-    }
-}
-
 /// Melt Method Settings
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MeltMethodSettings {
