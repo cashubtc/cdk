@@ -89,7 +89,7 @@ impl Wallet {
                         .select_proofs_to_swap(
                             amount,
                             available_proofs,
-                            SelectProofsMethod::LargestFirst,
+                            SelectProofsMethod::Largest,
                         )
                         .await?;
 

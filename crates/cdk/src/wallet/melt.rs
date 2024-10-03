@@ -297,7 +297,7 @@ impl Wallet {
             .select_proofs_to_swap(
                 inputs_needed_amount,
                 available_proofs,
-                SelectProofsMethod::ClosestFirst,
+                SelectProofsMethod::Closest,
             )
             .await?;
 

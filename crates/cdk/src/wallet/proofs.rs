@@ -283,8 +283,8 @@ impl Wallet {
 
 fn sort_proofs(proofs: &mut Proofs, method: SelectProofsMethod, amount: Amount) {
     match method {
-        SelectProofsMethod::LargestFirst => proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a)),
-        SelectProofsMethod::ClosestFirst => proofs.sort_by(|a: &Proof, b: &Proof| {
+        SelectProofsMethod::Largest => proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a)),
+        SelectProofsMethod::Closest => proofs.sort_by(|a: &Proof, b: &Proof| {
             let a_diff = if a.amount > amount {
                 a.amount - amount
             } else {
@@ -297,7 +297,7 @@ fn sort_proofs(proofs: &mut Proofs, method: SelectProofsMethod, amount: Amount) 
             };
             a_diff.cmp(&b_diff)
         }),
-        SelectProofsMethod::SmallestFirst => proofs.sort(),
+        SelectProofsMethod::Smallest => proofs.sort(),
     }
 }
 
@@ -306,11 +306,11 @@ fn sort_proofs(proofs: &mut Proofs, method: SelectProofsMethod, amount: Amount) 
 pub enum SelectProofsMethod {
     /// Select proofs with the largest amount first
     #[default]
-    LargestFirst,
+    Largest,
     /// Select proofs closest to the amount first
-    ClosestFirst,
+    Closest,
     /// Select proofs with the smallest amount first
-    SmallestFirst,
+    Smallest,
 }
 
 #[cfg(test)]
@@ -354,19 +354,19 @@ mod tests {
             },
         ];
 
-        fn assert_proof_order(proofs: &Vec<Proof>, order: Vec<u64>) {
+        fn assert_proof_order(proofs: &[Proof], order: Vec<u64>) {
             for (p, a) in proofs.iter().zip(order.iter()) {
                 assert_eq!(p.amount, Amount::from(*a));
             }
         }
 
-        sort_proofs(&mut proofs, SelectProofsMethod::LargestFirst, amount);
+        sort_proofs(&mut proofs, SelectProofsMethod::Largest, amount);
         assert_proof_order(&proofs, vec![1024, 256, 1]);
 
-        sort_proofs(&mut proofs, SelectProofsMethod::ClosestFirst, amount);
+        sort_proofs(&mut proofs, SelectProofsMethod::Closest, amount);
         assert_proof_order(&proofs, vec![256, 1, 1024]);
 
-        sort_proofs(&mut proofs, SelectProofsMethod::SmallestFirst, amount);
+        sort_proofs(&mut proofs, SelectProofsMethod::Smallest, amount);
         assert_proof_order(&proofs, vec![1, 256, 1024]);
     }
 }

@@ -176,7 +176,7 @@ impl Wallet {
         }
 
         let proofs = self
-            .select_proofs_to_swap(amount, available_proofs, SelectProofsMethod::LargestFirst)
+            .select_proofs_to_swap(amount, available_proofs, SelectProofsMethod::Largest)
             .await?;
 
         self.swap(
