@@ -6,7 +6,7 @@ authors.workspace = true
 description = "SQLite storage backend for CDK"
 license.workspace = true
 homepage.workspace = true
-repository = "https://github.com/cashubtc/cdk.git"
+repository.workspace = true
 rust-version = "1.66.0" # MSRV
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

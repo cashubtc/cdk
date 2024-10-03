@@ -6,7 +6,7 @@ authors.workspace = true
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 license.workspace = true
 homepage.workspace = true
-repository = "https://github.com/cashubtc/cdk.git"
+repository.workspace = true
 rust-version = "1.63.0" # MSRV
 
 
