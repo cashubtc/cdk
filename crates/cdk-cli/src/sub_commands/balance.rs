@@ -21,7 +21,7 @@ pub async fn mint_balances(
 
     for (i, (mint_url, amount)) in wallets.iter().enumerate() {
         let mint_url = mint_url.clone();
-        println!("{i}: {mint_url} {amount}");
+        println!("{i}: {mint_url} {amount} {unit}");
         wallets_vec.push((mint_url, *amount))
     }
     Ok(wallets_vec)
