@@ -6,6 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
+authors = ["CDK Developers"]
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
@@ -13,7 +14,6 @@ rust-version = "1.63.0" # MSRV
 version = "0.3.0"
 
 [workspace.metadata]
-authors = ["CDK Developers"]
 edition = "2021"
 description = "Cashu Development Kit"
 readme = "README.md"
