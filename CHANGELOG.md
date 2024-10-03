@@ -20,6 +20,26 @@
 ### Removed
 
 -->
+#[Unreleased]
+### Changed
+- cdk: Bump `bitcoin` to `0.32.2` ([prusnak]).
+- cdk: Bump `lightning-invoice` to `0.32.2` ([prusnak]).
+- cdk: Bump `lightning` to `0.0.124` ([prusnak]).
+- cdk: `PaymentMethod` as a `non_exhaustive` enum ([thesimplekid]).
+- cdk: `CurrencyUnit` as a `non_exhaustive` enum ([thesimpekid]).
+
+### Added
+- cdk: Added description to `MintQuoteBolt11Request` ([lollerfirst]).
+- cdk(wallet): Added description to `mint_quote` ([lollerfirst]).
+- cdk: Add `amount` and `fee_paid` to `Melted` ([davidcaseria]).
+- cdk: Add `from_proofs` on `Melted` ([davidcaseria]). 
+- cdk: Add unit on `PaymentResponse` ([thesimplekid]).
+
+### Removed
+- cdk: Remove `MintMeltSettings` since it is no longer used ([lollerfirst]).
+- cdk: `PaymentMethod::Custom` ([thesimplekid]).
+
+
 
 #[0.4.0]
 ### Summary
@@ -151,4 +171,7 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [vnprc]: https://github.com/vnprc
 [cjbeery24]: https://github.com/cjbeery24
 [callebtc]: https://github.com/callebtc
-[ok300]: (https://github.com/ok300)
+[ok300]: https://github.com/ok300
+[lollerfirst]: https://github.com/lollerfirst
+[prusnak]: https://github.com/prusnak
+

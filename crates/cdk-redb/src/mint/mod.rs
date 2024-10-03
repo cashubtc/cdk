@@ -11,16 +11,17 @@ use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
 use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
+    Proofs, PublicKey, State,
 };
+use cdk::types::LnKey;
 use cdk::{cdk_database, mint};
 use migrations::migrate_01_to_02;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
-use crate::mint::migrations::migrate_02_to_03;
+use crate::mint::migrations::{migrate_02_to_03, migrate_03_to_04};
 
 mod migrations;
 
@@ -34,8 +35,14 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 // Key is hex blinded_message B_ value is blinded_signature
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
+const QUOTE_PROOFS_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+    MultimapTableDefinition::new("quote_proofs");
+const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+    MultimapTableDefinition::new("quote_signatures");
 
-const DATABASE_VERSION: u32 = 3;
+const MELT_REQUESTS: TableDefinition<&str, (&str, &str)> = TableDefinition::new("melt_requests");
+
+const DATABASE_VERSION: u32 = 4;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
@@ -79,6 +86,10 @@ impl MintRedbDatabase {
 
                             if current_file_version == 2 {
                                 current_file_version = migrate_02_to_03(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 3 {
+                                current_file_version = migrate_03_to_04(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
@@ -125,6 +136,8 @@ impl MintRedbDatabase {
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_STATE_TABLE)?;
                         let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
+                        let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
+                        let _ = write_txn.open_multimap_table(QUOTE_SIGNATURES_TABLE)?;
 
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
@@ -483,19 +496,29 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<String>) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            let mut quote_proofs_table = write_txn
+                .open_multimap_table(QUOTE_PROOFS_TABLE)
+                .map_err(Error::from)?;
             for proof in proofs {
                 let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
-                if table.get(y.to_bytes()).map_err(Error::from)?.is_none() {
+                let y = y.to_bytes();
+                if table.get(y).map_err(Error::from)?.is_none() {
                     table
                         .insert(
-                            y.to_bytes(),
+                            y,
                             serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
                         )
+                        .map_err(Error::from)?;
+                }
+
+                if let Some(quote_id) = &quote_id {
+                    quote_proofs_table
+                        .insert(quote_id.as_str(), y)
                         .map_err(Error::from)?;
                 }
             }
@@ -521,6 +544,26 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         Ok(proofs)
+    }
+
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_multimap_table(QUOTE_PROOFS_TABLE)
+            .map_err(Error::from)?;
+
+        let ys = table.get(quote_id).map_err(Error::from)?;
+
+        let proof_ys = ys.fold(Vec::new(), |mut acc, y| {
+            if let Ok(y) = y {
+                if let Ok(pubkey) = PublicKey::from_slice(&y.value()) {
+                    acc.push(pubkey);
+                }
+            }
+            acc
+        });
+
+        Ok(proof_ys)
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
@@ -619,6 +662,7 @@ impl MintDatabase for MintRedbDatabase {
         &self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
@@ -626,17 +670,22 @@ impl MintDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(BLINDED_SIGNATURES)
                 .map_err(Error::from)?;
+            let mut quote_sigs_table = write_txn
+                .open_multimap_table(QUOTE_SIGNATURES_TABLE)
+                .map_err(Error::from)?;
 
             for (blinded_message, blind_signature) in blinded_messages.iter().zip(blind_signatures)
             {
+                let blind_sig = serde_json::to_string(&blind_signature).map_err(Error::from)?;
                 table
-                    .insert(
-                        blinded_message.to_bytes(),
-                        serde_json::to_string(&blind_signature)
-                            .map_err(Error::from)?
-                            .as_str(),
-                    )
+                    .insert(blinded_message.to_bytes(), blind_sig.as_str())
                     .map_err(Error::from)?;
+
+                if let Some(quote_id) = &quote_id {
+                    quote_sigs_table
+                        .insert(quote_id.as_str(), blinded_message.to_bytes())
+                        .map_err(Error::from)?;
+                }
             }
         }
 
@@ -688,5 +737,76 @@ impl MintDatabase for MintRedbDatabase {
                 }
             })
             .collect())
+    }
+
+    /// Add melt request
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
+
+        table
+            .insert(
+                melt_request.quote.as_str(),
+                (
+                    serde_json::to_string(&melt_request)?.as_str(),
+                    serde_json::to_string(&ln_key)?.as_str(),
+                ),
+            )
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+    /// Get melt request
+    async fn get_melt_request(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
+
+        match table.get(quote_id).map_err(Error::from)? {
+            Some(melt_request) => {
+                let (melt_request_str, ln_key_str) = melt_request.value();
+                let melt_request = serde_json::from_str(melt_request_str)?;
+                let ln_key = serde_json::from_str(ln_key_str)?;
+
+                Ok(Some((melt_request, ln_key)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let quote_proofs_table = read_txn
+            .open_multimap_table(QUOTE_SIGNATURES_TABLE)
+            .map_err(Error::from)?;
+
+        let ys = quote_proofs_table.get(quote_id).unwrap();
+
+        let ys: Vec<[u8; 33]> = ys.into_iter().flatten().map(|v| v.value()).collect();
+
+        let mut signatures = Vec::new();
+
+        let signatures_table = read_txn
+            .open_table(BLINDED_SIGNATURES)
+            .map_err(Error::from)?;
+
+        for y in ys {
+            if let Some(sig) = signatures_table.get(y).map_err(Error::from)? {
+                let sig = serde_json::from_str(sig.value())?;
+                signatures.push(sig);
+            }
+        }
+
+        Ok(signatures)
     }
 }

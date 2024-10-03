@@ -5,29 +5,34 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use cdk::amount::Amount;
+use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint;
 use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::unix_time;
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
-use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
+use rand::Rng;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
-use uuid::Uuid;
 
 pub mod error;
 
@@ -37,16 +42,22 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<String>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
-    mint_settings: MintMeltSettings,
-    melt_settings: MintMeltSettings,
+    mint_settings: MintMethodSettings,
+    melt_settings: MeltMethodSettings,
+    payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
+    failed_payment_check: Arc<Mutex<HashSet<String>>>,
+    payment_delay: u64,
 }
 
 impl FakeWallet {
     /// Creat new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
-        mint_settings: MintMeltSettings,
-        melt_settings: MintMeltSettings,
+        mint_settings: MintMethodSettings,
+        melt_settings: MeltMethodSettings,
+        payment_states: HashMap<String, MeltQuoteState>,
+        fail_payment_check: HashSet<String>,
+        payment_delay: u64,
     ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
 
@@ -56,6 +67,33 @@ impl FakeWallet {
             receiver: Arc::new(Mutex::new(Some(receiver))),
             mint_settings,
             melt_settings,
+            payment_states: Arc::new(Mutex::new(payment_states)),
+            failed_payment_check: Arc::new(Mutex::new(fail_payment_check)),
+            payment_delay,
+        }
+    }
+}
+
+/// Struct for signaling what methods should respond via invoice description
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FakeInvoiceDescription {
+    /// State to be returned from pay invoice state
+    pub pay_invoice_state: MeltQuoteState,
+    /// State to be returned by check payment state
+    pub check_payment_state: MeltQuoteState,
+    /// Should pay invoice error
+    pub pay_err: bool,
+    /// Should check failure
+    pub check_err: bool,
+}
+
+impl Default for FakeInvoiceDescription {
+    fn default() -> Self {
+        Self {
+            pay_invoice_state: MeltQuoteState::Paid,
+            check_payment_state: MeltQuoteState::Paid,
+            pay_err: false,
+            check_err: false,
         }
     }
 }
@@ -68,8 +106,9 @@ impl MintLightning for FakeWallet {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            melt_settings: self.melt_settings,
             mint_settings: self.mint_settings,
+            melt_settings: self.melt_settings,
+            invoice_description: true,
         }
     }
 
@@ -120,11 +159,44 @@ impl MintLightning for FakeWallet {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+
+        let payment_hash = bolt11.payment_hash().to_string();
+
+        let description = bolt11.description().to_string();
+
+        let status: Option<FakeInvoiceDescription> = serde_json::from_str(&description).ok();
+
+        let mut payment_states = self.payment_states.lock().await;
+        let payment_status = status
+            .clone()
+            .map(|s| s.pay_invoice_state)
+            .unwrap_or(MeltQuoteState::Paid);
+
+        let checkout_going_status = status
+            .clone()
+            .map(|s| s.check_payment_state)
+            .unwrap_or(MeltQuoteState::Paid);
+
+        payment_states.insert(payment_hash.clone(), checkout_going_status);
+
+        if let Some(description) = status {
+            if description.check_err {
+                let mut fail = self.failed_payment_check.lock().await;
+                fail.insert(payment_hash.clone());
+            }
+
+            if description.pay_err {
+                return Err(Error::UnknownInvoice.into());
+            }
+        }
+
         Ok(PayInvoiceResponse {
             payment_preimage: Some("".to_string()),
-            payment_hash: "".to_string(),
-            status: MeltQuoteState::Paid,
+            payment_lookup_id: payment_hash,
+            status: payment_status,
             total_spent: melt_quote.amount,
+            unit: melt_quote.unit,
         })
     }
 
@@ -138,62 +210,95 @@ impl MintLightning for FakeWallet {
         let time_now = unix_time();
         assert!(unix_expiry > time_now);
 
-        let label = Uuid::new_v4().to_string();
+        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
 
-        let private_key = SecretKey::from_slice(
-            &[
-                0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f, 0xe2,
-                0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04, 0xa8, 0xca,
-                0x3b, 0x2d, 0xb7, 0x34,
-            ][..],
-        )
-        .unwrap();
-
-        let payment_hash = sha256::Hash::from_slice(&[0; 32][..]).unwrap();
-        let payment_secret = PaymentSecret([42u8; 32]);
-
-        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
-
-        let invoice = InvoiceBuilder::new(Currency::Bitcoin)
-            .description(description)
-            .payment_hash(payment_hash)
-            .payment_secret(payment_secret)
-            .amount_milli_satoshis(amount.into())
-            .current_timestamp()
-            .min_final_cltv_expiry_delta(144)
-            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
-            .unwrap();
-
-        // Create a random delay between 3 and 6 seconds
-        let duration = time::Duration::from_secs(3)
-            + time::Duration::from_millis(rand::random::<u64>() % 3001);
+        let invoice = create_fake_invoice(amount_msat.into(), description);
 
         let sender = self.sender.clone();
-        let label_clone = label.clone();
+
+        let payment_hash = invoice.payment_hash();
+
+        let payment_hash_clone = payment_hash.to_string();
+
+        let duration = time::Duration::from_secs(self.payment_delay);
 
         tokio::spawn(async move {
             // Wait for the random delay to elapse
             time::sleep(duration).await;
 
             // Send the message after waiting for the specified duration
-            if sender.send(label_clone.clone()).await.is_err() {
-                tracing::error!("Failed to send label: {}", label_clone);
+            if sender.send(payment_hash_clone.clone()).await.is_err() {
+                tracing::error!("Failed to send label: {}", payment_hash_clone);
             }
         });
 
         let expiry = invoice.expires_at().map(|t| t.as_secs());
 
         Ok(CreateInvoiceResponse {
-            request_lookup_id: label,
+            request_lookup_id: payment_hash.to_string(),
             request: invoice,
             expiry,
         })
     }
 
-    async fn check_invoice_status(
+    async fn check_incoming_invoice_status(
         &self,
         _request_lookup_id: &str,
     ) -> Result<MintQuoteState, Self::Err> {
         Ok(MintQuoteState::Paid)
     }
+
+    async fn check_outgoing_payment(
+        &self,
+        request_lookup_id: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        // For fake wallet if the state is not explicitly set default to paid
+        let states = self.payment_states.lock().await;
+        let status = states.get(request_lookup_id).cloned();
+
+        let status = status.unwrap_or(MeltQuoteState::Paid);
+
+        let fail_payments = self.failed_payment_check.lock().await;
+
+        if fail_payments.contains(request_lookup_id) {
+            return Err(cdk_lightning::Error::InvoicePaymentPending);
+        }
+
+        Ok(PayInvoiceResponse {
+            payment_preimage: Some("".to_string()),
+            payment_lookup_id: request_lookup_id.to_string(),
+            status,
+            total_spent: Amount::ZERO,
+            unit: self.get_settings().unit,
+        })
+    }
+}
+
+/// Create fake invoice
+pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoice {
+    let private_key = SecretKey::from_slice(
+        &[
+            0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f, 0xe2,
+            0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04, 0xa8, 0xca,
+            0x3b, 0x2d, 0xb7, 0x34,
+        ][..],
+    )
+    .unwrap();
+
+    let mut rng = rand::thread_rng();
+    let mut random_bytes = [0u8; 32];
+    rng.fill(&mut random_bytes);
+
+    let payment_hash = sha256::Hash::from_slice(&random_bytes).unwrap();
+    let payment_secret = PaymentSecret([42u8; 32]);
+
+    InvoiceBuilder::new(Currency::Bitcoin)
+        .description(description)
+        .payment_hash(payment_hash)
+        .payment_secret(payment_secret)
+        .amount_milli_satoshis(amount_msat)
+        .current_timestamp()
+        .min_final_cltv_expiry_delta(144)
+        .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
+        .unwrap()
 }

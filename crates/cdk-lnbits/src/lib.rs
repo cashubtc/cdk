@@ -9,13 +9,15 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use axum::Router;
-use cdk::amount::Amount;
+use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, to_unit, CreateInvoiceResponse, MintLightning, MintMeltSettings, PayInvoiceResponse,
-    PaymentQuoteResponse, Settings,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{
+    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
+    MintQuoteState,
+};
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -31,8 +33,8 @@ pub mod error;
 #[derive(Clone)]
 pub struct LNbits {
     lnbits_api: LNBitsClient,
-    mint_settings: MintMeltSettings,
-    melt_settings: MintMeltSettings,
+    mint_settings: MintMethodSettings,
+    melt_settings: MeltMethodSettings,
     fee_reserve: FeeReserve,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     webhook_url: String,
@@ -45,8 +47,8 @@ impl LNbits {
         admin_api_key: String,
         invoice_api_key: String,
         api_url: String,
-        mint_settings: MintMeltSettings,
-        melt_settings: MintMeltSettings,
+        mint_settings: MintMethodSettings,
+        melt_settings: MeltMethodSettings,
         fee_reserve: FeeReserve,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
         webhook_url: String,
@@ -74,6 +76,7 @@ impl MintLightning for LNbits {
             unit: CurrencyUnit::Sat,
             mint_settings: self.mint_settings,
             melt_settings: self.melt_settings,
+            invoice_description: true,
         }
     }
 
@@ -185,10 +188,11 @@ impl MintLightning for LNbits {
         let total_spent = Amount::from((invoice_info.amount + invoice_info.fee).unsigned_abs());
 
         Ok(PayInvoiceResponse {
-            payment_hash: pay_response.payment_hash,
+            payment_lookup_id: pay_response.payment_hash,
             payment_preimage: Some(invoice_info.payment_hash),
             status,
             total_spent,
+            unit: CurrencyUnit::Sat,
         })
     }
 
@@ -238,13 +242,13 @@ impl MintLightning for LNbits {
         })
     }
 
-    async fn check_invoice_status(
+    async fn check_incoming_invoice_status(
         &self,
-        request_lookup_id: &str,
+        payment_hash: &str,
     ) -> Result<MintQuoteState, Self::Err> {
         let paid = self
             .lnbits_api
-            .is_invoice_paid(request_lookup_id)
+            .is_invoice_paid(payment_hash)
             .await
             .map_err(|err| {
                 tracing::error!("Could not check invoice status");
@@ -258,6 +262,43 @@ impl MintLightning for LNbits {
         };
 
         Ok(state)
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_hash: &str,
+    ) -> Result<PayInvoiceResponse, Self::Err> {
+        let payment = self
+            .lnbits_api
+            .get_payment_info(payment_hash)
+            .await
+            .map_err(|err| {
+                tracing::error!("Could not check invoice status");
+                tracing::error!("{}", err.to_string());
+                Self::Err::Anyhow(anyhow!("Could not check invoice status"))
+            })?;
+
+        let pay_response = PayInvoiceResponse {
+            payment_lookup_id: payment.details.payment_hash,
+            payment_preimage: Some(payment.preimage),
+            status: lnbits_to_melt_status(&payment.details.status, payment.details.pending),
+            total_spent: Amount::from(
+                payment.details.amount.unsigned_abs()
+                    + payment.details.fee.unsigned_abs() / MSAT_IN_SAT,
+            ),
+            unit: self.get_settings().unit,
+        };
+
+        Ok(pay_response)
+    }
+}
+
+fn lnbits_to_melt_status(status: &str, pending: bool) -> MeltQuoteState {
+    match (status, pending) {
+        ("success", false) => MeltQuoteState::Paid,
+        ("failed", false) => MeltQuoteState::Unpaid,
+        (_, false) => MeltQuoteState::Unknown,
+        (_, true) => MeltQuoteState::Pending,
     }
 }
 

@@ -1,29 +1,30 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
+use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MintInfo, MintQuoteState, Nuts, PaymentMethod, PreMintSecrets, Proofs,
+    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
+    Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
+use cdk::types::{LnKey, QuoteTTL};
 use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};
-use cdk_axum::LnKey;
 use cdk_fake_wallet::FakeWallet;
-use futures::StreamExt;
+use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
+use tokio::sync::Notify;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
-pub const MINT_URL: &str = "http://127.0.0.1:8088";
-const LISTEN_ADDR: &str = "127.0.0.1";
-const LISTEN_PORT: u16 = 8088;
+pub mod init_fake_wallet;
+pub mod init_regtest;
 
 pub fn create_backends_fake_wallet(
 ) -> HashMap<LnKey, Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>> {
@@ -39,8 +40,11 @@ pub fn create_backends_fake_wallet(
 
     let wallet = Arc::new(FakeWallet::new(
         fee_reserve.clone(),
-        MintMeltSettings::default(),
-        MintMeltSettings::default(),
+        MintMethodSettings::default(),
+        MeltMethodSettings::default(),
+        HashMap::default(),
+        HashSet::default(),
+        0,
     ));
 
     ln_backends.insert(ln_key, wallet.clone());
@@ -68,26 +72,22 @@ pub async fn start_mint(
 
     let mnemonic = Mnemonic::generate(12)?;
 
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
     let mint = Mint::new(
-        MINT_URL,
+        &get_mint_url(),
         &mnemonic.to_seed_normalized(""),
         mint_info,
+        quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
+        ln_backends.clone(),
         supported_units,
     )
     .await?;
 
-    let quote_ttl = 100000;
-
     let mint_arc = Arc::new(mint);
 
-    let v1_service = cdk_axum::create_mint_router(
-        MINT_URL,
-        Arc::clone(&mint_arc),
-        ln_backends.clone(),
-        quote_ttl,
-    )
-    .await?;
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc)).await?;
 
     let mint_service = Router::new()
         .merge(v1_service)
@@ -95,31 +95,15 @@ pub async fn start_mint(
 
     let mint = Arc::clone(&mint_arc);
 
-    for wallet in ln_backends.values() {
-        let wallet_clone = Arc::clone(wallet);
-        let mint = Arc::clone(&mint);
-        tokio::spawn(async move {
-            match wallet_clone.wait_any_invoice().await {
-                Ok(mut stream) => {
-                    while let Some(request_lookup_id) = stream.next().await {
-                        if let Err(err) =
-                            handle_paid_invoice(Arc::clone(&mint), &request_lookup_id).await
-                        {
-                            // nosemgrep: direct-panic
-                            panic!("{:?}", err);
-                        }
-                    }
-                }
-                Err(err) => {
-                    // nosemgrep: direct-panic
-                    panic!("Could not get invoice stream: {}", err);
-                }
-            }
-        });
-    }
+    let shutdown = Arc::new(Notify::new());
+
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        async move { mint.wait_for_paid_invoices(shutdown).await }
+    });
 
     axum::Server::bind(
-        &format!("{}:{}", LISTEN_ADDR, LISTEN_PORT)
+        &format!("{}:{}", get_mint_addr(), get_mint_port())
             .as_str()
             .parse()?,
     )
@@ -129,31 +113,13 @@ pub async fn start_mint(
     Ok(())
 }
 
-/// Update mint quote when called for a paid invoice
-async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result<()> {
-    println!("Invoice with lookup id paid: {}", request_lookup_id);
-    if let Ok(Some(mint_quote)) = mint
-        .localstore
-        .get_mint_quote_by_request_lookup_id(request_lookup_id)
-        .await
-    {
-        println!(
-            "Quote {} paid by lookup id {}",
-            mint_quote.id, request_lookup_id
-        );
-        mint.localstore
-            .update_mint_quote_state(&mint_quote.id, cdk::nuts::MintQuoteState::Paid)
-            .await?;
-    }
-    Ok(())
-}
-
 pub async fn wallet_mint(
     wallet: Arc<Wallet>,
     amount: Amount,
     split_target: SplitTarget,
+    description: Option<String>,
 ) -> Result<()> {
-    let quote = wallet.mint_quote(amount).await?;
+    let quote = wallet.mint_quote(amount, description).await?;
 
     loop {
         let status = wallet.mint_quote_state(&quote.id).await?;
@@ -178,6 +144,7 @@ pub async fn mint_proofs(
     amount: Amount,
     keyset_id: Id,
     mint_keys: &KeySet,
+    description: Option<String>,
 ) -> anyhow::Result<Proofs> {
     println!("Minting for ecash");
     println!();
@@ -185,7 +152,7 @@ pub async fn mint_proofs(
     let wallet_client = HttpClient::new();
 
     let mint_quote = wallet_client
-        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat)
+        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat, description)
         .await?;
 
     println!("Please pay: {}", mint_quote.request);
@@ -221,4 +188,41 @@ pub async fn mint_proofs(
     )?;
 
     Ok(pre_swap_proofs)
+}
+
+// Get all pending from wallet and attempt to swap
+// Will panic if there are no pending
+// Will return Ok if swap fails as expected
+pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await?;
+
+    assert!(!pending.is_empty());
+
+    let swap = wallet
+        .swap(
+            None,
+            SplitTarget::None,
+            pending.into_iter().map(|p| p.proof).collect(),
+            None,
+            false,
+        )
+        .await;
+
+    match swap {
+        Ok(_swap) => {
+            bail!("These proofs should be pending")
+        }
+        Err(err) => match err {
+            cdk::error::Error::TokenPending => (),
+            _ => {
+                println!("{:?}", err);
+                bail!("Wrong error")
+            }
+        },
+    }
+
+    Ok(())
 }

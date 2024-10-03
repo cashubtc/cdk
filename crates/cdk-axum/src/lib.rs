@@ -3,34 +3,19 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
-use cdk::cdk_lightning::{self, MintLightning};
 use cdk::mint::Mint;
-use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use router_handlers::*;
 
 mod router_handlers;
 
 /// Create mint [`Router`] with required endpoints for cashu mint
-pub async fn create_mint_router(
-    mint_url: &str,
-    mint: Arc<Mint>,
-    ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
-    quote_ttl: u64,
-) -> Result<Router> {
-    let state = MintState {
-        ln,
-        mint,
-        mint_url: MintUrl::from_str(mint_url)?,
-        quote_ttl,
-    };
+pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
+    let state = MintState { mint };
 
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
@@ -61,25 +46,5 @@ pub async fn create_mint_router(
 /// CDK Mint State
 #[derive(Clone)]
 pub struct MintState {
-    ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     mint: Arc<Mint>,
-    mint_url: MintUrl,
-    quote_ttl: u64,
-}
-
-/// Key used in hashmap of ln backends to identify what unit and payment method
-/// it is for
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct LnKey {
-    /// Unit of Payment backend
-    pub unit: CurrencyUnit,
-    /// Method of payment backend
-    pub method: PaymentMethod,
-}
-
-impl LnKey {
-    /// Create new [`LnKey`]
-    pub fn new(unit: CurrencyUnit, method: PaymentMethod) -> Self {
-        Self { unit, method }
-    }
 }

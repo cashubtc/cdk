@@ -3,7 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -13,14 +13,14 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
-use cdk::cdk_lightning::{MintLightning, MintMeltSettings};
-use cdk::mint::{FeeReserve, Mint};
+use cdk::cdk_lightning::MintLightning;
+use cdk::mint::{FeeReserve, MeltQuote, Mint};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
-    MintVersion, MppMethodSettings, Nuts, PaymentMethod,
+    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
+    MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
 };
-use cdk_axum::LnKey;
+use cdk::types::{LnKey, QuoteTTL};
 use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
 use cdk_lnbits::LNbits;
@@ -32,8 +32,7 @@ use cdk_strike::Strike;
 use clap::Parser;
 use cli::CLIArgs;
 use config::{DatabaseEngine, LnBackend};
-use futures::StreamExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -49,8 +48,12 @@ async fn main() -> anyhow::Result<()> {
     let default_filter = "debug";
 
     let sqlx_filter = "sqlx=warn";
+    let hyper_filter = "hyper=warn";
 
-    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+    let env_filter = EnvFilter::new(format!(
+        "{},{},{}",
+        default_filter, sqlx_filter, hyper_filter
+    ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
@@ -150,8 +153,8 @@ async fn main() -> anyhow::Result<()> {
                 Cln::new(
                     cln_socket,
                     fee_reserve,
-                    MintMeltSettings::default(),
-                    MintMeltSettings::default(),
+                    MintMethodSettings::default(),
+                    MeltMethodSettings::default(),
                 )
                 .await?,
             );
@@ -179,8 +182,8 @@ async fn main() -> anyhow::Result<()> {
 
                 let strike = Strike::new(
                     api_key.clone(),
-                    MintMeltSettings::default(),
-                    MintMeltSettings::default(),
+                    MintMethodSettings::default(),
+                    MeltMethodSettings::default(),
                     unit,
                     Arc::new(Mutex::new(Some(receiver))),
                     webhook_url.to_string(),
@@ -216,8 +219,8 @@ async fn main() -> anyhow::Result<()> {
                 admin_api_key,
                 invoice_api_key,
                 lnbits_settings.lnbits_api,
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
+                MintMethodSettings::default(),
+                MeltMethodSettings::default(),
                 fee_reserve,
                 Arc::new(Mutex::new(Some(receiver))),
                 webhook_url.to_string(),
@@ -265,8 +268,8 @@ async fn main() -> anyhow::Result<()> {
             let phoenixd = Phoenixd::new(
                 api_password.to_string(),
                 api_url.to_string(),
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
+                MintMethodSettings::default(),
+                MeltMethodSettings::default(),
                 fee_reserve,
                 Arc::new(Mutex::new(Some(receiver))),
                 webhook_url,
@@ -299,8 +302,8 @@ async fn main() -> anyhow::Result<()> {
                 cert_file,
                 macaroon_file,
                 fee_reserve,
-                MintMeltSettings::default(),
-                MintMeltSettings::default(),
+                MintMethodSettings::default(),
+                MeltMethodSettings::default(),
             )
             .await?;
 
@@ -323,8 +326,11 @@ async fn main() -> anyhow::Result<()> {
 
                 let wallet = Arc::new(FakeWallet::new(
                     fee_reserve.clone(),
-                    MintMeltSettings::default(),
-                    MintMeltSettings::default(),
+                    MintMethodSettings::default(),
+                    MeltMethodSettings::default(),
+                    HashMap::default(),
+                    HashSet::default(),
+                    0,
                 ));
 
                 ln_backends.insert(ln_key, wallet);
@@ -350,23 +356,24 @@ async fn main() -> anyhow::Result<()> {
             let settings = ln.get_settings();
 
             let m = MppMethodSettings {
-                method: key.method.clone(),
+                method: key.method,
                 unit: key.unit,
                 mpp: settings.mpp,
             };
 
             let n4 = MintMethodSettings {
-                method: key.method.clone(),
+                method: key.method,
                 unit: key.unit,
-                min_amount: Some(settings.mint_settings.min_amount),
-                max_amount: Some(settings.mint_settings.max_amount),
+                min_amount: settings.mint_settings.min_amount,
+                max_amount: settings.mint_settings.max_amount,
+                description: settings.invoice_description,
             };
 
             let n5 = MeltMethodSettings {
-                method: key.method.clone(),
+                method: key.method,
                 unit: key.unit,
-                min_amount: Some(settings.melt_settings.min_amount),
-                max_amount: Some(settings.melt_settings.max_amount),
+                min_amount: settings.melt_settings.min_amount,
+                max_amount: settings.melt_settings.max_amount,
             };
 
             nut_04.methods.push(n4);
@@ -417,11 +424,15 @@ async fn main() -> anyhow::Result<()> {
 
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+
     let mint = Mint::new(
         &settings.info.url,
         &mnemonic.to_seed_normalized(""),
         mint_info,
+        quote_ttl,
         localstore,
+        ln_backends.clone(),
         supported_units,
     )
     .await?;
@@ -433,20 +444,22 @@ async fn main() -> anyhow::Result<()> {
     // it is possible that a mint quote was paid but the mint has not been updated
     // this will check and update the mint state of those quotes
     for ln in ln_backends.values() {
-        check_pending_quotes(Arc::clone(&mint), Arc::clone(ln)).await?;
+        check_pending_mint_quotes(Arc::clone(&mint), Arc::clone(ln)).await?;
     }
 
-    let mint_url = settings.info.url;
+    // Checks the status of all pending melt quotes
+    // Pending melt quotes where the payment has gone through inputs are burnt
+    // Pending melt quotes where the paynment has **failed** inputs are reset to unspent
+    check_pending_melt_quotes(Arc::clone(&mint), &ln_backends).await?;
+
     let listen_addr = settings.info.listen_host;
     let listen_port = settings.info.listen_port;
-    let quote_ttl = settings
+    let _quote_ttl = settings
         .info
         .seconds_quote_is_valid_for
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
 
-    let v1_service =
-        cdk_axum::create_mint_router(&mint_url, Arc::clone(&mint), ln_backends.clone(), quote_ttl)
-            .await?;
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint)).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)
@@ -456,51 +469,40 @@ async fn main() -> anyhow::Result<()> {
         mint_service = mint_service.merge(router);
     }
 
-    // Spawn task to wait for invoces to be paid and update mint quotes
+    let shutdown = Arc::new(Notify::new());
 
-    for (_, ln) in ln_backends {
-        let mint = Arc::clone(&mint);
-        tokio::spawn(async move {
-            loop {
-                match ln.wait_any_invoice().await {
-                    Ok(mut stream) => {
-                        while let Some(request_lookup_id) = stream.next().await {
-                            if let Err(err) =
-                                handle_paid_invoice(mint.clone(), &request_lookup_id).await
-                            {
-                                tracing::warn!("{:?}", err);
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!("Could not get invoice stream: {}", err);
-                    }
-                }
-            }
-        });
-    }
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        async move { mint.wait_for_paid_invoices(shutdown).await }
+    });
 
-    axum::Server::bind(
+    let axum_result = axum::Server::bind(
         &format!("{}:{}", listen_addr, listen_port)
             .as_str()
             .parse()?,
     )
     .serve(mint_service.into_make_service())
-    .await?;
+    .await;
 
-    Ok(())
-}
+    shutdown.notify_waiters();
 
-/// Update mint quote when called for a paid invoice
-async fn handle_paid_invoice(mint: Arc<Mint>, request_lookup_id: &str) -> Result<()> {
-    tracing::debug!("Invoice with lookup id paid: {}", request_lookup_id);
-    mint.pay_mint_quote_for_request_id(request_lookup_id)
-        .await?;
+    match axum_result {
+        Ok(_) => {
+            tracing::info!("Axum server stopped with okay status");
+        }
+        Err(err) => {
+            tracing::warn!("Axum server stopped with error");
+            tracing::error!("{}", err);
+
+            bail!("Axum exited with error")
+        }
+    }
+
     Ok(())
 }
 
 /// Used on mint start up to check status of all pending mint quotes
-async fn check_pending_quotes(
+async fn check_pending_mint_quotes(
     mint: Arc<Mint>,
     ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
 ) -> Result<()> {
@@ -514,10 +516,10 @@ async fn check_pending_quotes(
     for quote in unpaid_quotes {
         tracing::trace!("Checking status of mint quote: {}", quote.id);
         let lookup_id = quote.request_lookup_id;
-        match ln.check_invoice_status(&lookup_id).await {
+        match ln.check_incoming_invoice_status(&lookup_id).await {
             Ok(state) => {
                 if state != quote.state {
-                    tracing::trace!("Mintquote status changed: {}", quote.id);
+                    tracing::trace!("Mint quote status changed: {}", quote.id);
                     mint.localstore
                         .update_mint_quote_state(&quote.id, state)
                         .await?;
@@ -531,6 +533,93 @@ async fn check_pending_quotes(
         }
     }
 
+    Ok(())
+}
+
+async fn check_pending_melt_quotes(
+    mint: Arc<Mint>,
+    ln_backends: &HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+) -> Result<()> {
+    let melt_quotes = mint.localstore.get_melt_quotes().await?;
+    let pending_quotes: Vec<MeltQuote> = melt_quotes
+        .into_iter()
+        .filter(|q| q.state == MeltQuoteState::Pending || q.state == MeltQuoteState::Unknown)
+        .collect();
+
+    for pending_quote in pending_quotes {
+        let melt_request_ln_key = mint.localstore.get_melt_request(&pending_quote.id).await?;
+
+        let (melt_request, ln_key) = match melt_request_ln_key {
+            None => (
+                None,
+                LnKey {
+                    unit: pending_quote.unit,
+                    method: PaymentMethod::Bolt11,
+                },
+            ),
+            Some((melt_request, ln_key)) => (Some(melt_request), ln_key),
+        };
+
+        let ln_backend = match ln_backends.get(&ln_key) {
+            Some(ln_backend) => ln_backend,
+            None => {
+                tracing::warn!("No backend for ln key: {:?}", ln_key);
+                continue;
+            }
+        };
+
+        let pay_invoice_response = ln_backend
+            .check_outgoing_payment(&pending_quote.request_lookup_id)
+            .await?;
+
+        match melt_request {
+            Some(melt_request) => {
+                match pay_invoice_response.status {
+                    MeltQuoteState::Paid => {
+                        if let Err(err) = mint
+                            .process_melt_request(
+                                &melt_request,
+                                pay_invoice_response.payment_preimage,
+                                pay_invoice_response.total_spent,
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                "Could not process melt request for pending quote: {}",
+                                melt_request.quote
+                            );
+                            tracing::error!("{}", err);
+                        }
+                    }
+                    MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
+                        // Payment has not been made we want to unset
+                        tracing::info!("Lightning payment for quote {} failed.", pending_quote.id);
+                        if let Err(err) = mint.process_unpaid_melt(&melt_request).await {
+                            tracing::error!("Could not reset melt quote state: {}", err);
+                        }
+                    }
+                    MeltQuoteState::Pending => {
+                        tracing::warn!(
+                            "LN payment pending, proofs are stuck as pending for quote: {}",
+                            melt_request.quote
+                        );
+                        // Quote is still pending we do not want to do anything
+                        // continue to check next quote
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "There is no stored melt request for pending melt quote: {}",
+                    pending_quote.id
+                );
+
+                mint.localstore
+                    .update_melt_quote_state(&pending_quote.id, pay_invoice_response.status)
+                    .await?;
+            }
+        };
+    }
     Ok(())
 }
 

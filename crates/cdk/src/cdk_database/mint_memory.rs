@@ -11,9 +11,10 @@ use crate::dhke::hash_to_curve;
 use crate::mint::{self, MintKeySetInfo, MintQuote};
 use crate::nuts::nut07::State;
 use crate::nuts::{
-    nut07, BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs,
-    PublicKey,
+    nut07, BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState,
+    Proof, Proofs, PublicKey,
 };
+use crate::types::LnKey;
 
 /// Mint Memory Database
 #[derive(Debug, Clone, Default)]
@@ -24,7 +25,10 @@ pub struct MintMemoryDatabase {
     melt_quotes: Arc<RwLock<HashMap<String, mint::MeltQuote>>>,
     proofs: Arc<RwLock<HashMap<[u8; 33], Proof>>>,
     proof_state: Arc<Mutex<HashMap<[u8; 33], nut07::State>>>,
+    quote_proofs: Arc<Mutex<HashMap<String, Vec<PublicKey>>>>,
     blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
+    quote_signatures: Arc<RwLock<HashMap<String, Vec<BlindSignature>>>>,
+    melt_requests: Arc<RwLock<HashMap<String, (MeltBolt11Request, LnKey)>>>,
 }
 
 impl MintMemoryDatabase {
@@ -37,7 +41,10 @@ impl MintMemoryDatabase {
         melt_quotes: Vec<mint::MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
+        quote_proofs: HashMap<String, Vec<PublicKey>>,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
+        quote_signatures: HashMap<String, Vec<BlindSignature>>,
+        melt_request: Vec<(MeltBolt11Request, LnKey)>,
     ) -> Result<Self, Error> {
         let mut proofs = HashMap::new();
         let mut proof_states = HashMap::new();
@@ -54,6 +61,11 @@ impl MintMemoryDatabase {
             proof_states.insert(y, State::Spent);
         }
 
+        let melt_requests = melt_request
+            .into_iter()
+            .map(|(request, ln_key)| (request.quote.clone(), (request, ln_key)))
+            .collect();
+
         Ok(Self {
             active_keysets: Arc::new(RwLock::new(active_keysets)),
             keysets: Arc::new(RwLock::new(
@@ -68,6 +80,9 @@ impl MintMemoryDatabase {
             proofs: Arc::new(RwLock::new(proofs)),
             proof_state: Arc::new(Mutex::new(proof_states)),
             blinded_signatures: Arc::new(RwLock::new(blinded_signatures)),
+            quote_proofs: Arc::new(Mutex::new(quote_proofs)),
+            quote_signatures: Arc::new(RwLock::new(quote_signatures)),
+            melt_requests: Arc::new(RwLock::new(melt_requests)),
         })
     }
 }
@@ -219,13 +234,47 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
-    async fn add_proofs(&self, proofs: Proofs) -> Result<(), Self::Err> {
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err> {
+        let mut melt_requests = self.melt_requests.write().await;
+        melt_requests.insert(melt_request.quote.clone(), (melt_request, ln_key));
+        Ok(())
+    }
+
+    async fn get_melt_request(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+        let melt_requests = self.melt_requests.read().await;
+
+        let melt_request = melt_requests.get(quote_id);
+
+        Ok(melt_request.cloned())
+    }
+
+    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<String>) -> Result<(), Self::Err> {
         let mut db_proofs = self.proofs.write().await;
 
+        let mut ys = Vec::with_capacity(proofs.capacity());
+
         for proof in proofs {
-            let secret_point = hash_to_curve(&proof.secret.to_bytes())?;
-            db_proofs.insert(secret_point.to_bytes(), proof);
+            let y = hash_to_curve(&proof.secret.to_bytes())?;
+            ys.push(y);
+
+            let y = y.to_bytes();
+
+            db_proofs.insert(y, proof);
         }
+
+        if let Some(quote_id) = quote_id {
+            let mut db_quote_proofs = self.quote_proofs.lock().await;
+
+            db_quote_proofs.insert(quote_id, ys);
+        }
+
         Ok(())
     }
 
@@ -241,6 +290,15 @@ impl MintDatabase for MintMemoryDatabase {
         }
 
         Ok(proofs)
+    }
+
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err> {
+        let quote_proofs = &__self.quote_proofs.lock().await;
+
+        match quote_proofs.get(quote_id) {
+            Some(ys) => Ok(ys.clone()),
+            None => Ok(vec![]),
+        }
     }
 
     async fn update_proofs_states(
@@ -304,11 +362,19 @@ impl MintDatabase for MintMemoryDatabase {
         &self,
         blinded_message: &[PublicKey],
         blind_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err> {
         let mut current_blinded_signatures = self.blinded_signatures.write().await;
 
         for (blinded_message, blind_signature) in blinded_message.iter().zip(blind_signatures) {
             current_blinded_signatures.insert(blinded_message.to_bytes(), blind_signature.clone());
+        }
+
+        if let Some(quote_id) = quote_id {
+            let mut current_quote_signatures = self.quote_signatures.write().await;
+            current_quote_signatures.insert(quote_id.clone(), blind_signatures.to_vec());
+            let t = current_quote_signatures.get(&quote_id);
+            println!("after insert: {:?}", t);
         }
 
         Ok(())
@@ -342,5 +408,15 @@ impl MintDatabase for MintMemoryDatabase {
             .filter(|b| &b.keyset_id == keyset_id)
             .cloned()
             .collect())
+    }
+
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let ys = self.quote_signatures.read().await;
+
+        Ok(ys.get(quote_id).cloned().unwrap_or_default())
     }
 }

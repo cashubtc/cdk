@@ -17,11 +17,15 @@ use crate::mint::MintQuote as MintMintQuote;
 #[cfg(feature = "wallet")]
 use crate::mint_url::MintUrl;
 #[cfg(feature = "mint")]
+use crate::nuts::MeltBolt11Request;
+#[cfg(feature = "mint")]
 use crate::nuts::{BlindSignature, MeltQuoteState, MintQuoteState, Proof, Proofs};
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use crate::nuts::{CurrencyUnit, Id, PublicKey, State};
 #[cfg(feature = "wallet")]
 use crate::nuts::{KeySetInfo, Keys, MintInfo, SpendingConditions};
+#[cfg(feature = "mint")]
+use crate::types::LnKey;
 #[cfg(feature = "wallet")]
 use crate::types::ProofInfo;
 #[cfg(feature = "wallet")]
@@ -220,6 +224,18 @@ pub trait MintDatabase {
     /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
+    /// Add melt request
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err>;
+    /// Get melt request
+    async fn get_melt_request(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err>;
+
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
     /// Get [`MintKeySetInfo`]
@@ -228,9 +244,11 @@ pub trait MintDatabase {
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     /// Add spent [`Proofs`]
-    async fn add_proofs(&self, proof: Proofs) -> Result<(), Self::Err>;
+    async fn add_proofs(&self, proof: Proofs, quote_id: Option<String>) -> Result<(), Self::Err>;
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get ys by quote id
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get [`Proofs`] state
@@ -250,6 +268,7 @@ pub trait MintDatabase {
         &self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
+        quote_id: Option<String>,
     ) -> Result<(), Self::Err>;
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
@@ -260,5 +279,10 @@ pub trait MintDatabase {
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err>;
+    /// Get [`BlindSignature`]s for quote
+    async fn get_blind_signatures_for_quote(
+        &self,
+        quote_id: &str,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
 }

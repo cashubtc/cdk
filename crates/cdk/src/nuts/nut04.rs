@@ -31,6 +31,8 @@ pub struct MintQuoteBolt11Request {
     pub amount: Amount,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
+    /// Memo to create the invoice with
+    pub description: Option<String>,
 }
 
 /// Possible states of a quote
@@ -200,7 +202,7 @@ pub struct MintBolt11Response {
 }
 
 /// Mint Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -212,6 +214,9 @@ pub struct MintMethodSettings {
     /// Max Amount
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
+    /// Quote Description
+    #[serde(default)]
+    pub description: bool,
 }
 
 /// Mint Settings
@@ -237,7 +242,7 @@ impl Settings {
     ) -> Option<MintMethodSettings> {
         for method_settings in self.methods.iter() {
             if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
-                return Some(method_settings.clone());
+                return Some(*method_settings);
             }
         }
 
@@ -252,6 +257,7 @@ impl Default for Settings {
             unit: CurrencyUnit::Sat,
             min_amount: Some(Amount::from(1)),
             max_amount: Some(Amount::from(1000000)),
+            description: true,
         };
 
         Settings {

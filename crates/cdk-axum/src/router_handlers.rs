@@ -1,23 +1,17 @@
-use std::str::FromStr;
-
 use anyhow::Result;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::amount::Amount;
-use cdk::cdk_lightning::to_unit;
-use cdk::error::{Error, ErrorResponse};
-use cdk::nuts::nut05::MeltBolt11Response;
+use cdk::error::ErrorResponse;
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeysResponse, KeysetResponse,
-    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
-    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
+    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
+    SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
-use cdk::Bolt11Invoice;
 
-use crate::{LnKey, MintState};
+use crate::MintState;
 
 pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
     let pubkeys = state.mint.pubkeys().await.map_err(|err| {
@@ -53,48 +47,13 @@ pub async fn get_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response>, Response> {
-    let ln = state
-        .ln
-        .get(&LnKey::new(payload.unit, PaymentMethod::Bolt11))
-        .ok_or_else(|| {
-            tracing::info!("Bolt11 mint request for unsupported unit");
-
-            into_response(Error::UnitUnsupported)
-        })?;
-
-    let amount =
-        to_unit(payload.amount, &payload.unit, &ln.get_settings().unit).map_err(|err| {
-            tracing::error!("Backed does not support unit: {}", err);
-            into_response(Error::UnitUnsupported)
-        })?;
-
-    let quote_expiry = unix_time() + state.quote_ttl;
-
-    let create_invoice_response = ln
-        .create_invoice(amount, &payload.unit, "".to_string(), quote_expiry)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not create invoice: {}", err);
-            into_response(Error::InvalidPaymentRequest)
-        })?;
-
     let quote = state
         .mint
-        .new_mint_quote(
-            state.mint_url,
-            create_invoice_response.request.to_string(),
-            payload.unit,
-            payload.amount,
-            create_invoice_response.expiry.unwrap_or(0),
-            create_invoice_response.request_lookup_id,
-        )
+        .get_mint_bolt11_quote(payload)
         .await
-        .map_err(|err| {
-            tracing::error!("Could not create new mint quote: {}", err);
-            into_response(err)
-        })?;
+        .map_err(into_response)?;
 
-    Ok(Json(quote.into()))
+    Ok(Json(quote))
 }
 
 pub async fn get_check_mint_bolt11_quote(
@@ -133,42 +92,13 @@ pub async fn get_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
-    let ln = state
-        .ln
-        .get(&LnKey::new(payload.unit, PaymentMethod::Bolt11))
-        .ok_or_else(|| {
-            tracing::info!("Could not get ln backend for {}, bolt11 ", payload.unit);
-
-            into_response(Error::UnitUnsupported)
-        })?;
-
-    let payment_quote = ln.get_payment_quote(&payload).await.map_err(|err| {
-        tracing::error!(
-            "Could not get payment quote for mint quote, {} bolt11, {}",
-            payload.unit,
-            err
-        );
-
-        into_response(Error::UnitUnsupported)
-    })?;
-
     let quote = state
         .mint
-        .new_melt_quote(
-            payload.request.to_string(),
-            payload.unit,
-            payment_quote.amount,
-            payment_quote.fee,
-            unix_time() + state.quote_ttl,
-            payment_quote.request_lookup_id,
-        )
+        .get_melt_bolt11_quote(&payload)
         .await
-        .map_err(|err| {
-            tracing::error!("Could not create melt quote: {}", err);
-            into_response(err)
-        })?;
+        .map_err(into_response)?;
 
-    Ok(Json(quote.into()))
+    Ok(Json(quote))
 }
 
 pub async fn get_check_melt_bolt11_quote(
@@ -190,200 +120,14 @@ pub async fn get_check_melt_bolt11_quote(
 pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request>,
-) -> Result<Json<MeltBolt11Response>, Response> {
-    let quote = match state.mint.verify_melt_request(&payload).await {
-        Ok(quote) => quote,
-        Err(err) => {
-            tracing::debug!("Error attempting to verify melt quote: {}", err);
-
-            if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                tracing::error!("Could not reset melt quote state: {}", err);
-            }
-            return Err(into_response(Error::UnitUnsupported));
-        }
-    };
-
-    // Check to see if there is a corresponding mint quote for a melt.
-    // In this case the mint can settle the payment internally and no ln payment is
-    // needed
-    let mint_quote = match state
-        .mint
-        .localstore
-        .get_mint_quote_by_request(&quote.request)
-        .await
-    {
-        Ok(mint_quote) => mint_quote,
-        Err(err) => {
-            tracing::debug!("Error attempting to get mint quote: {}", err);
-
-            if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                tracing::error!("Could not reset melt quote state: {}", err);
-            }
-            return Err(into_response(Error::Internal));
-        }
-    };
-
-    let inputs_amount_quote_unit = payload.proofs_amount().map_err(|_| {
-        tracing::error!("Proof inputs in melt quote overflowed");
-        into_response(Error::AmountOverflow)
-    })?;
-
-    let (preimage, amount_spent_quote_unit) = match mint_quote {
-        Some(mint_quote) => {
-            if mint_quote.state == MintQuoteState::Issued
-                || mint_quote.state == MintQuoteState::Paid
-            {
-                return Err(into_response(Error::RequestAlreadyPaid));
-            }
-
-            let mut mint_quote = mint_quote;
-
-            if mint_quote.amount > inputs_amount_quote_unit {
-                tracing::debug!(
-                    "Not enough inuts provided: {} needed {}",
-                    inputs_amount_quote_unit,
-                    mint_quote.amount
-                );
-                if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                    tracing::error!("Could not reset melt quote state: {}", err);
-                }
-                return Err(into_response(Error::InsufficientFunds));
-            }
-
-            mint_quote.state = MintQuoteState::Paid;
-
-            let amount = quote.amount;
-
-            if let Err(_err) = state.mint.update_mint_quote(mint_quote).await {
-                if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                    tracing::error!("Could not reset melt quote state: {}", err);
-                }
-                return Err(into_response(Error::Internal));
-            }
-
-            (None, amount)
-        }
-        None => {
-            let invoice = match Bolt11Invoice::from_str(&quote.request) {
-                Ok(bolt11) => bolt11,
-                Err(_) => {
-                    tracing::error!("Melt quote has invalid payment request");
-                    if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                        tracing::error!("Could not reset melt quote state: {}", err);
-                    }
-                    return Err(into_response(Error::InvalidPaymentRequest));
-                }
-            };
-
-            let mut partial_amount = None;
-
-            // If the quote unit is SAT or MSAT we can check that the expected fees are
-            // provided. We also check if the quote is less then the invoice
-            // amount in the case that it is a mmp However, if the quote id not
-            // of a bitcoin unit we cannot do these checks as the mint
-            // is unaware of a conversion rate. In this case it is assumed that the quote is
-            // correct and the mint should pay the full invoice amount if inputs
-            // > then quote.amount are included. This is checked in the
-            // verify_melt method.
-            if quote.unit == CurrencyUnit::Msat || quote.unit == CurrencyUnit::Sat {
-                let quote_msats = to_unit(quote.amount, &quote.unit, &CurrencyUnit::Msat)
-                    .expect("Quote unit is checked above that it can convert to msat");
-
-                let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
-                    Some(amount) => amount.into(),
-                    None => {
-                        if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                            tracing::error!("Could not reset melt quote state: {}", err);
-                        }
-                        return Err(into_response(Error::InvoiceAmountUndefined));
-                    }
-                };
-
-                partial_amount = match invoice_amount_msats > quote_msats {
-                    true => {
-                        let partial_msats = invoice_amount_msats - quote_msats;
-
-                        Some(
-                            to_unit(partial_msats, &CurrencyUnit::Msat, &quote.unit)
-                                .map_err(|_| into_response(Error::UnitUnsupported))?,
-                        )
-                    }
-                    false => None,
-                };
-
-                let amount_to_pay = match partial_amount {
-                    Some(amount_to_pay) => amount_to_pay,
-                    None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &quote.unit)
-                        .map_err(|_| into_response(Error::UnitUnsupported))?,
-                };
-
-                if amount_to_pay + quote.fee_reserve != inputs_amount_quote_unit {
-                    tracing::debug!(
-                        "Not enough inuts provided: {} msats needed {} msats",
-                        inputs_amount_quote_unit,
-                        amount_to_pay
-                    );
-
-                    if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                        tracing::error!("Could not reset melt quote state: {}", err);
-                    }
-                    return Err(into_response(Error::TransactionUnbalanced(
-                        inputs_amount_quote_unit.into(),
-                        amount_to_pay.into(),
-                        quote.fee_reserve.into(),
-                    )));
-                }
-            }
-
-            let ln = match state.ln.get(&LnKey::new(quote.unit, PaymentMethod::Bolt11)) {
-                Some(ln) => ln,
-                None => {
-                    tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
-                    if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                        tracing::error!("Could not reset melt quote state: {}", err);
-                    }
-
-                    return Err(into_response(Error::UnitUnsupported));
-                }
-            };
-
-            let pre = match ln
-                .pay_invoice(quote.clone(), partial_amount, Some(quote.fee_reserve))
-                .await
-            {
-                Ok(pay) => pay,
-                Err(err) => {
-                    tracing::error!("Could not pay invoice: {}", err);
-                    if let Err(err) = state.mint.process_unpaid_melt(&payload).await {
-                        tracing::error!("Could not reset melt quote state: {}", err);
-                    }
-
-                    let err = match err {
-                        cdk::cdk_lightning::Error::InvoiceAlreadyPaid => Error::RequestAlreadyPaid,
-                        _ => Error::PaymentFailed,
-                    };
-
-                    return Err(into_response(err));
-                }
-            };
-
-            let amount_spent = to_unit(pre.total_spent, &ln.get_settings().unit, &quote.unit)
-                .map_err(|_| into_response(Error::UnitUnsupported))?;
-
-            (pre.payment_preimage, amount_spent)
-        }
-    };
-
+) -> Result<Json<MeltQuoteBolt11Response>, Response> {
     let res = state
         .mint
-        .process_melt_request(&payload, preimage, amount_spent_quote_unit)
+        .melt_bolt11(&payload)
         .await
-        .map_err(|err| {
-            tracing::error!("Could not process melt request: {}", err);
-            into_response(err)
-        })?;
+        .map_err(into_response)?;
 
-    Ok(Json(res.into()))
+    Ok(Json(res))
 }
 
 pub async fn post_check(

@@ -7,7 +7,6 @@ use url::Url;
 
 use super::Error;
 use crate::error::ErrorResponse;
-use crate::nuts::nut05::MeltBolt11Response;
 use crate::nuts::nut15::Mpp;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
@@ -129,10 +128,15 @@ impl HttpClient {
         mint_url: Url,
         amount: Amount,
         unit: CurrencyUnit,
+        description: Option<String>,
     ) -> Result<MintQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11"])?;
 
-        let request = MintQuoteBolt11Request { amount, unit };
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit,
+            description,
+        };
 
         let res = self
             .inner
@@ -203,7 +207,7 @@ impl HttpClient {
     }
 
     /// Melt Quote [NUT-05]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_melt_quote(
         &self,
         mint_url: Url,
@@ -262,7 +266,7 @@ impl HttpClient {
         quote: String,
         inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
-    ) -> Result<MeltBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "melt", "bolt11"])?;
 
         let request = MeltBolt11Request {
@@ -281,9 +285,9 @@ impl HttpClient {
             .await?;
 
         match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response.into()),
+            Ok(melt_quote_response) => Ok(melt_quote_response),
             Err(_) => {
-                if let Ok(res) = serde_json::from_value::<MeltBolt11Response>(res.clone()) {
+                if let Ok(res) = serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
                     return Ok(res);
                 }
                 Err(ErrorResponse::from_value(res)?.into())

@@ -48,6 +48,10 @@ pub enum QuoteState {
     Paid,
     /// Paying quote is in progress
     Pending,
+    /// Unknown state
+    Unknown,
+    /// Failed
+    Failed,
 }
 
 impl fmt::Display for QuoteState {
@@ -56,6 +60,8 @@ impl fmt::Display for QuoteState {
             Self::Unpaid => write!(f, "UNPAID"),
             Self::Paid => write!(f, "PAID"),
             Self::Pending => write!(f, "PENDING"),
+            Self::Unknown => write!(f, "UNKNOWN"),
+            Self::Failed => write!(f, "FAILED"),
         }
     }
 }
@@ -68,6 +74,8 @@ impl FromStr for QuoteState {
             "PENDING" => Ok(Self::Pending),
             "PAID" => Ok(Self::Paid),
             "UNPAID" => Ok(Self::Unpaid),
+            "UNKNOWN" => Ok(Self::Unknown),
+            "FAILED" => Ok(Self::Failed),
             _ => Err(Error::UnknownState),
         }
     }
@@ -219,30 +227,8 @@ impl MeltBolt11Request {
     }
 }
 
-// TODO: to be deprecated
-/// Melt Response [NUT-05]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltBolt11Response {
-    /// Indicate if payment was successful
-    pub paid: bool,
-    /// Bolt11 preimage
-    pub payment_preimage: Option<String>,
-    /// Change
-    pub change: Option<Vec<BlindSignature>>,
-}
-
-impl From<MeltQuoteBolt11Response> for MeltBolt11Response {
-    fn from(quote_response: MeltQuoteBolt11Response) -> MeltBolt11Response {
-        MeltBolt11Response {
-            paid: quote_response.paid.unwrap(),
-            payment_preimage: quote_response.payment_preimage,
-            change: quote_response.change,
-        }
-    }
-}
-
 /// Melt Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -270,7 +256,7 @@ impl Settings {
     ) -> Option<MeltMethodSettings> {
         for method_settings in self.methods.iter() {
             if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
-                return Some(method_settings.clone());
+                return Some(*method_settings);
             }
         }
 

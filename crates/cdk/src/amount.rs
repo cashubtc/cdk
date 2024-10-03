@@ -8,6 +8,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::nuts::CurrencyUnit;
+
 /// Amount Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -17,6 +19,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Cannot convert units
+    #[error("Cannot convert units")]
+    CannotConvertUnits,
 }
 
 /// Amount can be any unit
@@ -101,6 +106,11 @@ impl Amount {
     /// Checked addition for Amount. Returns None if overflow occurs.
     pub fn checked_add(self, other: Amount) -> Option<Amount> {
         self.0.checked_add(other.0).map(Amount)
+    }
+
+    /// Checked subtraction for Amount. Returns None if overflow occurs.
+    pub fn checked_sub(self, other: Amount) -> Option<Amount> {
+        self.0.checked_sub(other.0).map(Amount)
     }
 
     /// Try sum to check for overflow
@@ -210,6 +220,30 @@ pub enum SplitTarget {
     Value(Amount),
     /// Specific amounts to split into **MUST** equal amount being split
     Values(Vec<Amount>),
+}
+
+/// Msats in sat
+pub const MSAT_IN_SAT: u64 = 1000;
+
+/// Helper function to convert units
+pub fn to_unit<T>(
+    amount: T,
+    current_unit: &CurrencyUnit,
+    target_unit: &CurrencyUnit,
+) -> Result<Amount, Error>
+where
+    T: Into<u64>,
+{
+    let amount = amount.into();
+    match (current_unit, target_unit) {
+        (CurrencyUnit::Sat, CurrencyUnit::Sat) => Ok(amount.into()),
+        (CurrencyUnit::Msat, CurrencyUnit::Msat) => Ok(amount.into()),
+        (CurrencyUnit::Sat, CurrencyUnit::Msat) => Ok((amount * MSAT_IN_SAT).into()),
+        (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok((amount / MSAT_IN_SAT).into()),
+        (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount.into()),
+        (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount.into()),
+        _ => Err(Error::CannotConvertUnits),
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +369,48 @@ mod tests {
         let total = Amount::try_sum(amounts).unwrap();
 
         assert_eq!(total, 10001.into());
+    }
+
+    #[test]
+    fn test_amount_to_unit() {
+        let amount = Amount::from(1000);
+        let current_unit = CurrencyUnit::Sat;
+        let target_unit = CurrencyUnit::Msat;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1000000.into());
+
+        let amount = Amount::from(1000);
+        let current_unit = CurrencyUnit::Msat;
+        let target_unit = CurrencyUnit::Sat;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1.into());
+
+        let amount = Amount::from(1);
+        let current_unit = CurrencyUnit::Usd;
+        let target_unit = CurrencyUnit::Usd;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1.into());
+
+        let amount = Amount::from(1);
+        let current_unit = CurrencyUnit::Eur;
+        let target_unit = CurrencyUnit::Eur;
+
+        let converted = to_unit(amount, &current_unit, &target_unit).unwrap();
+
+        assert_eq!(converted, 1.into());
+
+        let amount = Amount::from(1);
+        let current_unit = CurrencyUnit::Sat;
+        let target_unit = CurrencyUnit::Eur;
+
+        let converted = to_unit(amount, &current_unit, &target_unit);
+
+        assert!(converted.is_err());
     }
 }
