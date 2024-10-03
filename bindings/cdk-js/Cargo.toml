@@ -2,7 +2,7 @@
 name = "cdk-js"
 version.workspace = true
 edition.workspace = true
-license = "MIT"
+license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.63.0" # MSRV
