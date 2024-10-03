@@ -7,7 +7,6 @@ use url::Url;
 
 use super::Error;
 use crate::error::ErrorResponse;
-use crate::nuts::nut05::MeltBolt11Response;
 use crate::nuts::nut15::Mpp;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
@@ -267,7 +266,7 @@ impl HttpClient {
         quote: String,
         inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
-    ) -> Result<MeltBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response, Error> {
         let url = join_url(mint_url, &["v1", "melt", "bolt11"])?;
 
         let request = MeltBolt11Request {
@@ -286,9 +285,9 @@ impl HttpClient {
             .await?;
 
         match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response.into()),
+            Ok(melt_quote_response) => Ok(melt_quote_response),
             Err(_) => {
-                if let Ok(res) = serde_json::from_value::<MeltBolt11Response>(res.clone()) {
+                if let Ok(res) = serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
                     return Ok(res);
                 }
                 Err(ErrorResponse::from_value(res)?.into())

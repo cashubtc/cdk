@@ -3,7 +3,6 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
-use cdk::nuts::nut05::MeltBolt11Response;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
@@ -121,7 +120,7 @@ pub async fn get_check_melt_bolt11_quote(
 pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request>,
-) -> Result<Json<MeltBolt11Response>, Response> {
+) -> Result<Json<MeltQuoteBolt11Response>, Response> {
     let res = state
         .mint
         .melt_bolt11(&payload)
