@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use axum::Router;
-use cdk::amount::{amount_for_offer, to_unit, Amount, MSAT_IN_SAT};
+use cdk::amount::{amount_for_offer, to_unit, Amount};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, MintLightning, PayInvoiceResponse,
     PaymentQuoteResponse, Settings,
@@ -309,13 +309,11 @@ impl MintLightning for Phoenixd {
                     false => MeltQuoteState::Unpaid,
                 };
 
-                let total_spent = res.sent + (res.fees + 999) / MSAT_IN_SAT;
-
                 PayInvoiceResponse {
                     payment_lookup_id: res.payment_hash,
                     payment_preimage: Some(res.preimage),
                     status,
-                    total_spent: total_spent.into(),
+                    total_spent: res.sent.into(),
                     unit: CurrencyUnit::Sat,
                 }
             }
