@@ -388,7 +388,7 @@ pub enum ProofSelectionMethod {
     Closest,
     /// Select proofs with the smallest amount first
     Smallest,
-    /// Select least number of proofs over the amount
+    /// Select least total proof amount over the specified amount
     Least,
 }
 
