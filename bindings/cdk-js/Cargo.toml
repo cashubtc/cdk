@@ -1,6 +1,6 @@
 [package]
 name = "cdk-js"
-version = "0.4.0"
+version.workspace = true
 edition = "2021"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"

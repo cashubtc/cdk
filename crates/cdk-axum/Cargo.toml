@@ -1,6 +1,6 @@
 [package]
 name = "cdk-axum"
-version = "0.4.0"
+version.workspace = true
 edition = "2021"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
@@ -12,7 +12,7 @@ description = "Cashu CDK axum webserver"
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.6.20"
-cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = ["mint"] }
+cdk = { path = "../cdk", default-features = false, features = ["mint"] }
 tokio = { version = "1", default-features = false }
 tower-http = { version = "0.4.4", features = ["cors"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
