@@ -28,7 +28,6 @@ pub async fn pay(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &MeltSubCommand,
 ) -> Result<()> {
-    println!("{}", sub_command_args.unit);
     let unit = CurrencyUnit::from_str(&sub_command_args.unit).unwrap();
     let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
 

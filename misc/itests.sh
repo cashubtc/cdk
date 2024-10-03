@@ -6,7 +6,7 @@ cleanup() {
 
     # Kill the Rust binary process
     echo "Killing the Rust binary with PID $RUST_BIN_PID"
-    kill $CDK_ITEST_MINT_BIN_PID
+    # kill $CDK_ITEST_MINT_BIN_PID
 
     # Wait for the Rust binary to terminate
     wait $CDK_ITEST_MINT_BIN_PID
@@ -15,11 +15,11 @@ cleanup() {
     
     # Kill processes
     lncli --lnddir="$cdk_itests/lnd" --network=regtest stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/" stop
-    bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
+    # lightning-cli --regtest --lightning-dir="$cdk_itests/cln/" stop
+    # bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
 
     # Remove the temporary directory
-    rm -rf "$cdk_itests"
+    # rm -rf "$cdk_itests"
     echo "Temp directory removed: $cdk_itests"
     unset cdk_itests
     unset cdk_itests_mint_addr

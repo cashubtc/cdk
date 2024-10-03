@@ -401,10 +401,11 @@ impl MintLightning for Phoenixd {
             .await?;
 
         tracing::debug!(
-            "Phd invoice {} for {} with amount {}",
+            "Phd offer {} with amount {} with fee {} total spent {}",
             check_outgoing_response.status,
             amount,
-            check_outgoing_response.total_spent - amount
+            check_outgoing_response.total_spent - amount,
+            check_outgoing_response.total_spent
         );
 
         Ok(PayInvoiceResponse {

@@ -259,8 +259,6 @@ impl HttpClient {
 
         let res = self.inner.post(url).json(&request).send().await?;
 
-        println!("{:?}", res);
-
         let res = res.json::<Value>().await?;
 
         match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {

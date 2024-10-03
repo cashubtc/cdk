@@ -699,6 +699,21 @@ impl Mint {
                 err
             })?;
 
+        let change_amount: u64 = change
+            .as_ref()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|b| u64::from(b.amount))
+            .sum();
+
+        tracing::debug!(
+            "Quote {} paid, quote amount: {}, total paid: {}, change amount: {}",
+            quote.id,
+            quote.amount,
+            amount_spent_quote_unit,
+            change_amount
+        );
+
         Ok(MeltQuoteBolt11Response {
             paid: Some(true),
             payment_preimage: preimage,
