@@ -229,6 +229,14 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "15")]
     pub nut15: nut15::Settings,
+    /// NUT04 Settings
+    #[serde(default)]
+    #[serde(rename = "18")]
+    pub nut18: nut04::Settings,
+    /// NUT05 Settings
+    #[serde(default)]
+    #[serde(rename = "19")]
+    pub nut19: nut05::Settings,
 }
 
 impl Nuts {
@@ -315,6 +323,22 @@ impl Nuts {
             nut15: nut15::Settings {
                 methods: mpp_settings,
             },
+            ..self
+        }
+    }
+
+    /// Nut18 settings
+    pub fn nut18(self, nut04_settings: nut04::Settings) -> Self {
+        Self {
+            nut04: nut04_settings,
+            ..self
+        }
+    }
+
+    /// Nut19 settings
+    pub fn nut19(self, nut05_settings: nut05::Settings) -> Self {
+        Self {
+            nut05: nut05_settings,
             ..self
         }
     }
