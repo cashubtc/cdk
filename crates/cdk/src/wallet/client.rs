@@ -156,6 +156,41 @@ impl HttpClient {
         }
     }
 
+    /// Mint Quote [NUT-04]
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    pub async fn post_mint_bolt12_quote(
+        &self,
+        mint_url: Url,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<MintQuoteBolt11Response, Error> {
+        let url = join_url(mint_url, &["v1", "mint", "quote", "bolt12"])?;
+
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit,
+            description,
+        };
+
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(err) => {
+                tracing::warn!("{}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
+        }
+    }
+
     /// Mint Quote status
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_quote_status(

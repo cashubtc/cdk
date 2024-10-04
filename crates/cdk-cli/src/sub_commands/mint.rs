@@ -6,7 +6,7 @@ use anyhow::Result;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk::Amount;
@@ -23,6 +23,9 @@ pub struct MintSubCommand {
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,
+    /// Payment method
+    #[arg(short, long, default_value = "bolt11")]
+    method: String,
     /// Quote description
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
@@ -51,9 +54,21 @@ pub async fn mint(
         }
     };
 
-    let quote = wallet
-        .mint_quote(Amount::from(sub_command_args.amount), description)
-        .await?;
+    let method = PaymentMethod::from_str(&sub_command_args.method)?;
+
+    let quote = match method {
+        PaymentMethod::Bolt11 => {
+            wallet
+                .mint_quote(Amount::from(sub_command_args.amount), description)
+                .await?
+        }
+        PaymentMethod::Bolt12 => {
+            wallet
+                .mint_bolt12_quote(Amount::from(sub_command_args.amount), description)
+                .await?
+        }
+        _ => panic!("Unsupported unit"),
+    };
 
     println!("Quote: {:#?}", quote);
 
