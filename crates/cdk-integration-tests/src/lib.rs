@@ -1,4 +1,7 @@
+use core::fmt;
 use std::collections::{HashMap, HashSet};
+use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,13 +21,77 @@ use cdk::types::{LnKey, QuoteTTL};
 use cdk::wallet::client::HttpClient;
 use cdk::{Mint, Wallet};
 use cdk_fake_wallet::FakeWallet;
-use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
 pub mod init_fake_wallet;
 pub mod init_regtest;
+
+const BITCOIN_DIR: &str = "bitcoin";
+
+pub enum LNNode {
+    LNDWalletOne,
+    LNDMintOne,
+    CLNWalletOne,
+    CLNMintOne,
+}
+
+impl LNNode {
+    pub fn address(&self) -> String {
+        match self {
+            Self::LNDWalletOne => "0.0.0.0:9740".to_string(),
+            Self::LNDMintOne => "0.0.0.0:9760".to_string(),
+            Self::CLNWalletOne => "".to_string(),
+            Self::CLNMintOne => "127.0.0.1:9750".to_string(),
+        }
+    }
+
+    pub fn rpc_listen_addr(&self) -> String {
+        match self {
+            Self::LNDWalletOne => "localhost:10009".to_string(),
+            Self::LNDMintOne => "localhost:10010".to_string(),
+            Self::CLNWalletOne => "".to_string(),
+            Self::CLNMintOne => "127.0.0.1:19001".to_string(),
+        }
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        let temp_dir = get_temp_dir();
+        temp_dir.join(self.to_string())
+    }
+}
+
+impl fmt::Display for LNNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            LNNode::LNDWalletOne => {
+                write!(f, "lnd_wallet_one",)
+            }
+            LNNode::LNDMintOne => {
+                write!(f, "lnd_mint_one",)
+            }
+            LNNode::CLNWalletOne => {
+                write!(f, "cln_wallet_one",)
+            }
+            LNNode::CLNMintOne => {
+                write!(f, "cln_mint_one",)
+            }
+        }
+    }
+}
+
+pub fn get_temp_dir() -> PathBuf {
+    let dir = env::var("cdk_itests").expect("Temp dir set");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.parse().expect("Valid path buf")
+}
+
+pub fn get_bitcoin_dir() -> PathBuf {
+    let dir = get_temp_dir().join(BITCOIN_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 pub fn create_backends_fake_wallet(
 ) -> HashMap<LnKey, Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>> {
@@ -53,6 +120,9 @@ pub fn create_backends_fake_wallet(
 }
 
 pub async fn start_mint(
+    mint_url: &str,
+    mint_addr: &str,
+    mint_port: u16,
     ln_backends: HashMap<
         LnKey,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
@@ -75,7 +145,7 @@ pub async fn start_mint(
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
     let mint = Mint::new(
-        &get_mint_url(),
+        mint_url,
         &mnemonic.to_seed_normalized(""),
         mint_info,
         quote_ttl,
@@ -102,13 +172,9 @@ pub async fn start_mint(
         async move { mint.wait_for_paid_invoices(shutdown).await }
     });
 
-    axum::Server::bind(
-        &format!("{}:{}", get_mint_addr(), get_mint_port())
-            .as_str()
-            .parse()?,
-    )
-    .serve(mint_service.into_make_service())
-    .await?;
+    axum::Server::bind(&format!("{}:{}", mint_addr, mint_port).as_str().parse()?)
+        .serve(mint_service.into_make_service())
+        .await?;
 
     Ok(())
 }

@@ -14,12 +14,14 @@ cleanup() {
     echo "Mint binary terminated"
     
     # Kill processes
-    lncli --lnddir="$cdk_itests/lnd" --network=regtest stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/" stop
+    lncli --lnddir="$cdk_itests/lnd_wallet_one" --network=regtest stop
+    lncli --lnddir="$cdk_itests/lnd_mint_one" --rpcserver=localhost:10010 --network=regtest stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln_mint_one" stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln_wallet_one" stop
     bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
 
     # Remove the temporary directory
-    rm -rf "$cdk_itests"
+#    rm -rf "$cdk_itests"
     echo "Temp directory removed: $cdk_itests"
     unset cdk_itests
     unset cdk_itests_mint_addr
@@ -50,7 +52,7 @@ cargo run --bin cdk-integration-tests &
 # Capture its PID
 CDK_ITEST_MINT_BIN_PID=$!
 
-TIMEOUT=100
+TIMEOUT=200
 START_TIME=$(date +%s)
 # Loop until the endpoint returns a 200 OK status or timeout is reached
 while true; do
@@ -81,7 +83,7 @@ done
 
 
 # Run cargo test
-cargo test -p cdk-integration-tests --test regtest
+cargo test -p cdk-integration-tests
 
 # Capture the exit status of cargo test
 test_status=$?

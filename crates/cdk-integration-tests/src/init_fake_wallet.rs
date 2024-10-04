@@ -36,11 +36,6 @@ where
     // Parse input
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
-    > = HashMap::new();
-
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
         percent_fee_reserve: 1.0,
@@ -54,13 +49,27 @@ where
         HashSet::default(),
         0,
     );
+    let mut ln_backends: HashMap<
+        _,
+        Arc<
+            (dyn MintLightning<Err = cdk::cdk_lightning::Error>
+                 + std::marker::Send
+                 + Sync
+                 + 'static),
+        >,
+    > = HashMap::new();
 
     ln_backends.insert(
         LnKey::new(CurrencyUnit::Sat, cdk::nuts::PaymentMethod::Bolt11),
         Arc::new(fake_wallet),
     );
 
-    let mint = create_mint(database, ln_backends.clone()).await?;
+    let mint = create_mint(
+        &format!("http://{addr}:{port}"),
+        database,
+        ln_backends.clone(),
+    )
+    .await?;
 
     let mint_arc = Arc::new(mint);
 
