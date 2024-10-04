@@ -25,8 +25,8 @@ use cdk::nuts::{
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use cln_rpc::model::requests::{
-    FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest, PayRequest,
-    WaitanyinvoiceRequest,
+    FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest, OfferRequest,
+    PayRequest, WaitanyinvoiceRequest,
 };
 use cln_rpc::model::responses::{
     ListinvoicesInvoices, ListinvoicesInvoicesStatus, ListpaysPaysStatus, PayStatus,
@@ -193,7 +193,7 @@ impl MintLightning for Cln {
                                 None => payment_hash,
                             };
 
-                            return Some((request_look_up, (cln_client, last_pay_idx, cancel_token, is_active)));
+                            break Some((request_look_up, (cln_client, last_pay_idx, cancel_token, is_active)));
                                 }
                                 Err(e) => {
                                     tracing::warn!("Error fetching invoice: {e}");
@@ -608,12 +608,53 @@ impl MintLightning for Cln {
     /// Create bolt12 offer
     async fn create_bolt12_offer(
         &self,
-        _amount: Amount,
-        _unit: &CurrencyUnit,
-        _description: String,
-        _unix_expiry: u64,
+        amount: Amount,
+        unit: &CurrencyUnit,
+        description: String,
+        unix_expiry: u64,
     ) -> Result<CreateOfferResponse, Self::Err> {
-        todo!()
+        let time_now = unix_time();
+        assert!(unix_expiry > time_now);
+        let mut cln_client = self.cln_client.lock().await;
+
+        let label = Uuid::new_v4().to_string();
+
+        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+
+        let cln_response = cln_client
+            .call(cln_rpc::Request::Offer(OfferRequest {
+                absolute_expiry: Some(unix_expiry),
+                description: Some(description),
+                label: Some(label),
+                issuer: None,
+                quantity_max: None,
+                recurrence: None,
+                recurrence_base: None,
+                recurrence_limit: None,
+                recurrence_paywindow: None,
+                recurrence_start_any_period: None,
+                single_use: Some(true),
+                amount: amount.to_string(),
+            }))
+            .await
+            .map_err(Error::from)?;
+
+        match cln_response {
+            cln_rpc::Response::Offer(offer_res) => {
+                let offer = Offer::from_str(&offer_res.bolt12).unwrap();
+                let expiry = offer.absolute_expiry().map(|t| t.as_secs());
+
+                Ok(CreateOfferResponse {
+                    request_lookup_id: offer_res.bolt12,
+                    request: offer,
+                    expiry,
+                })
+            }
+            _ => {
+                tracing::warn!("CLN returned wrong response kind");
+                Err(Error::WrongClnResponse.into())
+            }
+        }
     }
 }
 
