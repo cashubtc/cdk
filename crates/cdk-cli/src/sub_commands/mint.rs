@@ -21,10 +21,10 @@ pub struct MintSubCommand {
     /// Amount
     amount: u64,
     /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
+    #[arg(short, long, default_value = "sat")]
     unit: String,
     /// Payment method
-    #[arg(short, long, default_value = "bolt11")]
+    #[arg(long, default_value = "bolt11")]
     method: String,
     /// Quote description
     #[serde(skip_serializing_if = "Option::is_none")]
