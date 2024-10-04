@@ -350,7 +350,7 @@ impl HttpClient {
             .await?;
 
         match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response.into()),
+            Ok(melt_quote_response) => Ok(melt_quote_response),
             Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }

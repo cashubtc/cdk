@@ -188,7 +188,7 @@ pub async fn post_melt_bolt11(
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
     let res = state.mint.melt(&payload).await.map_err(into_response)?;
 
-    Ok(Json(res.into()))
+    Ok(Json(res))
 }
 
 pub async fn get_melt_bolt12_quote(

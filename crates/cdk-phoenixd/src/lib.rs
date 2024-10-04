@@ -385,7 +385,7 @@ impl MintLightning for Phoenixd {
 
         let amount = match amount {
             Some(amount) => amount,
-            None => amount_for_offer(&offer, &CurrencyUnit::Sat)?,
+            None => amount_for_offer(offer, &CurrencyUnit::Sat)?,
         };
 
         let pay_response = self
