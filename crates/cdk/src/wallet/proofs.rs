@@ -168,6 +168,7 @@ impl Wallet {
     }
 
     /// Select proofs to send or swap for a specific amount.
+    /// If inactive keys are allowed via [`SelectProofsOptions`], they will be selected first in largest order.
     #[instrument(skip_all)]
     pub async fn select_proofs(
         &self,
@@ -266,6 +267,11 @@ fn select_least_proofs_over_amount(
     amount: Amount,
     fees: HashMap<Id, u64>,
 ) -> Option<Vec<Proof>> {
+    tracing::trace!(
+        "Selecting LEAST proofs for amount {} with fees {:?}",
+        amount,
+        fees
+    );
     let max_sum = Amount::try_sum(proofs.iter().map(|p| p.amount)).ok()? + 1.into();
     if max_sum < amount || proofs.is_empty() || amount == Amount::ZERO {
         return None;
@@ -284,20 +290,31 @@ fn select_least_proofs_over_amount(
                 let new_sum = current_sum + proof.amount;
                 let target_index = (t + Into::<u64>::into(proof.amount)) as usize;
 
-                // If we found a smaller sum or this sum has not been reached yet
-                if dp[target_index].is_none() || dp[target_index].unwrap() > new_sum {
+                // If this sum has not been reached yet, or if the new sum is smaller, or if the new path is shorter
+                if dp[target_index].is_none()
+                    || dp[target_index].unwrap() > new_sum
+                    || paths[target_index].len() > paths[t as usize].len() + 1
+                {
+                    tracing::trace!("Updating DP table: {} -> {}", target_index, new_sum);
                     dp[target_index] = Some(new_sum);
                     paths[target_index] = paths[t as usize].clone();
                     paths[target_index].push(proof.clone());
+                    tracing::trace!("Path: {:?}", paths[target_index]);
                 }
             }
         }
     }
 
-    // Find the smallest sum greater than or equal to the target
+    // Find the smallest sum greater than or equal to the target amount
     for t in Into::<u64>::into(amount)..=Into::<u64>::into(max_sum) {
         if let Some(proofs_amount) = dp[t as usize] {
             let proofs = &paths[t as usize];
+            let proofs_sum =
+                Amount::try_sum(proofs.iter().map(|p| p.amount)).unwrap_or(Amount::ZERO);
+            if proofs_sum != proofs_amount {
+                tracing::error!("Proofs sum does not match DP table sum");
+                continue;
+            }
             let mut proofs_count = HashMap::new();
             for proof in proofs {
                 proofs_count
@@ -308,11 +325,19 @@ fn select_least_proofs_over_amount(
             let fee = calculate_fee(&proofs_count, &fees).unwrap_or(Amount::ZERO);
 
             if proofs_amount >= amount + fee {
-                return Some(paths[t as usize].clone());
+                let proofs = paths[t as usize].clone();
+                tracing::trace!(
+                    "Selected proofs for amount {} with fee {}: {:?}",
+                    amount,
+                    fee,
+                    proofs
+                );
+                return Some(proofs);
             }
         }
     }
 
+    tracing::trace!("No proofs found for amount {}", amount);
     None
 }
 
@@ -448,11 +473,27 @@ mod tests {
 
     #[test]
     fn test_select_least_proofs_over_amount() {
-        let amount = Amount::from(1025);
         let keyset_id = Id::random();
+        let c_1 = PublicKey::random();
         let proofs = vec![
             Proof {
                 amount: 1.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: c_1,
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: 1.into(),
+                keyset_id,
+                secret: Secret::generate(),
+                c: c_1,
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: 2.into(),
                 keyset_id,
                 secret: Secret::generate(),
                 c: PublicKey::random(),
@@ -477,11 +518,31 @@ mod tests {
             },
         ];
 
-        let selected_proofs =
-            select_least_proofs_over_amount(&proofs, amount, HashMap::new()).unwrap();
-        assert_eq!(selected_proofs.len(), 2);
-        let amounts: Vec<u64> = selected_proofs.iter().map(|p| p.amount.into()).collect();
-        assert!(amounts.contains(&1024));
-        assert!(amounts.contains(&1));
+        fn assert_amounts(proofs: &mut [Proof], amounts: &mut [u64]) {
+            println!("{:?}", proofs);
+            println!("{:?}", amounts);
+            assert_eq!(proofs.len(), amounts.len());
+            proofs.sort_by(|a, b| a.amount.cmp(&b.amount));
+            amounts.sort();
+            for (p, a) in proofs.iter().zip(amounts.iter()) {
+                assert_eq!(p.amount, Amount::from(*a));
+            }
+        }
+
+        let mut selected_proofs =
+            select_least_proofs_over_amount(&proofs, Amount::from(1025), HashMap::new()).unwrap();
+        assert_amounts(&mut selected_proofs, &mut [1024, 1]);
+
+        let mut selected_proofs =
+            select_least_proofs_over_amount(&proofs, Amount::from(2), HashMap::new()).unwrap();
+        assert_amounts(&mut selected_proofs, &mut [2]);
+
+        let mut selected_proofs =
+            select_least_proofs_over_amount(&proofs, Amount::from(1284), HashMap::new()).unwrap();
+        assert_amounts(&mut selected_proofs, &mut [1024, 256, 2, 1, 1]);
+
+        assert!(
+            select_least_proofs_over_amount(&proofs, Amount::from(2048), HashMap::new()).is_none()
+        );
     }
 }
