@@ -36,6 +36,8 @@ use tokio::sync::{Mutex, Notify};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use url::Url;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 mod cli;
 mod config;
@@ -472,6 +474,10 @@ async fn main() -> anyhow::Result<()> {
     let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
 
     let mut mint_service = Router::new()
+        .merge(
+            SwaggerUi::new("/swagger-ui")
+                .url("/api-docs/openapi.json", cdk_axum::ApiDocV1::openapi()),
+        )
         .merge(v1_service)
         .layer(CorsLayer::permissive());
 

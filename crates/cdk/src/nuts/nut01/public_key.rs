@@ -13,7 +13,9 @@ use crate::SECP256K1;
 
 /// PublicKey
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct PublicKey {
+    #[cfg_attr(feature = "mint", schema(value_type = String))]
     inner: secp256k1::PublicKey,
 }
 
