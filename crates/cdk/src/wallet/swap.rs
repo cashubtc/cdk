@@ -15,7 +15,7 @@ use crate::Amount;
 use crate::Error;
 use crate::Wallet;
 
-use super::proofs::ProofSelectionMethod;
+use super::proofs::SelectProofsOptions;
 
 impl Wallet {
     /// Swap
@@ -176,7 +176,11 @@ impl Wallet {
         }
 
         let proofs = self
-            .select_proofs_to_swap(amount, available_proofs, ProofSelectionMethod::Largest)
+            .select_proofs(
+                amount,
+                available_proofs,
+                SelectProofsOptions::default().include_fees(include_fees),
+            )
             .await?;
 
         self.swap(

@@ -167,113 +167,47 @@ impl Wallet {
         Ok(balance)
     }
 
-    /// Select proofs to send
+    /// Select proofs to send or swap for a specific amount.
     #[instrument(skip_all)]
-    pub async fn select_proofs_to_send(
+    pub async fn select_proofs(
         &self,
         amount: Amount,
         proofs: Proofs,
-        include_fees: bool,
+        opts: SelectProofsOptions,
     ) -> Result<Proofs, Error> {
-        // TODO: Check all proofs are same unit
-
-        if Amount::try_sum(proofs.iter().map(|p| p.amount))? < amount {
-            return Err(Error::InsufficientFunds);
-        }
-
-        let (mut proofs_larger, mut proofs_smaller): (Proofs, Proofs) =
-            proofs.into_iter().partition(|p| p.amount > amount);
-
-        let next_bigger_proof = proofs_larger.first().cloned();
-
         let mut selected_proofs: Proofs = Vec::new();
-        let mut remaining_amount = amount;
 
-        while remaining_amount > Amount::ZERO {
-            proofs_larger.sort();
-            // Sort smaller proofs in descending order
-            proofs_smaller.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
-
-            let selected_proof = if let Some(next_small) = proofs_smaller.clone().first() {
-                next_small.clone()
-            } else if let Some(next_bigger) = proofs_larger.first() {
-                next_bigger.clone()
-            } else {
-                break;
-            };
-
-            let proof_amount = selected_proof.amount;
-
-            selected_proofs.push(selected_proof);
-
-            let fees = match include_fees {
-                true => self.get_proofs_fee(&selected_proofs).await?,
-                false => Amount::ZERO,
-            };
-
-            if proof_amount >= remaining_amount + fees {
-                remaining_amount = Amount::ZERO;
-                break;
-            }
-
-            remaining_amount = amount.checked_add(fees).ok_or(Error::AmountOverflow)?
-                - Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
-            (proofs_larger, proofs_smaller) = proofs_smaller
-                .into_iter()
-                .skip(1)
-                .partition(|p| p.amount > remaining_amount);
-        }
-
-        if remaining_amount > Amount::ZERO {
-            if let Some(next_bigger) = next_bigger_proof {
-                return Ok(vec![next_bigger.clone()]);
-            }
-
-            return Err(Error::InsufficientFunds);
-        }
-
-        Ok(selected_proofs)
-    }
-
-    /// Select proofs to send
-    ///
-    /// This method will first select inactive proofs and then active proofs.
-    /// Inactive proofs are always sorted largest first.
-    /// The active proofs are sorted by the [`SelectProofsMethod`] provided.
-    #[instrument(skip_all)]
-    pub async fn select_proofs_to_swap(
-        &self,
-        amount: Amount,
-        proofs: Proofs,
-        method: ProofSelectionMethod,
-    ) -> Result<Proofs, Error> {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         let (mut active_proofs, mut inactive_proofs): (Proofs, Proofs) = proofs
             .into_iter()
             .partition(|p| p.keyset_id == active_keyset_id);
 
-        let mut selected_proofs: Proofs = Vec::new();
-        sort_proofs(&mut inactive_proofs, ProofSelectionMethod::Largest, amount);
+        if opts.allow_inactive_keys {
+            sort_proofs(&mut inactive_proofs, ProofSelectionMethod::Largest, amount);
 
-        for inactive_proof in inactive_proofs {
-            selected_proofs.push(inactive_proof);
-            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
-            let fees = self.get_proofs_fee(&selected_proofs).await?;
+            for inactive_proof in inactive_proofs {
+                selected_proofs.push(inactive_proof);
+                let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+                let fees = self.get_proofs_fee(&selected_proofs).await?;
 
-            if selected_total >= amount + fees {
-                return Ok(selected_proofs);
+                if selected_total >= amount + fees {
+                    return Ok(selected_proofs);
+                }
             }
         }
 
-        if method == ProofSelectionMethod::Least {
+        if opts.method == ProofSelectionMethod::Least {
             let selected_amount = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
-            let keyset_fees = self
-                .get_mint_keysets()
-                .await?
-                .into_iter()
-                .map(|k| (k.id, k.input_fee_ppk))
-                .collect();
+            let keyset_fees = if opts.include_fees {
+                self.get_mint_keysets()
+                    .await?
+                    .into_iter()
+                    .map(|k| (k.id, k.input_fee_ppk))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
             if let Some(proofs) = select_least_proofs_over_amount(
                 &active_proofs,
                 amount.checked_sub(selected_amount).unwrap_or(Amount::ZERO),
@@ -284,12 +218,16 @@ impl Wallet {
             }
         }
 
-        sort_proofs(&mut active_proofs, method, amount);
+        sort_proofs(&mut active_proofs, opts.method, amount);
 
         for active_proof in active_proofs {
             selected_proofs.push(active_proof);
             let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
-            let fees = self.get_proofs_fee(&selected_proofs).await?;
+            let fees = if opts.include_fees {
+                self.get_proofs_fee(&selected_proofs).await?
+            } else {
+                Amount::ZERO
+            };
 
             if selected_total >= amount + fees {
                 return Ok(selected_proofs);
@@ -376,6 +314,59 @@ fn select_least_proofs_over_amount(
     }
 
     None
+}
+
+/// Select proofs options
+pub struct SelectProofsOptions {
+    /// Allow inactive keys (if `true`, inactive keys will be selected first in largest order)
+    pub allow_inactive_keys: bool,
+    /// Include fees to add to the selection amount
+    pub include_fees: bool,
+    /// Proof selection method
+    pub method: ProofSelectionMethod,
+}
+
+impl SelectProofsOptions {
+    /// Create new [`SelectProofsOptions`]
+    pub fn new(
+        allow_inactive_keys: bool,
+        include_fees: bool,
+        method: ProofSelectionMethod,
+    ) -> Self {
+        Self {
+            allow_inactive_keys,
+            include_fees,
+            method,
+        }
+    }
+
+    /// Allow inactive keys (if `true`, inactive keys will be selected first in largest order)
+    pub fn allow_inactive_keys(mut self, allow_inactive_keys: bool) -> Self {
+        self.allow_inactive_keys = allow_inactive_keys;
+        self
+    }
+
+    /// Include fees to add to the selection amount
+    pub fn include_fees(mut self, include_fees: bool) -> Self {
+        self.include_fees = include_fees;
+        self
+    }
+
+    /// Proof selection method
+    pub fn method(mut self, method: ProofSelectionMethod) -> Self {
+        self.method = method;
+        self
+    }
+}
+
+impl Default for SelectProofsOptions {
+    fn default() -> Self {
+        Self {
+            allow_inactive_keys: false,
+            include_fees: true,
+            method: ProofSelectionMethod::Largest,
+        }
+    }
 }
 
 /// Select proofs method
