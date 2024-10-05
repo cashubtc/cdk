@@ -15,6 +15,12 @@ pub struct Info {
     pub seconds_to_cache_requests_for: Option<u64>,
     pub seconds_to_extend_cache_by: Option<u64>,
     pub input_fee_ppk: Option<u64>,
+
+    /// When this is set to true, the mint exposes a Swagger UI for it's API at
+    /// `[listen_host]:[listen_port]/swagger-ui`
+    ///
+    /// This requires `mintd` was built with the `swagger` feature flag.
+    pub enable_swagger_ui: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -94,6 +100,7 @@ pub struct Database {
     pub engine: DatabaseEngine,
 }
 
+/// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub info: Info,

@@ -242,8 +242,9 @@ pub enum Error {
 
 /// CDK Error Response
 ///
-/// See NUT defenation in [00](https://github.com/cashubtc/nuts/blob/main/00.md)
+/// See NUT definition in [00](https://github.com/cashubtc/nuts/blob/main/00.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ErrorResponse {
     /// Error Code
     pub code: ErrorCode,
@@ -399,6 +400,7 @@ impl From<ErrorResponse> for Error {
 
 /// Possible Error Codes
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum ErrorCode {
     /// Token is already spent
     TokenAlreadySpent,

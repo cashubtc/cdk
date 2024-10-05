@@ -52,6 +52,7 @@ pub enum Error {
 
 /// HTLC Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct HTLCWitness {
     /// Primage
     pub preimage: String,

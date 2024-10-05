@@ -10,6 +10,7 @@ use crate::Amount;
 /// Multi-part payment
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename = "lowercase")]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Mpp {
     /// Amount
     pub amount: Amount,
@@ -17,6 +18,7 @@ pub struct Mpp {
 
 /// Mpp Method Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MppMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -28,6 +30,7 @@ pub struct MppMethodSettings {
 
 /// Mpp Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut15::Settings))]
 pub struct Settings {
     /// Method settings
     pub methods: Vec<MppMethodSettings>,

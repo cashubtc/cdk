@@ -649,14 +649,9 @@ impl WalletDatabase for WalletRedbDatabase {
                 let mut proof = None;
 
                 if let Ok(proof_info) = serde_json::from_str::<ProofInfo>(v.value()) {
-                    match proof_info.matches_conditions(
-                        &mint_url,
-                        &unit,
-                        &state,
-                        &spending_conditions,
-                    ) {
-                        true => proof = Some(proof_info),
-                        false => (),
+                    if proof_info.matches_conditions(&mint_url, &unit, &state, &spending_conditions)
+                    {
+                        proof = Some(proof_info)
                     }
                 }
 
