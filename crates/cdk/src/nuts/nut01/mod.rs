@@ -43,6 +43,7 @@ pub enum Error {
 ///
 /// See [NUT-01]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Keys(BTreeMap<AmountStr, PublicKey>);
 
 impl From<MintKeys> for Keys {
@@ -85,6 +86,7 @@ impl Keys {
 /// Mint Public Keys [NUT-01]
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeysResponse {
     /// Keysets
     #[serde_as(as = "VecSkipError<_>")]

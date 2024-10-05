@@ -41,10 +41,13 @@ pub enum Error {
 ///
 /// Defined in [NUT12](https://github.com/cashubtc/nuts/blob/main/12.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct BlindSignatureDleq {
     /// e
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub e: SecretKey,
     /// s
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub s: SecretKey,
 }
 
@@ -52,12 +55,16 @@ pub struct BlindSignatureDleq {
 ///
 /// Defined in [NUT12](https://github.com/cashubtc/nuts/blob/main/12.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ProofDleq {
     /// e
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub e: SecretKey,
     /// s
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub s: SecretKey,
     /// Blinding factor
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub r: SecretKey,
 }
 

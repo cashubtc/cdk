@@ -9,6 +9,7 @@ use super::{nut04, nut05, nut15, MppMethodSettings};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintVersion {
     /// Mint Software name
     pub name: String,
@@ -52,6 +53,7 @@ impl<'de> Deserialize<'de> for MintVersion {
 
 /// Mint Info [NIP-06]
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,6 +190,7 @@ impl MintInfo {
 
 /// Supported nuts and settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Nuts {
     /// NUT04 Settings
     #[serde(default)]
@@ -322,12 +325,14 @@ impl Nuts {
 
 /// Check state Settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SupportedSettings {
     supported: bool,
 }
 
 /// Contact Info
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ContactInfo {
     /// Contact Method i.e. nostr
     pub method: String,

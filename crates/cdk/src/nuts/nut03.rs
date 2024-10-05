@@ -34,8 +34,10 @@ pub struct PreSwap {
 
 /// Split Request [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SwapRequest {
     /// Proofs that are to be spent in `Split`
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<Proof>))]
     pub inputs: Proofs,
     /// Blinded Messages for Mint to sign
     pub outputs: Vec<BlindedMessage>,
@@ -64,6 +66,7 @@ impl SwapRequest {
 
 /// Split Response [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SwapResponse {
     /// Promises
     pub signatures: Vec<BlindSignature>,

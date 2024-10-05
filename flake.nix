@@ -135,7 +135,7 @@
               cargo update -p serde_with --precise 3.1.0
               cargo update -p regex --precise 1.9.6
               cargo update -p backtrace --precise 0.3.58
-              # For wasm32-unknown-unknown target 
+              # For wasm32-unknown-unknown target
               cargo update -p bumpalo --precise 3.12.0
               cargo update -p moka --precise 0.11.1
               cargo update -p triomphe --precise 0.1.11

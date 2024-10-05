@@ -15,7 +15,9 @@ use crate::SECP256K1;
 
 /// SecretKey
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SecretKey {
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     inner: secp256k1::SecretKey,
 }
 
