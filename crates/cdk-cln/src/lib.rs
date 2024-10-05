@@ -393,41 +393,19 @@ impl MintLightning for Cln {
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
-        let cln_response = cln_client
-            .call(Request::ListInvoices(ListinvoicesRequest {
-                payment_hash: Some(payment_hash.to_string()),
-                label: None,
-                invstring: None,
-                offer_id: None,
-                index: None,
-                limit: None,
-                start: None,
-            }))
-            .await
-            .map_err(Error::from)?;
-
-        let status = match cln_response {
-            cln_rpc::Response::ListInvoices(invoice_response) => {
-                match invoice_response.invoices.first() {
-                    Some(invoice_response) => {
-                        cln_invoice_status_to_mint_state(invoice_response.status)
-                    }
-                    None => {
-                        tracing::info!(
-                            "Check invoice called on unknown look up id: {}",
-                            payment_hash
-                        );
-                        return Err(Error::WrongClnResponse.into());
-                    }
-                }
+        match fetch_invoice_by_payment_hash(&mut cln_client, payment_hash).await? {
+            Some(invoice) => {
+                let status = cln_invoice_status_to_mint_state(invoice.status);
+                Ok(status)
             }
-            _ => {
-                tracing::warn!("CLN returned wrong response kind");
-                return Err(Error::WrongClnResponse.into());
+            None => {
+                tracing::info!(
+                    "Check invoice called on unknown payment hash: {}",
+                    payment_hash
+                );
+                Err(Error::UnknownInvoice.into())
             }
-        };
-
-        Ok(status)
+        }
     }
 
     async fn check_outgoing_payment(
@@ -517,7 +495,8 @@ impl MintLightning for Cln {
                     invoice: Some(invoice_response.invoice),
                 })
             }
-            _ => {
+            c => {
+                tracing::debug!("{:?}", c);
                 tracing::error!("Error attempting to pay invoice for offer",);
                 Err(Error::WrongClnResponse.into())
             }
@@ -645,7 +624,7 @@ impl MintLightning for Cln {
                 let expiry = offer.absolute_expiry().map(|t| t.as_secs());
 
                 Ok(CreateOfferResponse {
-                    request_lookup_id: offer_res.bolt12,
+                    request_lookup_id: offer_res.offer_id.to_string(),
                     request: offer,
                     expiry,
                 })

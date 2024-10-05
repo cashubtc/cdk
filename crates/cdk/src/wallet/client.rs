@@ -173,14 +173,10 @@ impl HttpClient {
             description,
         };
 
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .json::<Value>()
-            .await?;
+        let res = self.inner.post(url).json(&request).send().await?;
+        println!("{:?}", res);
+
+        let res = res.json::<Value>().await?;
 
         match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
             Ok(mint_quote_response) => Ok(mint_quote_response),
