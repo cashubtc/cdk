@@ -21,8 +21,6 @@ repository = "https://github.com/cashubtc/cdk"
 license-file = "LICENSE"
 keywords = ["bitcoin", "e-cash", "cashu"]
 
-[profile]
-
 [profile.ci]
 inherits = "dev"
 incremental = false

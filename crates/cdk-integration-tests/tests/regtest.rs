@@ -1,16 +1,17 @@
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::{
     amount::{Amount, SplitTarget},
     cdk_database::WalletMemoryDatabase,
-    nuts::{CurrencyUnit, MeltQuoteState, State},
-    wallet::Wallet,
+    nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PreMintSecrets, State},
+    wallet::{client::HttpClient, Wallet},
 };
 use cdk_integration_tests::init_regtest::{get_mint_url, init_cln_client, init_lnd_client};
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::InvoiceStatus;
+use tokio::time::sleep;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
@@ -251,5 +252,54 @@ async fn test_internal_payment() -> Result<()> {
 
     assert!(wallet_1_balance == 90.into());
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_cached_mint() -> Result<()> {
+    let lnd_client = init_lnd_client().await.unwrap();
+
+    let wallet = Wallet::new(
+        &get_mint_url(),
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_amount = Amount::from(100);
+
+    let quote = wallet.mint_quote(mint_amount, None).await?;
+    lnd_client.pay_invoice(quote.request).await?;
+
+    loop {
+        let status = wallet.mint_quote_state(&quote.id).await.unwrap();
+
+        println!("Quote status: {}", status.state);
+
+        if status.state == MintQuoteState::Paid {
+            break;
+        }
+
+        sleep(Duration::from_secs(5)).await;
+    }
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let http_client = HttpClient::new();
+    let premint_secrets =
+        PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
+
+    let response = http_client
+        .post_mint(
+            get_mint_url().as_str().parse()?,
+            &quote.id,
+            premint_secrets.clone(),
+        )
+        .await?;
+    let response1 = http_client
+        .post_mint(get_mint_url().as_str().parse()?, &quote.id, premint_secrets)
+        .await?;
+
+    assert!(response == response1);
     Ok(())
 }

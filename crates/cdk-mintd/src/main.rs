@@ -42,6 +42,8 @@ mod config;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;
+const DEFAULT_CACHE_TTL_SECS: u64 = 1800;
+const DEFAULT_CACHE_TTI_SECS: u64 = 1800;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -458,8 +460,16 @@ async fn main() -> anyhow::Result<()> {
         .info
         .seconds_quote_is_valid_for
         .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
+    let cache_ttl = settings
+        .info
+        .seconds_to_cache_requests_for
+        .unwrap_or(DEFAULT_CACHE_TTL_SECS);
+    let cache_tti = settings
+        .info
+        .seconds_to_extend_cache_by
+        .unwrap_or(DEFAULT_CACHE_TTI_SECS);
 
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint)).await?;
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)
