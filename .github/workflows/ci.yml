@@ -56,7 +56,7 @@ jobs:
             -p cdk-lnbits,
             -p cdk-fake-wallet,
             --bin cdk-cli,
-            --bin cdk-mintd
+            --bin cdk-mintd,
           ]
     steps:
       - name: checkout
@@ -85,9 +85,9 @@ jobs:
           ]
         database: 
           [
-          REDB,
-          SQLITE,
-          MEMORY
+            REDB,
+            SQLITE,
+            MEMORY,
           ]
     steps:
       - name: checkout
@@ -116,7 +116,7 @@ jobs:
           [
           REDB,
           SQLITE,
-          MEMORY
+          MEMORY,
           ]
     steps:
       - name: checkout
@@ -146,9 +146,9 @@ jobs:
             -p cdk-axum,
             -p cdk-strike,
             -p cdk-lnbits,
-            -p cdk-phoenixd
-            -p cdk-fake-wallet
-            -p cdk-cln
+            -p cdk-phoenixd,
+            -p cdk-fake-wallet,
+            -p cdk-cln,
           ]
     steps:
       - name: checkout
@@ -170,8 +170,8 @@ jobs:
       matrix:
         build-args:
           [
-            -p cdk-sqlite
-            -p cdk-redb
+            -p cdk-sqlite,
+            -p cdk-redb,
           ]
     steps:
       - name: checkout
@@ -199,7 +199,7 @@ jobs:
             -p cdk,
             -p cdk --no-default-features,
             -p cdk --no-default-features --features wallet,
-            -p cdk-js
+            -p cdk-js,
           ]
     steps:
       - name: checkout
