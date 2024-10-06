@@ -138,7 +138,7 @@ impl MintLightning for Lnd {
                     // Stream is cancelled
                     is_active.store(false, Ordering::SeqCst);
                     tracing::info!("Waiting for lnd invoice ending");
-                    return None;
+                    None
 
                     }
                     msg = stream.message() => {
