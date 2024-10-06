@@ -140,12 +140,15 @@ async fn main() -> anyhow::Result<()> {
 
     let mint_url: MintUrl = settings.info.url.parse()?;
 
+    let include_bolt12;
+
     let ln_routers: Vec<Router> = match settings.ln.ln_backend {
         LnBackend::Cln => {
+            let cln_settings = settings
+                .cln
+                .expect("Config checked at load that cln is some");
             let cln_socket = expand_path(
-                settings
-                    .cln
-                    .expect("Config checked at load that cln is some")
+                cln_settings
                     .rpc_path
                     .to_str()
                     .ok_or(anyhow!("cln socket not defined"))?,
@@ -165,7 +168,15 @@ async fn main() -> anyhow::Result<()> {
                 LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11),
                 cln.clone(),
             );
-            ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12), cln);
+
+            if cln_settings.bolt12 {
+                ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12), cln);
+
+                include_bolt12 = true;
+            } else {
+                include_bolt12 = false;
+            }
+
             supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
             vec![]
         }
@@ -208,6 +219,8 @@ async fn main() -> anyhow::Result<()> {
                 supported_units.insert(unit, (input_fee_ppk, 64));
             }
 
+            include_bolt12 = false;
+
             routers
         }
         LnBackend::LNbits => {
@@ -244,20 +257,14 @@ async fn main() -> anyhow::Result<()> {
             ln_backends.insert(ln_key, Arc::new(lnbits));
 
             supported_units.insert(unit, (input_fee_ppk, 64));
+            include_bolt12 = false;
             vec![router]
         }
         LnBackend::Phoenixd => {
-            let api_password = settings
-                .clone()
-                .phoenixd
-                .expect("Checked at config load")
-                .api_password;
+            let phd_settings = settings.phoenixd.expect("Checked at config load");
+            let api_password = phd_settings.api_password;
 
-            let api_url = settings
-                .clone()
-                .phoenixd
-                .expect("Checked at config load")
-                .api_url;
+            let api_url = phd_settings.api_url;
 
             if fee_reserve.percent_fee_reserve < 0.04 {
                 bail!("Fee reserve is too low needs to be at least 0.02");
@@ -286,13 +293,29 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+
+            let phd = Arc::new(phoenixd);
             ln_backends.insert(
                 LnKey {
                     unit: CurrencyUnit::Sat,
                     method: PaymentMethod::Bolt11,
                 },
-                Arc::new(phoenixd),
+                phd.clone(),
             );
+
+            if phd_settings.bolt12 {
+                ln_backends.insert(
+                    LnKey {
+                        unit: CurrencyUnit::Sat,
+                        method: PaymentMethod::Bolt12,
+                    },
+                    phd,
+                );
+
+                include_bolt12 = true;
+            } else {
+                include_bolt12 = false;
+            }
 
             vec![router]
         }
@@ -322,6 +345,8 @@ async fn main() -> anyhow::Result<()> {
                 Arc::new(lnd),
             );
 
+            include_bolt12 = false;
+
             vec![]
         }
         LnBackend::FakeWallet => {
@@ -343,6 +368,8 @@ async fn main() -> anyhow::Result<()> {
 
                 supported_units.insert(unit, (input_fee_ppk, 64));
             }
+
+            include_bolt12 = false;
 
             vec![]
         }
@@ -473,7 +500,8 @@ async fn main() -> anyhow::Result<()> {
         .seconds_to_extend_cache_by
         .unwrap_or(DEFAULT_CACHE_TTI_SECS);
 
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
+    let v1_service =
+        cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti, false).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)

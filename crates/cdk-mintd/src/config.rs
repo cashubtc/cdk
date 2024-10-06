@@ -53,6 +53,7 @@ pub struct LNbits {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
+    pub bolt12: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -66,6 +67,7 @@ pub struct Lnd {
 pub struct Phoenixd {
     pub api_password: String,
     pub api_url: String,
+    pub bolt12: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
