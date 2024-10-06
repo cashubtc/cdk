@@ -7,7 +7,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
