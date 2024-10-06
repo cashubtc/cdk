@@ -196,6 +196,7 @@ impl Mint {
                 let shutdown = Arc::clone(&shutdown);
                 let key = *key;
                 join_set.spawn(async move {
+            if !ln.is_wait_invoice_active() {
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
@@ -217,6 +218,7 @@ impl Mint {
                                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             }
                         }
+                    }
                     }
                 }
             }
