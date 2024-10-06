@@ -100,6 +100,7 @@ impl MintLightning for Phoenixd {
         self.wait_invoice_cancel_token.cancel()
     }
 
+    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
@@ -126,7 +127,7 @@ impl MintLightning for Phoenixd {
                     // Stream is cancelled
                     is_active.store(false, Ordering::SeqCst);
                     tracing::info!("Waiting for phonixd invoice ending");
-                    return None;
+                    None
                 }
                 msg_option = receiver.recv() => {
                     match msg_option {
