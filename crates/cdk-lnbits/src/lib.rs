@@ -80,6 +80,14 @@ impl MintLightning for LNbits {
         }
     }
 
+    fn is_wait_invoice_active(&self) -> bool {
+        todo!()
+    }
+
+    fn cancel_wait_invoice(&self) {
+        todo!()
+    }
+
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
