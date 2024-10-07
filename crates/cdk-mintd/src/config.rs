@@ -29,12 +29,31 @@ pub enum LnBackend {
     Lnd,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
     pub invoice_description: Option<String>,
+    pub min_mint: Amount,
+    pub max_mint: Amount,
+    pub min_melt: Amount,
+    pub max_melt: Amount,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+}
+
+impl Default for Ln {
+    fn default() -> Self {
+        Ln {
+            ln_backend: LnBackend::default(),
+            invoice_description: None,
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

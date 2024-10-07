@@ -16,8 +16,7 @@ use cdk::cdk_lightning::{
     PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
-    MeltQuoteState, MintMethodSettings, MintQuoteState,
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
 };
 use cdk::util::unix_time;
 use cdk::{mint, Bolt11Invoice};
@@ -38,8 +37,6 @@ pub mod error;
 #[derive(Clone)]
 pub struct Strike {
     strike_api: StrikeApi,
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
     unit: CurrencyUnit,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     webhook_url: String,
@@ -51,8 +48,6 @@ impl Strike {
     /// Create new [`Strike`] wallet
     pub async fn new(
         api_key: String,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
         unit: CurrencyUnit,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
         webhook_url: String,
@@ -60,8 +55,6 @@ impl Strike {
         let strike = StrikeApi::new(&api_key, None)?;
         Ok(Self {
             strike_api: strike,
-            mint_settings,
-            melt_settings,
             receiver,
             unit,
             webhook_url,
@@ -79,8 +72,8 @@ impl MintLightning for Strike {
         Settings {
             mpp: false,
             unit: self.unit,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            bolt12_mint: false,
+            bolt12_melt: false,
             invoice_description: true,
         }
     }

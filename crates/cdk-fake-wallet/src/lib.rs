@@ -22,8 +22,7 @@ use cdk::mint;
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
-    MeltQuoteState, MintMethodSettings, MintQuoteState,
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
 };
 use cdk::util::unix_time;
 use error::Error;
@@ -45,8 +44,6 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<String>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
@@ -58,8 +55,6 @@ impl FakeWallet {
     /// Creat new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
         payment_states: HashMap<String, MeltQuoteState>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
@@ -70,8 +65,6 @@ impl FakeWallet {
             fee_reserve,
             sender,
             receiver: Arc::new(Mutex::new(Some(receiver))),
-            mint_settings,
-            melt_settings,
             payment_states: Arc::new(Mutex::new(payment_states)),
             failed_payment_check: Arc::new(Mutex::new(fail_payment_check)),
             payment_delay,
@@ -113,8 +106,8 @@ impl MintLightning for FakeWallet {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            bolt12_mint: false,
+            bolt12_melt: false,
             invoice_description: true,
         }
     }

@@ -11,8 +11,8 @@ use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
-    Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
+    CurrencyUnit, Id, KeySet, MintInfo, MintQuoteState, Nuts, PaymentMethod, PreMintSecrets,
+    Proofs, State,
 };
 use cdk::types::{LnKey, QuoteTTL};
 use cdk::wallet::client::HttpClient;
@@ -40,8 +40,6 @@ pub fn create_backends_fake_wallet(
 
     let wallet = Arc::new(FakeWallet::new(
         fee_reserve.clone(),
-        MintMethodSettings::default(),
-        MeltMethodSettings::default(),
         HashMap::default(),
         HashSet::default(),
         0,

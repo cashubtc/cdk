@@ -140,8 +140,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mint_url: MintUrl = settings.info.url.parse()?;
 
-    let include_bolt12;
-
     let ln_routers: Vec<Router> = match settings.ln.ln_backend {
         LnBackend::Cln => {
             let cln_settings = settings
@@ -154,15 +152,8 @@ async fn main() -> anyhow::Result<()> {
                     .ok_or(anyhow!("cln socket not defined"))?,
             )
             .ok_or(anyhow!("cln socket not defined"))?;
-            let cln = Arc::new(
-                Cln::new(
-                    cln_socket,
-                    fee_reserve,
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
-                )
-                .await?,
-            );
+
+            let cln = Arc::new(Cln::new(cln_socket, fee_reserve, true, true).await?);
 
             ln_backends.insert(
                 LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11),
@@ -171,10 +162,6 @@ async fn main() -> anyhow::Result<()> {
 
             if cln_settings.bolt12 {
                 ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12), cln);
-
-                include_bolt12 = true;
-            } else {
-                include_bolt12 = false;
             }
 
             supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
@@ -199,8 +186,6 @@ async fn main() -> anyhow::Result<()> {
 
                 let strike = Strike::new(
                     api_key.clone(),
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
                     unit,
                     Arc::new(Mutex::new(Some(receiver))),
                     webhook_url.to_string(),
@@ -219,8 +204,6 @@ async fn main() -> anyhow::Result<()> {
                 supported_units.insert(unit, (input_fee_ppk, 64));
             }
 
-            include_bolt12 = false;
-
             routers
         }
         LnBackend::LNbits => {
@@ -238,8 +221,6 @@ async fn main() -> anyhow::Result<()> {
                 admin_api_key,
                 invoice_api_key,
                 lnbits_settings.lnbits_api,
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
                 fee_reserve,
                 Arc::new(Mutex::new(Some(receiver))),
                 webhook_url.to_string(),
@@ -257,7 +238,6 @@ async fn main() -> anyhow::Result<()> {
             ln_backends.insert(ln_key, Arc::new(lnbits));
 
             supported_units.insert(unit, (input_fee_ppk, 64));
-            include_bolt12 = false;
             vec![router]
         }
         LnBackend::Phoenixd => {
@@ -281,8 +261,6 @@ async fn main() -> anyhow::Result<()> {
             let phoenixd = Phoenixd::new(
                 api_password.to_string(),
                 api_url.to_string(),
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
                 fee_reserve,
                 Arc::new(Mutex::new(Some(receiver))),
                 webhook_url,
@@ -311,10 +289,6 @@ async fn main() -> anyhow::Result<()> {
                     },
                     phd,
                 );
-
-                include_bolt12 = true;
-            } else {
-                include_bolt12 = false;
             }
 
             vec![router]
@@ -326,15 +300,7 @@ async fn main() -> anyhow::Result<()> {
             let cert_file = lnd_settings.cert_file;
             let macaroon_file = lnd_settings.macaroon_file;
 
-            let lnd = Lnd::new(
-                address,
-                cert_file,
-                macaroon_file,
-                fee_reserve,
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
-            )
-            .await?;
+            let lnd = Lnd::new(address, cert_file, macaroon_file, fee_reserve).await?;
 
             supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
             ln_backends.insert(
@@ -344,8 +310,6 @@ async fn main() -> anyhow::Result<()> {
                 },
                 Arc::new(lnd),
             );
-
-            include_bolt12 = false;
 
             vec![]
         }
@@ -357,8 +321,6 @@ async fn main() -> anyhow::Result<()> {
 
                 let wallet = Arc::new(FakeWallet::new(
                     fee_reserve.clone(),
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
                     HashMap::default(),
                     HashSet::default(),
                     0,
@@ -373,8 +335,6 @@ async fn main() -> anyhow::Result<()> {
 
             let wallet = Arc::new(FakeWallet::new(
                 fee_reserve.clone(),
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
                 HashMap::default(),
                 HashSet::default(),
                 0,
@@ -384,66 +344,58 @@ async fn main() -> anyhow::Result<()> {
 
             supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
 
-            include_bolt12 = true;
-
             vec![]
         }
     };
 
-    let (nut04_settings, nut05_settings, mpp_settings): (
-        nut04::Settings,
-        nut05::Settings,
-        Vec<MppMethodSettings>,
-    ) = ln_backends.iter().fold(
-        (
-            nut04::Settings::new(vec![], false),
-            nut05::Settings::new(vec![], false),
-            Vec::new(),
-        ),
-        |(mut nut_04, mut nut_05, mut mpp), (key, ln)| {
-            let settings = ln.get_settings();
+    let nut_04_methods: Vec<MintMethodSettings> = ln_backends
+        .iter()
+        .map(|(key, ln)| {
+            let ln_backend_settings = ln.get_settings();
+            MintMethodSettings {
+                method: key.method,
+                unit: key.unit,
+                min_amount: Some(settings.ln.min_mint),
+                max_amount: Some(settings.ln.max_mint),
+                description: ln_backend_settings.invoice_description,
+            }
+        })
+        .collect();
 
-            let m = MppMethodSettings {
+    let nut_05_methods: Vec<MeltMethodSettings> = ln_backends
+        .iter()
+        .map(|(key, _ln)| MeltMethodSettings {
+            method: key.method,
+            unit: key.unit,
+            min_amount: Some(settings.ln.min_melt),
+            max_amount: Some(settings.ln.max_melt),
+        })
+        .collect();
+
+    let mpp_settings: Vec<MppMethodSettings> = ln_backends
+        .iter()
+        .map(|(key, ln)| {
+            let settings = ln.get_settings();
+            MppMethodSettings {
                 method: key.method,
                 unit: key.unit,
                 mpp: settings.mpp,
-            };
+            }
+        })
+        .collect();
 
-            let n4 = MintMethodSettings {
-                method: key.method,
-                unit: key.unit,
-                min_amount: settings.mint_settings.min_amount,
-                max_amount: settings.mint_settings.max_amount,
-                description: settings.invoice_description,
-            };
+    let support_bolt12_mint = ln_backends.iter().any(|(_k, ln)| {
+        let settings = ln.get_settings();
+        settings.bolt12_mint
+    });
 
-            let n5 = MeltMethodSettings {
-                method: key.method,
-                unit: key.unit,
-                min_amount: settings.melt_settings.min_amount,
-                max_amount: settings.melt_settings.max_amount,
-            };
+    let support_bolt12_melt = ln_backends.iter().any(|(_k, ln)| {
+        let settings = ln.get_settings();
+        settings.bolt12_melt
+    });
 
-            nut_04.methods.push(n4);
-            nut_05.methods.push(n5);
-            mpp.push(m);
-
-            (nut_04, nut_05, mpp)
-        },
-    );
-
-    let nut18_settings = MintMethodSettings {
-        method: PaymentMethod::Bolt12,
-        unit: CurrencyUnit::Sat,
-        min_amount: None,
-        max_amount: None,
-        description: false,
-    };
-
-    let nut18_settings = nut04::Settings {
-        methods: vec![nut18_settings],
-        disabled: false,
-    };
+    let nut04_settings = nut04::Settings::new(nut_04_methods, false);
+    let nut05_settings = nut05::Settings::new(nut_05_methods, false);
 
     let nuts = Nuts::new()
         .nut04(nut04_settings)
@@ -455,9 +407,44 @@ async fn main() -> anyhow::Result<()> {
         .nut11(true)
         .nut12(true)
         .nut14(true)
-        .nut15(mpp_settings)
-        .nut18(nut18_settings)
-        .nut19(nut05_settings);
+        .nut15(mpp_settings);
+
+    let nuts = match support_bolt12_mint {
+        true => {
+            let nut18_settings = MintMethodSettings {
+                method: PaymentMethod::Bolt12,
+                unit: CurrencyUnit::Sat,
+                min_amount: Some(settings.ln.min_mint),
+                max_amount: Some(settings.ln.max_mint),
+                description: true,
+            };
+
+            let nut18_settings = nut04::Settings {
+                methods: vec![nut18_settings],
+                disabled: false,
+            };
+            nuts.nut18(nut18_settings)
+        }
+        false => nuts,
+    };
+
+    let nuts = match support_bolt12_melt {
+        true => {
+            let nut19_settings = MeltMethodSettings {
+                method: PaymentMethod::Bolt12,
+                unit: CurrencyUnit::Sat,
+                min_amount: Some(settings.ln.min_melt),
+                max_amount: Some(settings.ln.max_melt),
+            };
+
+            let nut19_settings = nut05::Settings {
+                methods: vec![nut19_settings],
+                disabled: false,
+            };
+            nuts.nut19(nut19_settings)
+        }
+        false => nuts,
+    };
 
     let mut mint_info = MintInfo::new()
         .name(settings.mint_info.name)
@@ -529,6 +516,8 @@ async fn main() -> anyhow::Result<()> {
         .info
         .seconds_to_extend_cache_by
         .unwrap_or(DEFAULT_CACHE_TTI_SECS);
+
+    let include_bolt12 = support_bolt12_mint || support_bolt12_melt;
 
     let v1_service =
         cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti, include_bolt12)

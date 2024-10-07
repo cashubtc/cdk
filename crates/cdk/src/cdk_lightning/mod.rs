@@ -10,10 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::nuts::nut18::MeltQuoteBolt12Request;
-use crate::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
-};
+use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use crate::{mint, Amount};
 
 /// CDK Lightning Error
@@ -201,14 +198,14 @@ pub struct Bolt12PaymentQuoteResponse {
 }
 
 /// Ln backend settings
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// MPP supported
     pub mpp: bool,
-    /// Min amount to mint
-    pub mint_settings: MintMethodSettings,
-    /// Max amount to mint
-    pub melt_settings: MeltMethodSettings,
+    /// Supports bolt12 mint
+    pub bolt12_mint: bool,
+    /// Supports bolt12 melt
+    pub bolt12_melt: bool,
     /// Base unit of backend
     pub unit: CurrencyUnit,
     /// Invoice Description supported

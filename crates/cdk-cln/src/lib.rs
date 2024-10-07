@@ -19,8 +19,7 @@ use cdk::cdk_lightning::{
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
-    MeltQuoteState, MintMethodSettings, MintQuoteState,
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
 };
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
@@ -50,8 +49,8 @@ pub struct Cln {
     rpc_socket: PathBuf,
     cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
     fee_reserve: FeeReserve,
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
+    bolt12_mint: bool,
+    bolt12_melt: bool,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
 }
@@ -61,8 +60,8 @@ impl Cln {
     pub async fn new(
         rpc_socket: PathBuf,
         fee_reserve: FeeReserve,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
+        bolt12_mint: bool,
+        bolt12_melt: bool,
     ) -> Result<Self, Error> {
         let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
 
@@ -70,8 +69,8 @@ impl Cln {
             rpc_socket,
             cln_client: Arc::new(Mutex::new(cln_client)),
             fee_reserve,
-            mint_settings,
-            melt_settings,
+            bolt12_mint,
+            bolt12_melt,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         })
@@ -86,8 +85,8 @@ impl MintLightning for Cln {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            bolt12_mint: self.bolt12_mint,
+            bolt12_melt: self.bolt12_melt,
             invoice_description: true,
         }
     }
