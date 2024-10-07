@@ -98,7 +98,7 @@ pub async fn get_mint_bolt12_quote(
 ) -> Result<Json<MintQuoteBolt11Response>, Response> {
     let quote = state
         .mint
-        .get_mint_bolt11_quote(payload)
+        .get_mint_bolt12_quote(payload)
         .await
         .map_err(into_response)?;
 

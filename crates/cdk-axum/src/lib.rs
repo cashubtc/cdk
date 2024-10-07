@@ -62,6 +62,7 @@ pub async fn create_mint_router(
     // Conditionally create and merge bolt12_router
     if include_bolt12 {
         let bolt12_router = create_bolt12_router(state.clone());
+        //v1_router = bolt12_router.merge(v1_router);
         v1_router = v1_router.merge(bolt12_router);
     }
 

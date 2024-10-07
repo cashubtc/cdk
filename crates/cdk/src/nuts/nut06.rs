@@ -330,7 +330,7 @@ impl Nuts {
     /// Nut18 settings
     pub fn nut18(self, nut04_settings: nut04::Settings) -> Self {
         Self {
-            nut04: nut04_settings,
+            nut18: nut04_settings,
             ..self
         }
     }
@@ -338,7 +338,7 @@ impl Nuts {
     /// Nut19 settings
     pub fn nut19(self, nut05_settings: nut05::Settings) -> Self {
         Self {
-            nut05: nut05_settings,
+            nut19: nut05_settings,
             ..self
         }
     }

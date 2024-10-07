@@ -58,6 +58,7 @@ pub async fn mint(
 
     let quote = match method {
         PaymentMethod::Bolt11 => {
+            println!("Bolt11");
             wallet
                 .mint_quote(Amount::from(sub_command_args.amount), description)
                 .await?

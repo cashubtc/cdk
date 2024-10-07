@@ -369,7 +369,22 @@ async fn main() -> anyhow::Result<()> {
                 supported_units.insert(unit, (input_fee_ppk, 64));
             }
 
-            include_bolt12 = false;
+            let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12);
+
+            let wallet = Arc::new(FakeWallet::new(
+                fee_reserve.clone(),
+                MintMethodSettings::default(),
+                MeltMethodSettings::default(),
+                HashMap::default(),
+                HashSet::default(),
+                0,
+            ));
+
+            ln_backends.insert(ln_key, wallet);
+
+            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
+
+            include_bolt12 = true;
 
             vec![]
         }
@@ -417,9 +432,22 @@ async fn main() -> anyhow::Result<()> {
         },
     );
 
+    let nut18_settings = MintMethodSettings {
+        method: PaymentMethod::Bolt12,
+        unit: CurrencyUnit::Sat,
+        min_amount: None,
+        max_amount: None,
+        description: false,
+    };
+
+    let nut18_settings = nut04::Settings {
+        methods: vec![nut18_settings],
+        disabled: false,
+    };
+
     let nuts = Nuts::new()
         .nut04(nut04_settings)
-        .nut05(nut05_settings)
+        .nut05(nut05_settings.clone())
         .nut07(true)
         .nut08(true)
         .nut09(true)
@@ -427,7 +455,9 @@ async fn main() -> anyhow::Result<()> {
         .nut11(true)
         .nut12(true)
         .nut14(true)
-        .nut15(mpp_settings);
+        .nut15(mpp_settings)
+        .nut18(nut18_settings)
+        .nut19(nut05_settings);
 
     let mut mint_info = MintInfo::new()
         .name(settings.mint_info.name)
