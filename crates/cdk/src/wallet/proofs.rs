@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_fewest_proofs_over_amount() {
+    fn test_select_least_proofs_over_amount() {
         let keyset_id = Id::random();
         let c_1 = PublicKey::random();
         let proofs = vec![
