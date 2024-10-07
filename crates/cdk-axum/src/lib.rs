@@ -16,7 +16,9 @@ use cdk::nuts::nut00::{CurrencyUnit, PaymentMethod};
 use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey};
 use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
 use cdk::nuts::nut04;
-use cdk::nuts::nut04::MintMethodSettings;
+use cdk::nuts::nut04::{
+    MintMethodSettings, MintQuoteBolt11Request, MintQuoteBolt11Response, QuoteState,
+};
 use cdk::nuts::nut05;
 use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
@@ -52,19 +54,28 @@ pub struct MintState {
         KeySetVersion,
         MeltMethodSettings,
         MintInfo,
+        MintQuoteBolt11Request,
+        MintQuoteBolt11Response,
         MintMethodSettings,
         MintVersion,
         MppMethodSettings,
         Nuts,
         PaymentMethod,
         PublicKey,
+        QuoteState,
         SupportedSettings,
         nut04::Settings,
         nut05::Settings,
         nut15::Settings
     )),
     info(description = "Cashu CDK mint APIs", title = "cdk-mintd",),
-    paths(get_keys, get_keyset_pubkeys, get_keysets, get_mint_info)
+    paths(
+        get_keys,
+        get_keyset_pubkeys,
+        get_keysets,
+        get_mint_info,
+        get_mint_bolt11_quote
+    )
 )]
 /// OpenAPI spec for the mint's v1 APIs
 pub struct ApiDocV1;

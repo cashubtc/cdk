@@ -28,6 +28,7 @@ pub enum Error {
 
 /// Mint quote request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct MintQuoteBolt11Request {
     /// Amount
     pub amount: Amount,
@@ -40,6 +41,7 @@ pub struct MintQuoteBolt11Request {
 /// Possible states of a quote
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[cfg_attr(feature = "mint", derive(ToSchema), schema(as = MintQuoteState))]
 pub enum QuoteState {
     /// Quote has not been paid
     #[default]
@@ -81,6 +83,7 @@ impl FromStr for QuoteState {
 
 /// Mint quote response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct MintQuoteBolt11Response {
     /// Quote Id
     pub quote: String,

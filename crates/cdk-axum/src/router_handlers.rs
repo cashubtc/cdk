@@ -54,7 +54,7 @@ post_cache_wrapper!(post_melt_bolt11, MeltBolt11Request, MeltQuoteBolt11Response
     context_path = "/v1",
     path = "/keys",
     responses(
-        (status = 200, description = "Successful response", body = KeysResponse)
+        (status = 200, description = "Successful response", body = KeysResponse, content_type = "application/json")
     )
 )]
 /// Get the public keys of the newest mint keyset
@@ -77,8 +77,8 @@ pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysRespons
         ("keyset_id" = String, description = "The keyset ID"),
     ),
     responses(
-        (status = 200, description = "Successful response", body = KeysResponse),
-        (status = 500, description = "Server error", body = ErrorResponse)
+        (status = 200, description = "Successful response", body = KeysResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 )]
 /// Get the public keys of a specific keyset
@@ -101,8 +101,8 @@ pub async fn get_keyset_pubkeys(
     context_path = "/v1",
     path = "/keysets",
     responses(
-        (status = 200, description = "Successful response", body = KeysetResponse),
-        (status = 500, description = "Server error", body = ErrorResponse)
+        (status = 200, description = "Successful response", body = KeysetResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 )]
 /// Get all active keyset IDs of the mint
@@ -117,6 +117,19 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
     Ok(Json(keysets))
 }
 
+#[utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/quote/bolt11",
+    request_body(content = MintQuoteBolt11Request, description = "Request params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MintQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Request a quote for minting of new tokens
+///
+/// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
 pub async fn get_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
