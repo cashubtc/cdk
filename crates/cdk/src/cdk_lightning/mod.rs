@@ -85,6 +85,12 @@ pub trait MintLightning {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err>;
 
+    /// Is wait invoice active
+    fn is_wait_invoice_active(&self) -> bool;
+
+    /// Cancel wait invoice
+    fn cancel_wait_invoice(&self);
+
     /// Check the status of an incoming payment
     async fn check_incoming_invoice_status(
         &self,

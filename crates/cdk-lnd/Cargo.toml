@@ -15,5 +15,6 @@ cdk = { path = "../cdk", version= "0.4.0", default-features = false, features = 
 fedimint-tonic-lnd = "0.2.0"
 futures = { version = "0.3.28", default-features = false }
 tokio = { version = "1", default-features = false }
+tokio-util = { version = "0.7.11", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 thiserror = "1"

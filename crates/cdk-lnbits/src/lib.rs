@@ -4,6 +4,7 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -26,6 +27,7 @@ use futures::Stream;
 use lnbits_rs::api::invoice::CreateInvoiceRequest;
 use lnbits_rs::LNBitsClient;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 pub mod error;
 
@@ -38,6 +40,8 @@ pub struct LNbits {
     fee_reserve: FeeReserve,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     webhook_url: String,
+    wait_invoice_cancel_token: CancellationToken,
+    wait_invoice_is_active: Arc<AtomicBool>,
 }
 
 impl LNbits {
@@ -62,6 +66,8 @@ impl LNbits {
             receiver,
             fee_reserve,
             webhook_url,
+            wait_invoice_cancel_token: CancellationToken::new(),
+            wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -80,6 +86,15 @@ impl MintLightning for LNbits {
         }
     }
 
+    fn is_wait_invoice_active(&self) -> bool {
+        self.wait_invoice_is_active.load(Ordering::SeqCst)
+    }
+
+    fn cancel_wait_invoice(&self) {
+        self.wait_invoice_cancel_token.cancel()
+    }
+
+    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
@@ -92,25 +107,48 @@ impl MintLightning for LNbits {
 
         let lnbits_api = self.lnbits_api.clone();
 
-        Ok(futures::stream::unfold(
-            (receiver, lnbits_api),
-            |(mut receiver, lnbits_api)| async move {
-                match receiver.recv().await {
-                    Some(msg) => {
-                        let check = lnbits_api.is_invoice_paid(&msg).await;
+        let cancel_token = self.wait_invoice_cancel_token.clone();
 
-                        match check {
-                            Ok(state) => {
-                                if state {
-                                    Some((msg, (receiver, lnbits_api)))
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        }
+        Ok(futures::stream::unfold(
+            (
+                receiver,
+                lnbits_api,
+                cancel_token,
+                Arc::clone(&self.wait_invoice_is_active),
+            ),
+            |(mut receiver, lnbits_api, cancel_token, is_active)| async move {
+                is_active.store(true, Ordering::SeqCst);
+
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        // Stream is cancelled
+                        is_active.store(false, Ordering::SeqCst);
+                        tracing::info!("Waiting for phonixd invoice ending");
+                        None
                     }
-                    None => None,
+                    msg_option = receiver.recv() => {
+                    match msg_option {
+                        Some(msg) => {
+                            let check = lnbits_api.is_invoice_paid(&msg).await;
+
+                            match check {
+                                Ok(state) => {
+                                    if state {
+                                        Some((msg, (receiver, lnbits_api, cancel_token, is_active)))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            }
+                        }
+                        None => {
+                            is_active.store(true, Ordering::SeqCst);
+                            None
+                        },
+                    }
+
+                    }
                 }
             },
         )

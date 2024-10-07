@@ -47,7 +47,7 @@ macro_rules! post_cache_wrapper {
 
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
 post_cache_wrapper!(post_mint_bolt11, MintBolt11Request, MintBolt11Response);
-post_cache_wrapper!(post_melt_bolt11, MeltBolt11Request, MeltBolt11Response);
+post_cache_wrapper!(post_melt_bolt11, MeltBolt11Request, MeltQuoteBolt11Response);
 
 pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
     let pubkeys = state.mint.pubkeys().await.map_err(|err| {
