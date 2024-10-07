@@ -300,7 +300,7 @@ impl Wallet {
             .select_proofs(
                 inputs_needed_amount,
                 available_proofs,
-                SelectProofsOptions::default().method(ProofSelectionMethod::Least),
+                SelectProofsOptions::default().method(ProofSelectionMethod::Fewest),
             )
             .await?;
 

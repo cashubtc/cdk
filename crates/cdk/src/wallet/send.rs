@@ -118,7 +118,7 @@ impl Wallet {
                 available_proofs,
                 SelectProofsOptions::default()
                     .include_fees(include_fees)
-                    .method(ProofSelectionMethod::Least),
+                    .method(ProofSelectionMethod::Fewest),
             )
             .await;
 

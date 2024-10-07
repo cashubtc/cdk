@@ -198,7 +198,7 @@ impl Wallet {
             }
         }
 
-        if opts.method == ProofSelectionMethod::Least {
+        if opts.method == ProofSelectionMethod::Fewest {
             let selected_amount = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
             let keyset_fees = if opts.include_fees {
                 self.get_mint_keysets()
@@ -209,7 +209,7 @@ impl Wallet {
             } else {
                 HashMap::new()
             };
-            if let Some(proofs) = select_least_proofs_over_amount(
+            if let Some(proofs) = select_fewest_proofs_over_amount(
                 &active_proofs,
                 amount.checked_sub(selected_amount).unwrap_or(Amount::ZERO),
                 keyset_fees,
@@ -242,7 +242,7 @@ impl Wallet {
 fn sort_proofs(proofs: &mut Proofs, method: ProofSelectionMethod, amount: Amount) {
     match method {
         // Least fallback to largest
-        ProofSelectionMethod::Largest | ProofSelectionMethod::Least => {
+        ProofSelectionMethod::Largest | ProofSelectionMethod::Fewest => {
             proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a))
         }
         ProofSelectionMethod::Closest => proofs.sort_by(|a: &Proof, b: &Proof| {
@@ -262,7 +262,7 @@ fn sort_proofs(proofs: &mut Proofs, method: ProofSelectionMethod, amount: Amount
     }
 }
 
-fn select_least_proofs_over_amount(
+fn select_fewest_proofs_over_amount(
     proofs: &Proofs,
     amount: Amount,
     fees: HashMap<Id, u64>,
@@ -397,15 +397,15 @@ impl Default for SelectProofsOptions {
 /// Select proofs method
 #[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ProofSelectionMethod {
-    /// Select proofs with the largest amount first
+    /// The largest value proofs first
     #[default]
     Largest,
-    /// Select proofs closest to the amount first
+    /// The closest in value to the amount first
     Closest,
-    /// Select proofs with the smallest amount first
+    /// The smallest value proofs first
     Smallest,
-    /// Select least total proof amount over the specified amount
-    Least,
+    /// Select fewest number of proofs over the specified amount
+    Fewest,
 }
 
 #[cfg(test)]
@@ -418,7 +418,7 @@ mod tests {
         Amount,
     };
 
-    use super::{select_least_proofs_over_amount, sort_proofs, ProofSelectionMethod};
+    use super::{select_fewest_proofs_over_amount, sort_proofs, ProofSelectionMethod};
 
     #[test]
     fn test_sort_proofs_by_method() {
@@ -467,12 +467,12 @@ mod tests {
         assert_proof_order(&proofs, vec![1, 256, 1024]);
 
         // Least should fallback to largest
-        sort_proofs(&mut proofs, ProofSelectionMethod::Least, amount);
+        sort_proofs(&mut proofs, ProofSelectionMethod::Fewest, amount);
         assert_proof_order(&proofs, vec![1024, 256, 1]);
     }
 
     #[test]
-    fn test_select_least_proofs_over_amount() {
+    fn test_select_fewest_proofs_over_amount() {
         let keyset_id = Id::random();
         let c_1 = PublicKey::random();
         let proofs = vec![
@@ -530,19 +530,30 @@ mod tests {
         }
 
         let mut selected_proofs =
-            select_least_proofs_over_amount(&proofs, Amount::from(1025), HashMap::new()).unwrap();
+            select_fewest_proofs_over_amount(&proofs, Amount::from(1025), HashMap::new()).unwrap();
         assert_amounts(&mut selected_proofs, &mut [1024, 1]);
 
         let mut selected_proofs =
-            select_least_proofs_over_amount(&proofs, Amount::from(2), HashMap::new()).unwrap();
+            select_fewest_proofs_over_amount(&proofs, Amount::from(1), HashMap::new()).unwrap();
+        assert_amounts(&mut selected_proofs, &mut [1]);
+
+        let mut selected_proofs =
+            select_fewest_proofs_over_amount(&proofs, Amount::from(2), HashMap::new()).unwrap();
         assert_amounts(&mut selected_proofs, &mut [2]);
 
         let mut selected_proofs =
-            select_least_proofs_over_amount(&proofs, Amount::from(1284), HashMap::new()).unwrap();
+            select_fewest_proofs_over_amount(&proofs, Amount::from(1284), HashMap::new()).unwrap();
         assert_amounts(&mut selected_proofs, &mut [1024, 256, 2, 1, 1]);
 
+        // Edge cases
         assert!(
-            select_least_proofs_over_amount(&proofs, Amount::from(2048), HashMap::new()).is_none()
+            select_fewest_proofs_over_amount(&proofs, Amount::from(2048), HashMap::new()).is_none()
+        );
+        assert!(
+            select_fewest_proofs_over_amount(&proofs, Amount::from(0), HashMap::new()).is_none()
+        );
+        assert!(
+            select_fewest_proofs_over_amount(&vec![], Amount::from(1), HashMap::new()).is_none()
         );
     }
 }
