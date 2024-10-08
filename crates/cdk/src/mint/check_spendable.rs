@@ -57,6 +57,17 @@ impl Mint {
             return Err(Error::TokenAlreadySpent);
         }
 
+        for public_key in ys {
+            self.pubsub_manager.broadcast(
+                ProofState {
+                    y: *public_key,
+                    state: proof_state,
+                    witness: None,
+                }
+                .into(),
+            );
+        }
+
         Ok(())
     }
 }

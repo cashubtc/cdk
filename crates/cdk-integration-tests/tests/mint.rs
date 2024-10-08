@@ -6,16 +6,20 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint::MintQuote;
+use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::nut17::Params;
 use cdk::nuts::{
-    CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey,
-    SpendingConditions, SwapRequest,
+    CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PreMintSecrets,
+    ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::OnceCell;
+use tokio::time::sleep;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
 
@@ -206,6 +210,31 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
+    let public_keys_to_listen: Vec<_> = swap_request
+        .inputs
+        .ys()
+        .expect("key")
+        .into_iter()
+        .enumerate()
+        .filter_map(|(key, pk)| {
+            if key % 2 == 0 {
+                // Only expect messages from every other key
+                Some(pk.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut listener = mint
+        .pubsub_manager
+        .subscribe(Params {
+            kind: cdk::nuts::nut17::Kind::ProofState,
+            filters: public_keys_to_listen.clone(),
+            id: "test".into(),
+        })
+        .await;
+
     match mint.process_swap_request(swap_request).await {
         Ok(_) => bail!("Proofs spent without sig"),
         Err(err) => match err {
@@ -226,6 +255,34 @@ pub async fn test_p2pk_swap() -> Result<()> {
     let attempt_swap = mint.process_swap_request(swap_request).await;
 
     assert!(attempt_swap.is_ok());
+
+    sleep(Duration::from_millis(10)).await;
+
+    let mut msgs = HashMap::new();
+    while let Ok((sub_id, msg)) = listener.try_recv() {
+        assert_eq!(sub_id, "test".into());
+        match msg {
+            NotificationPayload::ProofState(ProofState { y, state, .. }) => {
+                let pk = y.to_string();
+                msgs.get_mut(&pk)
+                    .map(|x: &mut Vec<State>| {
+                        x.push(state);
+                    })
+                    .unwrap_or_else(|| {
+                        msgs.insert(pk, vec![state]);
+                    });
+            }
+            _ => bail!("Wrong message received"),
+        }
+    }
+
+    for keys in public_keys_to_listen {
+        let statuses = msgs.remove(&keys).expect("some events");
+        assert_eq!(statuses, vec![State::Pending, State::Pending, State::Spent]);
+    }
+
+    assert!(listener.try_recv().is_err(), "no other event is happening");
+    assert!(msgs.is_empty(), "Only expected key events are received");
 
     Ok(())
 }

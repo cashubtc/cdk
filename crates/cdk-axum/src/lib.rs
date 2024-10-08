@@ -14,6 +14,7 @@ use moka::future::Cache;
 use router_handlers::*;
 
 mod router_handlers;
+mod ws;
 
 #[cfg(feature = "swagger")]
 mod swagger_imports {
@@ -154,6 +155,7 @@ pub async fn create_mint_router(mint: Arc<Mint>, cache_ttl: u64, cache_tti: u64)
         )
         .route("/mint/bolt11", post(cache_post_mint_bolt11))
         .route("/melt/quote/bolt11", post(get_melt_bolt11_quote))
+        .route("/ws", get(ws_handler))
         .route(
             "/melt/quote/bolt11/:quote_id",
             get(get_check_melt_bolt11_quote),
