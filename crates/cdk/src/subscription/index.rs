@@ -4,6 +4,14 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+/// Indexable trait
+pub trait Indexable {
+    type Type: PartialOrd + Ord + Send + Sync;
+
+    /// To indexes
+    fn to_indexes(&self) -> Vec<Index<Self::Type>>;
+}
+
 #[derive(Debug, Ord, PartialOrd, PartialEq, Eq, Clone)]
 /// Index
 ///
@@ -15,6 +23,15 @@ where
     prefix: T,
     id: super::SubId,
     _unique: Unique,
+}
+
+impl<T> Into<super::SubId> for &Index<T>
+where
+    T: PartialOrd + Ord + Send + Sync,
+{
+    fn into(self) -> super::SubId {
+        self.id.clone()
+    }
 }
 
 impl<T> Deref for Index<T>

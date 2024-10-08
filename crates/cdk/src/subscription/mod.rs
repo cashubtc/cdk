@@ -19,9 +19,9 @@ use tokio::{
 
 mod index;
 
-pub use index::Index;
+pub use index::{Index, Indexable};
 
-type IndexTree<T, I> = Arc<RwLock<BTreeMap<Index<I>, mpsc::Sender<T>>>>;
+type IndexTree<T, I> = Arc<RwLock<BTreeMap<Index<I>, mpsc::Sender<(SubId, T)>>>>;
 
 /// Default size of the remove channel
 pub const DEFAULT_REMOVE_SIZE: usize = 10_000;
@@ -39,7 +39,7 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 /// type
 pub struct Manager<T, I>
 where
-    T: Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
     I: PartialOrd + Clone + Ord + Send + Sync + 'static,
 {
     indexes: IndexTree<T, I>,
@@ -50,7 +50,7 @@ where
 
 impl<T, I> Default for Manager<T, I>
 where
-    T: Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
     I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn default() -> Self {
@@ -73,7 +73,7 @@ where
 
 impl<T, I> Manager<T, I>
 where
-    T: Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
     I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     #[inline]
@@ -81,14 +81,15 @@ where
     ///
     /// This function takes an Arc to the storage struct, the event_id, the kind
     /// and the vent to broadcast
-    async fn broadcast_impl<II: Into<Index<I>>>(storage: &IndexTree<T, I>, index: II, event: T) {
-        let indexes = storage.read().await;
-        let index: Index<I> = index.into();
-        for (key, sender) in indexes.range(&index..) {
-            if index.cmp_prefix(&key) != Ordering::Equal {
-                break;
+    async fn broadcast_impl(storage: &IndexTree<T, I>, event: T) {
+        let index_storage = storage.read().await;
+        for index in event.to_indexes() {
+            for (key, sender) in index_storage.range(index.clone()..) {
+                if index.cmp_prefix(&key) != Ordering::Equal {
+                    break;
+                }
+                let _ = sender.try_send((key.into(), event.clone()));
             }
-            let _ = sender.try_send(event.clone());
         }
     }
 
@@ -96,18 +97,18 @@ where
     ///
     /// This public method will not block the caller, it will spawn a new task
     /// instead
-    pub fn broadcast<II: Into<Index<I>> + Send + Sync + 'static>(&self, index: II, event: T) {
+    pub fn broadcast(&self, event: T) {
         let storage = self.indexes.clone();
         tokio::spawn(async move {
-            Self::broadcast_impl(&storage, index, event).await;
+            Self::broadcast_impl(&storage, event).await;
         });
     }
 
     /// Broadcasts an event to all listeners
     ///
     /// This method is async and will await for the broadcast to be completed
-    pub async fn broadcast_async<II: Into<Index<I>>>(&self, index: II, event: T) {
-        Self::broadcast_impl(&self.indexes, index, event).await;
+    pub async fn broadcast_async(&self, event: T) {
+        Self::broadcast_impl(&self.indexes, event).await;
     }
 
     /// Subscribe to a specific event
@@ -167,7 +168,7 @@ where
 /// Manager goes out of scope, stop all background tasks
 impl<T, I> Drop for Manager<T, I>
 where
-    T: Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
     I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn drop(&mut self) {
@@ -191,7 +192,7 @@ where
     /// The subscription ID
     pub id: SubId,
     indexes: Vec<Index<I>>,
-    receiver: mpsc::Receiver<T>,
+    receiver: mpsc::Receiver<(SubId, T)>,
     drop: mpsc::Sender<(SubId, Vec<Index<I>>)>,
 }
 
@@ -200,7 +201,7 @@ where
     T: Send + Sync,
     I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
-    type Target = mpsc::Receiver<T>;
+    type Target = mpsc::Receiver<(SubId, T)>;
 
     fn deref(&self) -> &Self::Target {
         &self.receiver
@@ -209,7 +210,7 @@ where
 
 impl<T, I> DerefMut for ActiveSubscription<T, I>
 where
-    T: Send + Sync,
+    T: Indexable + Clone + Send + Sync + 'static,
     I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {

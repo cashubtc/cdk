@@ -20,7 +20,6 @@ pub mod util;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
-pub mod cdk_subscription;
 pub mod subscription;
 
 pub mod fees;
