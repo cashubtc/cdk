@@ -37,8 +37,6 @@ pub struct Ln {
     pub max_mint: Amount,
     pub min_melt: Amount,
     pub max_melt: Amount,
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
 }
 
 impl Default for Ln {
@@ -50,8 +48,6 @@ impl Default for Ln {
             max_mint: 500_000.into(),
             min_melt: 1.into(),
             max_melt: 500_000.into(),
-            fee_percent: 0.02,
-            reserve_fee_min: 2.into(),
         }
     }
 }
@@ -67,12 +63,16 @@ pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
     pub lnbits_api: String,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
     pub bolt12: bool,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -80,6 +80,8 @@ pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
     pub macaroon_file: PathBuf,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -87,17 +89,23 @@ pub struct Phoenixd {
     pub api_password: String,
     pub api_url: String,
     pub bolt12: bool,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 impl Default for FakeWallet {
     fn default() -> Self {
         Self {
             supported_units: vec![CurrencyUnit::Sat],
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
         }
     }
 }

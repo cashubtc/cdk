@@ -14,7 +14,7 @@ use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{FeeReserve, MeltQuote, Mint};
+use cdk::mint::{MeltQuote, Mint};
 use cdk::nuts::{
     nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
@@ -112,24 +112,14 @@ async fn main() -> anyhow::Result<()> {
         CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
     );
 
-    let relative_ln_fee = settings.ln.fee_percent;
-
-    let absolute_ln_fee_reserve = settings.ln.reserve_fee_min;
-
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: absolute_ln_fee_reserve,
-        percent_fee_reserve: relative_ln_fee,
-    };
-
     let mut ln_backends: HashMap<
         LnKey,
         Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     > = HashMap::new();
-
     let mut supported_units = HashMap::new();
-    let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
+    let mut ln_routers = vec![];
 
-    let ln_routers: Vec<Router> = match settings.ln.ln_backend {
+    match settings.ln.ln_backend {
         LnBackend::Cln => {
             let cln_settings = settings
                 .cln
@@ -140,11 +130,10 @@ async fn main() -> anyhow::Result<()> {
                 .setup(
                     &mut ln_backends,
                     &mut supported_units,
-                    fee_reserve,
-                    input_fee_ppk,
+                    &mut ln_routers,
                     &settings,
                 )
-                .await?
+                .await?;
         }
         LnBackend::Strike => {
             let strike_settings = settings.clone().strike.expect("Checked on config load");
@@ -153,8 +142,7 @@ async fn main() -> anyhow::Result<()> {
                 .setup(
                     &mut ln_backends,
                     &mut supported_units,
-                    fee_reserve,
-                    input_fee_ppk,
+                    &mut ln_routers,
                     &settings,
                 )
                 .await?
@@ -165,8 +153,7 @@ async fn main() -> anyhow::Result<()> {
                 .setup(
                     &mut ln_backends,
                     &mut supported_units,
-                    fee_reserve,
-                    input_fee_ppk,
+                    &mut ln_routers,
                     &settings,
                 )
                 .await?
@@ -177,8 +164,7 @@ async fn main() -> anyhow::Result<()> {
                 .setup(
                     &mut ln_backends,
                     &mut supported_units,
-                    fee_reserve,
-                    input_fee_ppk,
+                    &mut ln_routers,
                     &settings,
                 )
                 .await?
@@ -189,8 +175,7 @@ async fn main() -> anyhow::Result<()> {
                 .setup(
                     &mut ln_backends,
                     &mut supported_units,
-                    fee_reserve,
-                    input_fee_ppk,
+                    &mut ln_routers,
                     &settings,
                 )
                 .await?
@@ -202,8 +187,7 @@ async fn main() -> anyhow::Result<()> {
                 .setup(
                     &mut ln_backends,
                     &mut supported_units,
-                    fee_reserve,
-                    input_fee_ppk,
+                    &mut ln_routers,
                     &settings,
                 )
                 .await?

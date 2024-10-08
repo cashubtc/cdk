@@ -30,10 +30,9 @@ pub trait LnBackendSetup {
             Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
-        fee_reserve: FeeReserve,
-        input_fee_ppk: u64,
+        routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<Vec<Router>>;
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait]
@@ -45,16 +44,20 @@ impl LnBackendSetup for config::Cln {
             Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
-        fee_reserve: FeeReserve,
-        input_fee_ppk: u64,
-        _settings: &Settings,
-    ) -> anyhow::Result<Vec<Router>> {
+        _routers: &mut Vec<Router>,
+        settings: &Settings,
+    ) -> anyhow::Result<()> {
         let cln_socket = expand_path(
             self.rpc_path
                 .to_str()
                 .ok_or(anyhow!("cln socket not defined"))?,
         )
         .ok_or(anyhow!("cln socket not defined"))?;
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
 
         let cln = Arc::new(cdk_cln::Cln::new(cln_socket, fee_reserve, true, true).await?);
 
@@ -67,9 +70,10 @@ impl LnBackendSetup for config::Cln {
             ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12), cln);
         }
 
+        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
         supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
 
-        Ok(vec![])
+        Ok(())
     }
 }
 
@@ -82,18 +86,15 @@ impl LnBackendSetup for config::Strike {
             Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
-        _fee_reserve: FeeReserve,
-        input_fee_ppk: u64,
+        routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<Vec<Router>> {
+    ) -> anyhow::Result<()> {
         let api_key = &self.api_key;
 
         let units = self
             .supported_units
             .clone()
             .unwrap_or(vec![CurrencyUnit::Sat]);
-
-        let mut routers = vec![];
 
         for unit in units {
             // Channel used for strike web hook
@@ -120,10 +121,11 @@ impl LnBackendSetup for config::Strike {
 
             ln_backends.insert(ln_key, Arc::new(strike));
 
+            let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
             supported_units.insert(unit.clone(), (input_fee_ppk, 64));
         }
 
-        Ok(routers)
+        Ok(())
     }
 }
 
@@ -136,10 +138,9 @@ impl LnBackendSetup for config::LNbits {
             Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
-        fee_reserve: FeeReserve,
-        input_fee_ppk: u64,
+        routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<Vec<Router>> {
+    ) -> anyhow::Result<()> {
         let admin_api_key = &self.admin_api_key;
         let invoice_api_key = &self.invoice_api_key;
 
@@ -149,6 +150,11 @@ impl LnBackendSetup for config::LNbits {
 
         let mint_url: MintUrl = settings.info.url.parse()?;
         let webhook_url = mint_url.join(webhook_endpoint)?;
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
 
         let lnbits = cdk_lnbits::LNbits::new(
             admin_api_key.clone(),
@@ -170,8 +176,11 @@ impl LnBackendSetup for config::LNbits {
 
         ln_backends.insert(ln_key, Arc::new(lnbits));
 
+        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
         supported_units.insert(unit, (input_fee_ppk, 64));
-        Ok(vec![router])
+        routers.push(router);
+
+        Ok(())
     }
 }
 
@@ -184,13 +193,17 @@ impl LnBackendSetup for config::Phoenixd {
             Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
-        fee_reserve: FeeReserve,
-        input_fee_ppk: u64,
+        routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<Vec<Router>> {
+    ) -> anyhow::Result<()> {
         let api_password = &self.api_password;
 
         let api_url = &self.api_url;
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
 
         if fee_reserve.percent_fee_reserve < 0.04 {
             bail!("Fee reserve is too low needs to be at least 0.02");
@@ -216,6 +229,7 @@ impl LnBackendSetup for config::Phoenixd {
             .create_invoice_webhook(webhook_endpoint, sender)
             .await?;
 
+        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
         supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
 
         let phd = Arc::new(phoenixd);
@@ -237,7 +251,9 @@ impl LnBackendSetup for config::Phoenixd {
             );
         }
 
-        Ok(vec![router])
+        routers.push(router);
+
+        Ok(())
     }
 }
 
@@ -250,13 +266,17 @@ impl LnBackendSetup for config::Lnd {
             Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
-        fee_reserve: FeeReserve,
-        input_fee_ppk: u64,
-        _settings: &Settings,
-    ) -> anyhow::Result<Vec<Router>> {
+        _routers: &mut Vec<Router>,
+        settings: &Settings,
+    ) -> anyhow::Result<()> {
         let address = &self.address;
         let cert_file = &self.cert_file;
         let macaroon_file = &self.macaroon_file;
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
 
         let lnd = cdk_lnd::Lnd::new(
             address.to_string(),
@@ -266,6 +286,7 @@ impl LnBackendSetup for config::Lnd {
         )
         .await?;
 
+        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
         supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
         ln_backends.insert(
             LnKey {
@@ -275,7 +296,7 @@ impl LnBackendSetup for config::Lnd {
             Arc::new(lnd),
         );
 
-        Ok(vec![])
+        Ok(())
     }
 }
 
@@ -288,21 +309,26 @@ impl LnBackendSetup for config::FakeWallet {
             Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
-        fee_reserve: FeeReserve,
-        input_fee_ppk: u64,
+        _router: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<Vec<Router>> {
+    ) -> anyhow::Result<()> {
         let units = settings
             .clone()
             .fake_wallet
             .unwrap_or_default()
             .supported_units;
 
+        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
+
         for unit in units {
             let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
 
             let wallet = Arc::new(cdk_fake_wallet::FakeWallet::new(
-                fee_reserve.clone(),
+                fee_reserve,
                 HashMap::default(),
                 HashSet::default(),
                 0,
@@ -326,6 +352,6 @@ impl LnBackendSetup for config::FakeWallet {
 
         supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
 
-        Ok(vec![])
+        Ok(())
     }
 }

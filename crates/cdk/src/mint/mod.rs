@@ -487,7 +487,7 @@ impl Mint {
 }
 
 /// Mint Fee Reserve
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FeeReserve {
     /// Absolute expected min fee
     pub min_fee_reserve: Amount,
