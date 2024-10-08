@@ -6,11 +6,10 @@ use std::{
     ops::{Deref, DerefMut},
     sync::{atomic::AtomicUsize, Arc},
 };
+use storage::SubscriptionStorage;
 use tokio::{sync::mpsc, task::JoinHandle};
 
 mod storage;
-
-use storage::SubscriptionStorage;
 
 /// Default size of the remove channel
 pub const DEFAULT_REMOVE_SIZE: usize = 10;
@@ -27,7 +26,7 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 /// type
 pub struct Manager<T>
 where
-    T: Send + Sync + 'static,
+    T: Clone + Send + Sync + 'static,
 {
     storage: Arc<SubscriptionStorage<T>>,
     unsubscription_sender: mpsc::Sender<SubId>,
@@ -37,7 +36,7 @@ where
 
 impl<T> Default for Manager<T>
 where
-    T: Send + Sync + 'static,
+    T: Clone + Send + Sync + 'static,
 {
     fn default() -> Self {
         let (sender, receiver) = mpsc::channel(DEFAULT_REMOVE_SIZE);
@@ -57,8 +56,50 @@ where
 
 impl<T> Manager<T>
 where
-    T: Send + Sync,
+    T: Clone + Send + Sync + 'static,
 {
+    #[inline]
+    /// Broadcast an event to all listeners
+    ///
+    /// This function takes an Arc to the storage struct, the event_id, the kind
+    /// and the vent to broadcast
+    async fn broadcast_impl(
+        storage: Arc<SubscriptionStorage<T>>,
+        event_id: String,
+        kind: Kind,
+        event: T,
+    ) {
+        let indexes = storage.indexes.read().await;
+        for (key, sender) in
+            indexes.range((event_id.clone(), kind.clone(), Default::default(), 0)..)
+        {
+            if key.0 != event_id || key.1 != kind {
+                break;
+            }
+            let _ = sender.try_send(event.clone());
+        }
+    }
+
+    /// Broadcasts an event to all listeners
+    ///
+    /// This public method will not block the caller, it will spawn a new task
+    /// instead
+    pub fn broadcast(&self, event_id: String, kind: Kind, event: T) {
+        tokio::spawn(Self::broadcast_impl(
+            self.storage.clone(),
+            event_id,
+            kind,
+            event,
+        ));
+    }
+
+    /// Broadcasts an event to all listeners
+    ///
+    /// This method is async and will await for the broadcast to be completed
+    pub async fn broadcast_async(&self, event_id: String, kind: Kind, event: T) {
+        Self::broadcast_impl(self.storage.clone(), event_id, kind, event).await;
+    }
+
     /// Subscribe to a specific event
     pub async fn subscribe(&self, mut params: Params) -> ActiveSubscription<T> {
         let mut subscriptions = self.storage.subscriptions.write().await;
@@ -134,7 +175,7 @@ where
 /// Manager goes out of scope, stop all background tasks
 impl<T> Drop for Manager<T>
 where
-    T: Send + Sync,
+    T: Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         for task in self.background_tasks.drain(..) {
@@ -206,7 +247,7 @@ pub struct Params {
 ///
 /// This is the place to add some sane default (like a max length) to the
 /// subscription ID
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct SubId(String);
 
 impl Deref for SubId {
