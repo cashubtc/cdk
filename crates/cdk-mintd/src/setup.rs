@@ -106,7 +106,7 @@ impl LnBackendSetup for config::Strike {
 
             let strike = cdk_strike::Strike::new(
                 api_key.clone(),
-                unit.clone(),
+                unit,
                 Arc::new(Mutex::new(Some(receiver))),
                 webhook_url.to_string(),
             )
@@ -117,12 +117,12 @@ impl LnBackendSetup for config::Strike {
                 .await?;
             routers.push(router);
 
-            let ln_key = LnKey::new(unit.clone(), PaymentMethod::Bolt11);
+            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
 
             ln_backends.insert(ln_key, Arc::new(strike));
 
             let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
-            supported_units.insert(unit.clone(), (input_fee_ppk, 64));
+            supported_units.insert(unit, (input_fee_ppk, 64));
         }
 
         Ok(())
@@ -342,7 +342,7 @@ impl LnBackendSetup for config::FakeWallet {
         let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12);
 
         let wallet = Arc::new(cdk_fake_wallet::FakeWallet::new(
-            fee_reserve.clone(),
+            fee_reserve,
             HashMap::default(),
             HashSet::default(),
             0,

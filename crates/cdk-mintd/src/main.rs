@@ -209,8 +209,8 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     let nut_05_methods: Vec<MeltMethodSettings> = ln_backends
-        .iter()
-        .map(|(key, _ln)| MeltMethodSettings {
+        .keys()
+        .map(|key| MeltMethodSettings {
             method: key.method,
             unit: key.unit,
             min_amount: Some(settings.ln.min_melt),
