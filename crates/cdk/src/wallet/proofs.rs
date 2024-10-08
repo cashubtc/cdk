@@ -313,8 +313,13 @@ fn select_least_proofs_over_amount(
 
     // Find the smallest sum greater than or equal to the target amount
     for t in u64::from(amount)..=u64::from(max_sum) {
-        if let Some(proofs_amount) = dp[t as usize] {
-            let proofs = &paths[t as usize];
+        let idx = t as usize;
+        if idx >= dp.len() || idx >= paths.len() {
+            continue;
+        }
+
+        if let Some(proofs_amount) = dp[idx] {
+            let proofs = &paths[idx];
             let proofs_sum =
                 Amount::try_sum(proofs.iter().map(|p| p.amount)).unwrap_or(Amount::ZERO);
             if proofs_sum != proofs_amount {
@@ -331,7 +336,7 @@ fn select_least_proofs_over_amount(
             let fee = calculate_fee(&proofs_count, &fees).unwrap_or(Amount::ZERO);
 
             if proofs_amount >= amount + fee {
-                let proofs = paths[t as usize].clone();
+                let proofs = paths[idx].clone();
                 tracing::trace!(
                     "Selected proofs for amount {} with fee {}: {:?}",
                     amount,
