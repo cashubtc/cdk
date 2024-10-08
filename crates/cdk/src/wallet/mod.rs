@@ -19,7 +19,7 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
     PublicKey, RestoreRequest, SpendingConditions, State,
 };
-use crate::types::ProofInfo;
+
 use crate::{Amount, HttpClient};
 
 mod balance;
@@ -329,23 +329,19 @@ impl Wallet {
 
                 restored_value += Amount::try_sum(unspent_proofs.iter().map(|p| p.amount))?;
 
-                let unspent_proofs = unspent_proofs
-                    .into_iter()
-                    .map(|proof| {
-                        ProofInfo::new(proof, self.mint_url.clone(), State::Unspent, keyset.unit)
-                    })
-                    .collect::<Result<Vec<ProofInfo>, _>>()?;
-
-                let spent_public_keys: Vec<PublicKey> = proofs
+                let spent_ys: Vec<PublicKey> = proofs
                     .iter()
                     .zip(states)
-                    .filter(|(_, state)| state.state == State::Spent)
-                    .filter_map(|(p, _)| p.y().ok())
+                    .filter_map(|(proof, state)| {
+                        if state.state == State::Spent {
+                            proof.y().ok()
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
 
-                self.localstore
-                    .update_proofs(unspent_proofs, spent_public_keys)
-                    .await?;
+                self.localstore.update_proofs(vec![], spent_ys).await?;
 
                 empty_batch = 0;
                 start_counter += 100;
