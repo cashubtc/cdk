@@ -64,7 +64,7 @@ where
     /// This function takes an Arc to the storage struct, the event_id, the kind
     /// and the vent to broadcast
     async fn broadcast_impl(
-        storage: Arc<SubscriptionStorage<T>>,
+        storage: &Arc<SubscriptionStorage<T>>,
         event_id: String,
         kind: Kind,
         event: T,
@@ -85,19 +85,17 @@ where
     /// This public method will not block the caller, it will spawn a new task
     /// instead
     pub fn broadcast(&self, event_id: String, kind: Kind, event: T) {
-        tokio::spawn(Self::broadcast_impl(
-            self.storage.clone(),
-            event_id,
-            kind,
-            event,
-        ));
+        let storage = self.storage.clone();
+        tokio::spawn(async move {
+            Self::broadcast_impl(&storage, event_id, kind, event).await;
+        });
     }
 
     /// Broadcasts an event to all listeners
     ///
     /// This method is async and will await for the broadcast to be completed
     pub async fn broadcast_async(&self, event_id: String, kind: Kind, event: T) {
-        Self::broadcast_impl(self.storage.clone(), event_id, kind, event).await;
+        Self::broadcast_impl(&self.storage, event_id, kind, event).await;
     }
 
     /// Subscribe to a specific event
@@ -151,8 +149,7 @@ where
             let mut to_remove = vec![];
             for filter in params.filters {
                 let index = (filter, params.kind.clone(), params.id.clone(), 0);
-                let mut iterator = indexes.range(index..);
-                while let Some((key, _)) = iterator.next() {
+                for (key, _) in indexes.range(index..) {
                     if params.id != key.2 {
                         break;
                     }
