@@ -74,7 +74,8 @@ pub struct MintState {
         get_keyset_pubkeys,
         get_keysets,
         get_mint_info,
-        get_mint_bolt11_quote
+        get_mint_bolt11_quote,
+        get_check_mint_bolt11_quote
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs

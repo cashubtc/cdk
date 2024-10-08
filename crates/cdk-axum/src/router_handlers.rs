@@ -143,6 +143,21 @@ pub async fn get_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
+#[utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/mint/quote/bolt11/{quote_id}",
+    params(
+        ("quote_id" = String, description = "The quote ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = MintQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Get mint quote by ID
+///
+/// Get mint quote state.
 pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<String>,
