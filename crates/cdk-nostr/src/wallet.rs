@@ -528,7 +528,7 @@ impl WalletNostrDatabase {
             .get_events_of(
                 filters,
                 if sync_relays {
-                    EventSource::both(None)
+                    EventSource::both(Some(Duration::from_secs(5)))
                 } else {
                     EventSource::Database
                 },
