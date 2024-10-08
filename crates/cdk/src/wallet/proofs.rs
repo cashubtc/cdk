@@ -272,7 +272,7 @@ fn select_least_proofs_over_amount(
     if max_sum < amount || proofs.is_empty() || amount == Amount::ZERO {
         return None;
     }
-    let table_len = Into::<u64>::into(max_sum + 1.into()) as usize;
+    let table_len = u64::from(max_sum + 1.into()) as usize;
     let mut dp = vec![None; table_len];
     let mut paths = vec![Vec::<Proof>::new(); table_len];
 
@@ -280,20 +280,30 @@ fn select_least_proofs_over_amount(
 
     // Fill DP table and track paths
     for proof in proofs {
-        let max_other_amounts: u64 = (max_sum - proof.amount).into();
+        let max_other_amounts = u64::from(max_sum - proof.amount) as usize;
         for t in (0..=max_other_amounts).rev() {
+            // Double check bounds
+            if t >= dp.len() || t >= paths.len() {
+                continue;
+            }
+
             if let Some(current_sum) = dp[t as usize] {
                 let new_sum = current_sum + proof.amount;
-                let target_index = (t + u64::from(proof.amount)) as usize;
+                let target_index = (t as u64 + u64::from(proof.amount)) as usize;
+
+                // Double check new bounds
+                if target_index >= dp.len() || target_index >= paths.len() {
+                    continue;
+                }
 
                 // If this sum has not been reached yet, or if the new sum is smaller, or if the new path is shorter
                 if dp[target_index].is_none()
                     || dp[target_index].expect("None checked") > new_sum
-                    || paths[target_index].len() > paths[t as usize].len() + 1
+                    || paths[target_index].len() > paths[t].len() + 1
                 {
                     tracing::trace!("Updating DP table: {} -> {}", target_index, new_sum);
                     dp[target_index] = Some(new_sum);
-                    paths[target_index] = paths[t as usize].clone();
+                    paths[target_index] = paths[t].clone();
                     paths[target_index].push(proof.clone());
                     tracing::trace!("Path: {:?}", paths[target_index]);
                 }
@@ -302,7 +312,7 @@ fn select_least_proofs_over_amount(
     }
 
     // Find the smallest sum greater than or equal to the target amount
-    for t in Into::<u64>::into(amount)..=Into::<u64>::into(max_sum) {
+    for t in u64::from(amount)..=u64::from(max_sum) {
         if let Some(proofs_amount) = dp[t as usize] {
             let proofs = &paths[t as usize];
             let proofs_sum =
