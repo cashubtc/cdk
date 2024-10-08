@@ -9,6 +9,15 @@ repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.63.0" # MSRV
 description = "CDK mint binary"
 
+[lib]
+name = "cdk_mintd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cdk_mintd"
+path = "src/main.rs"
+
+
 [dependencies]
 anyhow = "1"
 axum = "0.6.20"

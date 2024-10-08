@@ -3,7 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -15,30 +15,21 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{FeeReserve, MeltQuote, Mint};
-use cdk::mint_url::MintUrl;
 use cdk::nuts::{
     nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
 };
 use cdk::types::{LnKey, QuoteTTL};
-use cdk_cln::Cln;
-use cdk_fake_wallet::FakeWallet;
-use cdk_lnbits::LNbits;
-use cdk_lnd::Lnd;
-use cdk_phoenixd::Phoenixd;
+use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
-use cdk_strike::Strike;
 use clap::Parser;
-use cli::CLIArgs;
-use config::{DatabaseEngine, LnBackend};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
-use url::Url;
 
-mod cli;
-mod config;
+use cdk_mintd::cli::CLIArgs;
+use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;
@@ -138,213 +129,84 @@ async fn main() -> anyhow::Result<()> {
     let mut supported_units = HashMap::new();
     let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
 
-    let mint_url: MintUrl = settings.info.url.parse()?;
-
     let ln_routers: Vec<Router> = match settings.ln.ln_backend {
         LnBackend::Cln => {
             let cln_settings = settings
                 .cln
+                .clone()
                 .expect("Config checked at load that cln is some");
-            let cln_socket = expand_path(
-                cln_settings
-                    .rpc_path
-                    .to_str()
-                    .ok_or(anyhow!("cln socket not defined"))?,
-            )
-            .ok_or(anyhow!("cln socket not defined"))?;
 
-            let cln = Arc::new(Cln::new(cln_socket, fee_reserve, true, true).await?);
-
-            ln_backends.insert(
-                LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11),
-                cln.clone(),
-            );
-
-            if cln_settings.bolt12 {
-                ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12), cln);
-            }
-
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            vec![]
+            cln_settings
+                .setup(
+                    &mut ln_backends,
+                    &mut supported_units,
+                    fee_reserve,
+                    input_fee_ppk,
+                    &settings,
+                )
+                .await?
         }
         LnBackend::Strike => {
-            let strike_settings = settings.strike.expect("Checked on config load");
-            let api_key = strike_settings.api_key;
+            let strike_settings = settings.clone().strike.expect("Checked on config load");
 
-            let units = strike_settings
-                .supported_units
-                .unwrap_or(vec![CurrencyUnit::Sat]);
-
-            let mut routers = vec![];
-
-            for unit in units {
-                // Channel used for strike web hook
-                let (sender, receiver) = tokio::sync::mpsc::channel(8);
-                let webhook_endpoint = format!("/webhook/{}/invoice", unit);
-
-                let webhook_url = mint_url.join(&webhook_endpoint)?;
-
-                let strike = Strike::new(
-                    api_key.clone(),
-                    unit,
-                    Arc::new(Mutex::new(Some(receiver))),
-                    webhook_url.to_string(),
+            strike_settings
+                .setup(
+                    &mut ln_backends,
+                    &mut supported_units,
+                    fee_reserve,
+                    input_fee_ppk,
+                    &settings,
                 )
-                .await?;
-
-                let router = strike
-                    .create_invoice_webhook(&webhook_endpoint, sender)
-                    .await?;
-                routers.push(router);
-
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-                ln_backends.insert(ln_key, Arc::new(strike));
-
-                supported_units.insert(unit, (input_fee_ppk, 64));
-            }
-
-            routers
+                .await?
         }
         LnBackend::LNbits => {
-            let lnbits_settings = settings.lnbits.expect("Checked on config load");
-            let admin_api_key = lnbits_settings.admin_api_key;
-            let invoice_api_key = lnbits_settings.invoice_api_key;
-
-            // Channel used for lnbits web hook
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-            let webhook_endpoint = "/webhook/lnbits/sat/invoice";
-
-            let webhook_url = mint_url.join(webhook_endpoint)?;
-
-            let lnbits = LNbits::new(
-                admin_api_key,
-                invoice_api_key,
-                lnbits_settings.lnbits_api,
-                fee_reserve,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url.to_string(),
-            )
-            .await?;
-
-            let router = lnbits
-                .create_invoice_webhook_router(webhook_endpoint, sender)
-                .await?;
-
-            let unit = CurrencyUnit::Sat;
-
-            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-            ln_backends.insert(ln_key, Arc::new(lnbits));
-
-            supported_units.insert(unit, (input_fee_ppk, 64));
-            vec![router]
+            let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
+            lnbits_settings
+                .setup(
+                    &mut ln_backends,
+                    &mut supported_units,
+                    fee_reserve,
+                    input_fee_ppk,
+                    &settings,
+                )
+                .await?
         }
         LnBackend::Phoenixd => {
-            let phd_settings = settings.phoenixd.expect("Checked at config load");
-            let api_password = phd_settings.api_password;
-
-            let api_url = phd_settings.api_url;
-
-            if fee_reserve.percent_fee_reserve < 0.04 {
-                bail!("Fee reserve is too low needs to be at least 0.02");
-            }
-
-            let webhook_endpoint = "/webhook/phoenixd";
-
-            let mint_url = Url::parse(&settings.info.url)?;
-
-            let webhook_url = mint_url.join(webhook_endpoint)?.to_string();
-
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-
-            let phoenixd = Phoenixd::new(
-                api_password.to_string(),
-                api_url.to_string(),
-                fee_reserve,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url,
-            )?;
-
-            let router = phoenixd
-                .create_invoice_webhook(webhook_endpoint, sender)
-                .await?;
-
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-
-            let phd = Arc::new(phoenixd);
-            ln_backends.insert(
-                LnKey {
-                    unit: CurrencyUnit::Sat,
-                    method: PaymentMethod::Bolt11,
-                },
-                phd.clone(),
-            );
-
-            if phd_settings.bolt12 {
-                ln_backends.insert(
-                    LnKey {
-                        unit: CurrencyUnit::Sat,
-                        method: PaymentMethod::Bolt12,
-                    },
-                    phd,
-                );
-            }
-
-            vec![router]
+            let phd_settings = settings.clone().phoenixd.expect("Checked at config load");
+            phd_settings
+                .setup(
+                    &mut ln_backends,
+                    &mut supported_units,
+                    fee_reserve,
+                    input_fee_ppk,
+                    &settings,
+                )
+                .await?
         }
         LnBackend::Lnd => {
-            let lnd_settings = settings.lnd.expect("Checked at config load");
-
-            let address = lnd_settings.address;
-            let cert_file = lnd_settings.cert_file;
-            let macaroon_file = lnd_settings.macaroon_file;
-
-            let lnd = Lnd::new(address, cert_file, macaroon_file, fee_reserve).await?;
-
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            ln_backends.insert(
-                LnKey {
-                    unit: CurrencyUnit::Sat,
-                    method: PaymentMethod::Bolt11,
-                },
-                Arc::new(lnd),
-            );
-
-            vec![]
+            let lnd_settings = settings.clone().lnd.expect("Checked at config load");
+            lnd_settings
+                .setup(
+                    &mut ln_backends,
+                    &mut supported_units,
+                    fee_reserve,
+                    input_fee_ppk,
+                    &settings,
+                )
+                .await?
         }
         LnBackend::FakeWallet => {
-            let units = settings.fake_wallet.unwrap_or_default().supported_units;
+            let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
 
-            for unit in units {
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-                let wallet = Arc::new(FakeWallet::new(
-                    fee_reserve.clone(),
-                    HashMap::default(),
-                    HashSet::default(),
-                    0,
-                ));
-
-                ln_backends.insert(ln_key, wallet);
-
-                supported_units.insert(unit, (input_fee_ppk, 64));
-            }
-
-            let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12);
-
-            let wallet = Arc::new(FakeWallet::new(
-                fee_reserve.clone(),
-                HashMap::default(),
-                HashSet::default(),
-                0,
-            ));
-
-            ln_backends.insert(ln_key, wallet);
-
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-
-            vec![]
+            fake_wallet
+                .setup(
+                    &mut ln_backends,
+                    &mut supported_units,
+                    fee_reserve,
+                    input_fee_ppk,
+                    &settings,
+                )
+                .await?
         }
     };
 
@@ -681,21 +543,6 @@ async fn check_pending_melt_quotes(
         };
     }
     Ok(())
-}
-
-fn expand_path(path: &str) -> Option<PathBuf> {
-    if path.starts_with('~') {
-        if let Some(home_dir) = home::home_dir().as_mut() {
-            let remainder = &path[2..];
-            home_dir.push(remainder);
-            let expanded_path = home_dir;
-            Some(expanded_path.clone())
-        } else {
-            None
-        }
-    } else {
-        Some(PathBuf::from(path))
-    }
 }
 
 fn work_dir() -> Result<PathBuf> {
