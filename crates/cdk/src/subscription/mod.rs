@@ -3,16 +3,29 @@
 //! This is an attempt to implement [NUT-17](https://github.com/cashubtc/nuts/blob/main/17.md)
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
+    collections::BTreeMap,
     ops::{Deref, DerefMut},
-    sync::{atomic::AtomicUsize, Arc},
+    str::FromStr,
+    sync::{
+        atomic::{self, AtomicUsize},
+        Arc,
+    },
 };
-use storage::SubscriptionStorage;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, RwLock},
+    task::JoinHandle,
+};
 
-mod storage;
+mod index;
+
+pub use index::Index;
+
+type IndexTree<T, I> = Arc<RwLock<BTreeMap<Index<I>, mpsc::Sender<T>>>>;
 
 /// Default size of the remove channel
-pub const DEFAULT_REMOVE_SIZE: usize = 10;
+pub const DEFAULT_REMOVE_SIZE: usize = 10_000;
+
 /// Default channel size for subscription buffering
 pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 
@@ -24,56 +37,55 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 /// The content of the notification is not relevant to this scope and it is up
 /// to the application, therefore the generic T is used instead of a specific
 /// type
-pub struct Manager<T>
+pub struct Manager<T, I>
 where
     T: Clone + Send + Sync + 'static,
+    I: PartialOrd + Clone + Ord + Send + Sync + 'static,
 {
-    storage: Arc<SubscriptionStorage<T>>,
-    unsubscription_sender: mpsc::Sender<SubId>,
+    indexes: IndexTree<T, I>,
+    unsubscription_sender: mpsc::Sender<(SubId, Vec<Index<I>>)>,
+    active_subscriptions: Arc<AtomicUsize>,
     background_tasks: Vec<JoinHandle<()>>,
-    counter: AtomicUsize,
 }
 
-impl<T> Default for Manager<T>
+impl<T, I> Default for Manager<T, I>
 where
     T: Clone + Send + Sync + 'static,
+    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn default() -> Self {
         let (sender, receiver) = mpsc::channel(DEFAULT_REMOVE_SIZE);
-        let storage: Arc<SubscriptionStorage<T>> = Arc::new(Default::default());
+        let active_subscriptions: Arc<AtomicUsize> = Default::default();
+        let storage: IndexTree<T, I> = Arc::new(Default::default());
 
         Self {
             background_tasks: vec![tokio::spawn(Self::remove_subscription(
                 receiver,
                 storage.clone(),
+                active_subscriptions.clone(),
             ))],
             unsubscription_sender: sender,
-            storage,
-            counter: Default::default(),
+            active_subscriptions,
+            indexes: storage,
         }
     }
 }
 
-impl<T> Manager<T>
+impl<T, I> Manager<T, I>
 where
     T: Clone + Send + Sync + 'static,
+    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     #[inline]
     /// Broadcast an event to all listeners
     ///
     /// This function takes an Arc to the storage struct, the event_id, the kind
     /// and the vent to broadcast
-    async fn broadcast_impl(
-        storage: &Arc<SubscriptionStorage<T>>,
-        event_id: String,
-        kind: Kind,
-        event: T,
-    ) {
-        let indexes = storage.indexes.read().await;
-        for (key, sender) in
-            indexes.range((event_id.clone(), kind.clone(), Default::default(), 0)..)
-        {
-            if key.0 != event_id || key.1 != kind {
+    async fn broadcast_impl<II: Into<Index<I>>>(storage: &IndexTree<T, I>, index: II, event: T) {
+        let indexes = storage.read().await;
+        let index: Index<I> = index.into();
+        for (key, sender) in indexes.range(&index..) {
+            if index.cmp_prefix(&key) != Ordering::Equal {
                 break;
             }
             let _ = sender.try_send(event.clone());
@@ -84,48 +96,49 @@ where
     ///
     /// This public method will not block the caller, it will spawn a new task
     /// instead
-    pub fn broadcast(&self, event_id: String, kind: Kind, event: T) {
-        let storage = self.storage.clone();
+    pub fn broadcast<II: Into<Index<I>> + Send + Sync + 'static>(&self, index: II, event: T) {
+        let storage = self.indexes.clone();
         tokio::spawn(async move {
-            Self::broadcast_impl(&storage, event_id, kind, event).await;
+            Self::broadcast_impl(&storage, index, event).await;
         });
     }
 
     /// Broadcasts an event to all listeners
     ///
     /// This method is async and will await for the broadcast to be completed
-    pub async fn broadcast_async(&self, event_id: String, kind: Kind, event: T) {
-        Self::broadcast_impl(&self.storage, event_id, kind, event).await;
+    pub async fn broadcast_async<II: Into<Index<I>>>(&self, index: II, event: T) {
+        Self::broadcast_impl(&self.indexes, index, event).await;
     }
 
     /// Subscribe to a specific event
-    pub async fn subscribe(&self, mut params: Params) -> ActiveSubscription<T> {
-        let mut subscriptions = self.storage.subscriptions.write().await;
+    pub async fn subscribe<SI: Into<SubId>, P: Into<Vec<Index<I>>>>(
+        &self,
+        sub_id: SI,
+        params: P,
+    ) -> ActiveSubscription<T, I> {
         let (sender, receiver) = mpsc::channel(10);
+        let indexes = params.into();
 
-        subscriptions.insert(params.id.clone(), params.clone());
-        drop(subscriptions);
-
-        let mut indexes = self.storage.indexes.write().await;
-        let sub_internal_id = self
-            .counter
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        for filter in params.filters.drain(..) {
-            let index = (
-                filter,
-                params.kind.clone(),
-                params.id.clone(),
-                sub_internal_id,
-            );
-            indexes.insert(index, sender.clone());
+        let mut index_storage = self.indexes.write().await;
+        for index in indexes.clone() {
+            index_storage.insert(index, sender.clone());
         }
-        drop(indexes);
+        drop(index_storage);
+
+        self.active_subscriptions
+            .fetch_add(1, atomic::Ordering::Relaxed);
 
         ActiveSubscription {
-            id: params.id,
+            id: sub_id.into(),
             receiver,
+            indexes,
             drop: self.unsubscription_sender.clone(),
         }
+    }
+
+    /// Return number of active subscriptions
+    pub fn active_subscriptions(&self) -> usize {
+        self.active_subscriptions.load(atomic::Ordering::SeqCst)
     }
 
     /// Task to remove dropped subscriptions from the storage struct
@@ -133,46 +146,29 @@ where
     /// This task will run in the background (and will dropped when the Manager
     /// is ) and will remove subscriptions from the storage struct it is dropped.
     async fn remove_subscription(
-        mut receiver: mpsc::Receiver<SubId>,
-        storage: Arc<SubscriptionStorage<T>>,
+        mut receiver: mpsc::Receiver<(SubId, Vec<Index<I>>)>,
+        storage: IndexTree<T, I>,
+        active_subscriptions: Arc<AtomicUsize>,
     ) {
-        while let Some(sub_id) = receiver.recv().await {
+        while let Some((sub_id, indexes)) = receiver.recv().await {
             tracing::info!("Removing subscription: {}", *sub_id);
-            let params = if let Some(params) = storage.subscriptions.write().await.remove(&sub_id) {
-                params
-            } else {
-                tracing::warn!("Subscription not found: {}", *sub_id);
-                continue;
-            };
 
-            let indexes = storage.indexes.read().await;
-            let mut to_remove = vec![];
-            for filter in params.filters {
-                let index = (filter, params.kind.clone(), params.id.clone(), 0);
-                for (key, _) in indexes.range(index..) {
-                    if params.id != key.2 {
-                        break;
-                    }
-                    to_remove.push(key.clone());
-                }
-            }
-            drop(indexes);
+            active_subscriptions.fetch_sub(1, atomic::Ordering::AcqRel);
 
-            if !to_remove.is_empty() {
-                let mut indexes = storage.indexes.write().await;
-                for key in to_remove {
-                    indexes.remove(&key);
-                }
-                drop(indexes);
+            let mut index_storage = storage.write().await;
+            for key in indexes {
+                index_storage.remove(&key);
             }
+            drop(index_storage);
         }
     }
 }
 
 /// Manager goes out of scope, stop all background tasks
-impl<T> Drop for Manager<T>
+impl<T, I> Drop for Manager<T, I>
 where
     T: Clone + Send + Sync + 'static,
+    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         for task in self.background_tasks.drain(..) {
@@ -187,19 +183,22 @@ where
 /// to keep track of the subscription itself. When this struct goes out of
 /// scope, it will notify the Manager about it, so it can be removed from the
 /// list of active listeners
-pub struct ActiveSubscription<T>
+pub struct ActiveSubscription<T, I>
 where
     T: Send + Sync,
+    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     /// The subscription ID
     pub id: SubId,
+    indexes: Vec<Index<I>>,
     receiver: mpsc::Receiver<T>,
-    drop: mpsc::Sender<SubId>,
+    drop: mpsc::Sender<(SubId, Vec<Index<I>>)>,
 }
 
-impl<T> Deref for ActiveSubscription<T>
+impl<T, I> Deref for ActiveSubscription<T, I>
 where
     T: Send + Sync,
+    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     type Target = mpsc::Receiver<T>;
 
@@ -208,9 +207,10 @@ where
     }
 }
 
-impl<T> DerefMut for ActiveSubscription<T>
+impl<T, I> DerefMut for ActiveSubscription<T, I>
 where
     T: Send + Sync,
+    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.receiver
@@ -222,22 +222,16 @@ where
 ///
 /// Having this in place, we can avoid memory leaks and also makes it super
 /// simple to implement the Unsubscribe method
-impl<T> Drop for ActiveSubscription<T>
+impl<T, I> Drop for ActiveSubscription<T, I>
 where
     T: Send + Sync,
+    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        self.drop.try_send(self.id.clone()).unwrap();
+        self.drop
+            .try_send((self.id.clone(), self.indexes.drain(..).collect()))
+            .unwrap();
     }
-}
-
-/// Subscription Parameter according to the standard
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Params {
-    kind: Kind,
-    filters: Vec<String>,
-    #[serde(rename = "subId")]
-    id: SubId,
 }
 
 /// Subscription Id wrapper
@@ -247,17 +241,30 @@ pub struct Params {
 #[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct SubId(String);
 
+impl From<&str> for SubId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for SubId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl FromStr for SubId {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_string()))
+    }
+}
+
 impl Deref for SubId {
     type Target = String;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
-}
-
-#[derive(Debug, Clone, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
-pub enum Kind {
-    Bolt11MeltQuote,
-    Bolt11MintQuote,
-    ProofState,
 }
