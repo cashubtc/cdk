@@ -12,16 +12,20 @@ use axum::Router;
 use cdk::amount::Amount;
 use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::mint::Mint;
-use cdk::nuts::nut00::{CurrencyUnit, PaymentMethod};
-use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey};
+use cdk::nuts::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Witness};
+use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
 use cdk::nuts::nut04;
 use cdk::nuts::nut04::{
-    MintMethodSettings, MintQuoteBolt11Request, MintQuoteBolt11Response, QuoteState,
+    MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, QuoteState,
 };
 use cdk::nuts::nut05;
 use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
+use cdk::nuts::nut11::P2PKWitness;
+use cdk::nuts::nut12::BlindSignatureDleq;
+use cdk::nuts::nut14::HTLCWitness;
 use cdk::nuts::nut15;
 use cdk::nuts::nut15::MppMethodSettings;
 use moka::future::Cache;
@@ -41,10 +45,14 @@ pub struct MintState {
 #[openapi(
     components(schemas(
         Amount,
+        BlindedMessage,
+        BlindSignature,
+        BlindSignatureDleq,
         ContactInfo,
         CurrencyUnit,
         ErrorCode,
         ErrorResponse,
+        HTLCWitness,
         Id,
         Keys,
         KeysResponse,
@@ -53,6 +61,8 @@ pub struct MintState {
         KeySetInfo,
         KeySetVersion,
         MeltMethodSettings,
+        MintBolt11Request,
+        MintBolt11Response,
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response,
@@ -60,10 +70,13 @@ pub struct MintState {
         MintVersion,
         MppMethodSettings,
         Nuts,
+        P2PKWitness,
         PaymentMethod,
         PublicKey,
+        SecretKey,
         QuoteState,
         SupportedSettings,
+        Witness,
         nut04::Settings,
         nut05::Settings,
         nut15::Settings
@@ -75,7 +88,8 @@ pub struct MintState {
         get_keysets,
         get_mint_info,
         get_mint_bolt11_quote,
-        get_check_mint_bolt11_quote
+        get_check_mint_bolt11_quote,
+        post_mint_bolt11
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs

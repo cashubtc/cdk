@@ -15,6 +15,8 @@ use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+#[cfg(feature = "mint")]
+use utoipa::ToSchema;
 
 use super::nut00::Witness;
 use super::nut01::PublicKey;
@@ -88,6 +90,7 @@ pub enum Error {
 
 /// P2Pk Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct P2PKWitness {
     /// Signatures
     pub signatures: Vec<String>,

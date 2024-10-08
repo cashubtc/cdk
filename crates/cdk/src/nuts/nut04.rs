@@ -180,10 +180,13 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
 
 /// Mint request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct MintBolt11Request {
     /// Quote id
+    #[cfg_attr(feature = "mint", schema(max_length = 1_000))]
     pub quote: String,
     /// Outputs
+    #[cfg_attr(feature = "mint", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
 }
 
@@ -201,6 +204,7 @@ impl MintBolt11Request {
 
 /// Mint response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct MintBolt11Response {
     /// Blinded Signatures
     pub signatures: Vec<BlindSignature>,

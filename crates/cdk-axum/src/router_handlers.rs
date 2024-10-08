@@ -174,6 +174,21 @@ pub async fn get_check_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
+#[utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/bolt11",
+    request_body(content = MintBolt11Request, description = "Request params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MintBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Mint tokens by paying a BOLT11 Lightning invoice.
+///
+/// Requests the minting of tokens belonging to a paid payment request.
+///
+/// Call this endpoint after `POST /v1/mint/quote`.
 pub async fn post_mint_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request>,

@@ -9,13 +9,17 @@ use bitcoin::secp256k1::rand::rngs::OsRng;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Keypair, Message, Scalar};
 use serde::{Deserialize, Deserializer, Serialize};
+#[cfg(feature = "mint")]
+use utoipa::ToSchema;
 
 use super::{Error, PublicKey};
 use crate::SECP256K1;
 
 /// SecretKey
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct SecretKey {
+    #[cfg_attr(feature = "mint", schema(value_type = String))]
     inner: secp256k1::SecretKey,
 }
 

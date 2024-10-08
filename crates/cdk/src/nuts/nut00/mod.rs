@@ -83,6 +83,7 @@ pub enum Error {
 
 /// Blinded Message (also called `output`)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct BlindedMessage {
     /// Amount
     ///
@@ -126,6 +127,7 @@ impl BlindedMessage {
 
 /// Blind Signature (also called `promise`)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct BlindSignature {
     /// Amount
     ///
@@ -163,6 +165,7 @@ impl PartialOrd for BlindSignature {
 /// Witness
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]

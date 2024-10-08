@@ -7,6 +7,8 @@ use core::ops::Deref;
 use bitcoin::secp256k1::{self, Scalar};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(feature = "mint")]
+use utoipa::ToSchema;
 
 use super::nut00::{BlindSignature, Proof};
 use super::nut01::{PublicKey, SecretKey};
@@ -41,6 +43,7 @@ pub enum Error {
 ///
 /// Defined in [NUT12](https://github.com/cashubtc/nuts/blob/main/12.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(ToSchema))]
 pub struct BlindSignatureDleq {
     /// e
     pub e: SecretKey,
