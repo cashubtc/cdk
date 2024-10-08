@@ -9,8 +9,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use utoipa::ToSchema;
 
 use super::nut00::Witness;
 use super::nut10::Secret;
@@ -54,7 +52,7 @@ pub enum Error {
 
 /// HTLC Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct HTLCWitness {
     /// Primage
     pub preimage: String,

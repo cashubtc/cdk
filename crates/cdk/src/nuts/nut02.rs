@@ -21,8 +21,6 @@ use bitcoin::secp256k1;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use utoipa::ToSchema;
 
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
@@ -51,7 +49,7 @@ pub enum Error {
 
 /// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Current Version 00
     Version00,
@@ -87,7 +85,7 @@ impl fmt::Display for KeySetVersion {
 /// be stored in a Cashu token such that the token can be used to identify
 /// which mint or keyset it was generated from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct Id {
     version: KeySetVersion,
     id: [u8; Self::BYTELEN],
@@ -228,7 +226,7 @@ impl From<&Keys> for Id {
 /// Ids of mints keyset ids
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
     #[serde_as(as = "VecSkipError<_>")]
@@ -237,7 +235,7 @@ pub struct KeysetResponse {
 
 /// Keyset
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct KeySet {
     /// Keyset [`Id`]
     pub id: Id,
@@ -260,7 +258,7 @@ impl From<MintKeySet> for KeySet {
 
 /// KeySetInfo
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct KeySetInfo {
     /// Keyset [`Id`]
     pub id: Id,

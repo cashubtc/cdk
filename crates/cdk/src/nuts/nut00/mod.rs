@@ -10,8 +10,6 @@ use std::string::FromUtf8Error;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use utoipa::ToSchema;
 
 use super::nut10;
 use super::nut11::SpendingConditions;
@@ -83,7 +81,7 @@ pub enum Error {
 
 /// Blinded Message (also called `output`)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct BlindedMessage {
     /// Amount
     ///
@@ -127,7 +125,7 @@ impl BlindedMessage {
 
 /// Blind Signature (also called `promise`)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct BlindSignature {
     /// Amount
     ///
@@ -165,7 +163,7 @@ impl PartialOrd for BlindSignature {
 /// Witness
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]
@@ -343,7 +341,7 @@ where
 /// Currency Unit
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub enum CurrencyUnit {
     /// Sat
     #[default]
@@ -415,7 +413,7 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
 /// Payment Method
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub enum PaymentMethod {
     /// Bolt11 payment type
     #[default]

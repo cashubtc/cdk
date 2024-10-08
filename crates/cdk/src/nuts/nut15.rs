@@ -3,8 +3,6 @@
 //! <https://github.com/cashubtc/nuts/blob/main/15.md>
 
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "mint")]
-use utoipa::ToSchema;
 
 use super::{CurrencyUnit, PaymentMethod};
 use crate::Amount;
@@ -19,7 +17,7 @@ pub struct Mpp {
 
 /// Mpp Method Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct MppMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -31,7 +29,7 @@ pub struct MppMethodSettings {
 
 /// Mpp Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema), schema(as = nut15::Settings))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema), schema(as = nut15::Settings))]
 pub struct Settings {
     /// Method settings
     pub methods: Vec<MppMethodSettings>,

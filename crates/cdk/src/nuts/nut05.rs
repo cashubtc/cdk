@@ -8,8 +8,6 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use utoipa::ToSchema;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
@@ -231,7 +229,7 @@ impl MeltBolt11Request {
 
 /// Melt Method Settings
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -269,7 +267,7 @@ impl Settings {
 
 /// Melt Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(ToSchema), schema(as = nut05::Settings))]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema), schema(as = nut05::Settings))]
 pub struct Settings {
     /// Methods to melt
     pub methods: Vec<MeltMethodSettings>,
