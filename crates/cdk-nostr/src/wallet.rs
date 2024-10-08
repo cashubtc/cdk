@@ -522,7 +522,8 @@ impl WalletNostrDatabase {
         if sync_relays {
             self.ensure_relays_connected().await;
         }
-        Ok(self
+
+        let events = self
             .client
             .get_events_of(
                 filters,
@@ -532,7 +533,13 @@ impl WalletNostrDatabase {
                     EventSource::Database
                 },
             )
-            .await?)
+            .await?;
+        for event in events.iter() {
+            if let Err(e) = self.client.database().save_event(event).await {
+                tracing::warn!("Failed to save event to database: {}", e);
+            }
+        }
+        Ok(events)
     }
 
     async fn save_event(&self, event: Event) -> Result<(), Error> {
@@ -548,6 +555,10 @@ impl WalletNostrDatabase {
     }
 
     async fn save_events(&self, events: Vec<Event>) -> Result<(), Error> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
         #[cfg(test)]
         if self.client.relays().await.is_empty() {
             for event in events {
