@@ -14,7 +14,7 @@ name = "cdk_mintd"
 path = "src/lib.rs"
 
 [[bin]]
-name = "cdk_mintd"
+name = "cdk-mintd"
 path = "src/main.rs"
 
 
