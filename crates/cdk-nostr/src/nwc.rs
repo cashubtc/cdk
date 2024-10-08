@@ -476,9 +476,9 @@ impl WalletConnection {
 
     fn check_and_update_remaining_budget(&mut self) -> Amount {
         if let Some(renews_at) = self.budget.renews_at {
-            if renews_at < Timestamp::now() {
+            if renews_at <= Timestamp::now() {
                 self.budget.used_budget_msats = Amount::ZERO;
-                self.budget.renews_at = Some(renews_at);
+                self.budget.renews_at = self.budget_renews_at();
             }
         }
         if self.budget.used_budget_msats >= self.budget.total_budget_msats {
@@ -654,12 +654,13 @@ mod tests {
 
     #[test]
     fn test_connection_budget_update() {
+        let now = Timestamp::now();
         let mut connection = WalletConnection::new(
             SecretKey::generate(),
             Url::from_str("ws://localhost:7777").unwrap(),
             ConnectionBudget {
                 renewal_period: BudgetRenewalPeriod::Daily,
-                renews_at: Some(Timestamp::now() - (24 * 60 * 60 - 1)),
+                renews_at: Some(now - (24 * 60 * 60 + 2)),
                 total_budget_msats: 1_000_000.into(),
                 used_budget_msats: 21_000.into(),
             },
@@ -667,8 +668,8 @@ mod tests {
         let remaining_amount = connection.check_and_update_remaining_budget();
         assert_eq!(remaining_amount, 1_000_000.into());
         assert_eq!(connection.budget.used_budget_msats, 0.into());
-        let new_renews_at = connection.budget_renews_at().unwrap();
-        assert!(new_renews_at > Timestamp::now());
-        assert!(new_renews_at < Timestamp::now() + 24 * 60 * 60);
+
+        let new_renews_at = connection.budget.renews_at.unwrap();
+        assert!(new_renews_at == now + (24 * 60 * 60 - 2));
     }
 }
