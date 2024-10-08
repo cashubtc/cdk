@@ -184,7 +184,7 @@ impl Wallet {
             .into_iter()
             .partition(|p| p.keyset_id == active_keyset_id);
 
-        if opts.allow_inactive_keys {
+        if opts.prefer_inactive_keys {
             sort_proofs(&mut inactive_proofs, ProofSelectionMethod::Largest, amount);
 
             for inactive_proof in inactive_proofs {
@@ -284,11 +284,11 @@ fn select_least_proofs_over_amount(
         for t in (0..=max_other_amounts).rev() {
             if let Some(current_sum) = dp[t as usize] {
                 let new_sum = current_sum + proof.amount;
-                let target_index = (t + Into::<u64>::into(proof.amount)) as usize;
+                let target_index = (t + u64::from(proof.amount)) as usize;
 
                 // If this sum has not been reached yet, or if the new sum is smaller, or if the new path is shorter
                 if dp[target_index].is_none()
-                    || dp[target_index].unwrap() > new_sum
+                    || dp[target_index].expect("None checked") > new_sum
                     || paths[target_index].len() > paths[t as usize].len() + 1
                 {
                     tracing::trace!("Updating DP table: {} -> {}", target_index, new_sum);
@@ -340,7 +340,7 @@ fn select_least_proofs_over_amount(
 /// Select proofs options
 pub struct SelectProofsOptions {
     /// Allow inactive keys (if `true`, inactive keys will be selected first in largest order)
-    pub allow_inactive_keys: bool,
+    pub prefer_inactive_keys: bool,
     /// Include fees to add to the selection amount
     pub include_fees: bool,
     /// Proof selection method
@@ -355,7 +355,7 @@ impl SelectProofsOptions {
         method: ProofSelectionMethod,
     ) -> Self {
         Self {
-            allow_inactive_keys,
+            prefer_inactive_keys: allow_inactive_keys,
             include_fees,
             method,
         }
@@ -363,7 +363,7 @@ impl SelectProofsOptions {
 
     /// Allow inactive keys (if `true`, inactive keys will be selected first in largest order)
     pub fn allow_inactive_keys(mut self, allow_inactive_keys: bool) -> Self {
-        self.allow_inactive_keys = allow_inactive_keys;
+        self.prefer_inactive_keys = allow_inactive_keys;
         self
     }
 
@@ -383,7 +383,7 @@ impl SelectProofsOptions {
 impl Default for SelectProofsOptions {
     fn default() -> Self {
         Self {
-            allow_inactive_keys: false,
+            prefer_inactive_keys: true,
             include_fees: true,
             method: ProofSelectionMethod::Largest,
         }
