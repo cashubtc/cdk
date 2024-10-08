@@ -245,18 +245,12 @@ fn sort_proofs(proofs: &mut Proofs, method: ProofSelectionMethod, amount: Amount
         ProofSelectionMethod::Largest | ProofSelectionMethod::Least => {
             proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a))
         }
-        ProofSelectionMethod::Closest => proofs.sort_by(|a: &Proof, b: &Proof| {
-            let a_diff = if a.amount > amount {
-                a.amount - amount
+        ProofSelectionMethod::Closest => proofs.sort_by_key(|p| {
+            if p.amount > amount {
+                p.amount - amount
             } else {
-                amount - a.amount
-            };
-            let b_diff = if b.amount > amount {
-                b.amount - amount
-            } else {
-                amount - b.amount
-            };
-            a_diff.cmp(&b_diff)
+                amount - p.amount
+            }
         }),
         ProofSelectionMethod::Smallest => proofs.sort(),
     }
@@ -272,7 +266,9 @@ fn select_least_proofs_over_amount(
         amount,
         fees
     );
-    let max_sum = Amount::try_sum(proofs.iter().map(|p| p.amount)).ok()? + 1.into();
+    let max_sum = Amount::try_sum(proofs.iter().map(|p| p.amount))
+        .ok()?
+        .checked_add(1.into())?;
     if max_sum < amount || proofs.is_empty() || amount == Amount::ZERO {
         return None;
     }
