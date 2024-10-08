@@ -1,10 +1,17 @@
+use core::panic;
 use std::{collections::HashMap, sync::Arc};
 
+use anyhow::anyhow;
 use cdk::{
+    amount::Amount,
     cdk_database::{self, MintDatabase},
     cdk_lightning::{self, MintLightning},
-    nuts::{CurrencyUnit, MintInfo, PaymentMethod},
-    types::LnKey,
+    mint::Mint,
+    nuts::{
+        ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
+        MppMethodSettings, PaymentMethod,
+    },
+    types::{LnKey, QuoteTTL},
 };
 
 /// Cashu Mint
@@ -13,12 +20,14 @@ pub struct MintBuilder {
     /// Mint Url
     mint_url: Option<String>,
     /// Mint Info
-    mint_info: Option<MintInfo>,
+    mint_info: MintInfo,
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
+    quote_ttl: Option<QuoteTTL>,
+    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
 }
 
 impl MintBuilder {
@@ -26,6 +35,7 @@ impl MintBuilder {
         MintBuilder::default()
     }
 
+    /// Set localstore
     pub fn with_localstore(
         mut self,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
@@ -34,32 +44,130 @@ impl MintBuilder {
         self
     }
 
-    pub fn with_info(mut self, mint_info: MintInfo) -> Self {
-        self.mint_info = Some(mint_info);
-        self
-    }
-
+    // Set mint url
     pub fn with_mint_url(mut self, mint_url: String) -> Self {
         self.mint_url = Some(mint_url);
         self
     }
 
+    /// Set seed
     pub fn with_seed(mut self, seed: Vec<u8>) -> Self {
         self.seed = Some(seed);
         self
     }
 
+    /// Set name
+    pub fn with_name(mut self, name: String) -> Self {
+        self.mint_info.name = Some(name);
+        self
+    }
+
+    /// Set icon url
+    pub fn with_icon_url(mut self, icon_url: String) -> Self {
+        self.mint_info.icon_url = Some(icon_url);
+        self
+    }
+
+    /// Set icon url
+    pub fn with_motd(mut self, motd: String) -> Self {
+        self.mint_info.motd = Some(motd);
+        self
+    }
+
+    /// Set description
+    pub fn with_description(mut self, description: String) -> Self {
+        self.mint_info.description = Some(description);
+        self
+    }
+
+    /// Set long description
+    pub fn with_long_description(mut self, description: String) -> Self {
+        self.mint_info.description_long = Some(description);
+        self
+    }
+
+    /// Set version
+    pub fn with_version(mut self, version: MintVersion) -> Self {
+        self.mint_info.version = Some(version);
+        self
+    }
+
+    /// Set contact info
+    pub fn add_contact_info(mut self, contact_info: ContactInfo) -> Self {
+        let mut contacts = self.mint_info.contact.clone().unwrap_or_default();
+        contacts.push(contact_info);
+        self.mint_info.contact = Some(contacts);
+        self
+    }
+
+    /// Add ln backend
     pub fn add_ln_backend(
         mut self,
         unit: CurrencyUnit,
         method: PaymentMethod,
+        limits: MintMeltLimits,
         ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     ) -> Self {
         let ln_key = LnKey { unit, method };
 
         let mut ln = self.ln.unwrap_or_default();
 
-        let _settings = ln_backend.get_settings();
+        let settings = ln_backend.get_settings();
+
+        if settings.mpp {
+            let mpp_settings = MppMethodSettings {
+                method,
+                unit,
+                mpp: true,
+            };
+            self.mint_info.nuts.nut15.methods.push(mpp_settings);
+        }
+
+        match method {
+            PaymentMethod::Bolt11 => {
+                let mint_method_settings = MintMethodSettings {
+                    method,
+                    unit,
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    description: settings.invoice_description,
+                };
+
+                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+                self.mint_info.nuts.nut04.disabled = false;
+
+                let melt_method_settings = MeltMethodSettings {
+                    method,
+                    unit,
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                };
+                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+                self.mint_info.nuts.nut05.disabled = false;
+            }
+            PaymentMethod::Bolt12 => {
+                let mint_method_settings = MintMethodSettings {
+                    method,
+                    unit,
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    description: settings.invoice_description,
+                };
+
+                self.mint_info.nuts.nut18.methods.push(mint_method_settings);
+                self.mint_info.nuts.nut18.disabled = false;
+
+                let melt_method_settings = MeltMethodSettings {
+                    method,
+                    unit,
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                };
+                self.mint_info.nuts.nut19.methods.push(melt_method_settings);
+                self.mint_info.nuts.nut19.disabled = false;
+            }
+            _ => panic!("Unsupported unit"),
+        }
 
         ln.insert(ln_key, ln_backend);
 
@@ -67,4 +175,36 @@ impl MintBuilder {
 
         self
     }
+
+    /// Set quote ttl
+    pub fn set_quote_ttl(mut self, mint_ttl: u64, melt_ttl: u64) -> Self {
+        let quote_ttl = QuoteTTL { mint_ttl, melt_ttl };
+
+        self.quote_ttl = Some(quote_ttl);
+
+        self
+    }
+
+    pub async fn build(&self) -> anyhow::Result<Mint> {
+        Ok(Mint::new(
+            self.mint_url.as_ref().ok_or(anyhow!("Mint url not set"))?,
+            self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
+            self.mint_info.clone(),
+            self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,
+            self.localstore
+                .clone()
+                .ok_or(anyhow!("Localstore not set"))?,
+            self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
+            self.supported_units.clone(),
+        )
+        .await?)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MintMeltLimits {
+    pub mint_min: Amount,
+    pub mint_max: Amount,
+    pub melt_min: Amount,
+    pub melt_max: Amount,
 }

@@ -345,9 +345,15 @@ impl Nuts {
 }
 
 /// Check state Settings
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SupportedSettings {
     supported: bool,
+}
+
+impl Default for SupportedSettings {
+    fn default() -> Self {
+        Self { supported: true }
+    }
 }
 
 /// Contact Info

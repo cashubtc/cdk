@@ -246,13 +246,6 @@ async fn main() -> anyhow::Result<()> {
     let nuts = Nuts::new()
         .nut04(nut04_settings)
         .nut05(nut05_settings.clone())
-        .nut07(true)
-        .nut08(true)
-        .nut09(true)
-        .nut10(true)
-        .nut11(true)
-        .nut12(true)
-        .nut14(true)
         .nut15(mpp_settings);
 
     let nuts = match support_bolt12_mint {
