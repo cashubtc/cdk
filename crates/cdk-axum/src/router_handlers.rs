@@ -3,7 +3,6 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
-use cdk::nuts::nut05::MeltBolt11Response;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
@@ -11,8 +10,44 @@ use cdk::nuts::{
     SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
+use cdk::Error;
+use paste::paste;
 
 use crate::MintState;
+
+macro_rules! post_cache_wrapper {
+    ($handler:ident, $request_type:ty, $response_type:ty) => {
+        paste! {
+            /// Cache wrapper function for $handler:
+            /// Wrap $handler into a function that caches responses using the request as key
+            pub async fn [<cache_ $handler>](
+                state: State<MintState>,
+                payload: Json<$request_type>
+            ) -> Result<Json<$response_type>, Response> {
+                let Json(json_extracted_payload) = payload.clone();
+                let State(mint_state) = state.clone();
+                let cache_key = serde_json::to_string(&json_extracted_payload).map_err(|err| {
+                    into_response(Error::from(err))
+                })?;
+
+                if let Some(cached_response) = mint_state.cache.get(&cache_key) {
+                    return Ok(Json(serde_json::from_str(&cached_response)
+                        .expect("Shouldn't panic: response is json-deserializable.")));
+                }
+
+                let Json(response) = $handler(state, payload).await?;
+                mint_state.cache.insert(cache_key, serde_json::to_string(&response)
+                    .expect("Shouldn't panic: response is json-serializable.")
+                ).await;
+                Ok(Json(response))
+            }
+        }
+    };
+}
+
+post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
+post_cache_wrapper!(post_mint_bolt11, MintBolt11Request, MintBolt11Response);
+post_cache_wrapper!(post_melt_bolt11, MeltBolt11Request, MeltQuoteBolt11Response);
 
 pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
     let pubkeys = state.mint.pubkeys().await.map_err(|err| {
@@ -121,7 +156,7 @@ pub async fn get_check_melt_bolt11_quote(
 pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request>,
-) -> Result<Json<MeltBolt11Response>, Response> {
+) -> Result<Json<MeltQuoteBolt11Response>, Response> {
     let res = state
         .mint
         .melt_bolt11(&payload)

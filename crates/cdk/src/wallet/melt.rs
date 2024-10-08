@@ -5,16 +5,16 @@ use tracing::instrument;
 
 use crate::{
     dhke::construct_proofs,
-    nuts::{
-        CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, PreMintSecrets, Proofs, PublicKey,
-        State,
-    },
+    nuts::{CurrencyUnit, MeltQuoteBolt11Response, PreMintSecrets, Proofs, PublicKey, State},
     types::{Melted, ProofInfo},
     util::unix_time,
     Amount, Error, Wallet,
 };
 
-use super::MeltQuote;
+use super::{
+    proofs::{ProofSelectionMethod, SelectProofsOptions},
+    MeltQuote,
+};
 
 impl Wallet {
     /// Melt Quote
@@ -204,13 +204,8 @@ impl Wallet {
             None => None,
         };
 
-        let state = match melt_response.paid {
-            true => MeltQuoteState::Paid,
-            false => MeltQuoteState::Unpaid,
-        };
-
         let melted = Melted::from_proofs(
-            state,
+            melt_response.state,
             melt_response.payment_preimage,
             quote_info.amount,
             proofs.clone(),
@@ -302,7 +297,11 @@ impl Wallet {
         let available_proofs = self.get_proofs().await?;
 
         let input_proofs = self
-            .select_proofs_to_swap(inputs_needed_amount, available_proofs)
+            .select_proofs(
+                inputs_needed_amount,
+                available_proofs,
+                SelectProofsOptions::default().method(ProofSelectionMethod::Least),
+            )
             .await?;
 
         self.melt_proofs(quote_id, input_proofs).await

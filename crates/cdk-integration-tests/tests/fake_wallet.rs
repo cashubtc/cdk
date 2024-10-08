@@ -27,7 +27,7 @@ async fn test_fake_tokens_pending() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_secs(5)).await;
+    sleep(Duration::from_millis(5)).await;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -66,6 +66,8 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    sleep(Duration::from_millis(5)).await;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -128,6 +130,8 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
+    sleep(Duration::from_millis(5)).await;
+
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
@@ -170,6 +174,8 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    sleep(Duration::from_millis(5)).await;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -228,6 +234,8 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    sleep(Duration::from_millis(5)).await;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -288,6 +296,8 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
+    sleep(Duration::from_millis(5)).await;
+
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
@@ -323,6 +333,8 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    sleep(Duration::from_millis(5)).await;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)

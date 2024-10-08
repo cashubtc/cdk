@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -33,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 
 pub mod error;
 
@@ -47,6 +49,8 @@ pub struct FakeWallet {
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
+    wait_invoice_cancel_token: CancellationToken,
+    wait_invoice_is_active: Arc<AtomicBool>,
 }
 
 impl FakeWallet {
@@ -70,6 +74,8 @@ impl FakeWallet {
             payment_states: Arc::new(Mutex::new(payment_states)),
             failed_payment_check: Arc::new(Mutex::new(fail_payment_check)),
             payment_delay,
+            wait_invoice_cancel_token: CancellationToken::new(),
+            wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -110,6 +116,14 @@ impl MintLightning for FakeWallet {
             melt_settings: self.melt_settings,
             invoice_description: true,
         }
+    }
+
+    fn is_wait_invoice_active(&self) -> bool {
+        self.wait_invoice_is_active.load(Ordering::SeqCst)
+    }
+
+    fn cancel_wait_invoice(&self) {
+        self.wait_invoice_cancel_token.cancel()
     }
 
     async fn wait_any_invoice(

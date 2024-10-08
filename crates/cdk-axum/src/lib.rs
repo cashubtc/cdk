@@ -9,31 +9,47 @@ use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
 use cdk::mint::Mint;
+use moka::future::Cache;
 use router_handlers::*;
+use std::time::Duration;
 
 mod router_handlers;
 
+/// CDK Mint State
+#[derive(Clone)]
+pub struct MintState {
+    mint: Arc<Mint>,
+    cache: Cache<String, String>,
+}
+
 /// Create mint [`Router`] with required endpoints for cashu mint
-pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
-    let state = MintState { mint };
+pub async fn create_mint_router(mint: Arc<Mint>, cache_ttl: u64, cache_tti: u64) -> Result<Router> {
+    let state = MintState {
+        mint,
+        cache: Cache::builder()
+            .max_capacity(10_000)
+            .time_to_live(Duration::from_secs(cache_ttl))
+            .time_to_idle(Duration::from_secs(cache_tti))
+            .build(),
+    };
 
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
         .route("/keysets", get(get_keysets))
         .route("/keys/:keyset_id", get(get_keyset_pubkeys))
-        .route("/swap", post(post_swap))
+        .route("/swap", post(cache_post_swap))
         .route("/mint/quote/bolt11", post(get_mint_bolt11_quote))
         .route(
             "/mint/quote/bolt11/:quote_id",
             get(get_check_mint_bolt11_quote),
         )
-        .route("/mint/bolt11", post(post_mint_bolt11))
+        .route("/mint/bolt11", post(cache_post_mint_bolt11))
         .route("/melt/quote/bolt11", post(get_melt_bolt11_quote))
         .route(
             "/melt/quote/bolt11/:quote_id",
             get(get_check_melt_bolt11_quote),
         )
-        .route("/melt/bolt11", post(post_melt_bolt11))
+        .route("/melt/bolt11", post(cache_post_melt_bolt11))
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
@@ -41,10 +57,4 @@ pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
     let mint_router = Router::new().nest("/v1", v1_router).with_state(state);
 
     Ok(mint_router)
-}
-
-/// CDK Mint State
-#[derive(Clone)]
-pub struct MintState {
-    mint: Arc<Mint>,
 }

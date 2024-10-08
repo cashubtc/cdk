@@ -92,6 +92,16 @@ impl PublicKey {
         SECP256K1.verify_schnorr(sig, &msg, &self.inner.x_only_public_key().0)?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub fn random() -> Self {
+        Self {
+            inner: secp256k1::PublicKey::from_secret_key(
+                &SECP256K1,
+                &secp256k1::SecretKey::new(&mut rand::thread_rng()),
+            ),
+        }
+    }
 }
 
 impl FromStr for PublicKey {

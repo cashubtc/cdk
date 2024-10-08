@@ -11,10 +11,10 @@ use crate::dhke::hash_to_curve;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::nut11::EnforceSigFlag;
 use crate::{
-    mint::SigFlag, nuts::Id, nuts::MeltQuoteState, types::LnKey, util::unix_time, Amount, Error,
+    amount::to_unit, mint::SigFlag, nuts::Id, nuts::MeltQuoteState, types::LnKey, util::unix_time,
+    Amount, Error,
 };
 
-use super::nut05::MeltBolt11Response;
 use super::{
     CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     Mint, PaymentMethod, PublicKey, State,
@@ -395,7 +395,7 @@ impl Mint {
     pub async fn melt_bolt11(
         &self,
         melt_request: &MeltBolt11Request,
-    ) -> Result<MeltBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response, Error> {
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
@@ -593,7 +593,7 @@ impl Mint {
                 err
             })?;
 
-        Ok(res.into())
+        Ok(res)
     }
 
     /// Process melt request marking [`Proofs`] as spent
