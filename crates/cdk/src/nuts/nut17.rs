@@ -2,24 +2,33 @@
 use super::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
 use crate::{
     nuts::ProofState,
-    subscription::{self, Index, Indexable, SubId},
+    subscription::{self, Index, Indexable},
 };
 use serde::{Deserialize, Serialize};
 
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Params {
-    kind: Kind,
-    filters: Vec<String>,
+    /// Kind
+    pub kind: Kind,
+    /// Filters
+    pub filters: Vec<String>,
+    /// Subscription Id
     #[serde(rename = "subId")]
-    id: SubId,
+    pub id: SubId,
 }
+
+pub use crate::subscription::SubId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
+/// Subscription response
 pub enum SubscriptionResponse {
+    /// Proof State
     ProofState(ProofState),
+    /// Melt Quote Bolt11 Response
     MeltQuoteBolt11Response(MeltQuoteBolt11Response),
+    /// Mint Quote Bolt11 Response
     MintQuoteBolt11Response(MintQuoteBolt11Response),
 }
 
@@ -70,11 +79,11 @@ impl Indexable for SubscriptionResponse {
 
 /// Kind
 pub enum Kind {
-    ///
+    /// Bolt 11 Melt Quote
     Bolt11MeltQuote,
-    ///
+    /// Bolt 11 Mint Quote
     Bolt11MintQuote,
-    ///
+    /// Proof State
     ProofState,
 }
 
@@ -84,11 +93,11 @@ impl AsRef<SubId> for Params {
     }
 }
 
-impl Into<Vec<Index<(String, Kind)>>> for Params {
-    fn into(self) -> Vec<Index<(String, Kind)>> {
-        self.filters
+impl From<Params> for Vec<Index<(String, Kind)>> {
+    fn from(val: Params) -> Self {
+        val.filters
             .iter()
-            .map(|filter| Index::from(((filter.clone(), self.kind), self.id.clone())))
+            .map(|filter| Index::from(((filter.clone(), val.kind), val.id.clone())))
             .collect()
     }
 }
@@ -132,7 +141,7 @@ mod test {
     #[tokio::test]
     async fn broadcast() {
         let manager = Manager::default();
-        let mut subscriptions = vec![
+        let mut subscriptions = [
             manager
                 .subscribe(Params {
                     kind: Kind::ProofState,

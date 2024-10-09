@@ -7,6 +7,8 @@ use std::{
 
 /// Indexable trait
 pub trait Indexable {
+    /// The type of the index, it is unknown and it is up to the Manager's
+    /// generic type
     type Type: PartialOrd + Ord + Send + Sync + Debug;
 
     /// To indexes
@@ -29,12 +31,12 @@ where
     id: super::SubId,
 }
 
-impl<T> Into<super::SubId> for &Index<T>
+impl<T> From<&Index<T>> for super::SubId
 where
     T: PartialOrd + Ord + Send + Sync + Debug,
 {
-    fn into(self) -> super::SubId {
-        self.id.clone()
+    fn from(val: &Index<T>) -> Self {
+        val.id.clone()
     }
 }
 

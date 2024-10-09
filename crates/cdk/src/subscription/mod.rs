@@ -86,7 +86,7 @@ where
         let index_storage = storage.read().await;
         for index in event.to_indexes() {
             for (key, sender) in index_storage.range(index.clone()..) {
-                if index.cmp_prefix(&key) != Ordering::Equal {
+                if index.cmp_prefix(key) != Ordering::Equal {
                     break;
                 }
                 let _ = sender.try_send((key.into(), event.clone()));
