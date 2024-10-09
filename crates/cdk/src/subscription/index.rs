@@ -106,3 +106,37 @@ impl Default for Unique {
         Self(COUNTER.fetch_add(1, Ordering::Relaxed))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_index_from_tuple() {
+        let sub_id = SubId::from("test_sub_id");
+        let prefix = "test_prefix";
+        let index: Index<&str> = Index::from((prefix, sub_id.clone()));
+        assert_eq!(index.prefix, "test_prefix");
+        assert_eq!(index.id, sub_id);
+    }
+
+    #[test]
+    fn test_index_cmp_prefix() {
+        let sub_id = SubId::from("test_sub_id");
+        let index1: Index<&str> = Index::from(("a", sub_id.clone()));
+        let index2: Index<&str> = Index::from(("b", sub_id.clone()));
+        assert_eq!(index1.cmp_prefix(&index2), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn test_sub_id_from_str() {
+        let sub_id = SubId::from("test_sub_id");
+        assert_eq!(sub_id.0, "test_sub_id");
+    }
+
+    #[test]
+    fn test_sub_id_deref() {
+        let sub_id = SubId::from("test_sub_id");
+        assert_eq!(&*sub_id, "test_sub_id");
+    }
+}

@@ -270,3 +270,29 @@ impl Deref for SubId {
         &self.0
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn test_active_subscription_drop() {
+        let (tx, rx) = mpsc::channel::<(SubId, ())>(10);
+        let sub_id = SubId::from("test_sub_id");
+        let indexes: Vec<Index<String>> = vec![Index::from(("test".to_string(), sub_id.clone()))];
+        let (drop_tx, mut drop_rx) = mpsc::channel(10);
+
+        {
+            let _active_subscription = ActiveSubscription {
+                sub_id: sub_id.clone(),
+                indexes,
+                receiver: rx,
+                drop: drop_tx,
+            };
+            // When it goes out of scope, it should notify
+        }
+        assert_eq!(drop_rx.try_recv().unwrap().0, sub_id); // it should have notified
+        assert!(tx.try_send(("foo".into(), ())).is_err()); // subscriber is dropped
+    }
+}
