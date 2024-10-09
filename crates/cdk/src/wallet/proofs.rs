@@ -307,7 +307,7 @@ fn select_least_proofs_over_amount(
                 continue;
             }
 
-            if let Some(current_sum) = dp[t as usize] {
+            if let Some(current_sum) = dp[t] {
                 let new_sum = current_sum + proof.amount;
                 let target_index = t + u64::from(proof.amount) as usize;
 
