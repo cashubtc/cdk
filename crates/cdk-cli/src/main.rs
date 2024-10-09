@@ -9,13 +9,14 @@ use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::client::HttpClient;
 use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk_nostr::wallet::WalletNostrDatabase;
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
+use nostr_sdk::{Keys, SecretKey, Url};
 use rand::Rng;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-use url::Url;
 
 mod sub_commands;
 
@@ -34,10 +35,16 @@ struct Cli {
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
+    /// Nostr secret key
+    #[arg(short, long)]
+    nsec: Option<SecretKey>,
+    /// Nostr relay url
+    #[arg(short, long)]
+    relay: Option<Url>,
     /// Logging level
     #[arg(short, long, default_value = "error")]
     log_level: Level,
-    /// NWS Proxy
+    /// Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
     #[command(subcommand)]
@@ -95,21 +102,36 @@ async fn main() -> Result<()> {
     fs::create_dir_all(&work_dir)?;
 
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
-        match args.engine.as_str() {
-            "sqlite" => {
-                let sql_path = work_dir.join("cdk-cli.sqlite");
-                let sql = WalletSqliteDatabase::new(&sql_path).await?;
-
-                sql.migrate().await;
-
-                Arc::new(sql)
+        match (args.nsec, args.relay) {
+            (Some(nsec), Some(relay)) => {
+                let keys = Keys::new(nsec);
+                let relays = vec![relay];
+                Arc::new(
+                    WalletNostrDatabase::remote(
+                        "cdk-cli".to_string(),
+                        keys.secret_key().clone(),
+                        relays,
+                    )
+                    .await?,
+                )
             }
-            "redb" => {
-                let redb_path = work_dir.join("cdk-cli.redb");
+            (None, None) => match args.engine.as_str() {
+                "sqlite" => {
+                    let sql_path = work_dir.join("cdk-cli.sqlite");
+                    let sql = WalletSqliteDatabase::new(&sql_path).await?;
 
-                Arc::new(WalletRedbDatabase::new(&redb_path)?)
-            }
-            _ => bail!("Unknown DB engine"),
+                    sql.migrate().await;
+
+                    Arc::new(sql)
+                }
+                "redb" => {
+                    let redb_path = work_dir.join("cdk-cli.redb");
+
+                    Arc::new(WalletRedbDatabase::new(&redb_path)?)
+                }
+                _ => bail!("Unknown DB engine"),
+            },
+            _ => bail!("Must provide both nsec and relay"),
         };
 
     let seed_path = work_dir.join("seed");
@@ -182,6 +204,7 @@ async fn main() -> Result<()> {
                 &multi_mint_wallet,
                 &mnemonic.to_seed_normalized(""),
                 localstore,
+                args.proxy,
                 sub_command_args,
             )
             .await
