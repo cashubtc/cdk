@@ -1,4 +1,5 @@
 //! Specific Subscription for the cdk crate
+use super::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
 use crate::{
     nuts::ProofState,
     subscription::{self, Index, Indexable, SubId},
@@ -14,12 +15,53 @@ pub struct Params {
     id: SubId,
 }
 
-impl Indexable for ProofState {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SubscriptionResponse {
+    ProofState(ProofState),
+    MeltQuoteBolt11Response(MeltQuoteBolt11Response),
+    MintQuoteBolt11Response(MintQuoteBolt11Response),
+}
+
+impl From<ProofState> for SubscriptionResponse {
+    fn from(proof_state: ProofState) -> SubscriptionResponse {
+        SubscriptionResponse::ProofState(proof_state)
+    }
+}
+
+impl From<MeltQuoteBolt11Response> for SubscriptionResponse {
+    fn from(melt_quote: MeltQuoteBolt11Response) -> SubscriptionResponse {
+        SubscriptionResponse::MeltQuoteBolt11Response(melt_quote)
+    }
+}
+
+impl From<MintQuoteBolt11Response> for SubscriptionResponse {
+    fn from(mint_quote: MintQuoteBolt11Response) -> SubscriptionResponse {
+        SubscriptionResponse::MintQuoteBolt11Response(mint_quote)
+    }
+}
+
+impl Indexable for SubscriptionResponse {
     type Type = (String, Kind);
 
     fn to_indexes(&self) -> Vec<Index<Self::Type>> {
-        // convert the event to a list of indexes
-        todo!()
+        match self {
+            SubscriptionResponse::ProofState(proof_state) => {
+                vec![Index::from((proof_state.y.to_hex(), Kind::ProofState))]
+            }
+            SubscriptionResponse::MeltQuoteBolt11Response(melt_quote) => {
+                vec![Index::from((
+                    melt_quote.quote.clone(),
+                    Kind::Bolt11MeltQuote,
+                ))]
+            }
+            SubscriptionResponse::MintQuoteBolt11Response(mint_quote) => {
+                vec![Index::from((
+                    mint_quote.quote.clone(),
+                    Kind::Bolt11MintQuote,
+                ))]
+            }
+        }
     }
 }
 
@@ -34,23 +76,23 @@ pub enum Kind {
     ProofState,
 }
 
-impl Into<SubId> for &Params {
-    fn into(self) -> SubId {
-        self.id.clone()
+impl AsRef<SubId> for Params {
+    fn as_ref(&self) -> &SubId {
+        &self.id
     }
 }
 
-impl Into<Vec<Index<(String, Kind)>>> for &Params {
+impl Into<Vec<Index<(String, Kind)>>> for Params {
     fn into(self) -> Vec<Index<(String, Kind)>> {
         self.filters
             .iter()
-            .map(|filter| Index::from((filter.clone(), self.kind)))
+            .map(|filter| Index::from(((filter.clone(), self.kind), self.id.clone())))
             .collect()
     }
 }
 
 /// Manager
-pub type Manager = subscription::Manager<ProofState, (String, Kind)>;
+pub type Manager = subscription::Manager<SubscriptionResponse, (String, Kind)>;
 
 #[cfg(test)]
 mod test {
@@ -74,8 +116,8 @@ mod test {
         // responsability of the implementor to make sure that SubId are unique
         // either globally or per client
         let subscriptions = vec![
-            manager.subscribe(&params, &params).await,
-            manager.subscribe(&params, &params).await,
+            manager.subscribe(params.clone()).await,
+            manager.subscribe(params).await,
         ];
         assert_eq!(2, manager.active_subscriptions());
         drop(subscriptions);
@@ -88,19 +130,27 @@ mod test {
     #[tokio::test]
     async fn broadcast() {
         let manager = Manager::default();
-        let params = Params {
-            kind: Kind::ProofState,
-            filters: vec!["x".to_string()],
-            id: "uno".into(),
-        };
-
-        // Although the same param is used, two subscriptions are created, that
-        // is because each index is unique, thanks to `Unique`, it is the
-        // responsability of the implementor to make sure that SubId are unique
-        // either globally or per client
         let mut subscriptions = vec![
-            manager.subscribe(&params, &params).await,
-            manager.subscribe(&params, &params).await,
+            manager
+                .subscribe(Params {
+                    kind: Kind::ProofState,
+                    filters: vec![
+                        "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
+                            .to_string(),
+                    ],
+                    id: "uno".into(),
+                })
+                .await,
+            manager
+                .subscribe(Params {
+                    kind: Kind::ProofState,
+                    filters: vec![
+                        "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
+                            .to_string(),
+                    ],
+                    id: "dos".into(),
+                })
+                .await,
         ];
 
         let event = ProofState {
@@ -112,10 +162,17 @@ mod test {
             witness: None,
         };
 
-        manager.broadcast(event);
+        manager.broadcast(event.into());
 
         sleep(Duration::from_millis(10)).await;
 
-        let x = subscriptions[1].try_recv().expect("valid message");
+        let (sub1, _) = subscriptions[0].try_recv().expect("valid message");
+        assert_eq!("uno", *sub1);
+
+        let (sub1, _) = subscriptions[1].try_recv().expect("valid message");
+        assert_eq!("dos", *sub1);
+
+        assert!(subscriptions[0].try_recv().is_err());
+        assert!(subscriptions[1].try_recv().is_err());
     }
 }

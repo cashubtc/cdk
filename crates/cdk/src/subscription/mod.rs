@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
+    fmt::Debug,
     ops::{Deref, DerefMut},
     str::FromStr,
     sync::{
@@ -40,7 +41,7 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 pub struct Manager<T, I>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
-    I: PartialOrd + Clone + Ord + Send + Sync + 'static,
+    I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
 {
     indexes: IndexTree<T, I>,
     unsubscription_sender: mpsc::Sender<(SubId, Vec<Index<I>>)>,
@@ -51,7 +52,7 @@ where
 impl<T, I> Default for Manager<T, I>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
-    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
+    I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
 {
     fn default() -> Self {
         let (sender, receiver) = mpsc::channel(DEFAULT_REMOVE_SIZE);
@@ -74,7 +75,7 @@ where
 impl<T, I> Manager<T, I>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
-    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
+    I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     #[inline]
     /// Broadcast an event to all listeners
@@ -84,6 +85,8 @@ where
     async fn broadcast_impl(storage: &IndexTree<T, I>, event: T) {
         let index_storage = storage.read().await;
         for index in event.to_indexes() {
+            println!("{:?}", index);
+            println!("{:?}", index_storage.keys().collect::<Vec<_>>());
             for (key, sender) in index_storage.range(index.clone()..) {
                 if index.cmp_prefix(&key) != Ordering::Equal {
                     break;
@@ -112,13 +115,13 @@ where
     }
 
     /// Subscribe to a specific event
-    pub async fn subscribe<SI: Into<SubId>, P: Into<Vec<Index<I>>>>(
+    pub async fn subscribe<P: AsRef<SubId> + Into<Vec<Index<I>>>>(
         &self,
-        sub_id: SI,
         params: P,
     ) -> ActiveSubscription<T, I> {
         let (sender, receiver) = mpsc::channel(10);
-        let indexes = params.into();
+        let sub_id: SubId = params.as_ref().clone();
+        let indexes: Vec<Index<I>> = params.into();
 
         let mut index_storage = self.indexes.write().await;
         for index in indexes.clone() {
@@ -169,7 +172,7 @@ where
 impl<T, I> Drop for Manager<T, I>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
-    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
+    I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         for task in self.background_tasks.drain(..) {
@@ -187,7 +190,7 @@ where
 pub struct ActiveSubscription<T, I>
 where
     T: Send + Sync,
-    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
+    I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     /// The subscription ID
     pub id: SubId,
@@ -199,7 +202,7 @@ where
 impl<T, I> Deref for ActiveSubscription<T, I>
 where
     T: Send + Sync,
-    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
+    I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     type Target = mpsc::Receiver<(SubId, T)>;
 
@@ -211,7 +214,7 @@ where
 impl<T, I> DerefMut for ActiveSubscription<T, I>
 where
     T: Indexable + Clone + Send + Sync + 'static,
-    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
+    I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.receiver
@@ -226,7 +229,7 @@ where
 impl<T, I> Drop for ActiveSubscription<T, I>
 where
     T: Send + Sync,
-    I: Clone + PartialOrd + Ord + Send + Sync + 'static,
+    I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         self.drop

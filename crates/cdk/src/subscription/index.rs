@@ -1,12 +1,13 @@
 use super::SubId;
 use std::{
+    fmt::Debug,
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 /// Indexable trait
 pub trait Indexable {
-    type Type: PartialOrd + Ord + Send + Sync;
+    type Type: PartialOrd + Ord + Send + Sync + Debug;
 
     /// To indexes
     fn to_indexes(&self) -> Vec<Index<Self::Type>>;
@@ -15,19 +16,22 @@ pub trait Indexable {
 #[derive(Debug, Ord, PartialOrd, PartialEq, Eq, Clone)]
 /// Index
 ///
-/// The Index is a sorted structure that
+/// The Index is a sorted structure that is used to quickly find matches
+///
+/// The counter is used to make sure each Index is unique, even if the prefix
+/// are the same, and also to make sure that ealier indexes matches first
 pub struct Index<T>
 where
-    T: PartialOrd + Ord + Send + Sync,
+    T: PartialOrd + Ord + Send + Sync + Debug,
 {
     prefix: T,
+    counter: Unique,
     id: super::SubId,
-    _unique: Unique,
 }
 
 impl<T> Into<super::SubId> for &Index<T>
 where
-    T: PartialOrd + Ord + Send + Sync,
+    T: PartialOrd + Ord + Send + Sync + Debug,
 {
     fn into(self) -> super::SubId {
         self.id.clone()
@@ -36,7 +40,7 @@ where
 
 impl<T> Deref for Index<T>
 where
-    T: PartialOrd + Ord + Send + Sync,
+    T: PartialOrd + Ord + Send + Sync + Debug,
 {
     type Target = T;
 
@@ -47,7 +51,7 @@ where
 
 impl<T> Index<T>
 where
-    T: PartialOrd + Ord + Send + Sync,
+    T: PartialOrd + Ord + Send + Sync + Debug,
 {
     /// Compare the
     pub fn cmp_prefix(&self, other: &Index<T>) -> std::cmp::Ordering {
@@ -57,26 +61,26 @@ where
 
 impl<T> From<(T, SubId)> for Index<T>
 where
-    T: PartialOrd + Ord + Send + Sync,
+    T: PartialOrd + Ord + Send + Sync + Debug,
 {
     fn from((prefix, id): (T, SubId)) -> Self {
         Self {
             prefix,
             id,
-            _unique: Default::default(),
+            counter: Default::default(),
         }
     }
 }
 
 impl<T> From<T> for Index<T>
 where
-    T: PartialOrd + Ord + Send + Sync,
+    T: PartialOrd + Ord + Send + Sync + Debug,
 {
     fn from(prefix: T) -> Self {
         Self {
             prefix,
             id: Default::default(),
-            _unique: Default::default(),
+            counter: Unique(0),
         }
     }
 }
@@ -90,6 +94,8 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// The prefix is used to leverage the BTree to find things quickly, but each
 /// entry/key must be unique, so we use this dummy type to make sure each Index
 /// is unique.
+///
+/// Unique is also used to make sure that the indexes are sorted by creation order
 #[derive(Debug, Ord, PartialOrd, PartialEq, Eq, Clone)]
 struct Unique(usize);
 
