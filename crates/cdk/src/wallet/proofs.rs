@@ -266,20 +266,36 @@ fn select_least_proofs_over_amount(
         amount,
         fees
     );
-    let max_sum = Amount::try_sum(proofs.iter().map(|p| p.amount))
+
+    // Filter proofs that are less than or equal to the amount and the next highest proof
+    let mut filtered_proofs: Vec<Proof> = proofs
+        .iter()
+        .filter(|p| p.amount <= amount)
+        .cloned()
+        .collect();
+
+    if let Some(next_highest_proof) = proofs
+        .iter()
+        .filter(|p| p.amount > amount)
+        .min_by_key(|p| p.amount)
+    {
+        filtered_proofs.push(next_highest_proof.clone());
+    }
+
+    let max_sum = Amount::try_sum(filtered_proofs.iter().map(|p| p.amount))
         .ok()?
         .checked_add(1.into())?;
-    if max_sum < amount || proofs.is_empty() || amount == Amount::ZERO {
+    if max_sum < amount || filtered_proofs.is_empty() || amount == Amount::ZERO {
         return None;
     }
     let table_len = u64::from(max_sum + 1.into()) as usize;
     let mut dp = vec![None; table_len];
-    let mut paths = vec![Vec::<Proof>::new(); table_len];
+    let mut paths = vec![Vec::<Proof>::with_capacity(0); table_len];
 
     dp[0] = Some(Amount::ZERO);
 
     // Fill DP table and track paths
-    for proof in proofs {
+    for proof in filtered_proofs {
         let max_other_amounts = u64::from(max_sum - proof.amount) as usize;
         for t in (0..=max_other_amounts).rev() {
             // Double check bounds
