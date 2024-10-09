@@ -18,16 +18,17 @@ use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
 use cdk::nuts::nut04;
 use cdk::nuts::nut04::{
     MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, QuoteState,
+    MintQuoteBolt11Response,
 };
 use cdk::nuts::nut05;
-use cdk::nuts::nut05::MeltMethodSettings;
+use cdk::nuts::nut05::{MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response};
 use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
 use cdk::nuts::nut11::P2PKWitness;
 use cdk::nuts::nut12::BlindSignatureDleq;
 use cdk::nuts::nut14::HTLCWitness;
 use cdk::nuts::nut15;
-use cdk::nuts::nut15::MppMethodSettings;
+use cdk::nuts::nut15::{Mpp, MppMethodSettings};
+use cdk::nuts::{MeltQuoteState, MintQuoteState};
 use moka::future::Cache;
 use router_handlers::*;
 use utoipa::OpenApi;
@@ -60,21 +61,25 @@ pub struct MintState {
         KeySet,
         KeySetInfo,
         KeySetVersion,
+        MeltQuoteBolt11Request,
+        MeltQuoteBolt11Response,
+        MeltQuoteState,
         MeltMethodSettings,
         MintBolt11Request,
         MintBolt11Response,
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response,
+        MintQuoteState,
         MintMethodSettings,
         MintVersion,
+        Mpp,
         MppMethodSettings,
         Nuts,
         P2PKWitness,
         PaymentMethod,
         PublicKey,
         SecretKey,
-        QuoteState,
         SupportedSettings,
         Witness,
         nut04::Settings,
@@ -89,7 +94,8 @@ pub struct MintState {
         get_mint_info,
         get_mint_bolt11_quote,
         get_check_mint_bolt11_quote,
-        post_mint_bolt11
+        post_mint_bolt11,
+        get_melt_bolt11_quote
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs

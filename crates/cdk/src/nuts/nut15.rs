@@ -10,6 +10,7 @@ use crate::Amount;
 /// Multi-part payment
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename = "lowercase")]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct Mpp {
     /// Amount
     pub amount: Amount,

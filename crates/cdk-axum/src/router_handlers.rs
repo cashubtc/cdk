@@ -205,6 +205,17 @@ pub async fn post_mint_bolt11(
     Ok(Json(res))
 }
 
+#[utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/melt/quote/bolt11",
+    request_body(content = MeltQuoteBolt11Request, description = "Quote params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Request a quote for melting tokens
 pub async fn get_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
