@@ -10,7 +10,7 @@ description = "Cashu CDK axum webserver"
 
 [dependencies]
 anyhow = "1"
-async-trait = "0.1"
+async-trait = "0.1.83"
 axum = { version = "0.6.20", features = ["ws"] }
 cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = ["mint"] }
 tokio = { version = "1", default-features = false, features = ["io-util"] }
