@@ -66,6 +66,8 @@ impl Indexable for SubscriptionResponse {
 }
 
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+
 /// Kind
 pub enum Kind {
     ///
@@ -174,5 +176,59 @@ mod test {
 
         assert!(subscriptions[0].try_recv().is_err());
         assert!(subscriptions[1].try_recv().is_err());
+    }
+
+    #[test]
+    fn parsing_request() {
+        let json = r#"{"kind":"proof_state","filters":["x"],"subId":"uno"}"#;
+        let params: Params = serde_json::from_str(json).expect("valid json");
+        assert_eq!(params.kind, Kind::ProofState);
+        assert_eq!(params.filters, vec!["x"]);
+        assert_eq!(*params.id, "uno");
+    }
+
+    #[tokio::test]
+    async fn json_test() {
+        let manager = Manager::default();
+        let mut subscription = manager
+            .subscribe::<Params>(
+                serde_json::from_str(r#"{"kind":"proof_state","filters":["02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"],"subId":"uno"}"#)
+                    .expect("valid json"),
+            )
+            .await;
+
+        manager.broadcast(
+            ProofState {
+                y: PublicKey::from_hex(
+                    "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
+                )
+                .expect("valid pk"),
+                state: State::Pending,
+                witness: None,
+            }
+            .into(),
+        );
+
+        // no one is listening for this event
+        manager.broadcast(
+            ProofState {
+                y: PublicKey::from_hex(
+                    "020000000000000000000000000000000000000000000000000000000000000001",
+                )
+                .expect("valid pk"),
+                state: State::Pending,
+                witness: None,
+            }
+            .into(),
+        );
+
+        sleep(Duration::from_millis(10)).await;
+        let (sub1, msg) = subscription.try_recv().expect("valid message");
+        assert_eq!("uno", *sub1);
+        assert_eq!(
+            r#"{"Y":"02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104","state":"PENDING","witness":null}"#,
+            serde_json::to_string(&msg).expect("valid json")
+        );
+        assert!(subscription.try_recv().is_err());
     }
 }

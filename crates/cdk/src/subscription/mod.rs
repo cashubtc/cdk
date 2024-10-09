@@ -85,8 +85,6 @@ where
     async fn broadcast_impl(storage: &IndexTree<T, I>, event: T) {
         let index_storage = storage.read().await;
         for index in event.to_indexes() {
-            println!("{:?}", index);
-            println!("{:?}", index_storage.keys().collect::<Vec<_>>());
             for (key, sender) in index_storage.range(index.clone()..) {
                 if index.cmp_prefix(&key) != Ordering::Equal {
                     break;
