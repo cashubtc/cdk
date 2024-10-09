@@ -226,17 +226,17 @@ pub struct Nuts {
     #[serde(rename = "14")]
     pub nut14: SupportedSettings,
     /// NUT15 Settings
-    #[serde(default)]
     #[serde(rename = "15")]
-    pub nut15: nut15::Settings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut15: Option<nut15::Settings>,
     /// NUT04 Settings
-    #[serde(default)]
     #[serde(rename = "18")]
-    pub nut18: nut04::Settings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut18: Option<nut04::Settings>,
     /// NUT05 Settings
-    #[serde(default)]
     #[serde(rename = "19")]
-    pub nut19: nut05::Settings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut19: Option<nut05::Settings>,
 }
 
 impl Nuts {
@@ -320,9 +320,9 @@ impl Nuts {
     /// Nut15 settings
     pub fn nut15(self, mpp_settings: Vec<MppMethodSettings>) -> Self {
         Self {
-            nut15: nut15::Settings {
+            nut15: Some(nut15::Settings {
                 methods: mpp_settings,
-            },
+            }),
             ..self
         }
     }
@@ -330,7 +330,7 @@ impl Nuts {
     /// Nut18 settings
     pub fn nut18(self, nut04_settings: nut04::Settings) -> Self {
         Self {
-            nut18: nut04_settings,
+            nut18: Some(nut04_settings),
             ..self
         }
     }
@@ -338,7 +338,7 @@ impl Nuts {
     /// Nut19 settings
     pub fn nut19(self, nut05_settings: nut05::Settings) -> Self {
         Self {
-            nut19: nut05_settings,
+            nut19: Some(nut05_settings),
             ..self
         }
     }

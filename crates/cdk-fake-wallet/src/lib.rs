@@ -125,6 +125,7 @@ impl MintLightning for FakeWallet {
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
         let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
+        self.wait_invoice_is_active.store(true, Ordering::SeqCst);
         Ok(Box::pin(receiver_stream.map(|label| label)))
     }
 

@@ -120,7 +120,11 @@ impl MintBuilder {
                 unit,
                 mpp: true,
             };
-            self.mint_info.nuts.nut15.methods.push(mpp_settings);
+            let mut mpp = self.mint_info.nuts.nut15.clone().unwrap_or_default();
+
+            mpp.methods.push(mpp_settings);
+
+            self.mint_info.nuts.nut15 = Some(mpp);
         }
 
         match method {
@@ -154,8 +158,12 @@ impl MintBuilder {
                     description: settings.invoice_description,
                 };
 
-                self.mint_info.nuts.nut18.methods.push(mint_method_settings);
-                self.mint_info.nuts.nut18.disabled = false;
+                let mut nut18_settings = self.mint_info.nuts.nut18.unwrap_or_default();
+
+                nut18_settings.methods.push(mint_method_settings);
+                nut18_settings.disabled = false;
+
+                self.mint_info.nuts.nut18 = Some(nut18_settings);
 
                 let melt_method_settings = MeltMethodSettings {
                     method,
@@ -163,8 +171,12 @@ impl MintBuilder {
                     min_amount: Some(limits.melt_min),
                     max_amount: Some(limits.melt_max),
                 };
-                self.mint_info.nuts.nut19.methods.push(melt_method_settings);
-                self.mint_info.nuts.nut19.disabled = false;
+
+                let mut nut19_settings = self.mint_info.nuts.nut19.unwrap_or_default();
+                nut19_settings.methods.push(melt_method_settings);
+                nut19_settings.disabled = false;
+
+                self.mint_info.nuts.nut19 = Some(nut19_settings);
             }
             _ => panic!("Unsupported unit"),
         }
@@ -177,10 +189,17 @@ impl MintBuilder {
     }
 
     /// Set quote ttl
-    pub fn set_quote_ttl(mut self, mint_ttl: u64, melt_ttl: u64) -> Self {
+    pub fn with_quote_ttl(mut self, mint_ttl: u64, melt_ttl: u64) -> Self {
         let quote_ttl = QuoteTTL { mint_ttl, melt_ttl };
 
         self.quote_ttl = Some(quote_ttl);
+
+        self
+    }
+
+    /// Set pubkey
+    pub fn with_pubkey(mut self, pubkey: cdk::nuts::PublicKey) -> Self {
+        self.mint_info.pubkey = Some(pubkey);
 
         self
     }
@@ -201,7 +220,7 @@ impl MintBuilder {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct MintMeltLimits {
     pub mint_min: Amount,
     pub mint_max: Amount,

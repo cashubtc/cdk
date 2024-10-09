@@ -15,11 +15,9 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{MeltQuote, Mint};
-use cdk::nuts::{
-    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
-    MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
-};
-use cdk::types::{LnKey, QuoteTTL};
+use cdk::nuts::{ContactInfo, CurrencyUnit, MeltQuoteState, MintVersion, PaymentMethod};
+use cdk::types::LnKey;
+use cdk_mintd::mint::{MintBuilder, MintMeltLimits};
 use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -63,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
         None => work_dir.join("config.toml"),
     };
 
+    let mut mint_builder = MintBuilder::new();
+
     let settings = config::Settings::new(&Some(config_file_arg));
 
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
@@ -80,6 +80,8 @@ async fn main() -> anyhow::Result<()> {
                 Arc::new(MintRedbDatabase::new(&redb_path)?)
             }
         };
+
+    mint_builder = mint_builder.with_localstore(localstore);
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -116,8 +118,14 @@ async fn main() -> anyhow::Result<()> {
         LnKey,
         Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     > = HashMap::new();
-    let mut supported_units = HashMap::new();
     let mut ln_routers = vec![];
+
+    let mint_melt_limits = MintMeltLimits {
+        mint_min: settings.ln.min_mint,
+        mint_max: settings.ln.max_mint,
+        melt_min: settings.ln.min_melt,
+        melt_max: settings.ln.max_melt,
+    };
 
     match settings.ln.ln_backend {
         LnBackend::Cln => {
@@ -126,109 +134,108 @@ async fn main() -> anyhow::Result<()> {
                 .clone()
                 .expect("Config checked at load that cln is some");
 
-            cln_settings
-                .setup(
-                    &mut ln_backends,
-                    &mut supported_units,
-                    &mut ln_routers,
-                    &settings,
-                )
+            let cln = cln_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
                 .await?;
+            let cln = Arc::new(cln);
+            let ln_key = LnKey {
+                unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Bolt11,
+            };
+            ln_backends.insert(ln_key, cln.clone());
+
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
+                cln,
+            )
         }
         LnBackend::Strike => {
             let strike_settings = settings.clone().strike.expect("Checked on config load");
 
-            strike_settings
-                .setup(
-                    &mut ln_backends,
-                    &mut supported_units,
-                    &mut ln_routers,
-                    &settings,
-                )
-                .await?
+            for unit in strike_settings
+                .clone()
+                .supported_units
+                .unwrap_or(vec![CurrencyUnit::Sat])
+            {
+                let strike = strike_settings
+                    .setup(&mut ln_routers, &settings, unit)
+                    .await?;
+
+                mint_builder = mint_builder.add_ln_backend(
+                    unit,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(strike),
+                );
+            }
         }
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
-            lnbits_settings
-                .setup(
-                    &mut ln_backends,
-                    &mut supported_units,
-                    &mut ln_routers,
-                    &settings,
-                )
-                .await?
+            let lnbits = lnbits_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
+                .await?;
+
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
+                Arc::new(lnbits),
+            );
         }
         LnBackend::Phoenixd => {
             let phd_settings = settings.clone().phoenixd.expect("Checked at config load");
-            phd_settings
-                .setup(
-                    &mut ln_backends,
-                    &mut supported_units,
-                    &mut ln_routers,
-                    &settings,
-                )
-                .await?
+            let phd = phd_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
+                .await?;
+
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
+                Arc::new(phd),
+            );
         }
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
-            lnd_settings
-                .setup(
-                    &mut ln_backends,
-                    &mut supported_units,
-                    &mut ln_routers,
-                    &settings,
-                )
-                .await?
+            let lnd = lnd_settings
+                .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
+                .await?;
+
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt11,
+                mint_melt_limits,
+                Arc::new(lnd),
+            );
         }
         LnBackend::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
 
-            fake_wallet
-                .setup(
-                    &mut ln_backends,
-                    &mut supported_units,
-                    &mut ln_routers,
-                    &settings,
-                )
-                .await?
+            for unit in fake_wallet.clone().supported_units {
+                let fake = fake_wallet
+                    .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
+                    .await?;
+
+                let fake = Arc::new(fake);
+
+                mint_builder = mint_builder.add_ln_backend(
+                    unit,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    fake.clone(),
+                );
+
+                mint_builder = mint_builder.add_ln_backend(
+                    unit,
+                    PaymentMethod::Bolt12,
+                    mint_melt_limits,
+                    fake.clone(),
+                );
+            }
         }
     };
-
-    let nut_04_methods: Vec<MintMethodSettings> = ln_backends
-        .iter()
-        .map(|(key, ln)| {
-            let ln_backend_settings = ln.get_settings();
-            MintMethodSettings {
-                method: key.method,
-                unit: key.unit,
-                min_amount: Some(settings.ln.min_mint),
-                max_amount: Some(settings.ln.max_mint),
-                description: ln_backend_settings.invoice_description,
-            }
-        })
-        .collect();
-
-    let nut_05_methods: Vec<MeltMethodSettings> = ln_backends
-        .keys()
-        .map(|key| MeltMethodSettings {
-            method: key.method,
-            unit: key.unit,
-            min_amount: Some(settings.ln.min_melt),
-            max_amount: Some(settings.ln.max_melt),
-        })
-        .collect();
-
-    let mpp_settings: Vec<MppMethodSettings> = ln_backends
-        .iter()
-        .map(|(key, ln)| {
-            let settings = ln.get_settings();
-            MppMethodSettings {
-                method: key.method,
-                unit: key.unit,
-                mpp: settings.mpp,
-            }
-        })
-        .collect();
 
     let support_bolt12_mint = ln_backends.iter().any(|(_k, ln)| {
         let settings = ln.get_settings();
@@ -240,91 +247,39 @@ async fn main() -> anyhow::Result<()> {
         settings.bolt12_melt
     });
 
-    let nut04_settings = nut04::Settings::new(nut_04_methods, false);
-    let nut05_settings = nut05::Settings::new(nut_05_methods, false);
-
-    let nuts = Nuts::new()
-        .nut04(nut04_settings)
-        .nut05(nut05_settings.clone())
-        .nut15(mpp_settings);
-
-    let nuts = match support_bolt12_mint {
-        true => {
-            let nut18_settings = MintMethodSettings {
-                method: PaymentMethod::Bolt12,
-                unit: CurrencyUnit::Sat,
-                min_amount: Some(settings.ln.min_mint),
-                max_amount: Some(settings.ln.max_mint),
-                description: true,
-            };
-
-            let nut18_settings = nut04::Settings {
-                methods: vec![nut18_settings],
-                disabled: false,
-            };
-            nuts.nut18(nut18_settings)
-        }
-        false => nuts,
-    };
-
-    let nuts = match support_bolt12_melt {
-        true => {
-            let nut19_settings = MeltMethodSettings {
-                method: PaymentMethod::Bolt12,
-                unit: CurrencyUnit::Sat,
-                min_amount: Some(settings.ln.min_melt),
-                max_amount: Some(settings.ln.max_melt),
-            };
-
-            let nut19_settings = nut05::Settings {
-                methods: vec![nut19_settings],
-                disabled: false,
-            };
-            nuts.nut19(nut19_settings)
-        }
-        false => nuts,
-    };
-
-    let mut mint_info = MintInfo::new()
-        .name(settings.mint_info.name)
-        .version(mint_version)
-        .description(settings.mint_info.description)
-        .nuts(nuts);
-
     if let Some(long_description) = &settings.mint_info.description_long {
-        mint_info = mint_info.long_description(long_description);
+        mint_builder = mint_builder.with_long_description(long_description.to_string());
     }
 
     if let Some(contact_info) = contact_info {
-        mint_info = mint_info.contact_info(contact_info);
+        for info in contact_info {
+            mint_builder = mint_builder.add_contact_info(info);
+        }
     }
 
     if let Some(pubkey) = settings.mint_info.pubkey {
-        mint_info = mint_info.pubkey(pubkey);
+        mint_builder = mint_builder.with_pubkey(pubkey);
     }
 
     if let Some(icon_url) = &settings.mint_info.icon_url {
-        mint_info = mint_info.icon_url(icon_url);
+        mint_builder = mint_builder.with_icon_url(icon_url.to_string());
     }
 
     if let Some(motd) = settings.mint_info.motd {
-        mint_info = mint_info.motd(motd);
+        mint_builder = mint_builder.with_motd(motd);
     }
 
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
-    let quote_ttl = QuoteTTL::new(10000, 10000);
+    mint_builder = mint_builder
+        .with_name(settings.mint_info.name)
+        .with_mint_url(settings.info.url)
+        .with_version(mint_version)
+        .with_description(settings.mint_info.description)
+        .with_quote_ttl(10000, 10000)
+        .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    let mint = Mint::new(
-        &settings.info.url,
-        &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        localstore,
-        ln_backends.clone(),
-        supported_units,
-    )
-    .await?;
+    let mint = mint_builder.build().await?;
 
     let mint = Arc::new(mint);
 

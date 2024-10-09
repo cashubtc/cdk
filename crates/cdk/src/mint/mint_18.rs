@@ -13,7 +13,12 @@ impl Mint {
         amount: Amount,
         unit: &CurrencyUnit,
     ) -> Result<(), Error> {
-        let nut18 = &self.mint_info.nuts.nut18;
+        let nut18 = &self
+            .mint_info
+            .nuts
+            .nut18
+            .as_ref()
+            .ok_or(Error::UnsupportedUnit)?;
 
         if nut18.disabled {
             return Err(Error::MintingDisabled);

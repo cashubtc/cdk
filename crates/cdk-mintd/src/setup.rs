@@ -6,13 +6,7 @@ use std::{
 use anyhow::{anyhow, bail};
 use axum::{async_trait, Router};
 
-use cdk::{
-    cdk_lightning::{self, MintLightning},
-    mint::FeeReserve,
-    mint_url::MintUrl,
-    nuts::{CurrencyUnit, PaymentMethod},
-    types::LnKey,
-};
+use cdk::{cdk_lightning::MintLightning, mint::FeeReserve, mint_url::MintUrl, nuts::CurrencyUnit};
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -25,28 +19,20 @@ use crate::{
 pub trait LnBackendSetup {
     async fn setup(
         &self,
-        ln_backends: &mut HashMap<
-            LnKey,
-            Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        >,
-        supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
         routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<()>;
+        unit: CurrencyUnit,
+    ) -> anyhow::Result<impl MintLightning>;
 }
 
 #[async_trait]
 impl LnBackendSetup for config::Cln {
     async fn setup(
         &self,
-        ln_backends: &mut HashMap<
-            LnKey,
-            Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        >,
-        supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
         _routers: &mut Vec<Router>,
-        settings: &Settings,
-    ) -> anyhow::Result<()> {
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_cln::Cln> {
         let cln_socket = expand_path(
             self.rpc_path
                 .to_str()
@@ -59,21 +45,9 @@ impl LnBackendSetup for config::Cln {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let cln = Arc::new(cdk_cln::Cln::new(cln_socket, fee_reserve, true, true).await?);
+        let cln = cdk_cln::Cln::new(cln_socket, fee_reserve, true, true).await?;
 
-        ln_backends.insert(
-            LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11),
-            cln.clone(),
-        );
-
-        if self.bolt12 {
-            ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12), cln);
-        }
-
-        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
-        supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-
-        Ok(())
+        Ok(cln)
     }
 }
 
@@ -81,51 +55,33 @@ impl LnBackendSetup for config::Cln {
 impl LnBackendSetup for config::Strike {
     async fn setup(
         &self,
-        ln_backends: &mut HashMap<
-            LnKey,
-            Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        >,
-        supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
         routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<()> {
+        unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_strike::Strike> {
         let api_key = &self.api_key;
 
-        let units = self
-            .supported_units
-            .clone()
-            .unwrap_or(vec![CurrencyUnit::Sat]);
+        // Channel used for strike web hook
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let webhook_endpoint = format!("/webhook/{}/invoice", unit);
 
-        for unit in units {
-            // Channel used for strike web hook
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-            let webhook_endpoint = format!("/webhook/{}/invoice", unit);
+        let mint_url: MintUrl = settings.info.url.parse()?;
+        let webhook_url = mint_url.join(&webhook_endpoint)?;
 
-            let mint_url: MintUrl = settings.info.url.parse()?;
-            let webhook_url = mint_url.join(&webhook_endpoint)?;
+        let strike = cdk_strike::Strike::new(
+            api_key.clone(),
+            unit,
+            Arc::new(Mutex::new(Some(receiver))),
+            webhook_url.to_string(),
+        )
+        .await?;
 
-            let strike = cdk_strike::Strike::new(
-                api_key.clone(),
-                unit,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url.to_string(),
-            )
+        let router = strike
+            .create_invoice_webhook(&webhook_endpoint, sender)
             .await?;
+        routers.push(router);
 
-            let router = strike
-                .create_invoice_webhook(&webhook_endpoint, sender)
-                .await?;
-            routers.push(router);
-
-            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-            ln_backends.insert(ln_key, Arc::new(strike));
-
-            let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
-            supported_units.insert(unit, (input_fee_ppk, 64));
-        }
-
-        Ok(())
+        Ok(strike)
     }
 }
 
@@ -133,14 +89,10 @@ impl LnBackendSetup for config::Strike {
 impl LnBackendSetup for config::LNbits {
     async fn setup(
         &self,
-        ln_backends: &mut HashMap<
-            LnKey,
-            Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        >,
-        supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
         routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<()> {
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_lnbits::LNbits> {
         let admin_api_key = &self.admin_api_key;
         let invoice_api_key = &self.invoice_api_key;
 
@@ -170,17 +122,9 @@ impl LnBackendSetup for config::LNbits {
             .create_invoice_webhook_router(webhook_endpoint, sender)
             .await?;
 
-        let unit = CurrencyUnit::Sat;
-
-        let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-        ln_backends.insert(ln_key, Arc::new(lnbits));
-
-        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
-        supported_units.insert(unit, (input_fee_ppk, 64));
         routers.push(router);
 
-        Ok(())
+        Ok(lnbits)
     }
 }
 
@@ -188,14 +132,10 @@ impl LnBackendSetup for config::LNbits {
 impl LnBackendSetup for config::Phoenixd {
     async fn setup(
         &self,
-        ln_backends: &mut HashMap<
-            LnKey,
-            Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        >,
-        supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
         routers: &mut Vec<Router>,
         settings: &Settings,
-    ) -> anyhow::Result<()> {
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_phoenixd::Phoenixd> {
         let api_password = &self.api_password;
 
         let api_url = &self.api_url;
@@ -229,31 +169,9 @@ impl LnBackendSetup for config::Phoenixd {
             .create_invoice_webhook(webhook_endpoint, sender)
             .await?;
 
-        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
-        supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-
-        let phd = Arc::new(phoenixd);
-        ln_backends.insert(
-            LnKey {
-                unit: CurrencyUnit::Sat,
-                method: PaymentMethod::Bolt11,
-            },
-            phd.clone(),
-        );
-
-        if self.bolt12 {
-            ln_backends.insert(
-                LnKey {
-                    unit: CurrencyUnit::Sat,
-                    method: PaymentMethod::Bolt12,
-                },
-                phd,
-            );
-        }
-
         routers.push(router);
 
-        Ok(())
+        Ok(phoenixd)
     }
 }
 
@@ -261,14 +179,10 @@ impl LnBackendSetup for config::Phoenixd {
 impl LnBackendSetup for config::Lnd {
     async fn setup(
         &self,
-        ln_backends: &mut HashMap<
-            LnKey,
-            Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        >,
-        supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
         _routers: &mut Vec<Router>,
-        settings: &Settings,
-    ) -> anyhow::Result<()> {
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_lnd::Lnd> {
         let address = &self.address;
         let cert_file = &self.cert_file;
         let macaroon_file = &self.macaroon_file;
@@ -286,17 +200,7 @@ impl LnBackendSetup for config::Lnd {
         )
         .await?;
 
-        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
-        supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-        ln_backends.insert(
-            LnKey {
-                unit: CurrencyUnit::Sat,
-                method: PaymentMethod::Bolt11,
-            },
-            Arc::new(lnd),
-        );
-
-        Ok(())
+        Ok(lnd)
     }
 }
 
@@ -304,54 +208,22 @@ impl LnBackendSetup for config::Lnd {
 impl LnBackendSetup for config::FakeWallet {
     async fn setup(
         &self,
-        ln_backends: &mut HashMap<
-            LnKey,
-            Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-        >,
-        supported_units: &mut HashMap<CurrencyUnit, (u64, u8)>,
         _router: &mut Vec<Router>,
-        settings: &Settings,
-    ) -> anyhow::Result<()> {
-        let units = settings
-            .clone()
-            .fake_wallet
-            .unwrap_or_default()
-            .supported_units;
-
-        let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_fake_wallet::FakeWallet> {
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
             percent_fee_reserve: self.fee_percent,
         };
 
-        for unit in units {
-            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-            let wallet = Arc::new(cdk_fake_wallet::FakeWallet::new(
-                fee_reserve,
-                HashMap::default(),
-                HashSet::default(),
-                0,
-            ));
-
-            ln_backends.insert(ln_key, wallet);
-
-            supported_units.insert(unit, (input_fee_ppk, 64));
-        }
-
-        let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt12);
-
-        let wallet = Arc::new(cdk_fake_wallet::FakeWallet::new(
+        let fake_wallet = cdk_fake_wallet::FakeWallet::new(
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
             0,
-        ));
+        );
 
-        ln_backends.insert(ln_key, wallet);
-
-        supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-
-        Ok(())
+        Ok(fake_wallet)
     }
 }
