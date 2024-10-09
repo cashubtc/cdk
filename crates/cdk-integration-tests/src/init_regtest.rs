@@ -7,7 +7,7 @@ use cdk::{
     cdk_database::{self, MintDatabase},
     cdk_lightning::MintLightning,
     mint::{FeeReserve, Mint},
-    nuts::{CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings},
+    nuts::{CurrencyUnit, MintInfo},
     types::{LnKey, QuoteTTL},
 };
 use cdk_cln::Cln as CdkCln;
@@ -131,13 +131,7 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
         percent_fee_reserve: 1.0,
     };
 
-    Ok(CdkCln::new(
-        rpc_path,
-        fee_reserve,
-        MintMethodSettings::default(),
-        MeltMethodSettings::default(),
-    )
-    .await?)
+    Ok(CdkCln::new(rpc_path, fee_reserve, true, true).await?)
 }
 
 pub async fn create_mint<D>(
@@ -222,6 +216,7 @@ where
         Arc::clone(&mint_arc),
         cache_time_to_live,
         cache_time_to_idle,
+        false,
     )
     .await
     .unwrap();

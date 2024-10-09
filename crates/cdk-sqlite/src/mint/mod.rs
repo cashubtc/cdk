@@ -8,6 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk::cdk_database::{self, MintDatabase};
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut05::QuoteState;
@@ -471,7 +472,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.id.to_string())
         .bind(quote.unit.to_string())
         .bind(u64::from(quote.amount) as i64)
-        .bind(quote.request)
+        .bind(serde_json::to_string(&quote.request)?)
         .bind(u64::from(quote.fee_reserve) as i64)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
@@ -1314,11 +1315,20 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
 
     let request_lookup_id = row_request_lookup.unwrap_or(row_request.clone());
 
+    let request: PaymentRequest = match serde_json::from_str(&row_request) {
+        Ok(request) => request,
+        Err(_) => {
+            let bolt11 = Bolt11Invoice::from_str(&row_request).map_err(|_| Error::InvalidBolt11)?;
+
+            PaymentRequest::Bolt11 { bolt11 }
+        }
+    };
+
     Ok(mint::MeltQuote {
         id: row_id,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
-        request: row_request,
+        request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
         state: QuoteState::from_str(&row_state)?,
         expiry: row_expiry as u64,

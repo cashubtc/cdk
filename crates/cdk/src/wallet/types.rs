@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
+use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PaymentMethod};
 use crate::Amount;
 
 /// Mint Quote Info
@@ -36,6 +36,8 @@ pub struct MeltQuote {
     pub amount: Amount,
     /// Quote Payment request e.g. bolt11
     pub request: String,
+    /// Payment Method
+    pub payment_method: PaymentMethod,
     /// Quote fee reserve
     pub fee_reserve: Amount,
     /// Quote state

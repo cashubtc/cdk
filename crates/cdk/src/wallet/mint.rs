@@ -84,6 +84,54 @@ impl Wallet {
         Ok(quote)
     }
 
+    /// Mint Bolt12
+    #[instrument(skip(self))]
+    pub async fn mint_bolt12_quote(
+        &self,
+        amount: Amount,
+        description: Option<String>,
+    ) -> Result<MintQuote, Error> {
+        let mint_url = self.mint_url.clone();
+        let unit = self.unit;
+
+        // If we have a description, we check that the mint supports it.
+        // If we have a description, we check that the mint supports it.
+        if description.is_some() {
+            let mint_method_settings = self
+                .localstore
+                .get_mint(mint_url.clone())
+                .await?
+                .ok_or(Error::IncorrectMint)?
+                .nuts
+                .nut04
+                .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
+                .ok_or(Error::UnsupportedUnit)?;
+
+            if !mint_method_settings.description {
+                return Err(Error::InvoiceDescriptionUnsupported);
+            }
+        }
+
+        let quote_res = self
+            .client
+            .post_mint_bolt12_quote(mint_url.clone().try_into()?, amount, unit, description)
+            .await?;
+
+        let quote = MintQuote {
+            mint_url,
+            id: quote_res.quote.clone(),
+            amount,
+            unit,
+            request: quote_res.request,
+            state: quote_res.state,
+            expiry: quote_res.expiry.unwrap_or(0),
+        };
+
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
+
     /// Check mint quote status
     #[instrument(skip(self, quote_id))]
     pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {

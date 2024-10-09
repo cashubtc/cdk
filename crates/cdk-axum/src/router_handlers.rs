@@ -5,9 +5,9 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
-    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MeltBolt12Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request,
+    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use cdk::Error;
@@ -92,6 +92,19 @@ pub async fn get_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
+pub async fn get_mint_bolt12_quote(
+    State(state): State<MintState>,
+    Json(payload): Json<MintQuoteBolt11Request>,
+) -> Result<Json<MintQuoteBolt11Response>, Response> {
+    let quote = state
+        .mint
+        .get_mint_bolt12_quote(payload)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(quote))
+}
+
 pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<String>,
@@ -109,6 +122,22 @@ pub async fn get_check_mint_bolt11_quote(
 }
 
 pub async fn post_mint_bolt11(
+    State(state): State<MintState>,
+    Json(payload): Json<MintBolt11Request>,
+) -> Result<Json<MintBolt11Response>, Response> {
+    let res = state
+        .mint
+        .process_mint_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process mint: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(res))
+}
+
+pub async fn post_mint_bolt12(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request>,
 ) -> Result<Json<MintBolt11Response>, Response> {
@@ -157,11 +186,29 @@ pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
-    let res = state
+    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+
+    Ok(Json(res))
+}
+
+pub async fn get_melt_bolt12_quote(
+    State(state): State<MintState>,
+    Json(payload): Json<MeltQuoteBolt12Request>,
+) -> Result<Json<MeltQuoteBolt11Response>, Response> {
+    let quote = state
         .mint
-        .melt_bolt11(&payload)
+        .get_melt_bolt12_quote(&payload)
         .await
         .map_err(into_response)?;
+
+    Ok(Json(quote))
+}
+
+pub async fn post_melt_bolt12(
+    State(state): State<MintState>,
+    Json(payload): Json<MeltBolt12Request>,
+) -> Result<Json<MeltQuoteBolt11Response>, Response> {
+    let res = state.mint.melt(&payload).await.map_err(into_response)?;
 
     Ok(Json(res))
 }

@@ -41,6 +41,9 @@ pub enum Error {
     /// Invalid Database Path
     #[error("Invalid database path")]
     InvalidDbPath,
+    /// Invalid bolt11
+    #[error("Invalid bolt11")]
+    InvalidBolt11,
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
