@@ -105,6 +105,14 @@ impl Id {
             id: bytes[1..].try_into()?,
         })
     }
+
+    #[cfg(test)]
+    pub fn random() -> Self {
+        Self {
+            version: KeySetVersion::Version00,
+            id: rand::random(),
+        }
+    }
 }
 
 impl TryFrom<Id> for u64 {

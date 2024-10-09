@@ -6,7 +6,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
-use cdk::wallet::Wallet;
+use cdk::wallet::{SelectProofsOptions, Wallet};
 use cdk::Amount;
 use rand::Rng;
 use tokio::time::sleep;
@@ -51,7 +51,11 @@ async fn main() {
     let proofs = wallet.get_proofs().await.unwrap();
 
     let selected = wallet
-        .select_proofs_to_send(Amount::from(64), proofs, false)
+        .select_proofs(
+            Amount::from(64),
+            proofs,
+            SelectProofsOptions::default().include_fees(false),
+        )
         .await
         .unwrap();
 
