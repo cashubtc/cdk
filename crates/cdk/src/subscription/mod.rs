@@ -46,7 +46,7 @@ where
     indexes: IndexTree<T, I>,
     unsubscription_sender: mpsc::Sender<(SubId, Vec<Index<I>>)>,
     active_subscriptions: Arc<AtomicUsize>,
-    background_tasks: Vec<JoinHandle<()>>,
+    background_subscription_remover: Option<JoinHandle<()>>,
 }
 
 impl<T, I> Default for Manager<T, I>
@@ -60,11 +60,11 @@ where
         let storage: IndexTree<T, I> = Arc::new(Default::default());
 
         Self {
-            background_tasks: vec![tokio::spawn(Self::remove_subscription(
+            background_subscription_remover: Some(tokio::spawn(Self::remove_subscription(
                 receiver,
                 storage.clone(),
                 active_subscriptions.clone(),
-            ))],
+            ))),
             unsubscription_sender: sender,
             active_subscriptions,
             indexes: storage,
@@ -173,8 +173,8 @@ where
     I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        for task in self.background_tasks.drain(..) {
-            task.abort();
+        if let Some(handler) = self.background_subscription_remover.take() {
+            handler.abort();
         }
     }
 }
