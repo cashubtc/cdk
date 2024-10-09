@@ -282,13 +282,17 @@ fn select_least_proofs_over_amount(
         filtered_proofs.push(next_highest_proof.clone());
     }
 
-    let max_sum = Amount::try_sum(filtered_proofs.iter().map(|p| p.amount))
-        .ok()?
-        .checked_add(1.into())?;
+    let max_sum = Amount::try_sum(filtered_proofs.iter().map(|p| p.amount)).ok()?;
     if max_sum < amount || filtered_proofs.is_empty() || amount == Amount::ZERO {
         return None;
     }
+
+    // Determine the size of the DP table, return None if it is too large
     let table_len = u64::from(max_sum + 1.into()) as usize;
+    if table_len > 1_000_000 {
+        return None;
+    }
+
     let mut dp = vec![None; table_len];
     let mut paths = vec![Vec::<Proof>::with_capacity(0); table_len];
 
@@ -303,9 +307,9 @@ fn select_least_proofs_over_amount(
                 continue;
             }
 
-            if let Some(current_sum) = dp[t as usize] {
+            if let Some(current_sum) = dp[t] {
                 let new_sum = current_sum + proof.amount;
-                let target_index = (t as u64 + u64::from(proof.amount)) as usize;
+                let target_index = t + u64::from(proof.amount) as usize;
 
                 // Double check new bounds
                 if target_index >= dp.len() || target_index >= paths.len() {
@@ -370,7 +374,7 @@ fn select_least_proofs_over_amount(
 
 /// Select proofs options
 pub struct SelectProofsOptions {
-    /// Allow inactive keys (if `true`, inactive keys will be selected first in largest order)
+    /// Prefer inactive keys (if `true`, inactive keys will be selected first in largest order)
     pub prefer_inactive_keys: bool,
     /// Include fees to add to the selection amount
     pub include_fees: bool,
@@ -381,19 +385,19 @@ pub struct SelectProofsOptions {
 impl SelectProofsOptions {
     /// Create new [`SelectProofsOptions`]
     pub fn new(
-        allow_inactive_keys: bool,
+        prefer_inactive_keys: bool,
         include_fees: bool,
         method: ProofSelectionMethod,
     ) -> Self {
         Self {
-            prefer_inactive_keys: allow_inactive_keys,
+            prefer_inactive_keys,
             include_fees,
             method,
         }
     }
 
-    /// Allow inactive keys (if `true`, inactive keys will be selected first in largest order)
-    pub fn allow_inactive_keys(mut self, allow_inactive_keys: bool) -> Self {
+    /// Prefer inactive keys (if `true`, inactive keys will be selected first in largest order)
+    pub fn prefer_inactive_keys(mut self, allow_inactive_keys: bool) -> Self {
         self.prefer_inactive_keys = allow_inactive_keys;
         self
     }
@@ -431,7 +435,7 @@ pub enum ProofSelectionMethod {
     Closest,
     /// The smallest value proofs first
     Smallest,
-    /// Select the least value of proofs equal to or over the specified amount
+    /// Select the least value of proofs equal to or over the specified amount (best-effort, may fallback to largest)
     Least,
 }
 
@@ -581,6 +585,29 @@ mod tests {
         );
         assert!(
             select_least_proofs_over_amount(&vec![], Amount::from(1), HashMap::new()).is_none()
+        );
+
+        // OOM protection
+        let proofs = vec![
+            Proof {
+                amount: Amount::from(1_048_576),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: Amount::from(2_097_152),
+                keyset_id,
+                secret: Secret::generate(),
+                c: PublicKey::random(),
+                witness: None,
+                dleq: None,
+            },
+        ];
+        assert!(
+            select_least_proofs_over_amount(&proofs, Amount::from(1), HashMap::new()).is_none()
         );
     }
 }

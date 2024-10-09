@@ -180,7 +180,7 @@ impl Wallet {
                 amount,
                 available_proofs,
                 SelectProofsOptions::default()
-                    .allow_inactive_keys(true)
+                    .prefer_inactive_keys(true)
                     .include_fees(include_fees),
             )
             .await?;
