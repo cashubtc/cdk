@@ -229,6 +229,21 @@ pub async fn get_melt_bolt11_quote(
     Ok(Json(quote))
 }
 
+#[utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/melt/quote/bolt11/{quote_id}",
+    params(
+        ("quote_id" = String, description = "The quote ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Get melt quote by ID
+///
+/// Get melt quote state.
 pub async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<String>,

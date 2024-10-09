@@ -95,7 +95,8 @@ pub struct MintState {
         get_mint_bolt11_quote,
         get_check_mint_bolt11_quote,
         post_mint_bolt11,
-        get_melt_bolt11_quote
+        get_melt_bolt11_quote,
+        get_check_melt_bolt11_quote
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs
