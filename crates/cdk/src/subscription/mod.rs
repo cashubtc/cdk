@@ -131,7 +131,7 @@ where
             .fetch_add(1, atomic::Ordering::Relaxed);
 
         ActiveSubscription {
-            id: sub_id.into(),
+            sub_id,
             receiver,
             indexes,
             drop: self.unsubscription_sender.clone(),
@@ -191,7 +191,7 @@ where
     I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     /// The subscription ID
-    pub id: SubId,
+    pub sub_id: SubId,
     indexes: Vec<Index<I>>,
     receiver: mpsc::Receiver<(SubId, T)>,
     drop: mpsc::Sender<(SubId, Vec<Index<I>>)>,
@@ -230,9 +230,9 @@ where
     I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        self.drop
-            .try_send((self.id.clone(), self.indexes.drain(..).collect()))
-            .unwrap();
+        let _ = self
+            .drop
+            .try_send((self.sub_id.clone(), self.indexes.drain(..).collect()));
     }
 }
 
