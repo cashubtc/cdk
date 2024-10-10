@@ -214,10 +214,12 @@ impl From<mint::MeltQuote> for MeltQuoteBolt11Response {
 
 /// Melt Bolt11 Request [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct MeltBolt11Request {
     /// Quote ID
     pub quote: String,
     /// Proofs
+    #[cfg_attr(feature = "mint", schema(value_type = Vec<Proof>))]
     pub inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero

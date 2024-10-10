@@ -260,6 +260,19 @@ pub async fn get_check_melt_bolt11_quote(
     Ok(Json(quote))
 }
 
+#[utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/melt/bolt11",
+    request_body(content = MeltBolt11Request, description = "Melt params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
+///
+/// Requests tokens to be destroyed and sent out via Lightning.
 pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request>,

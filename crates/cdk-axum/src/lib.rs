@@ -12,7 +12,9 @@ use axum::Router;
 use cdk::amount::Amount;
 use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::mint::Mint;
-use cdk::nuts::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Witness};
+use cdk::nuts::nut00::{
+    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Witness,
+};
 use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
 use cdk::nuts::nut04;
@@ -21,10 +23,12 @@ use cdk::nuts::nut04::{
     MintQuoteBolt11Response,
 };
 use cdk::nuts::nut05;
-use cdk::nuts::nut05::{MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response};
+use cdk::nuts::nut05::{
+    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+};
 use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
 use cdk::nuts::nut11::P2PKWitness;
-use cdk::nuts::nut12::BlindSignatureDleq;
+use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
 use cdk::nuts::nut14::HTLCWitness;
 use cdk::nuts::nut15;
 use cdk::nuts::nut15::{Mpp, MppMethodSettings};
@@ -61,6 +65,7 @@ pub struct MintState {
         KeySet,
         KeySetInfo,
         KeySetVersion,
+        MeltBolt11Request,
         MeltQuoteBolt11Request,
         MeltQuoteBolt11Response,
         MeltQuoteState,
@@ -78,6 +83,8 @@ pub struct MintState {
         Nuts,
         P2PKWitness,
         PaymentMethod,
+        Proof,
+        ProofDleq,
         PublicKey,
         SecretKey,
         SupportedSettings,
@@ -96,7 +103,8 @@ pub struct MintState {
         get_check_mint_bolt11_quote,
         post_mint_bolt11,
         get_melt_bolt11_quote,
-        get_check_melt_bolt11_quote
+        get_check_melt_bolt11_quote,
+        post_melt_bolt11
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs

@@ -53,12 +53,16 @@ pub struct BlindSignatureDleq {
 ///
 /// Defined in [NUT12](https://github.com/cashubtc/nuts/blob/main/12.md)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct ProofDleq {
     /// e
+    #[cfg_attr(feature = "mint", schema(value_type = String))]
     pub e: SecretKey,
     /// s
+    #[cfg_attr(feature = "mint", schema(value_type = String))]
     pub s: SecretKey,
     /// Blinding factor
+    #[cfg_attr(feature = "mint", schema(value_type = String))]
     pub r: SecretKey,
 }
 
