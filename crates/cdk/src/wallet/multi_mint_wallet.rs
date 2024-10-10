@@ -16,7 +16,7 @@ use super::types::SendKind;
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, SecretKey, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, Proof, SecretKey, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
@@ -115,6 +115,23 @@ impl MultiMintWallet {
         }
 
         Ok(balances)
+    }
+
+    /// List proofs.
+    #[instrument(skip(self))]
+    pub async fn list_proofs(
+        &self,
+        unit: &CurrencyUnit,
+    ) -> Result<BTreeMap<MintUrl, Vec<Proof>>, Error> {
+        let mut mint_proofs = BTreeMap::new();
+
+        for (WalletKey { mint_url, unit: u }, wallet) in self.wallets.lock().await.iter() {
+            if unit == u {
+                let wallet_proofs = wallet.get_proofs().await?;
+                mint_proofs.insert(mint_url.clone(), wallet_proofs);
+            }
+        }
+        Ok(mint_proofs)
     }
 
     /// Create cashu token

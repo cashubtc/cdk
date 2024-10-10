@@ -71,7 +71,7 @@ enum Commands {
     /// Update Mint Url
     UpdateMintUrl(sub_commands::update_mint_url::UpdateMintUrlSubCommand),
     /// Get proofs from mint.
-    MintProofs,
+    ListMintProofs,
 }
 
 #[tokio::main]
@@ -201,6 +201,8 @@ async fn main() -> Result<()> {
             sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)
                 .await
         }
-        Commands::MintProofs => sub_commands::mint_proofs::proofs(&multi_mint_wallet).await,
+        Commands::ListMintProofs => {
+            sub_commands::list_mint_proofs::proofs(&multi_mint_wallet).await
+        }
     }
 }
