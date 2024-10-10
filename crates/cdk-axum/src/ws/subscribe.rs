@@ -3,7 +3,7 @@ use super::{
     WsContext, WsError, JSON_RPC_VERSION,
 };
 use cdk::{
-    nuts::nut17::{Event, Params},
+    nuts::nut17::{NotificationPayload, Params},
     subscription::SubId,
 };
 
@@ -21,11 +21,11 @@ pub struct Notification {
     #[serde(rename = "subId")]
     pub sub_id: SubId,
 
-    pub payload: Event,
+    pub payload: NotificationPayload,
 }
 
-impl From<(SubId, Event)> for WsNotification<Notification> {
-    fn from((sub_id, payload): (SubId, Event)) -> Self {
+impl From<(SubId, NotificationPayload)> for WsNotification<Notification> {
+    fn from((sub_id, payload): (SubId, NotificationPayload)) -> Self {
         WsNotification {
             jsonrpc: JSON_RPC_VERSION.to_owned(),
             method: "subscribe".to_string(),

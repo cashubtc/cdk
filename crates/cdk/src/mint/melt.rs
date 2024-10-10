@@ -17,8 +17,8 @@ use crate::{
 };
 
 use super::{
-    CurrencyUnit, Event, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, Mint, PaymentMethod, PublicKey, State,
+    CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    Mint, NotificationPayload, PaymentMethod, PublicKey, State,
 };
 
 impl Mint {
@@ -133,7 +133,7 @@ impl Mint {
         let quote: MeltQuoteBolt11Response = quote.into();
 
         self.subscription_manager
-            .broadcast(Event::MeltQuoteBolt11Response(quote.clone()));
+            .broadcast(NotificationPayload::MeltQuoteBolt11Response(quote.clone()));
 
         Ok(quote)
     }

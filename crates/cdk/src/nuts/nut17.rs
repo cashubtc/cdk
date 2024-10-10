@@ -29,7 +29,7 @@ use super::BlindSignature;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 /// Subscription response
-pub enum Event {
+pub enum NotificationPayload {
     /// Proof State
     ProofState(ProofState),
     /// Melt Quote Bolt11 Response
@@ -38,39 +38,39 @@ pub enum Event {
     MintQuoteBolt11Response(MintQuoteBolt11Response),
 }
 
-impl From<ProofState> for Event {
-    fn from(proof_state: ProofState) -> Event {
-        Event::ProofState(proof_state)
+impl From<ProofState> for NotificationPayload {
+    fn from(proof_state: ProofState) -> NotificationPayload {
+        NotificationPayload::ProofState(proof_state)
     }
 }
 
-impl From<MeltQuoteBolt11Response> for Event {
-    fn from(melt_quote: MeltQuoteBolt11Response) -> Event {
-        Event::MeltQuoteBolt11Response(melt_quote)
+impl From<MeltQuoteBolt11Response> for NotificationPayload {
+    fn from(melt_quote: MeltQuoteBolt11Response) -> NotificationPayload {
+        NotificationPayload::MeltQuoteBolt11Response(melt_quote)
     }
 }
 
-impl From<MintQuoteBolt11Response> for Event {
-    fn from(mint_quote: MintQuoteBolt11Response) -> Event {
-        Event::MintQuoteBolt11Response(mint_quote)
+impl From<MintQuoteBolt11Response> for NotificationPayload {
+    fn from(mint_quote: MintQuoteBolt11Response) -> NotificationPayload {
+        NotificationPayload::MintQuoteBolt11Response(mint_quote)
     }
 }
 
-impl Indexable for Event {
+impl Indexable for NotificationPayload {
     type Type = (String, Kind);
 
     fn to_indexes(&self) -> Vec<Index<Self::Type>> {
         match self {
-            Event::ProofState(proof_state) => {
+            NotificationPayload::ProofState(proof_state) => {
                 vec![Index::from((proof_state.y.to_hex(), Kind::ProofState))]
             }
-            Event::MeltQuoteBolt11Response(melt_quote) => {
+            NotificationPayload::MeltQuoteBolt11Response(melt_quote) => {
                 vec![Index::from((
                     melt_quote.quote.clone(),
                     Kind::Bolt11MeltQuote,
                 ))]
             }
-            Event::MintQuoteBolt11Response(mint_quote) => {
+            NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
                 vec![Index::from((
                     mint_quote.quote.clone(),
                     Kind::Bolt11MintQuote,
@@ -113,10 +113,10 @@ impl From<Params> for Vec<Index<(String, Kind)>> {
 /// Subscription Manager
 ///
 /// This is the Subscription Manager for the cdk crate
-pub struct Manager(subscription::Manager<Event, (String, Kind)>);
+pub struct Manager(subscription::Manager<NotificationPayload, (String, Kind)>);
 
 impl Deref for Manager {
-    type Target = subscription::Manager<Event, (String, Kind)>;
+    type Target = subscription::Manager<NotificationPayload, (String, Kind)>;
 
     fn deref(&self) -> &Self::Target {
         &self.0

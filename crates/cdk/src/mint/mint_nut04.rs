@@ -3,8 +3,8 @@ use tracing::instrument;
 use crate::{nuts::MintQuoteState, types::LnKey, util::unix_time, Amount, Error};
 
 use super::{
-    nut04, CurrencyUnit, Event, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    PaymentMethod, PublicKey,
+    nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    NotificationPayload, PaymentMethod, PublicKey,
 };
 
 impl Mint {
@@ -117,7 +117,7 @@ impl Mint {
         let quote: MintQuoteBolt11Response = quote.into();
 
         self.subscription_manager
-            .broadcast(Event::MintQuoteBolt11Response(quote.clone()));
+            .broadcast(NotificationPayload::MintQuoteBolt11Response(quote.clone()));
 
         Ok(quote)
     }

@@ -1,6 +1,6 @@
 use crate::MintState;
 use axum::extract::ws::{Message, WebSocket};
-use cdk::nuts::nut17::{Event, SubId};
+use cdk::nuts::nut17::{NotificationPayload, SubId};
 use futures::{
     future::{self, Either},
     StreamExt,
@@ -53,7 +53,7 @@ pub use error::WsError;
 pub struct WsContext {
     state: MintState,
     subscriptions: HashMap<SubId, tokio::task::JoinHandle<()>>,
-    publisher: mpsc::Sender<(SubId, Event)>,
+    publisher: mpsc::Sender<(SubId, NotificationPayload)>,
 }
 
 /// Main function for websocket connections
