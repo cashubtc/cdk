@@ -1,10 +1,14 @@
 //! Specific Subscription for the cdk crate
-use super::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
 use crate::{
-    nuts::ProofState,
+    mint::{MeltQuote, MintQuote},
+    nuts::{
+        MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
+        ProofState,
+    },
     subscription::{self, Index, Indexable},
 };
 use serde::{Deserialize, Serialize};
+use std::ops::Deref;
 
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,10 +24,12 @@ pub struct Params {
 
 pub use crate::subscription::SubId;
 
+use super::BlindSignature;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 /// Subscription response
-pub enum SubscriptionResponse {
+pub enum Event {
     /// Proof State
     ProofState(ProofState),
     /// Melt Quote Bolt11 Response
@@ -32,39 +38,39 @@ pub enum SubscriptionResponse {
     MintQuoteBolt11Response(MintQuoteBolt11Response),
 }
 
-impl From<ProofState> for SubscriptionResponse {
-    fn from(proof_state: ProofState) -> SubscriptionResponse {
-        SubscriptionResponse::ProofState(proof_state)
+impl From<ProofState> for Event {
+    fn from(proof_state: ProofState) -> Event {
+        Event::ProofState(proof_state)
     }
 }
 
-impl From<MeltQuoteBolt11Response> for SubscriptionResponse {
-    fn from(melt_quote: MeltQuoteBolt11Response) -> SubscriptionResponse {
-        SubscriptionResponse::MeltQuoteBolt11Response(melt_quote)
+impl From<MeltQuoteBolt11Response> for Event {
+    fn from(melt_quote: MeltQuoteBolt11Response) -> Event {
+        Event::MeltQuoteBolt11Response(melt_quote)
     }
 }
 
-impl From<MintQuoteBolt11Response> for SubscriptionResponse {
-    fn from(mint_quote: MintQuoteBolt11Response) -> SubscriptionResponse {
-        SubscriptionResponse::MintQuoteBolt11Response(mint_quote)
+impl From<MintQuoteBolt11Response> for Event {
+    fn from(mint_quote: MintQuoteBolt11Response) -> Event {
+        Event::MintQuoteBolt11Response(mint_quote)
     }
 }
 
-impl Indexable for SubscriptionResponse {
+impl Indexable for Event {
     type Type = (String, Kind);
 
     fn to_indexes(&self) -> Vec<Index<Self::Type>> {
         match self {
-            SubscriptionResponse::ProofState(proof_state) => {
+            Event::ProofState(proof_state) => {
                 vec![Index::from((proof_state.y.to_hex(), Kind::ProofState))]
             }
-            SubscriptionResponse::MeltQuoteBolt11Response(melt_quote) => {
+            Event::MeltQuoteBolt11Response(melt_quote) => {
                 vec![Index::from((
                     melt_quote.quote.clone(),
                     Kind::Bolt11MeltQuote,
                 ))]
             }
-            SubscriptionResponse::MintQuoteBolt11Response(mint_quote) => {
+            Event::MintQuoteBolt11Response(mint_quote) => {
                 vec![Index::from((
                     mint_quote.quote.clone(),
                     Kind::Bolt11MintQuote,
@@ -103,7 +109,58 @@ impl From<Params> for Vec<Index<(String, Kind)>> {
 }
 
 /// Manager
-pub type Manager = subscription::Manager<SubscriptionResponse, (String, Kind)>;
+#[derive(Default)]
+/// Subscription Manager
+///
+/// This is the Subscription Manager for the cdk crate
+pub struct Manager(subscription::Manager<Event, (String, Kind)>);
+
+impl Deref for Manager {
+    type Target = subscription::Manager<Event, (String, Kind)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Manager {
+    /// Helper function to emit a MintQuoteBolt11Response status
+    pub fn mint_quote_bolt11_status(&self, quote: &MintQuote, new_state: MintQuoteState) {
+        self.broadcast(
+            MintQuoteBolt11Response {
+                quote: quote.id.clone(),
+                request: quote.request.clone(),
+                state: new_state,
+                paid: Some(new_state == MintQuoteState::Paid),
+                expiry: Some(quote.expiry),
+            }
+            .into(),
+        );
+    }
+
+    /// Helper function to emit a MeltQuoteBolt11Response status
+    pub fn melt_quote_status(
+        &self,
+        quote: &MeltQuote,
+        payment_preimage: Option<String>,
+        change: Option<Vec<BlindSignature>>,
+        new_state: MeltQuoteState,
+    ) {
+        self.broadcast(
+            MeltQuoteBolt11Response {
+                quote: quote.id.clone(),
+                payment_preimage,
+                change,
+                state: new_state,
+                paid: Some(new_state == MeltQuoteState::Paid),
+                expiry: quote.expiry,
+                amount: quote.amount,
+                fee_reserve: quote.fee_reserve,
+            }
+            .into(),
+        );
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -124,7 +181,7 @@ mod test {
 
         // Although the same param is used, two subscriptions are created, that
         // is because each index is unique, thanks to `Unique`, it is the
-        // responsability of the implementor to make sure that SubId are unique
+        // responsibility of the implementor to make sure that SubId are unique
         // either globally or per client
         let subscriptions = vec![
             manager.subscribe(params.clone()).await,

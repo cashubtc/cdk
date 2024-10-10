@@ -9,7 +9,6 @@ use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
 use cdk::mint::Mint;
-use cdk::nuts::nut17::Manager;
 use moka::future::Cache;
 use router_handlers::*;
 use std::time::Duration;
@@ -21,7 +20,6 @@ mod ws;
 #[derive(Clone)]
 pub struct MintState {
     mint: Arc<Mint>,
-    subscription_manager: Arc<Manager>,
     cache: Cache<String, String>,
 }
 
@@ -29,7 +27,6 @@ pub struct MintState {
 pub async fn create_mint_router(mint: Arc<Mint>, cache_ttl: u64, cache_tti: u64) -> Result<Router> {
     let state = MintState {
         mint,
-        subscription_manager: Default::default(),
         cache: Cache::builder()
             .max_capacity(10_000)
             .time_to_live(Duration::from_secs(cache_ttl))

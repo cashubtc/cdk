@@ -21,7 +21,7 @@ pub trait Indexable {
 /// The Index is a sorted structure that is used to quickly find matches
 ///
 /// The counter is used to make sure each Index is unique, even if the prefix
-/// are the same, and also to make sure that ealier indexes matches first
+/// are the same, and also to make sure that earlier indexes matches first
 pub struct Index<T>
 where
     T: PartialOrd + Ord + Send + Sync + Debug,
