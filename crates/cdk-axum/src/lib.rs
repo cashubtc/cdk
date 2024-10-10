@@ -28,6 +28,7 @@ use cdk::nuts::nut05::{
     MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
 };
 use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
+use cdk::nuts::nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
 use cdk::nuts::nut11::P2PKWitness;
 use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
 use cdk::nuts::nut14::HTLCWitness;
@@ -54,6 +55,8 @@ pub struct MintState {
         BlindedMessage,
         BlindSignature,
         BlindSignatureDleq,
+        CheckStateRequest,
+        CheckStateResponse,
         ContactInfo,
         CurrencyUnit,
         ErrorCode,
@@ -86,8 +89,10 @@ pub struct MintState {
         PaymentMethod,
         Proof,
         ProofDleq,
+        ProofState,
         PublicKey,
         SecretKey,
+        State,
         SupportedSettings,
         SwapRequest,
         SwapResponse,
@@ -108,7 +113,8 @@ pub struct MintState {
         get_melt_bolt11_quote,
         get_check_melt_bolt11_quote,
         post_melt_bolt11,
-        post_swap
+        post_swap,
+        post_check
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs

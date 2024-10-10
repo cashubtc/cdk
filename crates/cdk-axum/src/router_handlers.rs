@@ -286,6 +286,19 @@ pub async fn post_melt_bolt11(
     Ok(Json(res))
 }
 
+#[utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/checkstate",
+    request_body(content = CheckStateRequest, description = "State params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = CheckStateResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Check whether a proof is spent already or is pending in a transaction
+///
+/// Check whether a secret has been spent already or not.
 pub async fn post_check(
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
