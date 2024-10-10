@@ -17,6 +17,7 @@ use cdk::nuts::nut00::{
 };
 use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
+use cdk::nuts::nut03::{SwapRequest, SwapResponse};
 use cdk::nuts::nut04;
 use cdk::nuts::nut04::{
     MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
@@ -88,6 +89,8 @@ pub struct MintState {
         PublicKey,
         SecretKey,
         SupportedSettings,
+        SwapRequest,
+        SwapResponse,
         Witness,
         nut04::Settings,
         nut05::Settings,
@@ -104,7 +107,8 @@ pub struct MintState {
         post_mint_bolt11,
         get_melt_bolt11_quote,
         get_check_melt_bolt11_quote,
-        post_melt_bolt11
+        post_melt_bolt11,
+        post_swap
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs

@@ -311,6 +311,21 @@ pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintIn
     Ok(Json(state.mint.mint_info().clone().time(unix_time())))
 }
 
+#[utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/swap",
+    request_body(content = SwapRequest, description = "Swap params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = SwapResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Swap inputs for outputs of the same value
+///
+/// Requests a set of Proofs to be swapped for another set of BlindSignatures.
+///
+/// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
 pub async fn post_swap(
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
