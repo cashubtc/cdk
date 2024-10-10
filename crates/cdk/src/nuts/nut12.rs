@@ -44,8 +44,10 @@ pub enum Error {
 #[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
 pub struct BlindSignatureDleq {
     /// e
+    #[cfg_attr(feature = "mint", schema(value_type = String))]
     pub e: SecretKey,
     /// s
+    #[cfg_attr(feature = "mint", schema(value_type = String))]
     pub s: SecretKey,
 }
 

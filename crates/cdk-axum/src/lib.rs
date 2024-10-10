@@ -29,6 +29,7 @@ use cdk::nuts::nut05::{
 };
 use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
 use cdk::nuts::nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
+use cdk::nuts::nut09::{RestoreRequest, RestoreResponse};
 use cdk::nuts::nut11::P2PKWitness;
 use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
 use cdk::nuts::nut14::HTLCWitness;
@@ -91,6 +92,8 @@ pub struct MintState {
         ProofDleq,
         ProofState,
         PublicKey,
+        RestoreRequest,
+        RestoreResponse,
         SecretKey,
         State,
         SupportedSettings,
@@ -114,7 +117,8 @@ pub struct MintState {
         get_check_melt_bolt11_quote,
         post_melt_bolt11,
         post_swap,
-        post_check
+        post_check,
+        post_restore
     )
 )]
 /// OpenAPI spec for the mint's v1 APIs

@@ -354,6 +354,17 @@ pub async fn post_swap(
     Ok(Json(swap_response))
 }
 
+#[utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/restore",
+    request_body(content = RestoreRequest, description = "Restore params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = RestoreResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+)]
+/// Restores blind signature for a set of outputs.
 pub async fn post_restore(
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
