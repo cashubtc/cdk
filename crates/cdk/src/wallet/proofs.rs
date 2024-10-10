@@ -111,6 +111,16 @@ impl Wallet {
                     .collect::<Result<Vec<PublicKey>, _>>()?,
             )
             .await?;
+        let spent_ys: Vec<_> = spendable
+            .states
+            .iter()
+            .filter_map(|p| match p.state {
+                State::Spent => Some(p.y),
+                _ => None,
+            })
+            .collect();
+
+        self.localstore.update_proofs(vec![], spent_ys).await?;
 
         Ok(spendable.states)
     }
