@@ -48,4 +48,4 @@ pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 
-pub use nut17::{NotificationPayload, Manager as SubscriptionManager};
+pub use nut17::{NotificationPayload, PubSubManager};

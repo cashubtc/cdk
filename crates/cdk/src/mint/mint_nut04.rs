@@ -116,7 +116,7 @@ impl Mint {
 
         let quote: MintQuoteBolt11Response = quote.into();
 
-        self.subscription_manager
+        self.pubsub_manager
             .broadcast(NotificationPayload::MintQuoteBolt11Response(quote.clone()));
 
         Ok(quote)
@@ -214,7 +214,7 @@ impl Mint {
                 .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
                 .await?;
 
-            self.subscription_manager
+            self.pubsub_manager
                 .mint_quote_bolt11_status(&mint_quote, MintQuoteState::Paid);
         }
         Ok(())
@@ -283,7 +283,7 @@ impl Mint {
                 .await
                 .unwrap();
 
-            self.subscription_manager
+            self.pubsub_manager
                 .mint_quote_bolt11_status(&mint_quote, MintQuoteState::Paid);
 
             return Err(Error::BlindedMessageAlreadySigned);
@@ -312,7 +312,7 @@ impl Mint {
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
             .await?;
 
-        self.subscription_manager
+        self.pubsub_manager
             .mint_quote_bolt11_status(&mint_quote, MintQuoteState::Issued);
 
         Ok(nut04::MintBolt11Response {

@@ -4,7 +4,7 @@ use super::{
 };
 use cdk::{
     nuts::nut17::{NotificationPayload, Params},
-    subscription::SubId,
+    pub_sub::SubId,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -43,12 +43,7 @@ impl WsHandle for Method {
         if context.subscriptions.contains_key(&sub_id) {
             return Err(WsError::InvalidParams);
         }
-        let mut subscription = context
-            .state
-            .mint
-            .subscription_manager
-            .subscribe(self.0)
-            .await;
+        let mut subscription = context.state.mint.pubsub_manager.subscribe(self.0).await;
         let publisher = context.publisher.clone();
         context.subscriptions.insert(
             sub_id.clone(),

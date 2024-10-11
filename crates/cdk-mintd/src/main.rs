@@ -533,7 +533,7 @@ async fn check_pending_mint_quotes(
                     mint.localstore
                         .update_mint_quote_state(&quote.id, state)
                         .await?;
-                    mint.subscription_manager
+                    mint.pubsub_manager
                         .mint_quote_bolt11_status(&quote, state);
                 }
             }
@@ -630,7 +630,7 @@ async fn check_pending_melt_quotes(
                     .update_melt_quote_state(&pending_quote.id, pay_invoice_response.status)
                     .await?;
 
-                mint.subscription_manager.melt_quote_status(
+                mint.pubsub_manager.melt_quote_status(
                     &pending_quote,
                     None,
                     None,

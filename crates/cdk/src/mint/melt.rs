@@ -132,7 +132,7 @@ impl Mint {
 
         let quote: MeltQuoteBolt11Response = quote.into();
 
-        self.subscription_manager
+        self.pubsub_manager
             .broadcast(NotificationPayload::MeltQuoteBolt11Response(quote.clone()));
 
         Ok(quote)
@@ -394,7 +394,7 @@ impl Mint {
             .await?;
 
         if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
-            self.subscription_manager
+            self.pubsub_manager
                 .melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
         }
 
@@ -639,7 +639,7 @@ impl Mint {
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
             .await?;
 
-        self.subscription_manager.melt_quote_status(
+        self.pubsub_manager.melt_quote_status(
             &quote,
             payment_preimage.clone(),
             None,

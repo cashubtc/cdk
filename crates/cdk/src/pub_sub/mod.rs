@@ -1,6 +1,13 @@
-//! Subscription manager
+//! Publish–subscribe pattern.
 //!
-//! This is an attempt to implement [NUT-17](https://github.com/cashubtc/nuts/blob/main/17.md)
+//! This is a generic implementation for
+//! [NUT-17(https://github.com/cashubtc/nuts/blob/main/17.md) with a type
+//! agnostic Publish-subscribe manager.
+//!
+//! The manager has a method for subscribers to subscribe to events with a
+//! generic type that must be converted to a vector of indexes.
+//!
+//! Events are also generic that should implement the `Indexable` trait.
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,

@@ -5,7 +5,7 @@ use crate::{
         MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
         ProofState,
     },
-    subscription::{self, Index, Indexable},
+    pub_sub::{self, Index, Indexable},
 };
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
@@ -22,7 +22,7 @@ pub struct Params {
     pub id: SubId,
 }
 
-pub use crate::subscription::SubId;
+pub use crate::pub_sub::SubId;
 
 use super::BlindSignature;
 
@@ -110,20 +110,21 @@ impl From<Params> for Vec<Index<(String, Kind)>> {
 
 /// Manager
 #[derive(Default)]
-/// Subscription Manager
+/// Publish–subscribe manager
 ///
-/// This is the Subscription Manager for the cdk crate
-pub struct Manager(subscription::Manager<NotificationPayload, (String, Kind)>);
+/// Nut-17 implementation is system-wide and not only through the WebSocket, so
+/// it is possible for another part of the system to subscribe to events.
+pub struct PubSubManager(pub_sub::Manager<NotificationPayload, (String, Kind)>);
 
-impl Deref for Manager {
-    type Target = subscription::Manager<NotificationPayload, (String, Kind)>;
+impl Deref for PubSubManager {
+    type Target = pub_sub::Manager<NotificationPayload, (String, Kind)>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl Manager {
+impl PubSubManager {
     /// Helper function to emit a MintQuoteBolt11Response status
     pub fn mint_quote_bolt11_status(&self, quote: &MintQuote, new_state: MintQuoteState) {
         self.broadcast(
@@ -172,7 +173,7 @@ mod test {
 
     #[tokio::test]
     async fn active_and_drop() {
-        let manager = Manager::default();
+        let manager = PubSubManager::default();
         let params = Params {
             kind: Kind::ProofState,
             filters: vec!["x".to_string()],
@@ -197,7 +198,7 @@ mod test {
 
     #[tokio::test]
     async fn broadcast() {
-        let manager = Manager::default();
+        let manager = PubSubManager::default();
         let mut subscriptions = [
             manager
                 .subscribe(Params {
@@ -255,7 +256,7 @@ mod test {
 
     #[tokio::test]
     async fn json_test() {
-        let manager = Manager::default();
+        let manager = PubSubManager::default();
         let mut subscription = manager
             .subscribe::<Params>(
                 serde_json::from_str(r#"{"kind":"proof_state","filters":["02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"],"subId":"uno"}"#)
