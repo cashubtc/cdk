@@ -1,3 +1,11 @@
+# eTIMEbank
+
+` work in progress `
+
+# cdk README.md
+
+```
+
 > **Warning**
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind loosing.
 
@@ -86,6 +94,8 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 [08]: https://github.com/cashubtc/nuts/blob/main/08.md
 [09]: https://github.com/cashubtc/nuts/blob/main/09.md
 [10]: https://github.com/cashubtc/nuts/blob/main/10.md
+
+```
 [11]: https://github.com/cashubtc/nuts/blob/main/11.md
 [12]: https://github.com/cashubtc/nuts/blob/main/12.md
 [13]: https://github.com/cashubtc/nuts/blob/main/13.md
