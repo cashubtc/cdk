@@ -10,7 +10,7 @@ This project will be submitted to a [Bitcoin++ Hackathon](https://btcplusplus.de
 
 This project by design not include any Bitcoin elements and does not use satoshis as a unit, it is an exercise in applying a [Chaumian blinded signatures scheme](https://wikipedia.org/wiki/Blind_signature) to the concept of [Time Banking](https://en.wikipedia.org/wiki/Time_banking) 
 
-To know more about the design choices, what time banking is, and the reason why I made this project please refer to the [context.md document within this repository](https://github.com/0xg4tt0/eTIMEbank/context.md)
+To know more about the design choices, what time banking is, and the reason why I made this project please refer to the [context.md document within this repository](https://github.com/0xg4tt0/eTIMEbank/blob/main/context.md)
 
 ## TO DO
 
