@@ -2,28 +2,35 @@
 
 ` work in progress `
 
-This is a **Proof of Concept** fork of the [Cashu Development Kit (cdk)](https://github.com/cashubtc/cdk) for submission to a [Bitcoin++ Hackathon](https://btcplusplus.dev/) for a ecash based time-banking application that runs both the wallet client and mint logic. 
+This is a **Proof of Concept** fork of the [Cashu Development Kit (cdk)](https://github.com/cashubtc/cdk) 
 
-This project by design not include any Bitcoin elements and does not use satoshis as a unit, it is an exercise in applying a [Chaumian blinded signatures scheme](https://wikipedia.org/wiki/Blind_signature) to the concept of [Time Banking](https://en.wikipedia.org/wiki/Time_banking) - to know more about these choices see the [context.md document within this repository](https://github.com/LINKMISSING)
+Concept is the creation of a FOSS ecash based time-banking application that runs both the wallet client and mint logic for offline and offgrid communities.
+
+This project will be submitted to a [Bitcoin++ Hackathon](https://btcplusplus.dev/) but you are free to fork it and make it your own. PRs welcome.
+
+This project by design not include any Bitcoin elements and does not use satoshis as a unit, it is an exercise in applying a [Chaumian blinded signatures scheme](https://wikipedia.org/wiki/Blind_signature) to the concept of [Time Banking](https://en.wikipedia.org/wiki/Time_banking) 
+
+To know more about the design choices, what time banking is, and the reason why I made this project please refer to the [context.md document within this repository](https://github.com/LINKMISSING)
 
 ## TO DO
 
-- [ ] fork cdk and write project description / context.md
+- [ ] fork cdk and write project description
+- [ ] write context.md
 - [ ] remove Lightning Network logic:
- - [ ] cdk-lnbits
- - [ ] cdk-lnd
- - [ ] cdk-phoenixd
- - [ ] cdk-strike
- - [ ] ...
+  - [ ] cdk-lnbits
+  - [ ] cdk-lnd
+  - [ ] cdk-phoenixd
+  - [ ] cdk-strike
+  - [ ] ...
 - [ ] remove Bitcoin logic:
- - [ ] multi-mint logic
- - [ ] channel opening/closing
- - [ ] ...
+  - [ ] multi-mint logic
+  - [ ] channel opening/closing
+  - [ ] ...
 - [ ] replace 'sat' with 'time'
- - [ ] define 'time'
- - [ ] integrate logic to check real time and 'ecash 'time'
- - [ ] melt & mint logic remains the same
- - [ ] ...
+  - [ ] define 'time'
+  - [ ] integrate logic to check real time and 'ecash 'time'
+  - [ ] melt & mint logic remains the same
+  - [ ] ...
 - [ ] testing
 - [ ] deploy on 2 devices
 - [ ] test sharing 'time'
@@ -38,20 +45,24 @@ This project by design not include any Bitcoin elements and does not use satoshi
 ## Specifications
 
 *meow*
+*meow*
 
 
 ## Relevnt NUTs
 
+*meow*
 *meow*
 
 
 ## Feature Request / Future
 
 *meow*
+*meow*
 
 
 ## How to deploy / build
 
+*meow*
 *meow*
 
 
