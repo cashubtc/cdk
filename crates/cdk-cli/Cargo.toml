@@ -16,7 +16,6 @@ anyhow = "1"
 bip39 = "2.0"
 cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = ["wallet"]}
 cdk-redb = { path = "../cdk-redb", version = "0.4.0", default-features = false, features = ["wallet"] }
-cdk-sqlite = { path = "../cdk-sqlite", version = "0.4.0", default-features = false, features = ["wallet"] }
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
@@ -25,8 +24,4 @@ tracing = { version = "0.1", default-features = false, features = ["attributes",
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 rand = "0.8.5"
 home = "0.5.5"
-nostr-sdk = { version = "0.33.0", default-features = false, features = [
-    "nip04",
-    "nip44"
-]}
 url = "2.3"
