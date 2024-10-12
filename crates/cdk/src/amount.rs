@@ -138,7 +138,11 @@ impl Default for &Amount {
 
 impl fmt::Display for Amount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        if let Some(width) = f.width() {
+            write!(f, "{:width$}", self.0, width = width)
+        } else {
+            write!(f, "{}", self.0)
+        }
     }
 }
 

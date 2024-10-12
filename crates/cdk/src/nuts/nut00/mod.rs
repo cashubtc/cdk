@@ -378,11 +378,16 @@ impl FromStr for CurrencyUnit {
 
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CurrencyUnit::Sat => write!(f, "sat"),
-            CurrencyUnit::Msat => write!(f, "msat"),
-            CurrencyUnit::Usd => write!(f, "usd"),
-            CurrencyUnit::Eur => write!(f, "eur"),
+        let s = match self {
+            CurrencyUnit::Sat => "sat",
+            CurrencyUnit::Msat => "msat",
+            CurrencyUnit::Usd => "usd",
+            CurrencyUnit::Eur => "eur",
+        };
+        if let Some(width) = f.width() {
+            write!(f, "{:width$}", s, width = width)
+        } else {
+            write!(f, "{}", s)
         }
     }
 }
