@@ -2,7 +2,64 @@
 
 ` work in progress `
 
-# cdk README.md
+This is a **Proof of Concept** fork of the [Cashu Development Kit (cdk)](https://github.com/cashubtc/cdk) for submission to a [Bitcoin++ Hackathon](https://btcplusplus.dev/) for a ecash based time-banking application that runs both the wallet client and mint logic. 
+
+This project by design not include any Bitcoin elements and does not use satoshis as a unit, it is an exercise in applying a [Chaumian blinded signatures scheme](https://wikipedia.org/wiki/Blind_signature) to the concept of [Time Banking](https://en.wikipedia.org/wiki/Time_banking) - to know more about these choices see the [context.md document within this repository](https://github.com/LINKMISSING)
+
+## TO DO
+
+- [ ] fork cdk and write project description / context.md
+- [ ] remove Lightning Network logic:
+ - [ ] cdk-lnbits
+ - [ ] cdk-lnd
+ - [ ] cdk-phoenixd
+ - [ ] cdk-strike
+ - [ ] ...
+- [ ] remove Bitcoin logic:
+ - [ ] multi-mint logic
+ - [ ] channel opening/closing
+ - [ ] ...
+- [ ] replace 'sat' with 'time'
+ - [ ] define 'time'
+ - [ ] integrate logic to check real time and 'ecash 'time'
+ - [ ] melt & mint logic remains the same
+ - [ ] ...
+- [ ] testing
+- [ ] deploy on 2 devices
+- [ ] test sharing 'time'
+- [ ] 
+- [ ] 
+- [ ] slap together some slides
+- [ ] drink milk
+- [ ] profit ?
+
+
+
+## Specifications
+
+*meow*
+
+
+## Relevnt NUTs
+
+*meow*
+
+
+## Feature Request / Future
+
+*meow*
+
+
+## How to deploy / build
+
+*meow*
+
+
+## License
+
+Code is under the [MIT License](LICENSE)
+
+# Archive of the original README.md from cdk fork
 
 ```
 
