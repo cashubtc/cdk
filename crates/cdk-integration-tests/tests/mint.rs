@@ -6,6 +6,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint::MintQuote;
+use cdk::nuts::nut17::Params;
 use cdk::nuts::{
     CurrencyUnit, Id, MintBolt11Request, MintInfo, Nuts, PreMintSecrets, Proofs, SecretKey,
     SpendingConditions, SwapRequest,
@@ -15,7 +16,9 @@ use cdk::util::unix_time;
 use cdk::Mint;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::OnceCell;
+use tokio::time::sleep;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
 
@@ -165,6 +168,31 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
             }
         },
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+pub async fn test_notification_p2pk_swap() -> Result<()> {
+    let mint = initialize().await;
+
+    let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
+    let keyset_id = Id::from(&keys);
+
+    let mut subscription = mint
+        .pubsub_manager
+        .subscribe(Params {
+            kind: cdk::nuts::nut17::Kind::ProofState,
+            filters: vec![keyset_id.to_string()],
+            id: "uno".into(),
+        })
+        .await;
+
+    let _proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+
+    sleep(Duration::from_millis(10)).await;
+
+    println!("{:?}", subscription.try_recv().expect("valid message"));
 
     Ok(())
 }
