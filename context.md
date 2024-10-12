@@ -1,6 +1,6 @@
 `work in progress`
 
-# Context for the Proof of Concept eTIMEbank implementation of ecash
+# Context for the Proof of Concept eTIMEbank
 
 
 #### Contents:
