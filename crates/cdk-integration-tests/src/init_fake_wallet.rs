@@ -9,7 +9,7 @@ use cdk::{
     cdk_database::{self, MintDatabase},
     cdk_lightning::MintLightning,
     mint::FeeReserve,
-    nuts::{CurrencyUnit, MeltMethodSettings, MintMethodSettings},
+    nuts::CurrencyUnit,
     types::LnKey,
 };
 use cdk_fake_wallet::FakeWallet;
@@ -46,14 +46,7 @@ where
         percent_fee_reserve: 1.0,
     };
 
-    let fake_wallet = FakeWallet::new(
-        fee_reserve,
-        MintMethodSettings::default(),
-        MeltMethodSettings::default(),
-        HashMap::default(),
-        HashSet::default(),
-        0,
-    );
+    let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
     ln_backends.insert(
         LnKey::new(CurrencyUnit::Sat, cdk::nuts::PaymentMethod::Bolt11),
@@ -65,9 +58,10 @@ where
     let cache_tti = 3600;
     let mint_arc = Arc::new(mint);
 
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc), cache_ttl, cache_tti)
-        .await
-        .unwrap();
+    let v1_service =
+        cdk_axum::create_mint_router(Arc::clone(&mint_arc), cache_ttl, cache_tti, false)
+            .await
+            .unwrap();
 
     let mint_service = Router::new()
         .merge(v1_service)

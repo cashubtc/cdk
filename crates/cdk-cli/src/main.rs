@@ -75,7 +75,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
-    let default_filter = args.log_level;
+    let default_filter = "debug";
 
     let sqlx_filter = "sqlx=warn";
 

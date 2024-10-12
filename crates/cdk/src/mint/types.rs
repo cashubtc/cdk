@@ -1,5 +1,7 @@
 //! Mint Types
 
+use lightning::offers::offer::Offer;
+use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -64,7 +66,7 @@ pub struct MeltQuote {
     /// Quote amount
     pub amount: Amount,
     /// Quote Payment request e.g. bolt11
-    pub request: String,
+    pub request: PaymentRequest,
     /// Quote fee reserve
     pub fee_reserve: Amount,
     /// Quote state
@@ -80,7 +82,7 @@ pub struct MeltQuote {
 impl MeltQuote {
     /// Create new [`MeltQuote`]
     pub fn new(
-        request: String,
+        request: PaymentRequest,
         unit: CurrencyUnit,
         amount: Amount,
         fee_reserve: Amount,
@@ -100,5 +102,47 @@ impl MeltQuote {
             payment_preimage: None,
             request_lookup_id,
         }
+    }
+}
+
+/// Payment request
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentRequest {
+    /// Bolt11 Payment
+    Bolt11 {
+        /// Bolt11 invoice
+        bolt11: Bolt11Invoice,
+    },
+    /// Bolt12 Payment
+    Bolt12 {
+        /// Offer
+        #[serde(with = "offer_serde")]
+        offer: Box<Offer>,
+        /// Invoice
+        invoice: Option<String>,
+    },
+}
+
+mod offer_serde {
+    use super::Offer;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+    use std::str::FromStr;
+
+    pub fn serialize<S>(offer: &Offer, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = offer.to_string();
+        serializer.serialize_str(&s)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Box<Offer>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Box::new(Offer::from_str(&s).map_err(|_| {
+            serde::de::Error::custom("Invalid Bolt12 Offer")
+        })?))
     }
 }

@@ -21,7 +21,7 @@ use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
-use crate::mint::migrations::{migrate_02_to_03, migrate_03_to_04};
+use crate::mint::migrations::{migrate_02_to_03, migrate_03_to_04, migrate_04_to_05};
 
 mod migrations;
 
@@ -42,7 +42,7 @@ const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
 
 const MELT_REQUESTS: TableDefinition<&str, (&str, &str)> = TableDefinition::new("melt_requests");
 
-const DATABASE_VERSION: u32 = 4;
+const DATABASE_VERSION: u32 = 5;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
@@ -90,6 +90,10 @@ impl MintRedbDatabase {
 
                             if current_file_version == 3 {
                                 current_file_version = migrate_03_to_04(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 4 {
+                                current_file_version = migrate_04_to_05(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
