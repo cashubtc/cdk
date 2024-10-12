@@ -11,31 +11,22 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{FeeReserve, MeltQuote, Mint};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MeltQuoteState, MintInfo,
-    MintMethodSettings, MintVersion, MppMethodSettings, Nuts, PaymentMethod,
+    nut04, nut05, ContactInfo, MeltMethodSettings, MeltQuoteState, MintInfo, MintMethodSettings,
+    MintVersion, MppMethodSettings, Nuts, PaymentMethod,
 };
 use cdk::types::{LnKey, QuoteTTL};
-use cdk_cln::Cln;
 use cdk_fake_wallet::FakeWallet;
-use cdk_lnbits::LNbits;
-use cdk_lnd::Lnd;
-use cdk_phoenixd::Phoenixd;
 use cdk_redb::MintRedbDatabase;
-use cdk_sqlite::MintSqliteDatabase;
-use cdk_strike::Strike;
 use clap::Parser;
 use cli::CLIArgs;
-use config::{DatabaseEngine, LnBackend};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
-use url::Url;
 
 mod cli;
 mod config;
@@ -125,26 +116,26 @@ async fn main() -> anyhow::Result<()> {
     let mut supported_units = HashMap::new();
     let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
 
-    let mint_url: MintUrl = settings.info.url.parse()?;
+    let _mint_url: MintUrl = settings.info.url.parse()?;
     // Consider: we probably need only one unit, so this element might be redundant
     let units = settings.fake_wallet.unwrap_or_default().supported_units;
 
-            for unit in units {
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
+    for unit in units {
+        let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
 
-                let wallet = Arc::new(FakeWallet::new(
-                    fee_reserve.clone(),
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
-                    HashMap::default(),
-                    HashSet::default(),
-                    0,
-                ));
+        let wallet = Arc::new(FakeWallet::new(
+            fee_reserve.clone(),
+            MintMethodSettings::default(),
+            MeltMethodSettings::default(),
+            HashMap::default(),
+            HashSet::default(),
+            0,
+        ));
 
-                ln_backends.insert(ln_key, wallet);
+        ln_backends.insert(ln_key, wallet);
 
-                supported_units.insert(unit, (input_fee_ppk, 64));
-            }
+        supported_units.insert(unit, (input_fee_ppk, 64));
+    }
 
     let (nut04_settings, nut05_settings, mpp_settings): (
         nut04::Settings,
@@ -273,7 +264,7 @@ async fn main() -> anyhow::Result<()> {
 
     let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
 
-    let mut mint_service = Router::new()
+    let mint_service = Router::new()
         .merge(v1_service)
         .layer(CorsLayer::permissive());
 
@@ -429,21 +420,6 @@ async fn check_pending_melt_quotes(
         };
     }
     Ok(())
-}
-
-fn expand_path(path: &str) -> Option<PathBuf> {
-    if path.starts_with('~') {
-        if let Some(home_dir) = home::home_dir().as_mut() {
-            let remainder = &path[2..];
-            home_dir.push(remainder);
-            let expanded_path = home_dir;
-            Some(expanded_path.clone())
-        } else {
-            None
-        }
-    } else {
-        Some(PathBuf::from(path))
-    }
 }
 
 fn work_dir() -> Result<PathBuf> {

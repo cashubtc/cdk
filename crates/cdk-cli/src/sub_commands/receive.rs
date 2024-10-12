@@ -1,11 +1,9 @@
-use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::nuts::{SecretKey, Token};
-use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::{MultiMintWallet, WalletKey};
 use cdk::wallet::Wallet;
 use cdk::Amount;
@@ -18,7 +16,6 @@ pub struct ReceiveSubCommand {
     /// Signing Key
     #[arg(short, long, action = clap::ArgAction::Append)]
     signing_key: Vec<String>,
-    /// Nostr key
 }
 
 pub async fn receive(
@@ -27,16 +24,8 @@ pub async fn receive(
     seed: &[u8],
     sub_command_args: &ReceiveSubCommand,
 ) -> Result<()> {
-
-    let amount =  receive_token(
-                multi_mint_wallet,
-                localstore,
-                seed,
-                token_str,
-                &[],
-                &[],
-            )
-            .await?;
+    let token_str = sub_command_args.token.clone().unwrap();
+    let amount = receive_token(multi_mint_wallet, localstore, seed, &token_str, &[], &[]).await?;
     println!("Received: {}", amount);
 
     Ok(())

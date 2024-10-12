@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use bip39::Mnemonic;
-use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::client::HttpClient;
 use cdk::wallet::{MultiMintWallet, Wallet};
