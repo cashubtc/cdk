@@ -10,7 +10,6 @@ use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::client::HttpClient;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk_redb::WalletRedbDatabase;
-use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
 use rand::Rng;
 use tracing::Level;
@@ -28,9 +27,6 @@ const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 #[command(version = "0.1.0")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Database engine to use (sqlite/redb)
-    #[arg(short, long, default_value = "sqlite")]
-    engine: String,
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
@@ -94,23 +90,8 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all(&work_dir)?;
 
-    let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
-        match args.engine.as_str() {
-            "sqlite" => {
-                let sql_path = work_dir.join("cdk-cli.sqlite");
-                let sql = WalletSqliteDatabase::new(&sql_path).await?;
-
-                sql.migrate().await;
-
-                Arc::new(sql)
-            }
-            "redb" => {
-                let redb_path = work_dir.join("cdk-cli.redb");
-
-                Arc::new(WalletRedbDatabase::new(&redb_path)?)
-            }
-            _ => bail!("Unknown DB engine"),
-        };
+    let redb_path = work_dir.join("cdk-cli.redb");
+    let localstore = Arc::new(WalletRedbDatabase::new(&redb_path)?);
 
     let seed_path = work_dir.join("seed");
 
