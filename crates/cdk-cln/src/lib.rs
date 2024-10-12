@@ -105,7 +105,7 @@ impl MintLightning for Cln {
     // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
         let last_pay_index = self.get_last_pay_index().await?;
         let cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
@@ -162,6 +162,11 @@ impl MintLightning for Cln {
 
                             let payment_hash = wait_any_response.payment_hash.to_string();
 
+
+                            // TODO: Handle unit conversion
+                            let amount_msats = wait_any_response.amount_received_msat.expect("status is paid there should be an amount");
+                            let amount_sats =  amount_msats.msat() / 1000;
+
                             let request_look_up = match wait_any_response.bolt12 {
                                 // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
                                 // Since this is not returned in the wait any response,
@@ -192,7 +197,7 @@ impl MintLightning for Cln {
                                 None => payment_hash,
                             };
 
-                            break Some((request_look_up, (cln_client, last_pay_idx, cancel_token, is_active)));
+                            break Some(((request_look_up, amount_sats.into()), (cln_client, last_pay_idx, cancel_token, is_active)));
                                 }
                                 Err(e) => {
                                     tracing::warn!("Error fetching invoice: {e}");
@@ -597,7 +602,7 @@ impl MintLightning for Cln {
 
         let label = Uuid::new_v4().to_string();
 
-        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+        let _amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
 
         let cln_response = cln_client
             .call(cln_rpc::Request::Offer(OfferRequest {
@@ -611,8 +616,8 @@ impl MintLightning for Cln {
                 recurrence_limit: None,
                 recurrence_paywindow: None,
                 recurrence_start_any_period: None,
-                single_use: Some(true),
-                amount: amount.to_string(),
+                single_use: Some(false),
+                amount: "any".to_string(),
             }))
             .await
             .map_err(Error::from)?;

@@ -64,6 +64,8 @@ enum Commands {
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
     Mint(sub_commands::mint::MintSubCommand),
+    /// Remint
+    ReMint(sub_commands::remint_bolt12::ReMintSubCommand),
     /// Burn Spent tokens
     Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
@@ -198,6 +200,15 @@ async fn main() -> Result<()> {
         Commands::UpdateMintUrl(sub_command_args) => {
             sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)
                 .await
+        }
+        Commands::ReMint(sub_command_args) => {
+            sub_commands::remint_bolt12::remint(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+            )
+            .await
         }
     }
 }

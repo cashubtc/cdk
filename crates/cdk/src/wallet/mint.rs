@@ -244,10 +244,25 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
+        let status = self.mint_quote_state(quote_id).await?;
+
+        println!(
+            "Amount paid: {}, Amount issued: {}",
+            status.amount_paid, status.amount_issued
+        );
+
+        let amount = status.amount_paid - status.amount_issued;
+
+        let amount = if amount == Amount::ZERO {
+            quote_info.amount
+        } else {
+            amount
+        };
+
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
-                quote_info.amount,
+                amount,
                 &amount_split_target,
                 spending_conditions,
             )?,
@@ -255,7 +270,7 @@ impl Wallet {
                 active_keyset_id,
                 count,
                 self.xpriv,
-                quote_info.amount,
+                amount,
                 &amount_split_target,
             )?,
         };
@@ -293,7 +308,7 @@ impl Wallet {
         let minted_amount = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
 
         // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        //self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         if spending_conditions.is_none() {
             // Update counter for keyset

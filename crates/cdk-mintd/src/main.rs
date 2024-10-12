@@ -148,6 +148,19 @@ async fn main() -> anyhow::Result<()> {
                 CurrencyUnit::Sat,
                 PaymentMethod::Bolt11,
                 mint_melt_limits,
+                cln.clone(),
+            );
+
+            let ln_key = LnKey {
+                unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Bolt12,
+            };
+            ln_backends.insert(ln_key, cln.clone());
+
+            mint_builder = mint_builder.add_ln_backend(
+                CurrencyUnit::Sat,
+                PaymentMethod::Bolt12,
+                mint_melt_limits,
                 cln,
             )
         }

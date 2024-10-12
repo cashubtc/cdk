@@ -29,6 +29,10 @@ pub struct MintQuote {
     pub expiry: u64,
     /// Value used by ln backend to look up state of request
     pub request_lookup_id: String,
+    /// Amount paid
+    pub amount_paid: Amount,
+    /// Amount issued
+    pub amount_issued: Amount,
 }
 
 impl MintQuote {
@@ -40,6 +44,8 @@ impl MintQuote {
         amount: Amount,
         expiry: u64,
         request_lookup_id: String,
+        amount_paid: Amount,
+        amount_issued: Amount,
     ) -> Self {
         let id = Uuid::new_v4();
 
@@ -52,6 +58,8 @@ impl MintQuote {
             state: MintQuoteState::Unpaid,
             expiry,
             request_lookup_id,
+            amount_paid,
+            amount_issued,
         }
     }
 }

@@ -101,7 +101,7 @@ impl MintLightning for Phoenixd {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -136,7 +136,7 @@ impl MintLightning for Phoenixd {
                                 Ok(state) => {
                                     if state.is_paid {
                                         // Yield the payment hash and continue the stream
-                                        Some((msg.payment_hash, (receiver, phoenixd_api, cancel_token, is_active)))
+                                        Some(((msg.payment_hash, Amount::ZERO), (receiver, phoenixd_api, cancel_token, is_active)))
                                     } else {
                                         // Invoice not paid yet, continue waiting
                                         // We need to continue the stream, so we return the same state

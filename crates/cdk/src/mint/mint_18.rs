@@ -109,6 +109,8 @@ impl Mint {
             amount,
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
+            Amount::ZERO,
+            Amount::ZERO,
         );
 
         tracing::debug!(

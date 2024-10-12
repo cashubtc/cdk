@@ -72,11 +72,14 @@ async fn mint_proofs(
         amount,
         unix_time() + 36000,
         request_lookup.to_string(),
+        Amount::ZERO,
+        Amount::ZERO,
     );
 
     mint.localstore.add_mint_quote(quote.clone()).await?;
 
-    mint.pay_mint_quote_for_request_id(&request_lookup).await?;
+    mint.pay_mint_quote_for_request_id(&request_lookup, amount)
+        .await?;
     let keyset_id = Id::from(&keys);
 
     let premint = PreMintSecrets::random(keyset_id, amount, split_target)?;

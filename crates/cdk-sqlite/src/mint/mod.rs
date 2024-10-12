@@ -1298,6 +1298,9 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         state: MintQuoteState::from_str(&row_state).map_err(Error::from)?,
         expiry: row_expiry as u64,
         request_lookup_id,
+        // TODO: Get these values
+        amount_paid: Amount::ZERO,
+        amount_issued: Amount::ZERO,
     })
 }
 

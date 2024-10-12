@@ -92,7 +92,7 @@ impl MintLightning for LNbits {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -129,7 +129,7 @@ impl MintLightning for LNbits {
                             match check {
                                 Ok(state) => {
                                     if state {
-                                        Some((msg, (receiver, lnbits_api, cancel_token, is_active)))
+                                        Some(((msg, Amount::ZERO), (receiver, lnbits_api, cancel_token, is_active)))
                                     } else {
                                         None
                                     }

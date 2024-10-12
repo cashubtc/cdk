@@ -102,6 +102,8 @@ impl Mint {
             amount,
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
+            Amount::ZERO,
+            Amount::ZERO,
         );
 
         tracing::debug!(
@@ -142,6 +144,8 @@ impl Mint {
             paid: Some(paid),
             state,
             expiry: Some(quote.expiry),
+            amount_paid: quote.amount_paid,
+            amount_issued: quote.amount_issued,
         })
     }
 
@@ -194,6 +198,7 @@ impl Mint {
     pub async fn pay_mint_quote_for_request_id(
         &self,
         request_lookup_id: &str,
+        amount: Amount,
     ) -> Result<(), Error> {
         if let Ok(Some(mint_quote)) = self
             .localstore
@@ -208,6 +213,35 @@ impl Mint {
             self.localstore
                 .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
                 .await?;
+            let quote = self
+                .localstore
+                .get_mint_quote(&mint_quote.id)
+                .await?
+                .unwrap();
+
+            let amount_paid = quote.amount_paid + amount;
+
+            let quote = MintQuote {
+                id: quote.id,
+                mint_url: quote.mint_url,
+                amount: quote.amount,
+                unit: quote.unit,
+                request: quote.request,
+                state: MintQuoteState::Paid,
+                expiry: quote.expiry,
+                request_lookup_id: quote.request_lookup_id,
+                amount_paid,
+                amount_issued: quote.amount_issued,
+            };
+
+            tracing::debug!(
+                "Quote: {}, Amount paid: {}, amount issued: {}",
+                quote.id,
+                amount_paid,
+                quote.amount_issued
+            );
+
+            self.localstore.add_mint_quote(quote).await?;
         }
         Ok(())
     }
@@ -234,6 +268,11 @@ impl Mint {
             .localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)
             .await?;
+        let quote = self
+            .localstore
+            .get_mint_quote(&mint_request.quote)
+            .await?
+            .unwrap();
 
         match state {
             MintQuoteState::Unpaid => {
@@ -243,9 +282,19 @@ impl Mint {
                 return Err(Error::PendingQuote);
             }
             MintQuoteState::Issued => {
-                return Err(Error::IssuedQuote);
+                if quote.amount_issued >= quote.amount_paid {
+                    return Err(Error::IssuedQuote);
+                }
             }
             MintQuoteState::Paid => (),
+        }
+
+        let amount_can_issue = quote.amount_paid - quote.amount_issued;
+
+        let messages_amount = mint_request.total_amount().unwrap();
+
+        if amount_can_issue < messages_amount {
+            return Err(Error::IssuedQuote);
         }
 
         let blinded_messages: Vec<PublicKey> = mint_request
@@ -298,6 +347,21 @@ impl Mint {
         self.localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
             .await?;
+
+        let mint_quote = MintQuote {
+            id: quote.id,
+            mint_url: quote.mint_url,
+            amount: quote.amount,
+            unit: quote.unit,
+            request: quote.request,
+            state: MintQuoteState::Issued,
+            expiry: quote.expiry,
+            amount_paid: quote.amount_paid,
+            amount_issued: quote.amount_issued + messages_amount,
+            request_lookup_id: quote.request_lookup_id,
+        };
+
+        self.localstore.add_mint_quote(mint_quote).await?;
 
         Ok(nut04::MintBolt11Response {
             signatures: blind_signatures,

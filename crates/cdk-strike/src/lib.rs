@@ -89,7 +89,7 @@ impl MintLightning for Strike {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
         self.strike_api
             .subscribe_to_invoice_webhook(self.webhook_url.clone())
             .await?;
@@ -129,7 +129,7 @@ impl MintLightning for Strike {
                         match check {
                             Ok(state) => {
                                 if state.state == InvoiceState::Paid {
-                                    Some((msg, (receiver, strike_api, cancel_token, is_active)))
+                                    Some(((msg, Amount::ZERO), (receiver, strike_api, cancel_token, is_active)))
                                 } else {
                                     None
                                 }

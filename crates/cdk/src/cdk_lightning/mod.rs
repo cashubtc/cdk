@@ -88,7 +88,7 @@ pub trait MintLightning {
     /// Returns a stream of request_lookup_id once invoices are paid
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err>;
+    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err>;
 
     /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool;

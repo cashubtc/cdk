@@ -92,6 +92,10 @@ pub struct MintQuoteBolt11Response {
     pub state: MintQuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
+    /// Amount that has been paid
+    pub amount_paid: Amount,
+    /// Amount that has been issued
+    pub amount_issued: Amount,
 }
 
 // A custom deserializer is needed until all mints
@@ -149,12 +153,24 @@ impl<'de> Deserialize<'de> for MintQuoteBolt11Response {
             .ok_or(serde::de::Error::missing_field("expiry"))?
             .as_u64();
 
+        let amount_paid = value
+            .get("amount_paid")
+            .ok_or(serde::de::Error::missing_field("expiry"))?
+            .as_u64();
+
+        let amount_issued = value
+            .get("amount_issued")
+            .ok_or(serde::de::Error::missing_field("expiry"))?
+            .as_u64();
+
         Ok(Self {
             quote,
             request,
             paid: Some(paid),
             state,
             expiry,
+            amount_paid: amount_paid.unwrap_or_default().into(),
+            amount_issued: amount_issued.unwrap_or_default().into(),
         })
     }
 }
@@ -169,6 +185,8 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
             paid: Some(paid),
             state: mint_quote.state,
             expiry: Some(mint_quote.expiry),
+            amount_paid: mint_quote.amount_paid,
+            amount_issued: mint_quote.amount_issued,
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod mint;
 pub mod mint_info;
 pub mod pending_mints;
 pub mod receive;
+pub mod remint_bolt12;
 pub mod restore;
 pub mod send;
 pub mod update_mint_url;

@@ -183,6 +183,11 @@ impl MintBuilder {
 
         ln.insert(ln_key, ln_backend);
 
+        let mut supported_units = self.supported_units.clone();
+
+        supported_units.insert(ln_key.unit, (0, 32));
+        self.supported_units = supported_units;
+
         self.ln = Some(ln);
 
         self
