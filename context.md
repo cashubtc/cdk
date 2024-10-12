@@ -56,43 +56,28 @@ For a more in-depth explanation on 'how it works in practice' please see the fol
 - [TEDxStPeterPort: Timebanking in the UK: It's About Time - Sarah Bird](https://www.youtube.com/watch?v=k0Flh6cuuWs)
 
 **Time Banking Educational Resources**
-[Time Banking wiki](https://wikipedia.org/wiki/Time_banking)
-[Numismatics wiki](https://en.wikipedia.org/wiki/Numismatics)
-[Alternative currency wiki](https://en.wikipedia.org/wiki/Alternative_currency)
-
+- [Time Banking wiki](https://wikipedia.org/wiki/Time_banking)
+- [Numismatics wiki](https://en.wikipedia.org/wiki/Numismatics)
+- [Alternative currency wiki](https://en.wikipedia.org/wiki/Alternative_currency)
 
 **Examples of Time Banks**
-
-[Custom Gogole Map with Pins for all Time Banking ommunities globally](https://www.google.com/maps/d/viewer?mid=1ZZRA7ombZ7CN_8u8gHIi0wRxq45FaFWs&ll=23.581971987838646%2C2.24820156946123&z=2)
-
-[Tempo Time Credits](https://wearetempo.org/)
-
-[Time Banking UK](https://timebanking.org/overview/)
-
-[bespoke time banking software by Time Banking UK](https://timebanking.org/software/)
-
-[Time Banking USA](https://timebanks.org/)
-
-
+- [Custom Gogole Map with Pins for all Time Banking ommunities globally](https://www.google.com/maps/d/viewer?mid=1ZZRA7ombZ7CN_8u8gHIi0wRxq45FaFWs&ll=23.581971987838646%2C2.24820156946123&z=2)
+- [Tempo Time Credits](https://wearetempo.org/)
+- [Time Banking UK](https://timebanking.org/overview/)
+- [bespoke time banking software by Time Banking UK](https://timebanking.org/software/)
+- [Time Banking USA](https://timebanks.org/)
 
 **Other Sources**
-[Huffpost](https://www.huffpost.com/entry/bringing-people-together_b_8916374)
-
-[Vice Portugese - O banco que quer seu tempo, não seu dinheiro](https://www.vice.com/pt/article/o-banco-que-quer-seu-tempo-nao-seu-dinheiro/)
-
-[Book: Give and Take: How timebanking is transforming healthcare](https://books.google.com/books?id=LIiSBQAAQBAJ)
-
-[Timebanking (CCIA – 2015)](https://monneta.org/en/timebanking-ccia-2015/)
+- [Huffpost](https://www.huffpost.com/entry/bringing-people-together_b_8916374)
+- [Vice Portugese - O banco que quer seu tempo, não seu dinheiro](https://www.vice.com/pt/article/o-banco-que-quer-seu-tempo-nao-seu-dinheiro/)
+- [Book: Give and Take: How timebanking is transforming healthcare](https://books.google.com/books?id=LIiSBQAAQBAJ)
+- [Timebanking (CCIA – 2015)](https://monneta.org/en/timebanking-ccia-2015/)
 
 **Academic papers**
-
-[Introduction to time banking and Time Credits, 2016](https://www.researchgate.net/publication/297696050_Introduction_to_time_banking_and_Time_Credits)
-
-[Participação em bancos de tempo: utilizando dados sobre transações para avaliar o Banco de Tempo - Florianópolis](https://www.apec.org.br/rce/index.php/rce/article/view/16)
-
-[Banco de Tempo-Florianópolis: análise das características socioeconômicas de seus membros](https://ojsrevista.furb.br/ojs/index.php/rbdr/article/view/6937)
-
-[Time banks: rewarding community self-help in the inner city?](https://academic.oup.com/cdj/article-abstract/39/1/62/268434)
+- [Introduction to time banking and Time Credits, 2016](https://www.researchgate.net/publication/297696050_Introduction_to_time_banking_and_Time_Credits)
+- [Participação em bancos de tempo: utilizando dados sobre transações para avaliar o Banco de Tempo - Florianópolis](https://www.apec.org.br/rce/index.php/rce/article/view/16)
+- [Banco de Tempo-Florianópolis: análise das características socioeconômicas de seus membros](https://ojsrevista.furb.br/ojs/index.php/rbdr/article/view/6937)
+- [Time banks: rewarding community self-help in the inner city?](https://academic.oup.com/cdj/article-abstract/39/1/62/268434)
 
 
 
