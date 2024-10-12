@@ -74,21 +74,8 @@ async fn main() -> anyhow::Result<()> {
 
     let settings = config::Settings::new(&Some(config_file_arg));
 
-    let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
-        match settings.database.engine {
-            DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd.sqlite");
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
-
-                sqlite_db.migrate().await;
-
-                Arc::new(sqlite_db)
-            }
-            DatabaseEngine::Redb => {
-                let redb_path = work_dir.join("cdk-mintd.redb");
-                Arc::new(MintRedbDatabase::new(&redb_path)?)
-            }
-        };
+    let redb_path = work_dir.join("cdk-mintd.redb");
+    let localstore = Arc::new(MintRedbDatabase::new(&redb_path)?);
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -139,189 +126,8 @@ async fn main() -> anyhow::Result<()> {
     let input_fee_ppk = settings.info.input_fee_ppk.unwrap_or(0);
 
     let mint_url: MintUrl = settings.info.url.parse()?;
-
-    let ln_routers: Vec<Router> = match settings.ln.ln_backend {
-        LnBackend::Cln => {
-            let cln_socket = expand_path(
-                settings
-                    .cln
-                    .expect("Config checked at load that cln is some")
-                    .rpc_path
-                    .to_str()
-                    .ok_or(anyhow!("cln socket not defined"))?,
-            )
-            .ok_or(anyhow!("cln socket not defined"))?;
-            let cln = Arc::new(
-                Cln::new(
-                    cln_socket,
-                    fee_reserve,
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
-                )
-                .await?,
-            );
-
-            ln_backends.insert(LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11), cln);
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            vec![]
-        }
-        LnBackend::Strike => {
-            let strike_settings = settings.strike.expect("Checked on config load");
-            let api_key = strike_settings.api_key;
-
-            let units = strike_settings
-                .supported_units
-                .unwrap_or(vec![CurrencyUnit::Sat]);
-
-            let mut routers = vec![];
-
-            for unit in units {
-                // Channel used for strike web hook
-                let (sender, receiver) = tokio::sync::mpsc::channel(8);
-                let webhook_endpoint = format!("/webhook/{}/invoice", unit);
-
-                let webhook_url = mint_url.join(&webhook_endpoint)?;
-
-                let strike = Strike::new(
-                    api_key.clone(),
-                    MintMethodSettings::default(),
-                    MeltMethodSettings::default(),
-                    unit,
-                    Arc::new(Mutex::new(Some(receiver))),
-                    webhook_url.to_string(),
-                )
-                .await?;
-
-                let router = strike
-                    .create_invoice_webhook(&webhook_endpoint, sender)
-                    .await?;
-                routers.push(router);
-
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-                ln_backends.insert(ln_key, Arc::new(strike));
-
-                supported_units.insert(unit, (input_fee_ppk, 64));
-            }
-
-            routers
-        }
-        LnBackend::LNbits => {
-            let lnbits_settings = settings.lnbits.expect("Checked on config load");
-            let admin_api_key = lnbits_settings.admin_api_key;
-            let invoice_api_key = lnbits_settings.invoice_api_key;
-
-            // Channel used for lnbits web hook
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-            let webhook_endpoint = "/webhook/lnbits/sat/invoice";
-
-            let webhook_url = mint_url.join(webhook_endpoint)?;
-
-            let lnbits = LNbits::new(
-                admin_api_key,
-                invoice_api_key,
-                lnbits_settings.lnbits_api,
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
-                fee_reserve,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url.to_string(),
-            )
-            .await?;
-
-            let router = lnbits
-                .create_invoice_webhook_router(webhook_endpoint, sender)
-                .await?;
-
-            let unit = CurrencyUnit::Sat;
-
-            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
-
-            ln_backends.insert(ln_key, Arc::new(lnbits));
-
-            supported_units.insert(unit, (input_fee_ppk, 64));
-            vec![router]
-        }
-        LnBackend::Phoenixd => {
-            let api_password = settings
-                .clone()
-                .phoenixd
-                .expect("Checked at config load")
-                .api_password;
-
-            let api_url = settings
-                .clone()
-                .phoenixd
-                .expect("Checked at config load")
-                .api_url;
-
-            if fee_reserve.percent_fee_reserve < 0.04 {
-                bail!("Fee reserve is too low needs to be at least 0.02");
-            }
-
-            let webhook_endpoint = "/webhook/phoenixd";
-
-            let mint_url = Url::parse(&settings.info.url)?;
-
-            let webhook_url = mint_url.join(webhook_endpoint)?.to_string();
-
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-
-            let phoenixd = Phoenixd::new(
-                api_password.to_string(),
-                api_url.to_string(),
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
-                fee_reserve,
-                Arc::new(Mutex::new(Some(receiver))),
-                webhook_url,
-            )?;
-
-            let router = phoenixd
-                .create_invoice_webhook(webhook_endpoint, sender)
-                .await?;
-
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            ln_backends.insert(
-                LnKey {
-                    unit: CurrencyUnit::Sat,
-                    method: PaymentMethod::Bolt11,
-                },
-                Arc::new(phoenixd),
-            );
-
-            vec![router]
-        }
-        LnBackend::Lnd => {
-            let lnd_settings = settings.lnd.expect("Checked at config load");
-
-            let address = lnd_settings.address;
-            let cert_file = lnd_settings.cert_file;
-            let macaroon_file = lnd_settings.macaroon_file;
-
-            let lnd = Lnd::new(
-                address,
-                cert_file,
-                macaroon_file,
-                fee_reserve,
-                MintMethodSettings::default(),
-                MeltMethodSettings::default(),
-            )
-            .await?;
-
-            supported_units.insert(CurrencyUnit::Sat, (input_fee_ppk, 64));
-            ln_backends.insert(
-                LnKey {
-                    unit: CurrencyUnit::Sat,
-                    method: PaymentMethod::Bolt11,
-                },
-                Arc::new(lnd),
-            );
-
-            vec![]
-        }
-        LnBackend::FakeWallet => {
-            let units = settings.fake_wallet.unwrap_or_default().supported_units;
+    // Consider: we probably need only one unit, so this element might be redundant
+    let units = settings.fake_wallet.unwrap_or_default().supported_units;
 
             for unit in units {
                 let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
@@ -339,10 +145,6 @@ async fn main() -> anyhow::Result<()> {
 
                 supported_units.insert(unit, (input_fee_ppk, 64));
             }
-
-            vec![]
-        }
-    };
 
     let (nut04_settings, nut05_settings, mpp_settings): (
         nut04::Settings,
@@ -474,10 +276,6 @@ async fn main() -> anyhow::Result<()> {
     let mut mint_service = Router::new()
         .merge(v1_service)
         .layer(CorsLayer::permissive());
-
-    for router in ln_routers {
-        mint_service = mint_service.merge(router);
-    }
 
     let shutdown = Arc::new(Notify::new());
 
