@@ -15,7 +15,7 @@ To know more about the design choices, what time banking is, and the reason why 
 ## TO DO
 
 - [x] fork cdk & write project description
-- [ ] write context.md
+- [x] write context.md
 - [ ] remove Lightning Network logic:
   - [ ] cdk-lnbits
   - [ ] cdk-lnd
@@ -41,6 +41,14 @@ To know more about the design choices, what time banking is, and the reason why 
 - [ ] profit ?
 
 
+Design choices for project
+
+- 100% offline use (no http/API)
+- should run on smartphones made after 2010 (ideally a PWA)
+- access-control to the mint (not open to anyone)
+- etime notes represent minutes of real time (time counter mechanism)
+- no 'withdrawl' or 'deposit' logic (no exchange of etime for other assets)
+- ability to cryptographically query the mint for unique audits (more transparency with verifiability)
 
 ## Specifications
 
@@ -58,7 +66,11 @@ To know more about the design choices, what time banking is, and the reason why 
 
 *meow*
 *meow*
-
+- multi-mint or federated setup of mints within wallet client (Fedi example)
+- LoRA / mesh network / bluetooth connectivity protocol for clients (offline)
+- APK build
+- reproducible build
+- Translate into multiple languages (not just European ones)
 
 ## How to deploy / build
 
