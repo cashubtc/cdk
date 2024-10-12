@@ -26,8 +26,6 @@ To know more about the design choices, what time banking is, and the reason why 
 
 
 
-
-
 ## What is time banking?
 
 [Wikipedia entry introduction:](https://en.wikipedia.org/wiki/Time_banking) 
@@ -61,7 +59,7 @@ For a more in-depth explanation on 'how it works in practice' please see the fol
 - [Alternative currency wiki](https://en.wikipedia.org/wiki/Alternative_currency)
 
 **Examples of Time Banks**
-- [Custom Gogole Map with Pins for all Time Banking ommunities globally](https://www.google.com/maps/d/viewer?mid=1ZZRA7ombZ7CN_8u8gHIi0wRxq45FaFWs&ll=23.581971987838646%2C2.24820156946123&z=2)
+- [Custom GoogleMap with Pins for all Time Banking ommunities globally](https://www.google.com/maps/d/viewer?mid=1ZZRA7ombZ7CN_8u8gHIi0wRxq45FaFWs&ll=23.581971987838646%2C2.24820156946123&z=2)
 - [Tempo Time Credits](https://wearetempo.org/)
 - [Time Banking UK](https://timebanking.org/overview/)
 - [bespoke time banking software by Time Banking UK](https://timebanking.org/software/)
@@ -83,17 +81,26 @@ For a more in-depth explanation on 'how it works in practice' please see the fol
 
 ## Addressing with the 'how do you value one hour' question
 
+This is a fundamental question of any economic system and especially of relevance to Time Banking ones, which have been discussed at length within books and discussions within alternative currency and economics fields. This is outside the scope of this current proof of concept or this context document. 
 
+A standard presentation of this issue is how can 1 hour for a skilled Doctor with all the tools versus 1 hour of a gardener cutting the grass? 
 
+This is a social consensus problem and about how the members of a social group decide to operate within *their own sovereign Time Bank* and not something that will be solved with a technological solution such as an ecash wallet and mint. 
 
 
 
 ## An experiment in new forms of collectively ascibing 'value'
 
-
+What I will add that this is a question on whether any economic system needs to have an abstact numismatic value attributed to a real world action that is the time a person invests/spends/uses in helping another person, creating a good or service useful in the local economy, volunteer in public goods within society, pay their fine/punishment for sanctioned behaviour within the community.
 
 
 ## Why not just use Bitcoin?
+
+This proof of concept is applying the ecash model to minutes, hours, days - what can be called 'person-hours' to create a blind signature system to respesent their economic interactions as 'etime' 
+
+This 'etime' is not meant to be backed by satoshis/Bitcoin within the mint - that is out of scope, but a system could leverage both and have a satoshi 'value' for the 'etime' within an economic system (Citadel public goods idea)
+
+Time Banking systems do not require a digital collateral to back the etime, what is at stake is your reputation and power within a closed community group that will punish bad actors and incentivise public goods. 
 
 
 
@@ -102,11 +109,26 @@ For a more in-depth explanation on 'how it works in practice' please see the fol
 
 ## Relevant features of Chaumian ecash for time banking
 
-
-
+- Offline blind signature exchange
+- Feeless blind signature exchange
+- Creation of any denomination (melt/mint)
+- Low-resource requirement
+- self-hostable
+- low/no-latency contexts
+- asyncronhous mint interaction
+- programmable auditability (not just Proof of Liabilities)
+- cdk / MIT license
+- written in Rust
 
 ## Use-case scenarios
 
+From my brief research into current Time Banks there upwards of 5 active communities that could implement this today, but the core use-case is for new Time Banking systems starting in remote or off-grid communities that could benefit from the features of ecash within their economic model.
+
+Ideal community for use-case: coordinated groups of 50 - 200 people living within a 15 km area that meet in person, share resources, assist each other in time of need and have a shared values including the wish to not have a fiat/numismatic economy between members.
+
+The community would have to seek social consensus on what the 'mint' is, what the unit 'etime' is denominated in (minutes, hours, days), how they would resolve disputes and issues, 
+
+In terms of technology stack, all the members of this community would have and know how to use a stock android smart phone, for the mint it could be a mesh network, a wifi router to a rasperbby pi, a bluetooth gossip protocol. Up to the community, they might have their own intranet or wish to implement a multi-mint model for their etime system where each client is also its own independent mint (more complication and out of scope here)
 
 
 
@@ -116,8 +138,22 @@ For a more in-depth explanation on 'how it works in practice' please see the fol
 - should run on smartphones made after 2010 (ideally a PWA)
 - access-control to the mint (not open to anyone)
 - etime notes represent minutes of real time (time counter mechanism)
-- there is no 'withdrawl' or 'deposit' logic (interal community accounting for time)
-- ability to cryptographically query the mint to release enote balances (more transparency with verifiability)
+- no 'withdrawl' or 'deposit' logic (no exchange of etime for other assets)
+- ability to cryptographically query the mint for unique audits (more transparency with verifiability)
 
 
 ## FAQ
+
+Q:
+
+A:
+
+
+Q:
+
+A:
+
+
+Q:
+
+A:
