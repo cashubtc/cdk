@@ -25,6 +25,7 @@ use thiserror::Error;
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
+use crate::amount::AmountStr;
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
 #[cfg(feature = "mint")]
@@ -197,9 +198,9 @@ impl From<&Keys> for Id {
             5 - prefix it with a keyset ID version byte
         */
 
-        let mut keys: Vec<(&String, &super::PublicKey)> = map.iter().collect();
+        let mut keys: Vec<(&AmountStr, &super::PublicKey)> = map.iter().collect();
 
-        keys.sort_by_key(|(k, _v)| u64::from_str(k).unwrap());
+        keys.sort_by_key(|(amt, _v)| *amt);
 
         let pubkeys_concat: Vec<u8> = keys
             .iter()
