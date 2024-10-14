@@ -22,9 +22,44 @@ pub struct Params {
     pub id: SubId,
 }
 
+/// Check state Settings
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SupportedSettings {
+    supported: Vec<SupportedMethods>,
+}
+
+impl Default for SupportedSettings {
+    fn default() -> Self {
+        SupportedSettings {
+            supported: vec![SupportedMethods::default()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct SupportedMethods {
+    method: PaymentMethod,
+    unit: CurrencyUnit,
+    commands: Vec<String>,
+}
+
+impl Default for SupportedMethods {
+    fn default() -> Self {
+        SupportedMethods {
+            method: PaymentMethod::Bolt11,
+            unit: CurrencyUnit::Sat,
+            commands: vec![
+                "bolt11_mint_quote".to_owned(),
+                "bolt11_melt_quote".to_owned(),
+                "proof_state".to_owned(),
+            ],
+        }
+    }
+}
+
 pub use crate::pub_sub::SubId;
 
-use super::BlindSignature;
+use super::{BlindSignature, CurrencyUnit, PaymentMethod};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
