@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    unstable-nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -16,7 +17,7 @@
     pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
+  outputs = { self, nixpkgs, unstable-nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -31,6 +32,11 @@
 
         # Dependencies
         pkgs = import nixpkgs {
+          inherit system overlays;
+        };
+
+
+        unstable-pkgs = import unstable-nixpkgs {
           inherit system overlays;
         };
 
@@ -53,7 +59,11 @@
         };
 
         # Nighly for creating lock files
-        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default);
+
+        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: {
+          inherit (toolchain.default) date;
+          targets = toolchain.default.targets ++ [ "wasm32-unknown-unknown" ];
+        });
 
         # Common inputs
         envVars = { };
@@ -71,6 +81,7 @@
           clightning
           bitcoind
           sqlx-cli
+          unstable-pkgs.wasm-pack
         ] ++ libsDarwin;
 
         # WASM deps
@@ -145,7 +156,15 @@
             } // envVars);
 
             stable = pkgs.mkShell ({
-              shellHook = "${_shellHook}";
+              shellHook = ''
+                ${_shellHook}
+                export CC="${pkgs.clang-tools.clang}/bin/clang"
+                export AR="${pkgs.llvm}/bin/llvm-ar"
+                export C_INCLUDE_PATH="${pkgs.llvmPackages_15.libclang.lib}/lib/clang/${pkgs.llvmPackages_15.libclang.version}/include"
+                export LIBCLANG_PATH=
+                export CXX="${pkgs.clang-tools_15.clang}/bin/clang++"
+                export CFLAGS="-mcpu=generic"
+              '';
               buildInputs = buildInputs ++ WASMInputs ++ [ stable_toolchain ];
               inherit nativeBuildInputs;
             } // envVars);
