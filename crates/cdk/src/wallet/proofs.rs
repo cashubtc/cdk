@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use tracing::instrument;
 
+use crate::nuts::nut00::ProofsMethods;
 use crate::{
     amount::SplitTarget,
-    dhke::hash_to_curve,
     nuts::{Proof, ProofState, Proofs, PublicKey, State},
     types::ProofInfo,
     Amount, Error, Wallet,
@@ -73,11 +73,7 @@ impl Wallet {
     /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
     #[instrument(skip(self, proofs))]
     pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
-        let proof_ys = proofs
-            .iter()
-            // Find Y for the secret
-            .map(|p| hash_to_curve(p.secret.as_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let proof_ys = proofs.ys()?;
 
         let spendable = self
             .client
@@ -102,14 +98,7 @@ impl Wallet {
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
-            .post_check_state(
-                self.mint_url.clone().try_into()?,
-                proofs
-                    .iter()
-                    // Find Y for the secret
-                    .map(|p| hash_to_curve(p.secret.as_bytes()))
-                    .collect::<Result<Vec<PublicKey>, _>>()?,
-            )
+            .post_check_state(self.mint_url.clone().try_into()?, proofs.ys()?)
             .await?;
         let spent_ys: Vec<_> = spendable
             .states
@@ -186,7 +175,7 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         // TODO: Check all proofs are same unit
 
-        if Amount::try_sum(proofs.iter().map(|p| p.amount))? < amount {
+        if proofs.total_amount()? < amount {
             return Err(Error::InsufficientFunds);
         }
 
@@ -226,7 +215,7 @@ impl Wallet {
             }
 
             remaining_amount = amount.checked_add(fees).ok_or(Error::AmountOverflow)?
-                - Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+                - selected_proofs.total_amount()?;
             (proofs_larger, proofs_smaller) = proofs_smaller
                 .into_iter()
                 .skip(1)
@@ -262,7 +251,7 @@ impl Wallet {
 
         for inactive_proof in inactive_proofs {
             selected_proofs.push(inactive_proof);
-            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+            let selected_total = selected_proofs.total_amount()?;
             let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {
@@ -274,7 +263,7 @@ impl Wallet {
 
         for active_proof in active_proofs {
             selected_proofs.push(active_proof);
-            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+            let selected_total = selected_proofs.total_amount()?;
             let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {

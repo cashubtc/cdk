@@ -29,6 +29,28 @@ pub use token::{Token, TokenV3, TokenV4};
 /// List of [Proof]
 pub type Proofs = Vec<Proof>;
 
+/// Utility methods for [Proofs]
+pub trait ProofsMethods {
+    /// Try to sum up the amounts of all [Proof]s
+    fn total_amount(&self) -> Result<Amount, Error>;
+
+    /// Try to fetch the pubkeys of all [Proof]s
+    fn ys(&self) -> Result<Vec<PublicKey>, Error>;
+}
+
+impl ProofsMethods for Proofs {
+    fn total_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(self.iter().map(|p| p.amount)).map_err(Into::into)
+    }
+
+    fn ys(&self) -> Result<Vec<PublicKey>, Error> {
+        self.iter()
+            .map(|p| p.y())
+            .collect::<Result<Vec<PublicKey>, _>>()
+            .map_err(Into::into)
+    }
+}
+
 /// NUT00 Error
 #[derive(Debug, Error)]
 pub enum Error {

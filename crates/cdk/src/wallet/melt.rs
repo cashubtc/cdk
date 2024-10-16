@@ -3,9 +3,10 @@ use std::str::FromStr;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
+use crate::nuts::nut00::ProofsMethods;
 use crate::{
     dhke::construct_proofs,
-    nuts::{CurrencyUnit, MeltQuoteBolt11Response, PreMintSecrets, Proofs, PublicKey, State},
+    nuts::{CurrencyUnit, MeltQuoteBolt11Response, PreMintSecrets, Proofs, State},
     types::{Melted, ProofInfo},
     util::unix_time,
     Amount, Error, Wallet,
@@ -121,15 +122,12 @@ impl Wallet {
             return Err(Error::UnknownQuote);
         };
 
-        let proofs_total = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        let proofs_total = proofs.total_amount()?;
         if proofs_total < quote_info.amount + quote_info.fee_reserve {
             return Err(Error::InsufficientFunds);
         }
 
-        let ys = proofs
-            .iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let ys = proofs.ys()?;
         self.localstore.set_pending_proofs(ys).await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
@@ -213,7 +211,7 @@ impl Wallet {
             Some(change_proofs) => {
                 tracing::debug!(
                     "Change amount returned from melt: {}",
-                    Amount::try_sum(change_proofs.iter().map(|p| p.amount))?
+                    change_proofs.total_amount()?
                 );
 
                 // Update counter for keyset
@@ -238,10 +236,7 @@ impl Wallet {
 
         self.localstore.remove_melt_quote(&quote_info.id).await?;
 
-        let deleted_ys = proofs
-            .iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let deleted_ys = proofs.ys()?;
         self.localstore
             .update_proofs(change_proof_infos, deleted_ys)
             .await?;

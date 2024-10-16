@@ -10,6 +10,7 @@ use bitcoin::bip32::DerivationPath;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::mint::{MintKeySetInfo, MintQuote};
 use cdk::mint_url::MintUrl;
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut05::QuoteState;
 use cdk::nuts::{
     BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState,
@@ -838,10 +839,7 @@ WHERE quote_id=?;
                     .map(sqlite_row_to_proof)
                     .collect::<Result<Vec<Proof>, _>>()?;
 
-                proofs
-                    .iter()
-                    .map(|p| p.y())
-                    .collect::<Result<Vec<PublicKey>, _>>()?
+                proofs.ys()?
             }
             Err(err) => match err {
                 sqlx::Error::RowNotFound => {

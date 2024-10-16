@@ -1,6 +1,7 @@
 use tracing::instrument;
 
 use super::MintQuote;
+use crate::nuts::nut00::ProofsMethods;
 use crate::{
     amount::SplitTarget,
     dhke::construct_proofs,
@@ -242,7 +243,7 @@ impl Wallet {
             &keys,
         )?;
 
-        let minted_amount = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        let minted_amount = proofs.total_amount()?;
 
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
