@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SpendingConditions,
     State,
@@ -34,9 +35,9 @@ impl Melted {
         proofs: Proofs,
         change_proofs: Option<Proofs>,
     ) -> Result<Self, Error> {
-        let proofs_amount = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        let proofs_amount = proofs.total_amount()?;
         let change_amount = match &change_proofs {
-            Some(change_proofs) => Amount::try_sum(change_proofs.iter().map(|p| p.amount))?,
+            Some(change_proofs) => change_proofs.total_amount()?,
             None => Amount::ZERO,
         };
         let fee_paid = proofs_amount

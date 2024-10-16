@@ -35,6 +35,7 @@ mod swap;
 pub mod types;
 pub mod util;
 
+use crate::nuts::nut00::ProofsMethods;
 pub use multi_mint_wallet::MultiMintWallet;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -327,7 +328,7 @@ impl Wallet {
                     .cloned()
                     .collect();
 
-                restored_value += Amount::try_sum(unspent_proofs.iter().map(|p| p.amount))?;
+                restored_value += unspent_proofs.total_amount()?;
 
                 let unspent_proofs = unspent_proofs
                     .into_iter()

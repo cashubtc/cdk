@@ -2,6 +2,7 @@ use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10;
 use crate::nuts::PreMintSecrets;
 use crate::nuts::PreSwap;
@@ -85,8 +86,7 @@ impl Wallet {
                         let mut proofs_to_keep = Vec::new();
 
                         for proof in all_proofs {
-                            let proofs_to_send_amount =
-                                Amount::try_sum(proofs_to_send.iter().map(|p| p.amount))?;
+                            let proofs_to_send_amount = proofs_to_send.total_amount()?;
                             if proof.amount + proofs_to_send_amount <= amount + pre_swap.fee {
                                 proofs_to_send.push(proof);
                             } else {
@@ -98,7 +98,7 @@ impl Wallet {
                     }
                 };
 
-                let send_amount = Amount::try_sum(proofs_to_send.iter().map(|p| p.amount))?;
+                let send_amount = proofs_to_send.total_amount()?;
 
                 if send_amount.ne(&(amount + pre_swap.fee)) {
                     tracing::warn!(
@@ -199,9 +199,9 @@ impl Wallet {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         // Desired amount is either amount passed or value of all proof
-        let proofs_total = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        let proofs_total = proofs.total_amount()?;
 
-        let ys: Vec<PublicKey> = proofs.iter().map(|p| p.y()).collect::<Result<_, _>>()?;
+        let ys: Vec<PublicKey> = proofs.ys()?;
         self.localstore.set_pending_proofs(ys).await?;
 
         let fee = self.get_proofs_fee(&proofs).await?;

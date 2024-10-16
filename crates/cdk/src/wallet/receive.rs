@@ -4,6 +4,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::{hashes::sha256::Hash as Sha256Hash, XOnlyPublicKey};
 use tracing::instrument;
 
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Token};
 use crate::{
@@ -148,7 +149,7 @@ impl Wallet {
             .increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
             .await?;
 
-        let total_amount = Amount::try_sum(recv_proofs.iter().map(|p| p.amount))?;
+        let total_amount = recv_proofs.total_amount()?;
 
         let recv_proof_infos = recv_proofs
             .into_iter()

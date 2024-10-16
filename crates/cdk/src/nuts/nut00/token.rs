@@ -13,6 +13,7 @@ use url::Url;
 
 use super::{Error, Proof, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{CurrencyUnit, Id};
 use crate::Amount;
 
@@ -211,7 +212,7 @@ impl TokenV3 {
         Ok(Amount::try_sum(
             self.token
                 .iter()
-                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .map(|t| t.proofs.total_amount())
                 .collect::<Result<Vec<Amount>, _>>()?,
         )?)
     }
