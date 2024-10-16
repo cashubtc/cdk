@@ -6,7 +6,7 @@ use crate::{
     Amount, Error, Wallet,
 };
 
-use super::{proofs::SelectProofsOptions, ProofSelectionMethod, SendKind};
+use super::{proofs::SelectProofsOptions, SendKind};
 
 impl Wallet {
     /// Send specific proofs
@@ -116,9 +116,7 @@ impl Wallet {
             .select_proofs(
                 amount,
                 available_proofs,
-                SelectProofsOptions::default()
-                    .include_fees(include_fees)
-                    .method(ProofSelectionMethod::Least),
+                SelectProofsOptions::default().include_fees(include_fees),
             )
             .await;
 
