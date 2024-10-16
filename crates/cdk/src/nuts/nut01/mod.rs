@@ -16,7 +16,7 @@ mod secret_key;
 pub use self::public_key::PublicKey;
 pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
-use crate::amount::Amount;
+use crate::amount::{Amount, AmountStr};
 
 /// Nut01 Error
 #[derive(Debug, Error)]
@@ -37,16 +37,20 @@ pub enum Error {
     },
 }
 
-/// Mint Keys [NUT-01]
+/// Mint public keys per amount.
+///
+/// This is a variation of [MintKeys] that only exposes the public keys.
+///
+/// See [NUT-01]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Keys(BTreeMap<String, PublicKey>);
+pub struct Keys(BTreeMap<AmountStr, PublicKey>);
 
 impl From<MintKeys> for Keys {
     fn from(keys: MintKeys) -> Self {
         Self(
             keys.0
-                .iter()
-                .map(|(amount, keypair)| (amount.to_string(), keypair.public_key))
+                .into_iter()
+                .map(|(amount, keypair)| (AmountStr::from(amount), keypair.public_key))
                 .collect(),
         )
     }
@@ -55,25 +59,25 @@ impl From<MintKeys> for Keys {
 impl Keys {
     /// Create new [`Keys`]
     #[inline]
-    pub fn new(keys: BTreeMap<String, PublicKey>) -> Self {
+    pub fn new(keys: BTreeMap<AmountStr, PublicKey>) -> Self {
         Self(keys)
     }
 
     /// Get [`Keys`]
     #[inline]
-    pub fn keys(&self) -> &BTreeMap<String, PublicKey> {
+    pub fn keys(&self) -> &BTreeMap<AmountStr, PublicKey> {
         &self.0
     }
 
     /// Get [`PublicKey`] for [`Amount`]
     #[inline]
     pub fn amount_key(&self, amount: Amount) -> Option<PublicKey> {
-        self.0.get(&amount.to_string()).copied()
+        self.0.get(&AmountStr::from(amount)).copied()
     }
 
     /// Iterate through the (`Amount`, `PublicKey`) entries in the Map
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &PublicKey)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&AmountStr, &PublicKey)> {
         self.0.iter()
     }
 }
@@ -87,7 +91,7 @@ pub struct KeysResponse {
     pub keysets: Vec<KeySet>,
 }
 
-/// Mint keys
+/// Mint key pairs per amount
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKeys(BTreeMap<Amount, MintKeyPair>);
 

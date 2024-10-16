@@ -77,6 +77,8 @@ enum Commands {
     Restore(sub_commands::restore::RestoreSubCommand),
     /// Update Mint Url
     UpdateMintUrl(sub_commands::update_mint_url::UpdateMintUrlSubCommand),
+    /// Get proofs from mint.
+    ListMintProofs,
 }
 
 #[tokio::main]
@@ -145,10 +147,10 @@ async fn main() -> Result<()> {
             let mut rng = rand::thread_rng();
             let random_bytes: [u8; 32] = rng.gen();
 
-            let mnemnic = Mnemonic::from_entropy(&random_bytes)?;
+            let mnemonic = Mnemonic::from_entropy(&random_bytes)?;
             tracing::info!("Using randomly generated seed you will not be able to restore");
 
-            mnemnic
+            mnemonic
         }
     };
 
@@ -221,6 +223,9 @@ async fn main() -> Result<()> {
         Commands::UpdateMintUrl(sub_command_args) => {
             sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)
                 .await
+        }
+        Commands::ListMintProofs => {
+            sub_commands::list_mint_proofs::proofs(&multi_mint_wallet).await
         }
     }
 }

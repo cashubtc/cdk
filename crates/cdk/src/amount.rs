@@ -4,8 +4,9 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::nuts::CurrencyUnit;
@@ -138,7 +139,11 @@ impl Default for &Amount {
 
 impl fmt::Display for Amount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        if let Some(width) = f.width() {
+            write!(f, "{:width$}", self.0, width = width)
+        } else {
+            write!(f, "{}", self.0)
+        }
     }
 }
 
@@ -207,6 +212,54 @@ impl std::ops::Div for Amount {
 
     fn div(self, other: Self) -> Self::Output {
         Amount(self.0 / other.0)
+    }
+}
+
+/// String wrapper for an [Amount].
+///
+/// It ser-/deserializes the inner [Amount] to a string, while at the same time using the [u64]
+/// value of the [Amount] for comparison and ordering. This helps automatically sort the keys of
+/// a [BTreeMap] when [AmountStr] is used as key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmountStr(Amount);
+
+impl AmountStr {
+    pub(crate) fn from(amt: Amount) -> Self {
+        Self(amt)
+    }
+}
+
+impl PartialOrd<Self> for AmountStr {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AmountStr {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for AmountStr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        u64::from_str(&s)
+            .map(Amount)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for AmountStr {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
     }
 }
 
