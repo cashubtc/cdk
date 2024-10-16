@@ -36,7 +36,6 @@ pub mod types;
 pub mod util;
 
 pub use multi_mint_wallet::MultiMintWallet;
-pub use proofs::{ProofSelectionMethod, SelectProofsOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
 /// CDK Wallet

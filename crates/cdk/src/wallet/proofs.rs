@@ -1,12 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use tracing::instrument;
 
 use crate::{
     amount::SplitTarget,
     dhke::hash_to_curve,
-    fees::calculate_fee,
-    nuts::{Id, Proof, ProofState, Proofs, PublicKey, State},
+    nuts::{Proof, ProofState, Proofs, PublicKey, State},
     types::ProofInfo,
     Amount, Error, Wallet,
 };
@@ -112,16 +111,6 @@ impl Wallet {
                     .collect::<Result<Vec<PublicKey>, _>>()?,
             )
             .await?;
-        let spent_ys: Vec<_> = spendable
-            .states
-            .iter()
-            .filter_map(|p| match p.state {
-                State::Spent => Some(p.y),
-                _ => None,
-            })
-            .collect();
-
-        self.localstore.update_proofs(vec![], spent_ys).await?;
 
         Ok(spendable.states)
     }
@@ -177,68 +166,106 @@ impl Wallet {
         Ok(balance)
     }
 
-    /// Select proofs to send or swap for a specific amount.
-    /// If inactive keys are allowed via [`SelectProofsOptions`], they will be selected first in largest order.
+    /// Select proofs to send
     #[instrument(skip_all)]
-    pub async fn select_proofs(
+    pub async fn select_proofs_to_send(
         &self,
         amount: Amount,
         proofs: Proofs,
-        opts: SelectProofsOptions,
+        include_fees: bool,
     ) -> Result<Proofs, Error> {
-        let mut selected_proofs: Proofs = Vec::new();
+        // TODO: Check all proofs are same unit
 
+        if Amount::try_sum(proofs.iter().map(|p| p.amount))? < amount {
+            return Err(Error::InsufficientFunds);
+        }
+
+        let (mut proofs_larger, mut proofs_smaller): (Proofs, Proofs) =
+            proofs.into_iter().partition(|p| p.amount > amount);
+
+        let next_bigger_proof = proofs_larger.first().cloned();
+
+        let mut selected_proofs: Proofs = Vec::new();
+        let mut remaining_amount = amount;
+
+        while remaining_amount > Amount::ZERO {
+            proofs_larger.sort();
+            // Sort smaller proofs in descending order
+            proofs_smaller.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
+
+            let selected_proof = if let Some(next_small) = proofs_smaller.clone().first() {
+                next_small.clone()
+            } else if let Some(next_bigger) = proofs_larger.first() {
+                next_bigger.clone()
+            } else {
+                break;
+            };
+
+            let proof_amount = selected_proof.amount;
+
+            selected_proofs.push(selected_proof);
+
+            let fees = match include_fees {
+                true => self.get_proofs_fee(&selected_proofs).await?,
+                false => Amount::ZERO,
+            };
+
+            if proof_amount >= remaining_amount + fees {
+                remaining_amount = Amount::ZERO;
+                break;
+            }
+
+            remaining_amount = amount.checked_add(fees).ok_or(Error::AmountOverflow)?
+                - Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+            (proofs_larger, proofs_smaller) = proofs_smaller
+                .into_iter()
+                .skip(1)
+                .partition(|p| p.amount > remaining_amount);
+        }
+
+        if remaining_amount > Amount::ZERO {
+            if let Some(next_bigger) = next_bigger_proof {
+                return Ok(vec![next_bigger.clone()]);
+            }
+
+            return Err(Error::InsufficientFunds);
+        }
+
+        Ok(selected_proofs)
+    }
+
+    /// Select proofs to send
+    #[instrument(skip_all)]
+    pub async fn select_proofs_to_swap(
+        &self,
+        amount: Amount,
+        proofs: Proofs,
+    ) -> Result<Proofs, Error> {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         let (mut active_proofs, mut inactive_proofs): (Proofs, Proofs) = proofs
             .into_iter()
             .partition(|p| p.keyset_id == active_keyset_id);
 
-        if opts.prefer_inactive_keys {
-            sort_proofs(&mut inactive_proofs, ProofSelectionMethod::Largest, amount);
+        let mut selected_proofs: Proofs = Vec::new();
+        inactive_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
 
-            for inactive_proof in inactive_proofs {
-                selected_proofs.push(inactive_proof);
-                let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
-                let fees = self.get_proofs_fee(&selected_proofs).await?;
+        for inactive_proof in inactive_proofs {
+            selected_proofs.push(inactive_proof);
+            let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+            let fees = self.get_proofs_fee(&selected_proofs).await?;
 
-                if selected_total >= amount + fees {
-                    return Ok(selected_proofs);
-                }
-            }
-        }
-
-        if opts.method == ProofSelectionMethod::Least {
-            let selected_amount = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
-            let keyset_fees = if opts.include_fees {
-                self.get_mint_keysets()
-                    .await?
-                    .into_iter()
-                    .map(|k| (k.id, k.input_fee_ppk))
-                    .collect()
-            } else {
-                HashMap::new()
-            };
-            if let Some(proofs) = select_least_proofs_over_amount(
-                &active_proofs,
-                amount.checked_sub(selected_amount).unwrap_or(Amount::ZERO),
-                keyset_fees,
-            ) {
-                selected_proofs.extend(proofs);
+            if selected_total >= amount + fees {
                 return Ok(selected_proofs);
             }
         }
 
-        sort_proofs(&mut active_proofs, opts.method, amount);
+        active_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
 
         for active_proof in active_proofs {
             selected_proofs.push(active_proof);
             let selected_total = Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
-            let fees = if opts.include_fees {
-                self.get_proofs_fee(&selected_proofs).await?
-            } else {
-                Amount::ZERO
-            };
+            let fees = self.get_proofs_fee(&selected_proofs).await?;
 
             if selected_total >= amount + fees {
                 return Ok(selected_proofs);
@@ -246,410 +273,5 @@ impl Wallet {
         }
 
         Err(Error::InsufficientFunds)
-    }
-}
-
-fn sort_proofs(proofs: &mut Proofs, method: ProofSelectionMethod, amount: Amount) {
-    match method {
-        // Least fallback to smallest over
-        ProofSelectionMethod::SmallestOver | ProofSelectionMethod::Least => proofs.sort_by(
-            |a: &Proof, b: &Proof| match (a.amount >= amount, b.amount >= amount) {
-                (true, true) => a.amount.cmp(&b.amount),
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                (false, false) => b.amount.cmp(&a.amount),
-            },
-        ),
-        ProofSelectionMethod::Largest => proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a)),
-        ProofSelectionMethod::Closest => proofs.sort_by_key(|p| {
-            if p.amount > amount {
-                p.amount - amount
-            } else {
-                amount - p.amount
-            }
-        }),
-        ProofSelectionMethod::Smallest => proofs.sort(),
-    }
-}
-
-fn select_least_proofs_over_amount(
-    proofs: &Proofs,
-    amount: Amount,
-    fees: HashMap<Id, u64>,
-) -> Option<Vec<Proof>> {
-    tracing::trace!(
-        "Selecting LEAST proofs over amount {} with fees {:?}",
-        amount,
-        fees
-    );
-
-    // Filter proofs that are less than or equal to the amount and the next highest proof
-    let mut filtered_proofs: Vec<Proof> = proofs
-        .iter()
-        .filter(|p| p.amount <= amount)
-        .cloned()
-        .collect();
-
-    if let Some(next_highest_proof) = proofs
-        .iter()
-        .filter(|p| p.amount > amount)
-        .min_by_key(|p| p.amount)
-    {
-        filtered_proofs.push(next_highest_proof.clone());
-    }
-
-    let max_sum = Amount::try_sum(filtered_proofs.iter().map(|p| p.amount)).ok()?;
-    if max_sum < amount || filtered_proofs.is_empty() || amount == Amount::ZERO {
-        return None;
-    }
-
-    // Determine the size of the DP table, return None if it is too large
-    let table_len = u64::from(max_sum + 1.into()) as usize;
-    if table_len > 1_000_000 {
-        return None;
-    }
-
-    let mut dp = vec![None; table_len];
-    let mut paths = vec![Vec::<Proof>::with_capacity(0); table_len];
-
-    dp[0] = Some(Amount::ZERO);
-
-    // Fill DP table and track paths
-    for proof in filtered_proofs {
-        let max_other_amounts = u64::from(max_sum - proof.amount) as usize;
-        for t in (0..=max_other_amounts).rev() {
-            // Double check bounds
-            if t >= dp.len() || t >= paths.len() {
-                continue;
-            }
-
-            if let Some(current_sum) = dp[t] {
-                let new_sum = current_sum + proof.amount;
-                let target_index = t + u64::from(proof.amount) as usize;
-
-                // Double check new bounds
-                if target_index >= dp.len() || target_index >= paths.len() {
-                    continue;
-                }
-
-                // If this sum has not been reached yet, or if the new sum is smaller, or if the new path is shorter
-                if dp[target_index].is_none()
-                    || dp[target_index].expect("None checked") > new_sum
-                    || paths[target_index].len() > paths[t].len() + 1
-                {
-                    tracing::trace!("Updating DP table: {} -> {}", target_index, new_sum);
-                    dp[target_index] = Some(new_sum);
-                    paths[target_index] = paths[t].clone();
-                    paths[target_index].push(proof.clone());
-                    tracing::trace!("Path: {:?}", paths[target_index]);
-                }
-            }
-        }
-    }
-
-    // Find the smallest sum greater than or equal to the target amount
-    for t in u64::from(amount)..=u64::from(max_sum) {
-        let idx = t as usize;
-        if idx >= dp.len() || idx >= paths.len() {
-            continue;
-        }
-
-        if let Some(proofs_amount) = dp[idx] {
-            let proofs = &paths[idx];
-            let proofs_sum =
-                Amount::try_sum(proofs.iter().map(|p| p.amount)).unwrap_or(Amount::ZERO);
-            if proofs_sum != proofs_amount {
-                tracing::error!("Proofs sum does not match DP table sum");
-                continue;
-            }
-            let mut proofs_count = HashMap::new();
-            for proof in proofs {
-                proofs_count
-                    .entry(proof.keyset_id)
-                    .and_modify(|count| *count += 1)
-                    .or_insert(1);
-            }
-            let fee = calculate_fee(&proofs_count, &fees).unwrap_or(Amount::ZERO);
-
-            if proofs_amount >= amount + fee {
-                let proofs = paths[idx].clone();
-                tracing::trace!(
-                    "Selected proofs for amount {} with fee {}: {:?}",
-                    amount,
-                    fee,
-                    proofs
-                );
-                return Some(proofs);
-            }
-        }
-    }
-
-    tracing::trace!("No proofs found for amount {}", amount);
-    None
-}
-
-/// Select proofs options
-pub struct SelectProofsOptions {
-    /// Prefer inactive keys (if `true`, inactive keys will be selected first in largest order)
-    pub prefer_inactive_keys: bool,
-    /// Include fees to add to the selection amount
-    pub include_fees: bool,
-    /// Proof selection method
-    pub method: ProofSelectionMethod,
-}
-
-impl SelectProofsOptions {
-    /// Create new [`SelectProofsOptions`]
-    pub fn new(
-        prefer_inactive_keys: bool,
-        include_fees: bool,
-        method: ProofSelectionMethod,
-    ) -> Self {
-        Self {
-            prefer_inactive_keys,
-            include_fees,
-            method,
-        }
-    }
-
-    /// Prefer inactive keys (if `true`, inactive keys will be selected first in largest order)
-    pub fn prefer_inactive_keys(mut self, allow_inactive_keys: bool) -> Self {
-        self.prefer_inactive_keys = allow_inactive_keys;
-        self
-    }
-
-    /// Include fees to add to the selection amount
-    pub fn include_fees(mut self, include_fees: bool) -> Self {
-        self.include_fees = include_fees;
-        self
-    }
-
-    /// Proof selection method
-    pub fn method(mut self, method: ProofSelectionMethod) -> Self {
-        self.method = method;
-        self
-    }
-}
-
-impl Default for SelectProofsOptions {
-    fn default() -> Self {
-        Self {
-            prefer_inactive_keys: true,
-            include_fees: true,
-            method: ProofSelectionMethod::Largest,
-        }
-    }
-}
-
-/// Select proofs method
-#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum ProofSelectionMethod {
-    /// The smallest over the specified amount proofs first, then largest
-    #[default]
-    SmallestOver,
-    /// The largest value proofs first
-    Largest,
-    /// The closest in value to the amount first
-    Closest,
-    /// The smallest value proofs first
-    Smallest,
-    /// Select the least value of proofs equal to or over the specified amount.
-    /// **CAUTION**: This method can be slow or OOM for large proof sets.
-    Least,
-}
-
-impl std::fmt::Display for ProofSelectionMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProofSelectionMethod::SmallestOver => write!(f, "SmallestOver"),
-            ProofSelectionMethod::Largest => write!(f, "Largest"),
-            ProofSelectionMethod::Closest => write!(f, "Closest"),
-            ProofSelectionMethod::Smallest => write!(f, "Smallest"),
-            ProofSelectionMethod::Least => write!(f, "Least"),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use crate::{
-        nuts::{Id, Proof, PublicKey},
-        secret::Secret,
-        Amount,
-    };
-
-    use super::{select_least_proofs_over_amount, sort_proofs, ProofSelectionMethod};
-
-    #[test]
-    fn test_sort_proofs_by_method() {
-        let amount = Amount::from(256);
-        let keyset_id = Id::random();
-        let mut proofs = vec![
-            Proof {
-                amount: 1.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-            Proof {
-                amount: 256.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-            Proof {
-                amount: 1024.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-        ];
-
-        fn assert_proof_order(
-            proofs: &[Proof],
-            order: Vec<u64>,
-            test_method: ProofSelectionMethod,
-        ) {
-            for (p, a) in proofs.iter().zip(order.iter()) {
-                assert_eq!(p.amount, Amount::from(*a), "{}", test_method);
-            }
-        }
-
-        sort_proofs(&mut proofs, ProofSelectionMethod::SmallestOver, amount);
-        assert_proof_order(
-            &proofs,
-            vec![256, 1024, 1],
-            ProofSelectionMethod::SmallestOver,
-        );
-
-        sort_proofs(&mut proofs, ProofSelectionMethod::Largest, amount);
-        assert_proof_order(&proofs, vec![1024, 256, 1], ProofSelectionMethod::Largest);
-
-        sort_proofs(&mut proofs, ProofSelectionMethod::Closest, amount);
-        assert_proof_order(&proofs, vec![256, 1, 1024], ProofSelectionMethod::Closest);
-
-        sort_proofs(&mut proofs, ProofSelectionMethod::Smallest, amount);
-        assert_proof_order(&proofs, vec![1, 256, 1024], ProofSelectionMethod::Smallest);
-
-        // Least should fallback to smallest over
-        sort_proofs(&mut proofs, ProofSelectionMethod::Least, amount);
-        assert_proof_order(&proofs, vec![256, 1024, 1], ProofSelectionMethod::Least);
-    }
-
-    #[test]
-    fn test_select_least_proofs_over_amount() {
-        let keyset_id = Id::random();
-        let c_1 = PublicKey::random();
-        let proofs = vec![
-            Proof {
-                amount: 1.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: c_1,
-                witness: None,
-                dleq: None,
-            },
-            Proof {
-                amount: 1.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: c_1,
-                witness: None,
-                dleq: None,
-            },
-            Proof {
-                amount: 2.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-            Proof {
-                amount: 256.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-            Proof {
-                amount: 1024.into(),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-        ];
-
-        fn assert_amounts(proofs: &mut [Proof], amounts: &mut [u64]) {
-            println!("{:?}", proofs);
-            println!("{:?}", amounts);
-            assert_eq!(proofs.len(), amounts.len());
-            proofs.sort_by(|a, b| a.amount.cmp(&b.amount));
-            amounts.sort();
-            for (p, a) in proofs.iter().zip(amounts.iter()) {
-                assert_eq!(p.amount, Amount::from(*a));
-            }
-        }
-
-        let mut selected_proofs =
-            select_least_proofs_over_amount(&proofs, Amount::from(1025), HashMap::new()).unwrap();
-        assert_amounts(&mut selected_proofs, &mut [1024, 1]);
-
-        let mut selected_proofs =
-            select_least_proofs_over_amount(&proofs, Amount::from(1), HashMap::new()).unwrap();
-        assert_amounts(&mut selected_proofs, &mut [1]);
-
-        let mut selected_proofs =
-            select_least_proofs_over_amount(&proofs, Amount::from(2), HashMap::new()).unwrap();
-        assert_amounts(&mut selected_proofs, &mut [2]);
-
-        let mut selected_proofs =
-            select_least_proofs_over_amount(&proofs, Amount::from(1284), HashMap::new()).unwrap();
-        assert_amounts(&mut selected_proofs, &mut [1024, 256, 2, 1, 1]);
-
-        // Edge cases
-        assert!(
-            select_least_proofs_over_amount(&proofs, Amount::from(2048), HashMap::new()).is_none()
-        );
-        assert!(
-            select_least_proofs_over_amount(&proofs, Amount::from(0), HashMap::new()).is_none()
-        );
-        assert!(
-            select_least_proofs_over_amount(&vec![], Amount::from(1), HashMap::new()).is_none()
-        );
-
-        // OOM protection
-        let proofs = vec![
-            Proof {
-                amount: Amount::from(1_048_576),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-            Proof {
-                amount: Amount::from(2_097_152),
-                keyset_id,
-                secret: Secret::generate(),
-                c: PublicKey::random(),
-                witness: None,
-                dleq: None,
-            },
-        ];
-        assert!(
-            select_least_proofs_over_amount(&proofs, Amount::from(1), HashMap::new()).is_none()
-        );
     }
 }
