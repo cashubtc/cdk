@@ -241,10 +241,16 @@ impl Wallet {
 
 fn sort_proofs(proofs: &mut Proofs, method: ProofSelectionMethod, amount: Amount) {
     match method {
-        // Least fallback to largest
-        ProofSelectionMethod::Largest | ProofSelectionMethod::Least => {
-            proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a))
-        }
+        // Least fallback to smallest over
+        ProofSelectionMethod::SmallestOver | ProofSelectionMethod::Least => proofs.sort_by(
+            |a: &Proof, b: &Proof| match (a.amount >= amount, b.amount >= amount) {
+                (true, true) => a.amount.cmp(&b.amount),
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (false, false) => b.amount.cmp(&a.amount),
+            },
+        ),
+        ProofSelectionMethod::Largest => proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a)),
         ProofSelectionMethod::Closest => proofs.sort_by_key(|p| {
             if p.amount > amount {
                 p.amount - amount
@@ -428,15 +434,30 @@ impl Default for SelectProofsOptions {
 /// Select proofs method
 #[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ProofSelectionMethod {
-    /// The largest value proofs first
+    /// The smallest over the specified amount proofs first, then largest
     #[default]
+    SmallestOver,
+    /// The largest value proofs first
     Largest,
     /// The closest in value to the amount first
     Closest,
     /// The smallest value proofs first
     Smallest,
-    /// Select the least value of proofs equal to or over the specified amount (best-effort, may fallback to largest)
+    /// Select the least value of proofs equal to or over the specified amount.
+    /// **CAUTION**: This method can be slow or OOM for large proof sets.
     Least,
+}
+
+impl std::fmt::Display for ProofSelectionMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProofSelectionMethod::SmallestOver => write!(f, "SmallestOver"),
+            ProofSelectionMethod::Largest => write!(f, "Largest"),
+            ProofSelectionMethod::Closest => write!(f, "Closest"),
+            ProofSelectionMethod::Smallest => write!(f, "Smallest"),
+            ProofSelectionMethod::Least => write!(f, "Least"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -482,24 +503,35 @@ mod tests {
             },
         ];
 
-        fn assert_proof_order(proofs: &[Proof], order: Vec<u64>) {
+        fn assert_proof_order(
+            proofs: &[Proof],
+            order: Vec<u64>,
+            test_method: ProofSelectionMethod,
+        ) {
             for (p, a) in proofs.iter().zip(order.iter()) {
-                assert_eq!(p.amount, Amount::from(*a));
+                assert_eq!(p.amount, Amount::from(*a), "{}", test_method);
             }
         }
 
+        sort_proofs(&mut proofs, ProofSelectionMethod::SmallestOver, amount);
+        assert_proof_order(
+            &proofs,
+            vec![256, 1024, 1],
+            ProofSelectionMethod::SmallestOver,
+        );
+
         sort_proofs(&mut proofs, ProofSelectionMethod::Largest, amount);
-        assert_proof_order(&proofs, vec![1024, 256, 1]);
+        assert_proof_order(&proofs, vec![1024, 256, 1], ProofSelectionMethod::Largest);
 
         sort_proofs(&mut proofs, ProofSelectionMethod::Closest, amount);
-        assert_proof_order(&proofs, vec![256, 1, 1024]);
+        assert_proof_order(&proofs, vec![256, 1, 1024], ProofSelectionMethod::Closest);
 
         sort_proofs(&mut proofs, ProofSelectionMethod::Smallest, amount);
-        assert_proof_order(&proofs, vec![1, 256, 1024]);
+        assert_proof_order(&proofs, vec![1, 256, 1024], ProofSelectionMethod::Smallest);
 
-        // Least should fallback to largest
+        // Least should fallback to smallest over
         sort_proofs(&mut proofs, ProofSelectionMethod::Least, amount);
-        assert_proof_order(&proofs, vec![1024, 256, 1]);
+        assert_proof_order(&proofs, vec![256, 1024, 1], ProofSelectionMethod::Least);
     }
 
     #[test]

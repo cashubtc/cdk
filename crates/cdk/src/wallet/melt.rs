@@ -11,10 +11,7 @@ use crate::{
     Amount, Error, Wallet,
 };
 
-use super::{
-    proofs::{ProofSelectionMethod, SelectProofsOptions},
-    MeltQuote,
-};
+use super::{proofs::SelectProofsOptions, MeltQuote};
 
 impl Wallet {
     /// Melt Quote
@@ -300,7 +297,7 @@ impl Wallet {
             .select_proofs(
                 inputs_needed_amount,
                 available_proofs,
-                SelectProofsOptions::default().method(ProofSelectionMethod::Least),
+                SelectProofsOptions::default(),
             )
             .await?;
 
