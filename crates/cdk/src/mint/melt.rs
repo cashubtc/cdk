@@ -5,14 +5,17 @@ use anyhow::bail;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use crate::cdk_lightning;
-use crate::cdk_lightning::MintLightning;
-use crate::cdk_lightning::PayInvoiceResponse;
-use crate::dhke::hash_to_curve;
-use crate::nuts::nut11::enforce_sig_flag;
-use crate::nuts::nut11::EnforceSigFlag;
 use crate::{
-    amount::to_unit, mint::SigFlag, nuts::Id, nuts::MeltQuoteState, types::LnKey, util::unix_time,
+    amount::to_unit,
+    cdk_lightning::{self, MintLightning, PayInvoiceResponse},
+    dhke::hash_to_curve,
+    mint::SigFlag,
+    nuts::{
+        nut11::{enforce_sig_flag, EnforceSigFlag},
+        Id, MeltQuoteState,
+    },
+    types::LnKey,
+    util::unix_time,
     Amount, Error,
 };
 

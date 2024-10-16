@@ -1,0 +1,35 @@
+[package]
+name = "cdk-nostr"
+version = "0.4.0"
+edition = "2021"
+authors = ["CDK Developers"]
+description = "Core Cashu Development Kit library implementing the Cashu protocol"
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true                                                      # MSRV
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+bitcoin = { version = "0.32.2", default-features = false }
+cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = [
+    "wallet",
+] }
+hkdf = "0.12.4"
+itertools = "0.13"
+lightning-invoice = "0.32"
+nostr-sdk = { version = "0.35", default-features = false, features = [
+    "nip44",
+    "nip47",
+] }
+nostr-database = "0.35"
+serde = "1"
+serde_json = "1"
+sha2 = "0.10.8"
+thiserror = "1"
+tokio = "1"
+tracing = "0.1"
+url = "2.3"
+
+[dev-dependencies]
+tokio-stream = "0.1"

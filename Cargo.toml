@@ -1,15 +1,12 @@
 [workspace]
-members = [
-    "bindings/cdk-js",
-    "crates/*",
-]
+members = ["bindings/cdk-js", "crates/*"]
 resolver = "2"
 
 [workspace.package]
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0" # MSRV
+rust-version = "1.63.0"                            # MSRV
 version = "0.3.0"
 
 [workspace.metadata]
