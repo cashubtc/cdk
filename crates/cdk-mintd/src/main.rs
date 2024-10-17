@@ -525,14 +525,15 @@ async fn check_pending_mint_quotes(
 
     for quote in unpaid_quotes {
         tracing::trace!("Checking status of mint quote: {}", quote.id);
-        let lookup_id = quote.request_lookup_id;
-        match ln.check_incoming_invoice_status(&lookup_id).await {
+        let lookup_id = quote.request_lookup_id.as_str();
+        match ln.check_incoming_invoice_status(lookup_id).await {
             Ok(state) => {
                 if state != quote.state {
                     tracing::trace!("Mint quote status changed: {}", quote.id);
                     mint.localstore
                         .update_mint_quote_state(&quote.id, state)
                         .await?;
+                    mint.pubsub_manager.mint_quote_bolt11_status(&quote, state);
                 }
             }
 
@@ -627,6 +628,13 @@ async fn check_pending_melt_quotes(
                 mint.localstore
                     .update_melt_quote_state(&pending_quote.id, pay_invoice_response.status)
                     .await?;
+
+                mint.pubsub_manager.melt_quote_status(
+                    &pending_quote,
+                    None,
+                    None,
+                    pay_invoice_response.status,
+                );
             }
         };
     }
