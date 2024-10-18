@@ -17,6 +17,7 @@ wallet = ["dep:reqwest"]
 bench = []
 
 
+
 [dependencies]
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }

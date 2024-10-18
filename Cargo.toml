@@ -24,4 +24,4 @@ keywords = ["bitcoin", "e-cash", "cashu"]
 [profile.ci]
 inherits = "dev"
 incremental = false
-lto = "off"
+lto = true

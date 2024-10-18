@@ -12,6 +12,10 @@ description = "Cashu Development Kit JS Bindings"
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[profile.release]
+lto = true
+
+
 [dependencies]
 cdk = { path = "../../crates/cdk", features = ["wallet"] }
 cdk-rexie = { path = "../../crates/cdk-rexie", features = ["wallet"] }
