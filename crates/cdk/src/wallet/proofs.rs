@@ -77,7 +77,7 @@ impl Wallet {
 
         let spendable = self
             .client
-            .post_check_state(self.mint_url.clone().try_into()?, proof_ys)
+            .post_check_state(self.mint_url.clone(), proof_ys)
             .await?
             .states;
 
@@ -98,7 +98,7 @@ impl Wallet {
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
-            .post_check_state(self.mint_url.clone().try_into()?, proofs.ys()?)
+            .post_check_state(self.mint_url.clone(), proofs.ys()?)
             .await?;
         let spent_ys: Vec<_> = spendable
             .states

@@ -42,7 +42,7 @@ impl Wallet {
 
         let swap_response = self
             .client
-            .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
+            .post_swap(mint_url.clone(), pre_swap.swap_request)
             .await?;
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;

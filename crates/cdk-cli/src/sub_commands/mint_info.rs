@@ -6,7 +6,6 @@ use url::Url;
 
 #[derive(Args)]
 pub struct MintInfoSubcommand {
-    /// Cashu Token
     mint_url: MintUrl,
 }
 
@@ -17,7 +16,7 @@ pub async fn mint_info(proxy: Option<Url>, sub_command_args: &MintInfoSubcommand
     };
 
     let info = client
-        .get_mint_info(sub_command_args.mint_url.clone().try_into()?)
+        .get_mint_info(sub_command_args.mint_url.clone())
         .await?;
 
     println!("{:#?}", info);
