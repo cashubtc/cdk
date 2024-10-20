@@ -21,6 +21,8 @@ impl Wallet {
                 .get_mint_keyset(self.mint_url.clone().try_into()?, keyset_id)
                 .await?;
 
+            keys.verify_id()?;
+
             self.localstore.add_keys(keys.keys.clone()).await?;
 
             keys.keys

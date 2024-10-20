@@ -43,6 +43,9 @@ pub enum Error {
     /// Unknown version
     #[error("NUT02: Unknown Version")]
     UnknownVersion,
+    /// Keyset id does not match
+    #[error("Keyset id incorrect")]
+    IncorrectKeysetId,
     /// Slice Error
     #[error(transparent)]
     Slice(#[from] TryFromSliceError),
@@ -240,6 +243,19 @@ pub struct KeySet {
     pub unit: CurrencyUnit,
     /// Keyset [`Keys`]
     pub keys: Keys,
+}
+
+impl KeySet {
+    /// Verify the keyset is matches keys
+    pub fn verify_id(&self) -> Result<(), Error> {
+        let keys_id: Id = (&self.keys).into();
+
+        if keys_id != self.id {
+            return Err(Error::IncorrectKeysetId);
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "mint")]
