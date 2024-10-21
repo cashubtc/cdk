@@ -9,7 +9,6 @@ use std::str::FromStr;
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
 use bitcoin::base64::{alphabet, Engine as _};
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 use super::{Error, Proof, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
@@ -180,9 +179,6 @@ impl TokenV3 {
         if proofs.is_empty() {
             return Err(Error::ProofsRequired);
         }
-
-        // Check Url is valid
-        let _: Url = (&mint_url).try_into().map_err(|_| Error::InvalidUrl)?;
 
         Ok(Self {
             token: vec![TokenV3Token::new(mint_url, proofs)],

@@ -59,7 +59,7 @@ impl Wallet {
 
         let quote_res = self
             .client
-            .post_melt_quote(self.mint_url.clone().try_into()?, self.unit, invoice, mpp)
+            .post_melt_quote(self.mint_url.clone(), self.unit, invoice, mpp)
             .await?;
 
         if quote_res.amount != amount {
@@ -90,7 +90,7 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let response = self
             .client
-            .get_melt_quote_status(self.mint_url.clone().try_into()?, quote_id)
+            .get_melt_quote_status(self.mint_url.clone(), quote_id)
             .await?;
 
         match self.localstore.get_melt_quote(quote_id).await? {
@@ -149,7 +149,7 @@ impl Wallet {
         let melt_response = self
             .client
             .post_melt(
-                self.mint_url.clone().try_into()?,
+                self.mint_url.clone(),
                 quote_id.to_string(),
                 proofs.clone(),
                 Some(premint_secrets.blinded_messages()),
