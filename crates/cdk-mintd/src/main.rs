@@ -36,6 +36,8 @@ use tokio::sync::{Mutex, Notify};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use url::Url;
+#[cfg(feature = "swagger")]
+use utoipa::OpenApi;
 
 mod cli;
 mod config;
@@ -451,7 +453,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Checks the status of all pending melt quotes
     // Pending melt quotes where the payment has gone through inputs are burnt
-    // Pending melt quotes where the paynment has **failed** inputs are reset to unspent
+    // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     check_pending_melt_quotes(Arc::clone(&mint), &ln_backends).await?;
 
     let listen_addr = settings.info.listen_host;

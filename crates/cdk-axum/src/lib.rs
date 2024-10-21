@@ -45,6 +45,9 @@ mod swagger_imports {
     pub use cdk::nuts::{MeltQuoteState, MintQuoteState};
 }
 
+#[cfg(feature = "swagger")]
+use swagger_imports::*;
+
 /// CDK Mint State
 #[derive(Clone)]
 pub struct MintState {
