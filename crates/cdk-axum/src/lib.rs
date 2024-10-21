@@ -9,38 +9,41 @@ use std::time::Duration;
 use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
-use cdk::amount::Amount;
-use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::mint::Mint;
-use cdk::nuts::nut00::{
-    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Witness,
-};
-use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
-use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
-use cdk::nuts::nut03::{SwapRequest, SwapResponse};
-use cdk::nuts::nut04;
-use cdk::nuts::nut04::{
-    MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
-    MintQuoteBolt11Response,
-};
-use cdk::nuts::nut05;
-use cdk::nuts::nut05::{
-    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-};
-use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
-use cdk::nuts::nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
-use cdk::nuts::nut09::{RestoreRequest, RestoreResponse};
-use cdk::nuts::nut11::P2PKWitness;
-use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
-use cdk::nuts::nut14::HTLCWitness;
-use cdk::nuts::nut15;
-use cdk::nuts::nut15::{Mpp, MppMethodSettings};
-use cdk::nuts::{MeltQuoteState, MintQuoteState};
 use moka::future::Cache;
 use router_handlers::*;
-use utoipa::OpenApi;
 
 mod router_handlers;
+
+#[cfg(feature = "swagger")]
+mod swagger_imports {
+    pub use cdk::amount::Amount;
+    pub use cdk::error::{ErrorCode, ErrorResponse};
+    pub use cdk::nuts::nut00::{
+        BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Witness,
+    };
+    pub use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
+    pub use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
+    pub use cdk::nuts::nut03::{SwapRequest, SwapResponse};
+    pub use cdk::nuts::nut04;
+    pub use cdk::nuts::nut04::{
+        MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
+        MintQuoteBolt11Response,
+    };
+    pub use cdk::nuts::nut05;
+    pub use cdk::nuts::nut05::{
+        MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    };
+    pub use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
+    pub use cdk::nuts::nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
+    pub use cdk::nuts::nut09::{RestoreRequest, RestoreResponse};
+    pub use cdk::nuts::nut11::P2PKWitness;
+    pub use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
+    pub use cdk::nuts::nut14::HTLCWitness;
+    pub use cdk::nuts::nut15;
+    pub use cdk::nuts::nut15::{Mpp, MppMethodSettings};
+    pub use cdk::nuts::{MeltQuoteState, MintQuoteState};
+}
 
 /// CDK Mint State
 #[derive(Clone)]
@@ -49,7 +52,8 @@ pub struct MintState {
     cache: Cache<String, String>,
 }
 
-#[derive(OpenApi)]
+#[cfg(feature = "swagger")]
+#[derive(utoipa::OpenApi)]
 #[openapi(
     components(schemas(
         Amount,

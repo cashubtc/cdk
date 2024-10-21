@@ -12,7 +12,8 @@ license = "MIT"
 
 [features]
 default = ["mint", "wallet"]
-mint = ["dep:futures", "dep:utoipa"]
+mint = ["dep:futures"]
+swagger = ["mint", "dep:utoipa"]
 wallet = ["dep:reqwest"]
 bench = []
 

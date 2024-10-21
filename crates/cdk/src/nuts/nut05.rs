@@ -29,10 +29,10 @@ pub enum Error {
 
 /// Melt quote request [NUT-05]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteBolt11Request {
     /// Bolt11 invoice to be paid
-    #[cfg_attr(feature = "mint", schema(value_type = String))]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub request: Bolt11Invoice,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
@@ -43,7 +43,7 @@ pub struct MeltQuoteBolt11Request {
 /// Possible states of a quote
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema), schema(as = MeltQuoteState))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = MeltQuoteState))]
 pub enum QuoteState {
     /// Quote has not been paid
     #[default]
@@ -87,7 +87,7 @@ impl FromStr for QuoteState {
 
 /// Melt quote response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteBolt11Response {
     /// Quote Id
     pub quote: String,
@@ -214,12 +214,12 @@ impl From<mint::MeltQuote> for MeltQuoteBolt11Response {
 
 /// Melt Bolt11 Request [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltBolt11Request {
     /// Quote ID
     pub quote: String,
     /// Proofs
-    #[cfg_attr(feature = "mint", schema(value_type = Vec<Proof>))]
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<Proof>))]
     pub inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
@@ -236,7 +236,7 @@ impl MeltBolt11Request {
 
 /// Melt Method Settings
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -274,7 +274,7 @@ impl Settings {
 
 /// Melt Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema), schema(as = nut05::Settings))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut05::Settings))]
 pub struct Settings {
     /// Methods to melt
     pub methods: Vec<MeltMethodSettings>,

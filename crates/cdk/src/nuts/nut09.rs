@@ -8,7 +8,7 @@ use super::nut00::{BlindSignature, BlindedMessage};
 
 /// Restore Request [NUT-09]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct RestoreRequest {
     /// Outputs
     pub outputs: Vec<BlindedMessage>,
@@ -16,7 +16,7 @@ pub struct RestoreRequest {
 
 /// Restore Response [NUT-09]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "mint", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct RestoreResponse {
     /// Outputs
     pub outputs: Vec<BlindedMessage>,
