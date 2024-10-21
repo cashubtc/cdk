@@ -13,6 +13,7 @@ license = "MIT"
 [features]
 default = ["mint", "wallet"]
 mint = ["dep:futures"]
+swagger = ["mint", "dep:utoipa"]
 wallet = ["dep:reqwest"]
 bench = []
 
@@ -39,6 +40,7 @@ tracing = { version = "0.1", default-features = false, features = ["attributes",
 thiserror = "1"
 futures = { version = "0.3.28", default-features = false, optional = true }
 url = "2.3"
+utoipa = { version = "4", optional = true }
 uuid = { version = "1", features = ["v4"] }
 
 # -Z minimal-versions

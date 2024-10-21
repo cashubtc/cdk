@@ -26,6 +26,7 @@ pub enum Error {
 
 /// Mint quote request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteBolt11Request {
     /// Amount
     pub amount: Amount,
@@ -38,6 +39,7 @@ pub struct MintQuoteBolt11Request {
 /// Possible states of a quote
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = MintQuoteState))]
 pub enum QuoteState {
     /// Quote has not been paid
     #[default]
@@ -79,6 +81,7 @@ impl FromStr for QuoteState {
 
 /// Mint quote response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteBolt11Response {
     /// Quote Id
     pub quote: String,
@@ -175,10 +178,13 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
 
 /// Mint request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintBolt11Request {
     /// Quote id
+    #[cfg_attr(feature = "swagger", schema(max_length = 1_000))]
     pub quote: String,
     /// Outputs
+    #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
 }
 
@@ -196,6 +202,7 @@ impl MintBolt11Request {
 
 /// Mint response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintBolt11Response {
     /// Blinded Signatures
     pub signatures: Vec<BlindSignature>,
@@ -203,6 +210,7 @@ pub struct MintBolt11Response {
 
 /// Mint Method Settings
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -221,6 +229,7 @@ pub struct MintMethodSettings {
 
 /// Mint Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut04::Settings))]
 pub struct Settings {
     /// Methods to mint
     pub methods: Vec<MintMethodSettings>,

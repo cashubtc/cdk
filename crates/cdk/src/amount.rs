@@ -27,6 +27,7 @@ pub enum Error {
 
 /// Amount can be any unit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct Amount(u64);
 
