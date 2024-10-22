@@ -4,6 +4,7 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -24,6 +25,7 @@ use futures::{Stream, StreamExt};
 use phoenixd_rs::webhooks::WebhookResponse;
 use phoenixd_rs::{InvoiceRequest, Phoenixd as PhoenixdApi};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 pub mod error;
 
@@ -36,6 +38,8 @@ pub struct Phoenixd {
     fee_reserve: FeeReserve,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<WebhookResponse>>>>,
     webhook_url: String,
+    wait_invoice_cancel_token: CancellationToken,
+    wait_invoice_is_active: Arc<AtomicBool>,
 }
 
 impl Phoenixd {
@@ -57,6 +61,8 @@ impl Phoenixd {
             fee_reserve,
             receiver,
             webhook_url,
+            wait_invoice_cancel_token: CancellationToken::new(),
+            wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -86,6 +92,15 @@ impl MintLightning for Phoenixd {
         }
     }
 
+    fn is_wait_invoice_active(&self) -> bool {
+        self.wait_invoice_is_active.load(Ordering::SeqCst)
+    }
+
+    fn cancel_wait_invoice(&self) {
+        self.wait_invoice_cancel_token.cancel()
+    }
+
+    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
@@ -98,29 +113,55 @@ impl MintLightning for Phoenixd {
 
         let phoenixd_api = self.phoenixd_api.clone();
 
-        Ok(futures::stream::unfold(
-            (receiver, phoenixd_api),
-            |(mut receiver, phoenixd_api)| async move {
-                match receiver.recv().await {
-                    Some(msg) => {
-                        let check = phoenixd_api.get_incoming_invoice(&msg.payment_hash).await;
+        let cancel_token = self.wait_invoice_cancel_token.clone();
 
-                        match check {
-                            Ok(state) => {
-                                if state.is_paid {
-                                    Some((msg.payment_hash, (receiver, phoenixd_api)))
-                                } else {
+        Ok(futures::stream::unfold(
+        (receiver, phoenixd_api, cancel_token,
+                Arc::clone(&self.wait_invoice_is_active),
+        ),
+        |(mut receiver, phoenixd_api, cancel_token, is_active)| async move {
+
+                is_active.store(true, Ordering::SeqCst);
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    // Stream is cancelled
+                    is_active.store(false, Ordering::SeqCst);
+                    tracing::info!("Waiting for phonixd invoice ending");
+                    None
+                }
+                msg_option = receiver.recv() => {
+                    match msg_option {
+                        Some(msg) => {
+                            let check = phoenixd_api.get_incoming_invoice(&msg.payment_hash).await;
+
+                            match check {
+                                Ok(state) => {
+                                    if state.is_paid {
+                                        // Yield the payment hash and continue the stream
+                                        Some((msg.payment_hash, (receiver, phoenixd_api, cancel_token, is_active)))
+                                    } else {
+                                        // Invoice not paid yet, continue waiting
+                                        // We need to continue the stream, so we return the same state
+                                        None
+                                    }
+                                }
+                                Err(e) => {
+                                    // Log the error and continue
+                                    tracing::warn!("Error checking invoice state: {:?}", e);
                                     None
                                 }
                             }
-                            _ => None,
+                        }
+                        None => {
+                            // The receiver stream has ended
+                            None
                         }
                     }
-                    None => None,
                 }
-            },
-        )
-        .boxed())
+            }
+        },
+    )
+    .boxed())
     }
 
     async fn get_payment_quote(

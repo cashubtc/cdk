@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::hash_to_curve;
 use cdk::mint::{MintKeySetInfo, MintQuote};
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
     Proofs, PublicKey, State,
@@ -603,10 +604,7 @@ impl MintDatabase for MintRedbDatabase {
             .filter(|p| &p.keyset_id == keyset_id)
             .collect::<Proofs>();
 
-        let proof_ys = proofs_for_id
-            .iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let proof_ys = proofs_for_id.ys()?;
 
         assert_eq!(proofs_for_id.len(), proof_ys.len());
 

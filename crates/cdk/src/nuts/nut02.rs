@@ -25,6 +25,7 @@ use thiserror::Error;
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
+use crate::amount::AmountStr;
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
 #[cfg(feature = "mint")]
@@ -42,6 +43,9 @@ pub enum Error {
     /// Unknown version
     #[error("NUT02: Unknown Version")]
     UnknownVersion,
+    /// Keyset id does not match
+    #[error("Keyset id incorrect")]
+    IncorrectKeysetId,
     /// Slice Error
     #[error(transparent)]
     Slice(#[from] TryFromSliceError),
@@ -49,6 +53,7 @@ pub enum Error {
 
 /// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Current Version 00
     Version00,
@@ -84,6 +89,7 @@ impl fmt::Display for KeySetVersion {
 /// be stored in a Cashu token such that the token can be used to identify
 /// which mint or keyset it was generated from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Id {
     version: KeySetVersion,
     id: [u8; Self::BYTELEN],
@@ -197,9 +203,9 @@ impl From<&Keys> for Id {
             5 - prefix it with a keyset ID version byte
         */
 
-        let mut keys: Vec<(&String, &super::PublicKey)> = map.iter().collect();
+        let mut keys: Vec<(&AmountStr, &super::PublicKey)> = map.iter().collect();
 
-        keys.sort_by_key(|(k, _v)| u64::from_str(k).unwrap());
+        keys.sort_by_key(|(amt, _v)| *amt);
 
         let pubkeys_concat: Vec<u8> = keys
             .iter()
@@ -224,6 +230,7 @@ impl From<&Keys> for Id {
 /// Ids of mints keyset ids
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
     #[serde_as(as = "VecSkipError<_>")]
@@ -232,6 +239,7 @@ pub struct KeysetResponse {
 
 /// Keyset
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySet {
     /// Keyset [`Id`]
     pub id: Id,
@@ -239,6 +247,19 @@ pub struct KeySet {
     pub unit: CurrencyUnit,
     /// Keyset [`Keys`]
     pub keys: Keys,
+}
+
+impl KeySet {
+    /// Verify the keyset is matches keys
+    pub fn verify_id(&self) -> Result<(), Error> {
+        let keys_id: Id = (&self.keys).into();
+
+        if keys_id != self.id {
+            return Err(Error::IncorrectKeysetId);
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "mint")]
@@ -254,6 +275,7 @@ impl From<MintKeySet> for KeySet {
 
 /// KeySetInfo
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySetInfo {
     /// Keyset [`Id`]
     pub id: Id,

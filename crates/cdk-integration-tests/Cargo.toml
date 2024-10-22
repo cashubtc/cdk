@@ -35,6 +35,7 @@ ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tower-service = "0.3.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = [

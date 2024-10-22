@@ -190,15 +190,18 @@ impl Mint {
         let mut join_set = JoinSet::new();
 
         for (key, ln) in self.ln.iter() {
-            let mint = Arc::clone(&mint_arc);
-            let ln = Arc::clone(ln);
-            let shutdown = Arc::clone(&shutdown);
-            let key = *key;
-            join_set.spawn(async move {
+            if !ln.is_wait_invoice_active() {
+                let mint = Arc::clone(&mint_arc);
+                let ln = Arc::clone(ln);
+                let shutdown = Arc::clone(&shutdown);
+                let key = *key;
+                join_set.spawn(async move {
+            if !ln.is_wait_invoice_active() {
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
                         tracing::info!("Shutdown signal received, stopping task for {:?}", key);
+                        ln.cancel_wait_invoice();
                         break;
                     }
                     result = ln.wait_any_invoice() => {
@@ -216,9 +219,11 @@ impl Mint {
                             }
                         }
                     }
+                    }
                 }
             }
         });
+            }
         }
 
         // Spawn a task to manage the JoinSet
