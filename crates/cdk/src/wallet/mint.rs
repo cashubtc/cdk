@@ -48,7 +48,6 @@ impl Wallet {
         let unit = self.unit;
 
         // If we have a description, we check that the mint supports it.
-        // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let mint_method_settings = self
                 .localstore
