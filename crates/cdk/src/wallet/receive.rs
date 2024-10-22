@@ -34,10 +34,7 @@ impl Wallet {
             .await?
             .is_none()
         {
-            tracing::debug!(
-                "Mint not in localstore fetching info for: {}",
-                self.mint_url
-            );
+            tracing::debug!("Mint not in localstore fetching info for: {mint_url}");
             self.get_mint_info().await?;
         }
 
@@ -134,7 +131,7 @@ impl Wallet {
 
         let swap_response = self
             .client
-            .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
+            .post_swap(mint_url.clone(), pre_swap.swap_request)
             .await?;
 
         // Proof to keep
