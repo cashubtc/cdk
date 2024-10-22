@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::{mint_url::MintUrl, Amount};
 
-use super::CurrencyUnit;
+use super::{CurrencyUnit, Proofs};
 
 const PAYMENT_REQUEST_PREFIX: &str = "creqA";
 
@@ -32,12 +32,39 @@ pub enum Error {
     Base64Error(#[from] bitcoin::base64::DecodeError),
 }
 
+/// Transport Type
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransportType {
+    /// Nostr
+    #[serde(rename = "nostr")]
+    Nostr,
+    /// Http post
+    #[serde(rename = "post")]
+    HttpPost,
+}
+
+impl fmt::Display for TransportType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use serde::ser::Error;
+        let t = serde_json::to_string(self).map_err(|e| fmt::Error::custom(e.to_string()))?;
+        write!(f, "{}", t)
+    }
+}
+
+impl FromStr for Transport {
+    type Err = serde_json::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
+    }
+}
+
 /// Transport
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transport {
     /// Type
     #[serde(rename = "t")]
-    pub _type: String,
+    pub _type: TransportType,
     /// Target
     #[serde(rename = "a")]
     pub target: String,
@@ -47,7 +74,7 @@ pub struct Transport {
 }
 
 /// Payment Request
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequest {
     /// `Payment id`
     #[serde(rename = "i")]
@@ -98,6 +125,21 @@ impl FromStr for PaymentRequest {
     }
 }
 
+/// Payment Request
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaymentRequestPayload {
+    /// Id
+    pub id: Option<String>,
+    /// Memo
+    pub memo: Option<String>,
+    /// Mint
+    pub mint: MintUrl,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Proofs
+    pub proofs: Proofs,
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -121,7 +163,7 @@ mod tests {
 
         let transport = req.transports.first().unwrap();
 
-        let expected_transport = Transport {_type: "nostr".to_string(), target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
+        let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
 
         assert_eq!(transport, &expected_transport);
 
@@ -130,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_payment_req() -> anyhow::Result<()> {
-        let transport = Transport {_type: "nostr".to_string(), target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
+        let transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
 
         let request = PaymentRequest {
             payment_id: Some("b7a90176".to_string()),
