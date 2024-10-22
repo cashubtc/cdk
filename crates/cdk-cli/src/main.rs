@@ -72,6 +72,12 @@ enum Commands {
     UpdateMintUrl(sub_commands::update_mint_url::UpdateMintUrlSubCommand),
     /// Get proofs from mint.
     ListMintProofs,
+    /// Decode a payment request
+    DecodeRequest(sub_commands::decode_request::DecodePaymentRequestSubCommand),
+    /// Pay a payment request
+    PayRequest(sub_commands::pay_request::PayRequestSubCommand),
+    /// Create Payment request
+    CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
 }
 
 #[tokio::main]
@@ -203,6 +209,15 @@ async fn main() -> Result<()> {
         }
         Commands::ListMintProofs => {
             sub_commands::list_mint_proofs::proofs(&multi_mint_wallet).await
+        }
+        Commands::DecodeRequest(sub_command_args) => {
+            sub_commands::decode_request::decode_payment_request(sub_command_args)
+        }
+        Commands::PayRequest(sub_command_args) => {
+            sub_commands::pay_request::pay_request(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::CreateRequest(sub_command_args) => {
+            sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
         }
     }
 }

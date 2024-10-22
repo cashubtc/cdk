@@ -184,20 +184,25 @@ async fn nostr_receive(
 
     let client = nostr_sdk::Client::default();
 
-    client.add_relays(relays).await?;
-
     client.connect().await;
 
-    let events = client.get_events_of(vec![filter], None).await?;
+    let events = client
+        .get_events_of(
+            vec![filter],
+            nostr_sdk::EventSource::Relays {
+                timeout: None,
+                specific_relays: Some(relays),
+            },
+        )
+        .await?;
 
     let mut tokens: HashSet<String> = HashSet::new();
 
     let keys = Keys::from_str(&(nostr_signing_key).to_secret_hex())?;
 
     for event in events {
-        if event.kind() == Kind::EncryptedDirectMessage {
-            if let Ok(msg) = nip04::decrypt(keys.secret_key()?, event.author_ref(), event.content())
-            {
+        if event.kind == Kind::EncryptedDirectMessage {
+            if let Ok(msg) = nip04::decrypt(keys.secret_key(), &event.pubkey, event.content) {
                 if let Some(token) = cdk::wallet::util::token_from_text(&msg) {
                     tokens.insert(token.to_string());
                 }
