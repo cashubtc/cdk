@@ -80,13 +80,11 @@ Experimental bindings can be found in the [bindings](./bindings/) folder.
   just test
 ```
 
-### Set Dev
+### Setup Dev
 
 ```
   https://github.com/cashubtc/cdk/tree/main/crates/cdk-mintd#readme
 ```
-
-
 
 ## License
 
