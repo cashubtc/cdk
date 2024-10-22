@@ -1383,6 +1383,14 @@ impl MintLightning for Node {
         }))
     }
 
+    fn is_wait_invoice_active(&self) -> bool {
+        self.paid_invoices.receiver_count() > 0
+    }
+
+    fn cancel_wait_invoice(&self) {
+        tracing::warn!("Cancelling wait invoice unimplemented");
+    }
+
     async fn check_incoming_invoice_status(
         &self,
         request_lookup_id: &str,
