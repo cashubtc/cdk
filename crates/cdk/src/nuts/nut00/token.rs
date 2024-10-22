@@ -43,7 +43,7 @@ impl Token {
         mint_url: MintUrl,
         proofs: Proofs,
         memo: Option<String>,
-        unit: Option<CurrencyUnit>,
+        unit: CurrencyUnit,
     ) -> Self {
         let proofs = proofs
             .into_iter()
@@ -90,10 +90,10 @@ impl Token {
     }
 
     /// Unit
-    pub fn unit(&self) -> &Option<CurrencyUnit> {
+    pub fn unit(&self) -> Option<CurrencyUnit> {
         match self {
             Self::TokenV3(token) => token.unit(),
-            Self::TokenV4(token) => token.unit(),
+            Self::TokenV4(token) => Some(token.unit()),
         }
     }
 
@@ -219,8 +219,8 @@ impl TokenV3 {
     }
 
     #[inline]
-    fn unit(&self) -> &Option<CurrencyUnit> {
-        &self.unit
+    fn unit(&self) -> Option<CurrencyUnit> {
+        self.unit
     }
 }
 
@@ -257,7 +257,7 @@ impl From<TokenV4> for TokenV3 {
         TokenV3 {
             token: vec![TokenV3Token::new(mint_url, proofs)],
             memo: token.memo,
-            unit: token.unit,
+            unit: Some(token.unit),
         }
     }
 }
@@ -269,14 +269,12 @@ pub struct TokenV4 {
     #[serde(rename = "m")]
     pub mint_url: MintUrl,
     /// Token Unit
-    #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
-    pub unit: Option<CurrencyUnit>,
+    #[serde(rename = "u")]
+    pub unit: CurrencyUnit,
     /// Memo for token
     #[serde(rename = "d", skip_serializing_if = "Option::is_none")]
     pub memo: Option<String>,
-    /// Proofs
-    ///
-    /// Proofs separated by keyset_id
+    /// Proofs grouped by keyset_id
     #[serde(rename = "t")]
     pub token: Vec<TokenV4Token>,
 }
@@ -319,8 +317,8 @@ impl TokenV4 {
     }
 
     #[inline]
-    fn unit(&self) -> &Option<CurrencyUnit> {
-        &self.unit
+    fn unit(&self) -> CurrencyUnit {
+        self.unit
     }
 }
 
@@ -374,7 +372,7 @@ impl TryFrom<TokenV3> for TokenV4 {
             mint_url: mint_url.to_owned(),
             token: proofs,
             memo: token.memo,
-            unit: token.unit,
+            unit: token.unit.ok_or(Error::UnsupportedUnit)?,
         })
     }
 }
@@ -469,8 +467,7 @@ mod tests {
 
         assert_eq!(amount, Amount::from(4));
 
-        let unit = (*token.unit()).unwrap();
-
+        let unit = token.unit().unwrap();
         assert_eq!(CurrencyUnit::Sat, unit);
 
         match token {
