@@ -66,9 +66,6 @@ pub enum Error {
     /// Unsupported token
     #[error("Unsupported payment method")]
     UnsupportedPaymentMethod,
-    /// Invalid Url
-    #[error("Invalid URL")]
-    InvalidUrl,
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -78,9 +75,6 @@ pub enum Error {
     /// Base64 error
     #[error(transparent)]
     Base64Error(#[from] bitcoin::base64::DecodeError),
-    /// Parse Url Error
-    #[error(transparent)]
-    UrlParseError(#[from] url::ParseError),
     /// Ciborium error
     #[error(transparent)]
     CiboriumError(#[from] ciborium::de::Error<std::io::Error>),
