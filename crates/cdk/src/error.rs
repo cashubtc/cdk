@@ -234,6 +234,9 @@ pub enum Error {
     /// NUT14 Error
     #[error(transparent)]
     NUT14(#[from] crate::nuts::nut14::Error),
+    /// NUT18 Error
+    #[error(transparent)]
+    NUT18(#[from] crate::nuts::nut18::Error),
     /// Database Error
     #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]
