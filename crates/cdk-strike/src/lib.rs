@@ -336,20 +336,20 @@ impl Strike {
 pub(crate) fn from_strike_amount(
     strike_amount: StrikeAmount,
     target_unit: &CurrencyUnit,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<Amount> {
     match target_unit {
-        CurrencyUnit::Sat => strike_amount.to_sats(),
-        CurrencyUnit::Msat => Ok(strike_amount.to_sats()? * 1000),
+        CurrencyUnit::Sat => Ok(strike_amount.to_sats()?.into()),
+        CurrencyUnit::Msat => Ok(Amount::from(strike_amount.to_sats()? * 1000)),
         CurrencyUnit::Usd => {
             if strike_amount.currency == StrikeCurrencyUnit::USD {
-                Ok((strike_amount.amount * 100.0).round() as u64)
+                Ok(Amount::from((strike_amount.amount * 100.0).round() as u64))
             } else {
                 bail!("Could not convert strike USD");
             }
         }
         CurrencyUnit::Eur => {
             if strike_amount.currency == StrikeCurrencyUnit::EUR {
-                Ok((strike_amount.amount * 100.0).round() as u64)
+                Ok(Amount::from((strike_amount.amount * 100.0).round() as u64))
             } else {
                 bail!("Could not convert to EUR");
             }
