@@ -1,6 +1,8 @@
 //! Specific Subscription for the cdk crate
+
+#[cfg(feature = "mint")]
+use crate::mint::{MeltQuote, MintQuote};
 use crate::{
-    mint::{MeltQuote, MintQuote},
     nuts::{
         MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
         ProofState,
@@ -159,42 +161,61 @@ impl Deref for PubSubManager {
     }
 }
 
+#[cfg(feature = "mint")]
+impl From<&MintQuote> for MintQuoteBolt11Response {
+    fn from(mint_quote: &MintQuote) -> MintQuoteBolt11Response {
+        MintQuoteBolt11Response {
+            quote: mint_quote.id.clone(),
+            request: mint_quote.request.clone(),
+            paid: Some(mint_quote.state == MintQuoteState::Paid),
+            state: mint_quote.state,
+            expiry: Some(mint_quote.expiry),
+        }
+    }
+}
+
+#[cfg(feature = "mint")]
+impl From<&MeltQuote> for MeltQuoteBolt11Response {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response {
+        MeltQuoteBolt11Response {
+            quote: melt_quote.id.clone(),
+            payment_preimage: None,
+            change: None,
+            state: melt_quote.state,
+            paid: Some(melt_quote.state == MeltQuoteState::Paid),
+            expiry: melt_quote.expiry,
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
+        }
+    }
+}
+
 impl PubSubManager {
     /// Helper function to emit a MintQuoteBolt11Response status
-    pub fn mint_quote_bolt11_status(&self, quote: &MintQuote, new_state: MintQuoteState) {
-        self.broadcast(
-            MintQuoteBolt11Response {
-                quote: quote.id.clone(),
-                request: quote.request.clone(),
-                state: new_state,
-                paid: Some(new_state == MintQuoteState::Paid),
-                expiry: Some(quote.expiry),
-            }
-            .into(),
-        );
+    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response>>(
+        &self,
+        quote: E,
+        new_state: MintQuoteState,
+    ) {
+        let mut event = quote.into();
+        event.paid = Some(new_state == MintQuoteState::Paid);
+
+        self.broadcast(event.into());
     }
 
     /// Helper function to emit a MeltQuoteBolt11Response status
-    pub fn melt_quote_status(
+    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response>>(
         &self,
-        quote: &MeltQuote,
+        quote: E,
         payment_preimage: Option<String>,
         change: Option<Vec<BlindSignature>>,
         new_state: MeltQuoteState,
     ) {
-        self.broadcast(
-            MeltQuoteBolt11Response {
-                quote: quote.id.clone(),
-                payment_preimage,
-                change,
-                state: new_state,
-                paid: Some(new_state == MeltQuoteState::Paid),
-                expiry: quote.expiry,
-                amount: quote.amount,
-                fee_reserve: quote.fee_reserve,
-            }
-            .into(),
-        );
+        let mut quote = quote.into();
+        quote.paid = Some(new_state == MeltQuoteState::Paid);
+        quote.payment_preimage = payment_preimage;
+        quote.change = change;
+        self.broadcast(quote.into());
     }
 }
 
