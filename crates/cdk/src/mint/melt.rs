@@ -18,7 +18,7 @@ use crate::{
 
 use super::{
     CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    Mint, PaymentMethod, PublicKey, State,
+    Mint, NotificationPayload, PaymentMethod, PublicKey, State,
 };
 
 impl Mint {
@@ -130,7 +130,12 @@ impl Mint {
 
         self.localstore.add_melt_quote(quote.clone()).await?;
 
-        Ok(quote.into())
+        let quote: MeltQuoteBolt11Response = quote.into();
+
+        self.pubsub_manager
+            .broadcast(NotificationPayload::MeltQuoteBolt11Response(quote.clone()));
+
+        Ok(quote)
     }
 
     /// Check melt quote status
@@ -380,6 +385,11 @@ impl Mint {
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Unpaid)
             .await?;
 
+        if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
+            self.pubsub_manager
+                .melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
+        }
+
         Ok(())
     }
 
@@ -616,6 +626,13 @@ impl Mint {
         self.localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
             .await?;
+
+        self.pubsub_manager.melt_quote_status(
+            &quote,
+            payment_preimage.clone(),
+            None,
+            MeltQuoteState::Paid,
+        );
 
         let mut change = None;
 
