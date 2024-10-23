@@ -51,7 +51,7 @@ enum Commands {
     /// Balance
     Balance,
     /// Pay bolt11 invoice
-    Pay(sub_commands::melt::MeltSubCommand),
+    Melt(sub_commands::melt::MeltSubCommand),
     /// Claim pending mint quotes that have been paid
     MintPending,
     /// Receive token
@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
         Commands::Balance => sub_commands::balance::balance(&multi_mint_wallet).await,
-        Commands::Pay(sub_command_args) => {
+        Commands::Melt(sub_command_args) => {
             sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Receive(sub_command_args) => {
