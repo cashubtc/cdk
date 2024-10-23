@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use tracing::instrument;
 
-use crate::dhke::hash_to_curve;
+use crate::nuts::nut00::ProofsMethods;
 use crate::Error;
 
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
@@ -59,11 +59,7 @@ impl Mint {
 
         let proof_count = swap_request.inputs.len();
 
-        let input_ys = swap_request
-            .inputs
-            .iter()
-            .map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let input_ys = swap_request.inputs.ys()?;
 
         self.localstore
             .add_proofs(swap_request.inputs.clone(), None)

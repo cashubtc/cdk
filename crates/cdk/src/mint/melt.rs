@@ -8,7 +8,7 @@ use tracing::instrument;
 use crate::cdk_lightning;
 use crate::cdk_lightning::MintLightning;
 use crate::cdk_lightning::PayInvoiceResponse;
-use crate::dhke::hash_to_curve;
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::enforce_sig_flag;
 use crate::nuts::nut11::EnforceSigFlag;
 use crate::{
@@ -269,11 +269,7 @@ impl Mint {
             }
         }
 
-        let ys = melt_request
-            .inputs
-            .iter()
-            .map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let ys = melt_request.inputs.ys()?;
 
         // Ensure proofs are unique and not being double spent
         if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
@@ -379,11 +375,7 @@ impl Mint {
     /// quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let input_ys = melt_request
-            .inputs
-            .iter()
-            .map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let input_ys = melt_request.inputs.ys()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Unspent)
@@ -625,11 +617,7 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let input_ys = melt_request
-            .inputs
-            .iter()
-            .map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let input_ys = melt_request.inputs.ys()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Spent)

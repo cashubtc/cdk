@@ -1,8 +1,9 @@
 use tracing::instrument;
 
+use crate::nuts::nut00::ProofsMethods;
 use crate::{
     amount::SplitTarget,
-    nuts::{Proofs, PublicKey, SpendingConditions, State, Token},
+    nuts::{Proofs, SpendingConditions, State, Token},
     Amount, Error, Wallet,
 };
 
@@ -12,10 +13,7 @@ impl Wallet {
     /// Send specific proofs
     #[instrument(skip(self))]
     pub async fn send_proofs(&self, memo: Option<String>, proofs: Proofs) -> Result<Token, Error> {
-        let ys = proofs
-            .iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let ys = proofs.ys()?;
         self.localstore.reserve_proofs(ys).await?;
 
         Ok(Token::new(
@@ -114,8 +112,7 @@ impl Wallet {
         let send_proofs: Proofs = match (send_kind, selected, conditions.clone()) {
             // Handle exact matches offline
             (SendKind::OfflineExact, Ok(selected_proofs), _) => {
-                let selected_proofs_amount =
-                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+                let selected_proofs_amount = selected_proofs.total_amount()?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -131,8 +128,7 @@ impl Wallet {
 
             // Handle exact matches
             (SendKind::OnlineExact, Ok(selected_proofs), _) => {
-                let selected_proofs_amount =
-                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+                let selected_proofs_amount = selected_proofs.total_amount()?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -152,8 +148,7 @@ impl Wallet {
 
             // Handle offline tolerance
             (SendKind::OfflineTolerance(tolerance), Ok(selected_proofs), _) => {
-                let selected_proofs_amount =
-                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+                let selected_proofs_amount = selected_proofs.total_amount()?;
 
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
@@ -178,8 +173,7 @@ impl Wallet {
 
             // Handle online tolerance with successful selection
             (SendKind::OnlineTolerance(tolerance), Ok(selected_proofs), _) => {
-                let selected_proofs_amount =
-                    Amount::try_sum(selected_proofs.iter().map(|p| p.amount))?;
+                let selected_proofs_amount = selected_proofs.total_amount()?;
                 let amount_to_send = match include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
                     false => amount,

@@ -35,6 +35,7 @@ mod swap;
 pub mod types;
 pub mod util;
 
+use crate::nuts::nut00::ProofsMethods;
 pub use multi_mint_wallet::MultiMintWallet;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -160,11 +161,7 @@ impl Wallet {
     /// Qeury mint for current mint information
     #[instrument(skip(self))]
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = match self
-            .client
-            .get_mint_info(self.mint_url.clone().try_into()?)
-            .await
-        {
+        let mint_info = match self.client.get_mint_info(self.mint_url.clone()).await {
             Ok(mint_info) => Some(mint_info),
             Err(err) => {
                 tracing::warn!("Could not get mint info {}", err);
@@ -280,7 +277,7 @@ impl Wallet {
 
                 let response = self
                     .client
-                    .post_restore(self.mint_url.clone().try_into()?, restore_request)
+                    .post_restore(self.mint_url.clone(), restore_request)
                     .await?;
 
                 if response.signatures.is_empty() {
@@ -327,7 +324,7 @@ impl Wallet {
                     .cloned()
                     .collect();
 
-                restored_value += Amount::try_sum(unspent_proofs.iter().map(|p| p.amount))?;
+                restored_value += unspent_proofs.total_amount()?;
 
                 let unspent_proofs = unspent_proofs
                     .into_iter()

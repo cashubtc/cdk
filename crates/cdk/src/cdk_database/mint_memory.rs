@@ -9,6 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
 use crate::mint::{self, MintKeySetInfo, MintQuote};
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut07::State;
 use crate::nuts::{
     nut07, BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState,
@@ -346,10 +347,7 @@ impl MintDatabase for MintMemoryDatabase {
             .cloned()
             .collect();
 
-        let proof_ys = proofs_for_id
-            .iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let proof_ys = proofs_for_id.ys()?;
 
         assert_eq!(proofs_for_id.len(), proof_ys.len());
 
