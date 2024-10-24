@@ -1,3 +1,4 @@
+use cdk_common::ensure_cdk;
 use tracing::instrument;
 
 use super::MintQuote;
@@ -50,7 +51,7 @@ impl Wallet {
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            let mint_method_settings = self
+            let settings = self
                 .localstore
                 .get_mint(mint_url.clone())
                 .await?
@@ -60,9 +61,7 @@ impl Wallet {
                 .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
                 .ok_or(Error::UnsupportedUnit)?;
 
-            if !mint_method_settings.description {
-                return Err(Error::InvoiceDescriptionUnsupported);
-            }
+            ensure_cdk!(settings.description, Error::InvoiceDescriptionUnsupported);
         }
 
         let secret_key = SecretKey::generate();
@@ -186,17 +185,17 @@ impl Wallet {
             self.get_mint_info().await?;
         }
 
-        let quote_info = self.localstore.get_mint_quote(quote_id).await?;
+        let quote_info = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
-                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
-            }
-
-            quote.clone()
-        } else {
-            return Err(Error::UnknownQuote);
-        };
+        let unix_time = unix_time();
+        ensure_cdk!(
+            quote_info.expiry > unix_time || quote_info.expiry == 0,
+            Error::ExpiredQuote(quote_info.expiry, unix_time)
+        );
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
