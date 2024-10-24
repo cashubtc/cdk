@@ -34,36 +34,20 @@ impl Mint {
             return Err(Error::MeltingDisabled);
         }
 
-        match nut05.get_settings(&unit, &method) {
-            Some(settings) => {
-                if settings
-                    .max_amount
-                    .map_or(false, |max_amount| amount > max_amount)
-                {
-                    return Err(Error::AmountOutofLimitRange(
-                        settings.min_amount.unwrap_or_default(),
-                        settings.max_amount.unwrap_or_default(),
-                        amount,
-                    ));
-                }
+        let settings = nut05
+            .get_settings(&unit, &method)
+            .ok_or(Error::UnitUnsupported)?;
 
-                if settings
-                    .min_amount
-                    .map_or(false, |min_amount| amount < min_amount)
-                {
-                    return Err(Error::AmountOutofLimitRange(
-                        settings.min_amount.unwrap_or_default(),
-                        settings.max_amount.unwrap_or_default(),
-                        amount,
-                    ));
-                }
-            }
-            None => {
-                return Err(Error::UnitUnsupported);
-            }
+        let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
+        let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
+        match is_above_max || is_below_min {
+            true => Err(Error::AmountOutofLimitRange(
+                settings.min_amount.unwrap_or_default(),
+                settings.max_amount.unwrap_or_default(),
+                amount,
+            )),
+            false => Ok(()),
         }
-
-        Ok(())
     }
 
     /// Get melt bolt11 quote
@@ -252,17 +236,11 @@ impl Mint {
             .await?;
 
         match state {
-            MeltQuoteState::Unpaid | MeltQuoteState::Failed => (),
-            MeltQuoteState::Pending => {
-                return Err(Error::PendingQuote);
-            }
-            MeltQuoteState::Paid => {
-                return Err(Error::PaidQuote);
-            }
-            MeltQuoteState::Unknown => {
-                return Err(Error::UnknownPaymentState);
-            }
-        }
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => Ok(()),
+            MeltQuoteState::Pending => Err(Error::PendingQuote),
+            MeltQuoteState::Paid => Err(Error::PaidQuote),
+            MeltQuoteState::Unknown => Err(Error::UnknownPaymentState),
+        }?;
 
         let ys = melt_request.inputs.ys()?;
 
