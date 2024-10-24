@@ -5,6 +5,8 @@
 
 use core::fmt;
 
+use crate::ensure_cdk;
+
 /// Hex error
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -76,9 +78,7 @@ where
     let hex = hex.as_ref();
     let len = hex.len();
 
-    if len % 2 != 0 {
-        return Err(Error::OddLength);
-    }
+    ensure_cdk!(len % 2 == 0, Error::OddLength);
 
     let mut bytes: Vec<u8> = Vec::with_capacity(len / 2);
 

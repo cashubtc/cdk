@@ -14,7 +14,7 @@ use super::{Error, Proof, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{CurrencyUnit, Id};
-use crate::Amount;
+use crate::{ensure_cdk, Amount};
 
 /// Token Enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,11 +103,9 @@ impl Token {
             Self::TokenV3(token) => {
                 let mint_urls = token.mint_urls();
 
-                if mint_urls.len() != 1 {
-                    return Err(Error::UnsupportedToken);
-                }
+                ensure_cdk!(mint_urls.len() == 1, Error::UnsupportedToken);
 
-                Ok(mint_urls.first().expect("Length is checked above").clone())
+                mint_urls.first().ok_or(Error::UnsupportedToken).cloned()
             }
             Self::TokenV4(token) => Ok(token.mint_url.clone()),
         }
@@ -164,9 +162,7 @@ impl TryFrom<&Vec<u8>> for Token {
     type Error = Error;
 
     fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
-        if bytes.len() < 5 {
-            return Err(Error::UnsupportedToken);
-        }
+        ensure_cdk!(bytes.len() >= 5, Error::UnsupportedToken);
 
         let prefix = String::from_utf8(bytes[..5].to_vec())?;
 
@@ -220,9 +216,7 @@ impl TokenV3 {
         memo: Option<String>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Self, Error> {
-        if proofs.is_empty() {
-            return Err(Error::ProofsRequired);
-        }
+        ensure_cdk!(!proofs.is_empty(), Error::ProofsRequired);
 
         Ok(Self {
             token: vec![TokenV3Token::new(mint_url, proofs)],
@@ -400,18 +394,12 @@ impl TryFrom<&Vec<u8>> for TokenV4 {
     type Error = Error;
 
     fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
-        if bytes.len() < 5 {
-            return Err(Error::UnsupportedToken);
-        }
+        ensure_cdk!(bytes.len() >= 5, Error::UnsupportedToken);
 
         let prefix = String::from_utf8(bytes[..5].to_vec())?;
+        ensure_cdk!(prefix.as_str() == "crawB", Error::UnsupportedToken);
 
-        if prefix.as_str() == "crawB" {
-            let token: TokenV4 = ciborium::from_reader(&bytes[5..])?;
-            Ok(token)
-        } else {
-            Err(Error::UnsupportedToken)
-        }
+        Ok(ciborium::from_reader(&bytes[5..])?)
     }
 }
 
@@ -421,11 +409,9 @@ impl TryFrom<TokenV3> for TokenV4 {
         let proofs = token.proofs();
         let mint_urls = token.mint_urls();
 
-        if mint_urls.len() != 1 {
-            return Err(Error::UnsupportedToken);
-        }
+        ensure_cdk!(mint_urls.len() == 1, Error::UnsupportedToken);
 
-        let mint_url = mint_urls.first().expect("Len is checked");
+        let mint_url = mint_urls.first().ok_or(Error::UnsupportedToken)?;
 
         let proofs = proofs
             .iter()

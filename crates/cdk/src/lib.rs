@@ -22,7 +22,7 @@ pub mod pub_sub;
 /// Re-export amount type
 #[doc(hidden)]
 pub use cdk_common::{
-    amount, common as types, dhke,
+    amount, common as types, dhke, ensure_cdk,
     error::{self, Error},
     lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };

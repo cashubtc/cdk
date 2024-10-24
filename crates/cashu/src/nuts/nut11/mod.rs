@@ -17,6 +17,7 @@ use thiserror::Error;
 use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
+use crate::ensure_cdk;
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;
 use crate::util::{hex, unix_time};
@@ -422,9 +423,7 @@ impl Conditions {
         sig_flag: Option<SigFlag>,
     ) -> Result<Self, Error> {
         if let Some(locktime) = locktime {
-            if locktime.lt(&unix_time()) {
-                return Err(Error::LocktimeInPast);
-            }
+            ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
         }
 
         Ok(Self {
@@ -704,10 +703,7 @@ where
     type Error = Error;
 
     fn try_from(tag: Vec<S>) -> Result<Self, Self::Error> {
-        let tag_kind: TagKind = match tag.first() {
-            Some(kind) => TagKind::from(kind),
-            None => return Err(Error::KindNotFound),
-        };
+        let tag_kind = tag.first().map(TagKind::from).ok_or(Error::KindNotFound)?;
 
         match tag_kind {
             TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from_str(tag[1].as_ref())?)),

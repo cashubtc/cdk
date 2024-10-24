@@ -24,4 +24,4 @@ pub use cashu::mint;
 pub use cashu::nuts::{self, *};
 #[cfg(feature = "wallet")]
 pub use cashu::wallet;
-pub use cashu::{dhke, mint_url, secret, util, SECP256K1};
+pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
