@@ -207,9 +207,7 @@ impl Wallet {
             return Err(Error::MultiMintTokenNotSupported);
         }
 
-        let (mint_url, proofs) = proofs.into_iter().next().expect("Token has proofs");
-
-        if self.mint_url != mint_url {
+        if self.mint_url != token_data.mint_url()? {
             return Err(Error::IncorrectMint);
         }
 
