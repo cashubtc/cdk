@@ -82,12 +82,7 @@ pub async fn create_request(
 
                 let payload: PaymentRequestPayload = serde_json::from_str(&rumor.content)?;
 
-                let token = Token::new(
-                    payload.mint,
-                    payload.proofs,
-                    payload.memo,
-                    Some(payload.unit),
-                );
+                let token = Token::new(payload.mint, payload.proofs, payload.memo, payload.unit);
 
                 let amount = multi_mint_wallet
                     .receive(&token.to_string(), &[], &[])
