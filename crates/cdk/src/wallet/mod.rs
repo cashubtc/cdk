@@ -27,6 +27,7 @@ pub mod client;
 mod keysets;
 mod melt;
 mod mint;
+mod mint_bolt12;
 pub mod multi_mint_wallet;
 mod proofs;
 mod receive;

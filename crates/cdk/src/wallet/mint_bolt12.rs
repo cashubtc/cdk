@@ -2,45 +2,21 @@ use tracing::instrument;
 
 use super::MintQuote;
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut19::MintQuoteBolt12Response;
 use crate::nuts::PaymentMethod;
 use crate::{
     amount::SplitTarget,
     dhke::construct_proofs,
-    nuts::{nut12, MintQuoteBolt11Response, PreMintSecrets, SpendingConditions, State},
+    nuts::{nut12, PreMintSecrets, SpendingConditions, State},
     types::ProofInfo,
     util::unix_time,
-    wallet::MintQuoteState,
     Amount, Error, Wallet,
 };
 
 impl Wallet {
-    /// Mint Quote
-    /// # Synopsis
-    /// ```rust
-    /// use std::sync::Arc;
-    ///
-    /// use cdk::amount::Amount;
-    /// use cdk::cdk_database::WalletMemoryDatabase;
-    /// use cdk::nuts::CurrencyUnit;
-    /// use cdk::wallet::Wallet;
-    /// use rand::Rng;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> anyhow::Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
-    ///     let unit = CurrencyUnit::Sat;
-    ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
-    ///     let amount = Amount::from(100);
-    ///
-    ///     let quote = wallet.mint_quote(amount, None).await?;
-    ///     Ok(())
-    /// }
-    /// ```
+    /// Mint Bolt12
     #[instrument(skip(self))]
-    pub async fn mint_quote(
+    pub async fn mint_bolt12_quote(
         &self,
         amount: Amount,
         description: Option<String>,
@@ -67,13 +43,13 @@ impl Wallet {
 
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone(), amount, unit, description)
+            .post_mint_bolt12_quote(mint_url.clone(), amount, unit, description)
             .await?;
 
         let quote = MintQuote {
             mint_url,
             id: quote_res.quote.clone(),
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::Bolt12,
             amount,
             unit,
             request: quote_res.request,
@@ -88,84 +64,12 @@ impl Wallet {
         Ok(quote)
     }
 
-    /// Check mint quote status
-    #[instrument(skip(self, quote_id))]
-    pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
-        let response = self
-            .client
-            .get_mint_quote_status(self.mint_url.clone(), quote_id)
-            .await?;
-
-        match self.localstore.get_mint_quote(quote_id).await? {
-            Some(quote) => {
-                let mut quote = quote;
-
-                quote.state = response.state;
-                self.localstore.add_mint_quote(quote).await?;
-            }
-            None => {
-                tracing::info!("Quote mint {} unknown", quote_id);
-            }
-        }
-
-        Ok(response)
-    }
-
-    /// Check status of pending mint quotes
+    /// Mint bolt12
     #[instrument(skip(self))]
-    pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
-        let mint_quotes = self.localstore.get_mint_quotes().await?;
-        let mut total_amount = Amount::ZERO;
-
-        for mint_quote in mint_quotes {
-            let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
-
-            if mint_quote_response.state == MintQuoteState::Paid {
-                let amount = self
-                    .mint(&mint_quote.id, SplitTarget::default(), None)
-                    .await?;
-                total_amount += amount;
-            } else if mint_quote.expiry.le(&unix_time()) {
-                self.localstore.remove_mint_quote(&mint_quote.id).await?;
-            }
-        }
-        Ok(total_amount)
-    }
-
-    /// Mint
-    /// # Synopsis
-    /// ```rust
-    /// use std::sync::Arc;
-    ///
-    /// use anyhow::Result;
-    /// use cdk::amount::{Amount, SplitTarget};
-    /// use cdk::cdk_database::WalletMemoryDatabase;
-    /// use cdk::nuts::CurrencyUnit;
-    /// use cdk::wallet::Wallet;
-    /// use rand::Rng;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
-    ///     let unit = CurrencyUnit::Sat;
-    ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
-    ///     let amount = Amount::from(100);
-    ///
-    ///     let quote = wallet.mint_quote(amount, None).await?;
-    ///     let quote_id = quote.id;
-    ///     // To be called after quote request is paid
-    ///     let amount_minted = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    #[instrument(skip(self))]
-    pub async fn mint(
+    pub async fn mint_bolt12(
         &self,
         quote_id: &str,
+        amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Amount, Error> {
@@ -200,7 +104,16 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
-        let amount = quote_info.amount;
+        let amount = match amount {
+            Some(amount) => amount,
+            None => {
+                // If an amount it not supplied with check the status of the quote
+                // The mint will tell us how much can be minted
+                let state = self.mint_bolt12_quote_state(quote_id).await?;
+
+                state.amount_paid - state.amount_issued
+            }
+        };
 
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
@@ -272,5 +185,32 @@ impl Wallet {
         self.localstore.update_proofs(proofs, vec![]).await?;
 
         Ok(minted_amount)
+    }
+
+    /// Check mint quote status
+    #[instrument(skip(self, quote_id))]
+    pub async fn mint_bolt12_quote_state(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response, Error> {
+        let response = self
+            .client
+            .get_mint_bolt12_quote_status(self.mint_url.clone(), quote_id)
+            .await?;
+
+        match self.localstore.get_mint_quote(quote_id).await? {
+            Some(quote) => {
+                let mut quote = quote;
+                quote.amount_minted = response.amount_issued;
+                quote.amount_paid = response.amount_paid;
+
+                self.localstore.add_mint_quote(quote).await?;
+            }
+            None => {
+                tracing::info!("Quote mint {} unknown", quote_id);
+            }
+        }
+
+        Ok(response)
     }
 }

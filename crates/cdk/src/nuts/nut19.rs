@@ -19,8 +19,8 @@ pub enum Error {
     AmountOverflow,
 }
 
-/// Mint quote request [NUT-17]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Mint quote request [NUT-19]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuoteBolt12Request {
     /// Amount
     pub amount: Option<Amount>,
@@ -34,8 +34,8 @@ pub struct MintQuoteBolt12Request {
     pub expiry: Option<u64>,
 }
 
-/// Mint quote response [NUT-04]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Mint quote response [NUT-19]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuoteBolt12Response {
     /// Quote Id
     pub quote: String,

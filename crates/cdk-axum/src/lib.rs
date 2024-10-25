@@ -9,10 +9,14 @@ use std::time::Duration;
 use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
+use bolt12_router::{
+    get_melt_bolt12_quote, get_mint_bolt12_quote, post_melt_bolt12, post_mint_bolt12,
+};
 use cdk::mint::Mint;
 use moka::future::Cache;
 use router_handlers::*;
 
+mod bolt12_router;
 mod router_handlers;
 
 #[cfg(feature = "swagger")]

@@ -142,8 +142,6 @@ impl Mint {
             request: quote.request,
             state,
             expiry: Some(quote.expiry),
-            amount_paid: quote.amount_paid,
-            amount_issued: quote.amount_issued,
         })
     }
 

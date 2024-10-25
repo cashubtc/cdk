@@ -90,10 +90,6 @@ pub struct MintQuoteBolt11Response {
     pub state: MintQuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
-    /// Amount that has been paid
-    pub amount_paid: Amount,
-    /// Amount that has been issued
-    pub amount_issued: Amount,
 }
 
 #[cfg(feature = "mint")]
@@ -104,8 +100,6 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
             request: mint_quote.request,
             state: mint_quote.state,
             expiry: Some(mint_quote.expiry),
-            amount_paid: mint_quote.amount_paid,
-            amount_issued: mint_quote.amount_issued,
         }
     }
 }

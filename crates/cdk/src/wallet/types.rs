@@ -13,6 +13,9 @@ pub struct MintQuote {
     pub id: String,
     /// Mint Url
     pub mint_url: MintUrl,
+    /// Payment method
+    #[serde(default)]
+    pub payment_method: PaymentMethod,
     /// Amount of quote
     pub amount: Amount,
     /// Unit of quote
@@ -23,6 +26,10 @@ pub struct MintQuote {
     pub state: MintQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
+    /// Amount minted
+    pub amount_minted: Amount,
+    /// Amount paid to the mint for the quote
+    pub amount_paid: Amount,
 }
 
 /// Melt Quote Info

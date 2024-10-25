@@ -9,6 +9,7 @@ use super::Error;
 use crate::error::ErrorResponse;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut15::Mpp;
+use crate::nuts::nut19::MintQuoteBolt12Response;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
     KeysetResponse, MeltBolt11Request, MeltBolt12Request, MeltQuoteBolt11Request,
@@ -139,7 +140,7 @@ impl HttpClient {
         }
     }
 
-    /// Mint Quote [NUT-04]
+    /// Mint Quote [NUT-19]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn post_mint_bolt12_quote(
         &self,
@@ -199,6 +200,56 @@ impl HttpClient {
         premint_secrets: PreMintSecrets,
     ) -> Result<MintBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "bolt11"])?;
+
+        let request = MintBolt11Request {
+            quote: quote.to_string(),
+            outputs: premint_secrets.blinded_messages(),
+        };
+
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<MintBolt11Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        }
+    }
+
+    /// Mint Quote status
+    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    pub async fn get_mint_bolt12_quote_status(
+        &self,
+        mint_url: MintUrl,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response, Error> {
+        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt12", quote_id])?;
+
+        let res = self.inner.get(url).send().await?.json::<Value>().await?;
+
+        match serde_json::from_value::<MintQuoteBolt12Response>(res.clone()) {
+            Ok(mint_quote_response) => Ok(mint_quote_response),
+            Err(err) => {
+                tracing::warn!("{}", err);
+                Err(ErrorResponse::from_value(res)?.into())
+            }
+        }
+    }
+
+    /// Mint Tokens [NUT-19]
+    #[instrument(skip(self, quote, premint_secrets), fields(mint_url = %mint_url))]
+    pub async fn post_mint_bolt12(
+        &self,
+        mint_url: MintUrl,
+        quote: &str,
+        premint_secrets: PreMintSecrets,
+    ) -> Result<MintBolt11Response, Error> {
+        let url = mint_url.join_paths(&["v1", "mint", "bolt12"])?;
 
         let request = MintBolt11Request {
             quote: quote.to_string(),
