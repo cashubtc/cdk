@@ -26,7 +26,9 @@
 - cdk: Bump `lightning-invoice` to `0.32.2` ([prusnak]).
 - cdk: Bump `lightning` to `0.0.124` ([prusnak]).
 - cdk: `PaymentMethod` as a `non_exhaustive` enum ([thesimplekid]).
-- cdk: `CurrencyUnit` as a `non_exhaustive` enum ([thesimpekid]).
+- cdk: `CurrencyUnit` as a `non_exhaustive` enum ([thesimplekid]).
+- cdk: Enforce token is single mint ([thesimplekid]).
+
 
 ### Added
 - cdk: Added description to `MintQuoteBolt11Request` ([lollerfirst]).
