@@ -218,13 +218,9 @@ impl Mint {
         &self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
-        // Check quote is known and not expired
+        // Check quote is known
         match self.localstore.get_mint_quote(&mint_request.quote).await? {
-            Some(quote) => {
-                if quote.expiry < unix_time() {
-                    return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
-                }
-            }
+            Some(_) => (),
             None => {
                 return Err(Error::UnknownQuote);
             }
