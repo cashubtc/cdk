@@ -1246,7 +1246,12 @@ impl MintLightning for Node {
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
-        tracing::info!("Creating invoice: {} {}", amount, unit);
+        tracing::info!(
+            "Creating invoice: {} {} (expiry={})",
+            amount,
+            unit,
+            unix_expiry
+        );
         let amount_msats = match unit {
             CurrencyUnit::Sat => Into::<u64>::into(amount) * 1000,
             CurrencyUnit::Msat => Into::<u64>::into(amount),
@@ -1265,6 +1270,11 @@ impl MintLightning for Node {
         )
         .map_err(map_err)?;
         self.db.insert_invoice(&invoice).await.map_err(map_err)?;
+        tracing::info!(
+            "Invoice created: {} (payment_hash={})",
+            invoice,
+            invoice.payment_hash()
+        );
         Ok(CreateInvoiceResponse {
             request_lookup_id: invoice.payment_hash().to_string(),
             request: invoice,
@@ -1306,7 +1316,12 @@ impl MintLightning for Node {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        tracing::info!("Paying invoice: {}", melt_quote.request);
+        tracing::info!(
+            "Paying invoice: {} (partial_amount={:?}, max_fee={:?})",
+            melt_quote.request,
+            partial_amount,
+            max_fee
+        );
         let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
         let (payment_hash, recipient_onion, mut route_params) =
             payment_parameters_from_invoice(&bolt11)
@@ -1358,6 +1373,16 @@ impl MintLightning for Node {
             .map_err(|e| map_err(format!("{:?}", e)))?;
 
         let payment = rx.await.map_err(map_err)?;
+        if payment.pre_image.is_none() {
+            tracing::warn!("Payment failed: {}", payment_hash);
+        } else {
+            tracing::info!(
+                "Payment successful: {} (spent={}, pre_image={})",
+                payment_hash,
+                payment.spent,
+                hex::encode(payment.pre_image.as_ref().expect("None check above"))
+            );
+        }
         Ok(PayInvoiceResponse {
             payment_lookup_id: payment_hash.to_string(),
             payment_preimage: payment.pre_image.map(|p| hex::encode(p)),
