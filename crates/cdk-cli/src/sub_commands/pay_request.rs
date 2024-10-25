@@ -91,10 +91,7 @@ pub async fn pay_request(
             true,
         )
         .await?
-        .proofs()
-        .get(&matching_wallet.mint_url)
-        .unwrap()
-        .clone();
+        .proofs();
 
     let payload = PaymentRequestPayload {
         id: payment_request.payment_id.clone(),
