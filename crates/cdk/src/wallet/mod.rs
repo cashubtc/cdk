@@ -393,87 +393,87 @@ impl Wallet {
                 "Must set locktime".to_string(),
             ));
         }
+        if token.mint_url()? != self.mint_url {
+            return Err(Error::IncorrectWallet(format!(
+                "Should be {} not {}",
+                self.mint_url,
+                token.mint_url()?
+            )));
+        }
 
-        for (mint_url, proofs) in &token.proofs() {
-            if mint_url != &self.mint_url {
-                return Err(Error::IncorrectWallet(format!(
-                    "Should be {} not {}",
-                    self.mint_url, mint_url
-                )));
+        let proofs = token.proofs();
+        for proof in proofs {
+            let secret: nut10::Secret = (&proof.secret).try_into()?;
+
+            let proof_conditions: SpendingConditions = secret.try_into()?;
+
+            if num_sigs.ne(&proof_conditions.num_sigs()) {
+                tracing::debug!(
+                    "Spending condition requires: {:?} sigs proof secret specifies: {:?}",
+                    num_sigs,
+                    proof_conditions.num_sigs()
+                );
+
+                return Err(Error::P2PKConditionsNotMet(
+                    "Num sigs did not match spending condition".to_string(),
+                ));
             }
-            for proof in proofs {
-                let secret: nut10::Secret = (&proof.secret).try_into()?;
 
-                let proof_conditions: SpendingConditions = secret.try_into()?;
+            let spending_condition_pubkeys = pubkeys.clone().unwrap_or_default();
+            let proof_pubkeys = proof_conditions.pubkeys().unwrap_or_default();
 
-                if num_sigs.ne(&proof_conditions.num_sigs()) {
-                    tracing::debug!(
-                        "Spending condition requires: {:?} sigs proof secret specifies: {:?}",
-                        num_sigs,
-                        proof_conditions.num_sigs()
-                    );
+            // Check the Proof has the required pubkeys
+            if proof_pubkeys.len().ne(&spending_condition_pubkeys.len())
+                || !proof_pubkeys
+                    .iter()
+                    .all(|pubkey| spending_condition_pubkeys.contains(pubkey))
+            {
+                tracing::debug!("Proof did not included Publickeys meeting condition");
+                tracing::debug!("{:?}", proof_pubkeys);
+                tracing::debug!("{:?}", spending_condition_pubkeys);
+                return Err(Error::P2PKConditionsNotMet(
+                    "Pubkeys in proof not allowed by spending condition".to_string(),
+                ));
+            }
 
-                    return Err(Error::P2PKConditionsNotMet(
-                        "Num sigs did not match spending condition".to_string(),
-                    ));
-                }
+            // If spending condition refund keys is allowed (Some(Empty Vec))
+            // If spending conition refund keys is allowed to restricted set of keys check
+            // it is one of them Check that proof locktime is > condition
+            // locktime
 
-                let spending_condition_pubkeys = pubkeys.clone().unwrap_or_default();
-                let proof_pubkeys = proof_conditions.pubkeys().unwrap_or_default();
+            if let Some(proof_refund_keys) = proof_conditions.refund_keys() {
+                let proof_locktime = proof_conditions
+                    .locktime()
+                    .ok_or(Error::LocktimeNotProvided)?;
 
-                // Check the Proof has the required pubkeys
-                if proof_pubkeys.len().ne(&spending_condition_pubkeys.len())
-                    || !proof_pubkeys
-                        .iter()
-                        .all(|pubkey| spending_condition_pubkeys.contains(pubkey))
+                if let (Some(condition_refund_keys), Some(condition_locktime)) =
+                    (&refund_keys, locktime)
                 {
-                    tracing::debug!("Proof did not included Publickeys meeting condition");
-                    tracing::debug!("{:?}", proof_pubkeys);
-                    tracing::debug!("{:?}", spending_condition_pubkeys);
-                    return Err(Error::P2PKConditionsNotMet(
-                        "Pubkeys in proof not allowed by spending condition".to_string(),
-                    ));
-                }
-
-                // If spending condition refund keys is allowed (Some(Empty Vec))
-                // If spending conition refund keys is allowed to restricted set of keys check
-                // it is one of them Check that proof locktime is > condition
-                // locktime
-
-                if let Some(proof_refund_keys) = proof_conditions.refund_keys() {
-                    let proof_locktime = proof_conditions
-                        .locktime()
-                        .ok_or(Error::LocktimeNotProvided)?;
-
-                    if let (Some(condition_refund_keys), Some(condition_locktime)) =
-                        (&refund_keys, locktime)
-                    {
-                        // Proof locktime must be greater then condition locktime to ensure it
-                        // cannot be claimed back
-                        if proof_locktime.lt(&condition_locktime) {
-                            return Err(Error::P2PKConditionsNotMet(
-                                "Proof locktime less then required".to_string(),
-                            ));
-                        }
-
-                        // A non empty condition refund key list is used as a restricted set of keys
-                        // returns are allowed to An empty list means the
-                        // proof can be refunded to anykey set in the secret
-                        if !condition_refund_keys.is_empty()
-                            && !proof_refund_keys
-                                .iter()
-                                .all(|refund_key| condition_refund_keys.contains(refund_key))
-                        {
-                            return Err(Error::P2PKConditionsNotMet(
-                                "Refund Key not allowed".to_string(),
-                            ));
-                        }
-                    } else {
-                        // Spending conditions does not allow refund keys
+                    // Proof locktime must be greater then condition locktime to ensure it
+                    // cannot be claimed back
+                    if proof_locktime.lt(&condition_locktime) {
                         return Err(Error::P2PKConditionsNotMet(
-                            "Spending condition does not allow refund keys".to_string(),
+                            "Proof locktime less then required".to_string(),
                         ));
                     }
+
+                    // A non empty condition refund key list is used as a restricted set of keys
+                    // returns are allowed to An empty list means the
+                    // proof can be refunded to anykey set in the secret
+                    if !condition_refund_keys.is_empty()
+                        && !proof_refund_keys
+                            .iter()
+                            .all(|refund_key| condition_refund_keys.contains(refund_key))
+                    {
+                        return Err(Error::P2PKConditionsNotMet(
+                            "Refund Key not allowed".to_string(),
+                        ));
+                    }
+                } else {
+                    // Spending conditions does not allow refund keys
+                    return Err(Error::P2PKConditionsNotMet(
+                        "Spending condition does not allow refund keys".to_string(),
+                    ));
                 }
             }
         }
@@ -486,31 +486,32 @@ impl Wallet {
     pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
 
-        for (mint_url, proofs) in &token.proofs() {
-            if mint_url != &self.mint_url {
-                return Err(Error::IncorrectWallet(format!(
-                    "Should be {} not {}",
-                    self.mint_url, mint_url
-                )));
-            }
-            for proof in proofs {
-                let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
-                    Some(keys) => keys.amount_key(proof.amount),
-                    None => {
-                        let keys = self.get_keyset_keys(proof.keyset_id).await?;
+        // TODO: Get mint url
+        // if mint_url != &self.mint_url {
+        //     return Err(Error::IncorrectWallet(format!(
+        //         "Should be {} not {}",
+        //         self.mint_url, mint_url
+        //     )));
+        // }
 
-                        let key = keys.amount_key(proof.amount);
-                        keys_cache.insert(proof.keyset_id, keys);
+        let proofs = token.proofs();
+        for proof in proofs {
+            let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
+                Some(keys) => keys.amount_key(proof.amount),
+                None => {
+                    let keys = self.get_keyset_keys(proof.keyset_id).await?;
 
-                        key
-                    }
+                    let key = keys.amount_key(proof.amount);
+                    keys_cache.insert(proof.keyset_id, keys);
+
+                    key
                 }
-                .ok_or(Error::AmountKey)?;
-
-                proof
-                    .verify_dleq(mint_pubkey)
-                    .map_err(|_| Error::CouldNotVerifyDleq)?;
             }
+            .ok_or(Error::AmountKey)?;
+
+            proof
+                .verify_dleq(mint_pubkey)
+                .map_err(|_| Error::CouldNotVerifyDleq)?;
         }
 
         Ok(())

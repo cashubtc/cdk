@@ -16,12 +16,7 @@ impl Wallet {
         let ys = proofs.ys()?;
         self.localstore.reserve_proofs(ys).await?;
 
-        Ok(Token::new(
-            self.mint_url.clone(),
-            proofs,
-            memo,
-            Some(self.unit),
-        ))
+        Ok(Token::new(self.mint_url.clone(), proofs, memo, self.unit))
     }
 
     /// Send

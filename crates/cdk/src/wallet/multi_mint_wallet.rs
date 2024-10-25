@@ -237,36 +237,36 @@ impl MultiMintWallet {
         let token_data = Token::from_str(encoded_token)?;
         let unit = token_data.unit().unwrap_or_default();
 
-        let mint_proofs = token_data.proofs();
+        let proofs = token_data.proofs();
 
         let mut amount_received = Amount::ZERO;
 
         let mut mint_errors = None;
 
+        let mint_url = token_data.mint_url()?;
+
         // Check that all mints in tokes have wallets
-        for (mint_url, proofs) in mint_proofs {
-            let wallet_key = WalletKey::new(mint_url.clone(), unit);
-            if !self.has(&wallet_key).await {
-                return Err(Error::UnknownWallet(wallet_key.clone()));
+        let wallet_key = WalletKey::new(mint_url.clone(), unit);
+        if !self.has(&wallet_key).await {
+            return Err(Error::UnknownWallet(wallet_key.clone()));
+        }
+
+        let wallet_key = WalletKey::new(mint_url.clone(), unit);
+        let wallet = self
+            .get_wallet(&wallet_key)
+            .await
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+
+        match wallet
+            .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
+            .await
+        {
+            Ok(amount) => {
+                amount_received += amount;
             }
-
-            let wallet_key = WalletKey::new(mint_url.clone(), unit);
-            let wallet = self
-                .get_wallet(&wallet_key)
-                .await
-                .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
-
-            match wallet
-                .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
-                .await
-            {
-                Ok(amount) => {
-                    amount_received += amount;
-                }
-                Err(err) => {
-                    tracing::error!("Could no receive proofs for mint: {}", err);
-                    mint_errors = Some(err);
-                }
+            Err(err) => {
+                tracing::error!("Could no receive proofs for mint: {}", err);
+                mint_errors = Some(err);
             }
         }
 
