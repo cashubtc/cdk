@@ -25,8 +25,15 @@ tracing = { version = "0.1", default-features = false, features = ["attributes",
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 rand = "0.8.5"
 home = "0.5.5"
-nostr-sdk = { version = "0.33.0", default-features = false, features = [
+nostr-sdk = { version = "0.35.0", default-features = false, features = [
     "nip04",
-    "nip44"
+    "nip44",
+    "nip59"
+]}
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "rustls-tls-native-roots",
+    "socks",
 ]}
 url = "2.3"

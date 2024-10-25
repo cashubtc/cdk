@@ -48,6 +48,7 @@
 - cdk: Add Proofs trait ([ok300]).
 - cdk: Wallet verifiys keyset id when first fetching keys ([thesimplekid]).
 - cdk-mind: Add swagger docs ([ok300]).
+- cdk: NUT18 payment request support ([thesimplekid]).
 
 ### Removed
 - cdk: Remove `MintMeltSettings` since it is no longer used ([lollerfirst]).
