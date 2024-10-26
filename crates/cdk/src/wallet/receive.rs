@@ -111,7 +111,7 @@ impl Wallet {
         let proofs_info = proofs
             .clone()
             .into_iter()
-            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit))
+            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
         self.localstore
             .update_proofs(proofs_info.clone(), vec![])
@@ -150,7 +150,7 @@ impl Wallet {
 
         let recv_proof_infos = recv_proofs
             .into_iter()
-            .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, self.unit))
+            .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
         self.localstore
             .update_proofs(

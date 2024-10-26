@@ -137,7 +137,7 @@ pub struct MintBolt11Response {
 }
 
 /// Mint Method Settings
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
@@ -179,7 +179,7 @@ impl Settings {
     ) -> Option<MintMethodSettings> {
         for method_settings in self.methods.iter() {
             if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
-                return Some(*method_settings);
+                return Some(method_settings.clone());
             }
         }
 
