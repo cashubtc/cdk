@@ -54,6 +54,7 @@ pub struct Mint {
 
 impl Mint {
     /// Create new [`Mint`]
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         mint_url: &str,
         seed: &[u8],
@@ -63,6 +64,7 @@ impl Mint {
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
@@ -83,7 +85,7 @@ impl Mint {
 
             let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
                 keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
-                    acc.entry(ks.unit).or_default().push(ks.clone());
+                    acc.entry(ks.unit.clone()).or_default().push(ks.clone());
                     acc
                 });
 
@@ -112,7 +114,7 @@ impl Mint {
                             &secp_ctx,
                             xpriv,
                             highest_index_keyset.max_order,
-                            highest_index_keyset.unit,
+                            highest_index_keyset.unit.clone(),
                             highest_index_keyset.derivation_path.clone(),
                         );
                         active_keysets.insert(id, keyset);
@@ -125,37 +127,46 @@ impl Mint {
                         highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
                     };
 
-                    let derivation_path = derivation_path_from_unit(unit, derivation_path_index);
+                    let derivation_path = match custom_paths.get(&unit) {
+                        Some(path) => path.clone(),
+                        None => derivation_path_from_unit(unit.clone(), derivation_path_index)
+                            .ok_or(Error::UnsupportedUnit)?,
+                    };
 
                     let (keyset, keyset_info) = create_new_keyset(
                         &secp_ctx,
                         xpriv,
                         derivation_path,
                         Some(derivation_path_index),
-                        unit,
+                        unit.clone(),
                         *max_order,
                         *input_fee_ppk,
                     );
 
                     let id = keyset_info.id;
                     localstore.add_keyset_info(keyset_info).await?;
-                    localstore.set_active_keyset(unit, id).await?;
+                    localstore.set_active_keyset(unit.clone(), id).await?;
                     active_keysets.insert(id, keyset);
-                    active_keyset_units.push(unit);
+                    active_keyset_units.push(unit.clone());
                 }
             }
         }
 
         for (unit, (fee, max_order)) in supported_units {
             if !active_keyset_units.contains(&unit) {
-                let derivation_path = derivation_path_from_unit(unit, 0);
+                let derivation_path = match custom_paths.get(&unit) {
+                    Some(path) => path.clone(),
+                    None => {
+                        derivation_path_from_unit(unit.clone(), 0).ok_or(Error::UnsupportedUnit)?
+                    }
+                };
 
                 let (keyset, keyset_info) = create_new_keyset(
                     &secp_ctx,
                     xpriv,
                     derivation_path,
                     Some(0),
-                    unit,
+                    unit.clone(),
                     max_order,
                     fee,
                 );
@@ -194,7 +205,7 @@ impl Mint {
                 let mint = Arc::clone(&mint_arc);
                 let ln = Arc::clone(ln);
                 let shutdown = Arc::clone(&shutdown);
-                let key = *key;
+                let key = key.clone();
                 join_set.spawn(async move {
             if !ln.is_wait_invoice_active() {
             loop {
@@ -438,7 +449,8 @@ impl Mint {
 
         Ok(RestoreResponse {
             outputs,
-            signatures,
+            signatures: signatures.clone(),
+            promises: Some(signatures),
         })
     }
 
@@ -559,7 +571,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
-        unit: keyset.unit,
+        unit: keyset.unit.clone(),
         active: true,
         valid_from: unix_time(),
         valid_to: None,
@@ -571,12 +583,17 @@ fn create_new_keyset<C: secp256k1::Signing>(
     (keyset, keyset_info)
 }
 
-fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> DerivationPath {
-    DerivationPath::from(vec![
+fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
+    let unit_index = match unit.derivation_index() {
+        Some(index) => index,
+        None => return None,
+    };
+
+    Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
-        ChildNumber::from_hardened_idx(unit.derivation_index()).expect("0 is a valid index"),
+        ChildNumber::from_hardened_idx(unit_index).expect("0 is a valid index"),
         ChildNumber::from_hardened_idx(index).expect("0 is a valid index"),
-    ])
+    ]))
 }
 
 #[cfg(test)]
@@ -598,7 +615,7 @@ mod tests {
             seed,
             2,
             CurrencyUnit::Sat,
-            derivation_path_from_unit(CurrencyUnit::Sat, 0),
+            derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -642,7 +659,7 @@ mod tests {
             xpriv,
             2,
             CurrencyUnit::Sat,
-            derivation_path_from_unit(CurrencyUnit::Sat, 0),
+            derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -722,6 +739,7 @@ mod tests {
             localstore,
             HashMap::new(),
             config.supported_units,
+            HashMap::new(),
         )
         .await
     }
@@ -777,7 +795,8 @@ mod tests {
         assert!(keysets.keysets.is_empty());
 
         // generate the first keyset and set it to active
-        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1).await?;
+        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1, HashMap::new())
+            .await?;
 
         let keysets = mint.keysets().await.unwrap();
         assert!(keysets.keysets.len().eq(&1));
@@ -785,7 +804,8 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1).await?;
+        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1, HashMap::new())
+            .await?;
 
         let keysets = mint.keysets().await.unwrap();
 

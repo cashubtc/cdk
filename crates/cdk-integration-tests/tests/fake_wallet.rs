@@ -368,16 +368,12 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     assert!(melt_response.change.is_some());
 
     let check = wallet.melt_quote_status(&melt_quote.id).await?;
+    let mut melt_change = melt_response.change.unwrap();
+    melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
 
-    assert_eq!(
-        melt_response
-            .change
-            .unwrap()
-            .sort_by(|a, b| a.amount.cmp(&b.amount)),
-        check
-            .change
-            .unwrap()
-            .sort_by(|a, b| a.amount.cmp(&b.amount))
-    );
+    let mut check = check.change.unwrap();
+    check.sort_by(|a, b| a.amount.cmp(&b.amount));
+
+    assert_eq!(melt_change, check);
     Ok(())
 }

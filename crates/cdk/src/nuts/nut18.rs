@@ -154,7 +154,7 @@ mod tests {
 
         assert_eq!(&req.payment_id.unwrap(), "b7a90176");
         assert_eq!(req.amount.unwrap(), 10.into());
-        assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
             req.mints.unwrap(),
             vec![MintUrl::from_str("https://nofees.testnut.cashu.space")?]
@@ -190,7 +190,7 @@ mod tests {
 
         assert_eq!(&req.payment_id.unwrap(), "b7a90176");
         assert_eq!(req.amount.unwrap(), 10.into());
-        assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
             req.mints.unwrap(),
             vec![MintUrl::from_str("https://nofees.testnut.cashu.space")?]

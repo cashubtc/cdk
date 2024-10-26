@@ -46,7 +46,7 @@ impl Wallet {
         description: Option<String>,
     ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
-        let unit = self.unit;
+        let unit = self.unit.clone();
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
@@ -67,7 +67,7 @@ impl Wallet {
 
         let request = MintQuoteBolt11Request {
             amount,
-            unit,
+            unit: unit.clone(),
             description,
         };
 
@@ -80,7 +80,7 @@ impl Wallet {
             mint_url,
             id: quote_res.quote.clone(),
             amount,
-            unit,
+            unit: unit.clone(),
             request: quote_res.request,
             state: quote_res.state,
             expiry: quote_res.expiry.unwrap_or(0),
@@ -269,7 +269,7 @@ impl Wallet {
                     proof,
                     self.mint_url.clone(),
                     State::Unspent,
-                    quote_info.unit,
+                    quote_info.unit.clone(),
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
