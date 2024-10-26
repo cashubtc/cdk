@@ -62,7 +62,7 @@ impl Wallet {
 
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,
-            unit: self.unit,
+            unit: self.unit.clone(),
             options,
         };
 
@@ -79,7 +79,7 @@ impl Wallet {
             id: quote_res.quote,
             amount,
             request,
-            unit: self.unit,
+            unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
             state: quote_res.state,
             expiry: quote_res.expiry,
@@ -233,7 +233,7 @@ impl Wallet {
                             proof,
                             self.mint_url.clone(),
                             State::Unspent,
-                            quote_info.unit,
+                            quote_info.unit.clone(),
                         )
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?

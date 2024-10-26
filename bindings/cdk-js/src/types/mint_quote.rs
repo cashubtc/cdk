@@ -33,7 +33,7 @@ impl JsMintQuote {
 
     #[wasm_bindgen(getter)]
     pub fn unit(&self) -> JsCurrencyUnit {
-        self.inner.unit.into()
+        self.inner.unit.clone().into()
     }
 
     #[wasm_bindgen(getter)]

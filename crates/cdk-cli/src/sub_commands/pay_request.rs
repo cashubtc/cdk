@@ -21,7 +21,7 @@ pub async fn pay_request(
 ) -> Result<()> {
     let payment_request = &sub_command_args.payment_request;
 
-    let unit = payment_request.unit;
+    let unit = &payment_request.unit;
 
     let amount = match payment_request.amount {
         Some(amount) => amount,
@@ -56,7 +56,7 @@ pub async fn pay_request(
         }
 
         if let Some(unit) = unit {
-            if wallet.unit != unit {
+            if &wallet.unit != unit {
                 continue;
             }
         }
@@ -97,7 +97,7 @@ pub async fn pay_request(
         id: payment_request.payment_id.clone(),
         memo: None,
         mint: matching_wallet.mint_url.clone(),
-        unit: matching_wallet.unit,
+        unit: matching_wallet.unit.clone(),
         proofs,
     };
 

@@ -77,9 +77,9 @@ impl MintLightning for Strike {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: false,
-            unit: self.unit,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
+            unit: self.unit.clone(),
+            mint_settings: self.mint_settings.clone(),
+            melt_settings: self.melt_settings.clone(),
             invoice_description: true,
         }
     }
@@ -288,7 +288,7 @@ impl MintLightning for Strike {
                     payment_preimage: None,
                     status: state,
                     total_spent: from_strike_amount(invoice.total_amount, &self.unit)?.into(),
-                    unit: self.unit,
+                    unit: self.unit.clone(),
                 }
             }
             Err(err) => match err {
@@ -297,7 +297,7 @@ impl MintLightning for Strike {
                     payment_preimage: None,
                     status: MeltQuoteState::Unknown,
                     total_spent: Amount::ZERO,
-                    unit: self.unit,
+                    unit: self.unit.clone(),
                 },
                 _ => {
                     return Err(Error::from(err).into());

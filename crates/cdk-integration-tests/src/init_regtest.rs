@@ -176,6 +176,7 @@ where
         Arc::new(database),
         ln_backends,
         supported_units,
+        HashMap::new(),
     )
     .await?;
 

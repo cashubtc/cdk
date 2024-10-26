@@ -19,7 +19,7 @@ impl Wallet {
 
         // TODO If only the proofs for this wallet's unit are retrieved, why build a map with key = unit?
         let balances = proofs.iter().fold(HashMap::new(), |mut acc, proof| {
-            *acc.entry(self.unit).or_insert(Amount::ZERO) += proof.amount;
+            *acc.entry(self.unit.clone()).or_insert(Amount::ZERO) += proof.amount;
             acc
         });
 
@@ -33,7 +33,7 @@ impl Wallet {
 
         // TODO If only the proofs for this wallet's unit are retrieved, why build a map with key = unit?
         let balances = proofs.iter().fold(HashMap::new(), |mut acc, proof| {
-            *acc.entry(self.unit).or_insert(Amount::ZERO) += proof.amount;
+            *acc.entry(self.unit.clone()).or_insert(Amount::ZERO) += proof.amount;
             acc
         });
 

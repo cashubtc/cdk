@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
                     api_key.clone(),
                     MintMethodSettings::default(),
                     MeltMethodSettings::default(),
-                    unit,
+                    unit.clone(),
                     Arc::new(Mutex::new(Some(receiver))),
                     webhook_url.to_string(),
                 )
@@ -199,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
                 routers.push(router);
 
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
+                let ln_key = LnKey::new(unit.clone(), PaymentMethod::Bolt11);
 
                 ln_backends.insert(ln_key, Arc::new(strike));
 
@@ -237,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
 
             let unit = CurrencyUnit::Sat;
 
-            let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
+            let ln_key = LnKey::new(unit.clone(), PaymentMethod::Bolt11);
 
             ln_backends.insert(ln_key, Arc::new(lnbits));
 
@@ -326,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
             let units = settings.fake_wallet.unwrap_or_default().supported_units;
 
             for unit in units {
-                let ln_key = LnKey::new(unit, PaymentMethod::Bolt11);
+                let ln_key = LnKey::new(unit.clone(), PaymentMethod::Bolt11);
 
                 let wallet = Arc::new(FakeWallet::new(
                     fee_reserve.clone(),
@@ -361,13 +361,13 @@ async fn main() -> anyhow::Result<()> {
 
             let m = MppMethodSettings {
                 method: key.method,
-                unit: key.unit,
+                unit: key.unit.clone(),
                 mpp: settings.mpp,
             };
 
             let n4 = MintMethodSettings {
                 method: key.method,
-                unit: key.unit,
+                unit: key.unit.clone(),
                 min_amount: settings.mint_settings.min_amount,
                 max_amount: settings.mint_settings.max_amount,
                 description: settings.invoice_description,
@@ -375,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
 
             let n5 = MeltMethodSettings {
                 method: key.method,
-                unit: key.unit,
+                unit: key.unit.clone(),
                 min_amount: settings.melt_settings.min_amount,
                 max_amount: settings.melt_settings.max_amount,
             };
@@ -438,6 +438,7 @@ async fn main() -> anyhow::Result<()> {
         localstore,
         ln_backends.clone(),
         supported_units,
+        HashMap::new(),
     )
     .await?;
 

@@ -330,7 +330,12 @@ impl Wallet {
                 let unspent_proofs = unspent_proofs
                     .into_iter()
                     .map(|proof| {
-                        ProofInfo::new(proof, self.mint_url.clone(), State::Unspent, keyset.unit)
+                        ProofInfo::new(
+                            proof,
+                            self.mint_url.clone(),
+                            State::Unspent,
+                            keyset.unit.clone(),
+                        )
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
 
