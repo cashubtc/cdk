@@ -148,7 +148,7 @@ impl HttpClient {
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
-    ) -> Result<MintQuoteBolt11Response, Error> {
+    ) -> Result<MintQuoteBolt12Response, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt12"])?;
 
         let request = MintQuoteBolt11Request {
@@ -162,7 +162,7 @@ impl HttpClient {
 
         let res = res.json::<Value>().await?;
 
-        match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
+        match serde_json::from_value::<MintQuoteBolt12Response>(res.clone()) {
             Ok(mint_quote_response) => Ok(mint_quote_response),
             Err(err) => {
                 tracing::warn!("{}", err);

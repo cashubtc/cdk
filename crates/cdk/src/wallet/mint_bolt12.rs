@@ -53,7 +53,7 @@ impl Wallet {
             amount,
             unit,
             request: quote_res.request,
-            state: quote_res.state,
+            state: crate::nuts::MintQuoteState::Unpaid,
             expiry: quote_res.expiry.unwrap_or(0),
             amount_minted: Amount::ZERO,
             amount_paid: Amount::ZERO,
