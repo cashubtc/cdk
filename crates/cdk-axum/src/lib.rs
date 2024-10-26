@@ -10,7 +10,8 @@ use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
 use bolt12_router::{
-    get_melt_bolt12_quote, get_mint_bolt12_quote, post_melt_bolt12, post_mint_bolt12,
+    get_check_mint_bolt12_quote, get_melt_bolt12_quote, get_mint_bolt12_quote, post_melt_bolt12,
+    post_mint_bolt12,
 };
 use cdk::mint::Mint;
 use moka::future::Cache;
@@ -196,7 +197,7 @@ fn create_bolt12_router(state: MintState) -> Router<MintState> {
         .route("/mint/quote/bolt12", post(get_mint_bolt12_quote))
         .route(
             "/mint/quote/bolt12/:quote_id",
-            get(get_check_mint_bolt11_quote),
+            get(get_check_mint_bolt12_quote),
         )
         .route("/mint/bolt12", post(post_mint_bolt12))
         .with_state(state)

@@ -92,4 +92,19 @@ impl Mint {
 
         Ok(quote.into())
     }
+
+    /// Check mint quote
+    #[instrument(skip(self))]
+    pub async fn check_mint_bolt12_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response, Error> {
+        let quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote.into())
+    }
 }

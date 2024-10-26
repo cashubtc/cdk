@@ -1,5 +1,5 @@
 use anyhow::Result;
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::response::Response;
 use cdk::nuts::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::nuts::{
@@ -17,6 +17,20 @@ pub async fn get_mint_bolt12_quote(
     let quote = state
         .mint
         .get_mint_bolt12_quote(payload)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(quote))
+}
+
+/// Get mint bolt12 quote
+pub async fn get_check_mint_bolt12_quote(
+    State(state): State<MintState>,
+    Path(quote_id): Path<String>,
+) -> Result<Json<MintQuoteBolt12Response>, Response> {
+    let quote = state
+        .mint
+        .check_mint_bolt12_quote(&quote_id)
         .await
         .map_err(into_response)?;
 
