@@ -261,6 +261,7 @@ impl Mint {
             .localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)
             .await?;
+
         let quote = self
             .localstore
             .get_mint_quote(&mint_request.quote)
@@ -280,14 +281,6 @@ impl Mint {
                 }
             }
             MintQuoteState::Paid => (),
-        }
-
-        let amount_can_issue = quote.amount_paid - quote.amount_issued;
-
-        let messages_amount = mint_request.total_amount().unwrap();
-
-        if amount_can_issue < messages_amount {
-            return Err(Error::IssuedQuote);
         }
 
         let blinded_messages: Vec<PublicKey> = mint_request
@@ -350,7 +343,10 @@ impl Mint {
             state: MintQuoteState::Issued,
             expiry: quote.expiry,
             amount_paid: quote.amount_paid,
-            amount_issued: quote.amount_issued + messages_amount,
+            amount_issued: quote.amount_issued
+                + mint_request
+                    .total_amount()
+                    .map_err(|_| Error::AmountOverflow)?,
             request_lookup_id: quote.request_lookup_id,
             single_use: None,
         };

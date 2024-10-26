@@ -186,7 +186,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_internal_payment() -> Result<()> {
+async fn test_regtest_internal_payment() -> Result<()> {
     let lnd_client = init_lnd_client().await?;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
