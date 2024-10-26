@@ -39,6 +39,7 @@ pub struct MintQuote {
 
 impl MintQuote {
     /// Create new [`MintQuote`]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mint_url: MintUrl,
         request: String,
