@@ -14,7 +14,7 @@ use axum::Router;
 use cdk::amount::{amount_for_offer, to_unit, Amount};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -101,7 +101,7 @@ impl MintLightning for Phoenixd {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -135,8 +135,13 @@ impl MintLightning for Phoenixd {
                             match check {
                                 Ok(state) => {
                                     if state.is_paid {
+                                        let wait_invoice = WaitInvoiceResponse {
+                                            payment_lookup_id: msg.payment_hash,
+                                            payment_amount: Amount::ZERO,
+                                            unit: CurrencyUnit::Sat
+                                        };
                                         // Yield the payment hash and continue the stream
-                                        Some(((msg.payment_hash, Amount::ZERO), (receiver, phoenixd_api, cancel_token, is_active)))
+                                        Some((wait_invoice, (receiver, phoenixd_api, cancel_token, is_active)))
                                     } else {
                                         // Invoice not paid yet, continue waiting
                                         // We need to continue the stream, so we return the same state

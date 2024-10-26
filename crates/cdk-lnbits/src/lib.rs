@@ -13,7 +13,7 @@ use axum::Router;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -92,7 +92,7 @@ impl MintLightning for LNbits {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -129,7 +129,13 @@ impl MintLightning for LNbits {
                             match check {
                                 Ok(state) => {
                                     if state {
-                                        Some(((msg, Amount::ZERO), (receiver, lnbits_api, cancel_token, is_active)))
+                                        let response = WaitInvoiceResponse {
+                                            payment_lookup_id: msg,
+                                            payment_amount: Amount::ZERO,
+                                            unit: CurrencyUnit::Sat
+                                        };
+
+                                        Some((response , (receiver, lnbits_api, cancel_token, is_active)))
                                     } else {
                                         None
                                     }

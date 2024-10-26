@@ -13,7 +13,7 @@ use axum::Router;
 use cdk::amount::Amount;
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
 };
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
@@ -89,7 +89,7 @@ impl MintLightning for Strike {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         self.strike_api
             .subscribe_to_invoice_webhook(self.webhook_url.clone())
             .await?;
@@ -103,6 +103,7 @@ impl MintLightning for Strike {
 
         let strike_api = self.strike_api.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
+        let unit = self.unit.clone();
 
         Ok(futures::stream::unfold(
             (
@@ -110,8 +111,9 @@ impl MintLightning for Strike {
                 strike_api,
                 cancel_token,
                 Arc::clone(&self.wait_invoice_is_active),
+                unit
             ),
-            |(mut receiver, strike_api, cancel_token, is_active)| async move {
+            |(mut receiver, strike_api, cancel_token, is_active, unit)| async move {
                 tokio::select! {
 
                     _ = cancel_token.cancelled() => {
@@ -129,7 +131,12 @@ impl MintLightning for Strike {
                         match check {
                             Ok(state) => {
                                 if state.state == InvoiceState::Paid {
-                                    Some(((msg, Amount::ZERO), (receiver, strike_api, cancel_token, is_active)))
+                                    let wait_response = WaitInvoiceResponse {
+                                        payment_lookup_id: msg,
+                                        payment_amount: Amount::ZERO,
+                                        unit
+                                    };
+                                    Some((wait_response , (receiver, strike_api, cancel_token, is_active, unit)))
                                 } else {
                                     None
                                 }

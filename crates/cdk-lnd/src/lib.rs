@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -99,7 +99,7 @@ impl MintLightning for Lnd {
 
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let mut client =
             fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
                 .await
@@ -141,7 +141,14 @@ impl MintLightning for Lnd {
                 match msg {
                     Ok(Some(msg)) => {
                         if msg.state == 1 {
-                            Some(((hex::encode(msg.r_hash), Amount::ZERO), (stream, cancel_token, is_active)))
+                            let wait_response = WaitInvoiceResponse {
+                                payment_lookup_id: hex::encode(msg.r_hash),
+                                payment_amount: Amount::ZERO,
+                                unit: CurrencyUnit::Sat
+
+                            };
+
+                            Some((wait_response , (stream, cancel_token, is_active)))
                         } else {
                             None
                         }

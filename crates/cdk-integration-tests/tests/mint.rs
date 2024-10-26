@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
+use cdk::cdk_lightning::WaitInvoiceResponse;
 use cdk::dhke::construct_proofs;
 use cdk::mint::MintQuote;
 use cdk::nuts::{
@@ -79,8 +80,13 @@ async fn mint_proofs(
 
     mint.localstore.add_mint_quote(quote.clone()).await?;
 
-    mint.pay_mint_quote_for_request_id(&request_lookup, amount)
-        .await?;
+    let wait_invoice = WaitInvoiceResponse {
+        payment_lookup_id: request_lookup,
+        payment_amount: amount,
+        unit: CurrencyUnit::Sat,
+    };
+
+    mint.pay_mint_quote_for_request_id(wait_invoice).await?;
     let keyset_id = Id::from(&keys);
 
     let premint = PreMintSecrets::random(keyset_id, amount, split_target)?;

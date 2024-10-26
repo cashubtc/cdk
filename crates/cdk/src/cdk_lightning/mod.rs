@@ -51,6 +51,17 @@ pub enum Error {
     Amount(#[from] crate::amount::Error),
 }
 
+/// Wait any invoice response
+#[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
+pub struct WaitInvoiceResponse {
+    /// Payment look up id
+    pub payment_lookup_id: String,
+    /// Payment amount
+    pub payment_amount: Amount,
+    /// Unit
+    pub unit: CurrencyUnit,
+}
+
 /// MintLighting Trait
 #[async_trait]
 pub trait MintLightning {
@@ -88,7 +99,7 @@ pub trait MintLightning {
     /// Returns a stream of request_lookup_id once invoices are paid
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err>;
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err>;
 
     /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool;

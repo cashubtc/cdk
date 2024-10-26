@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use cdk::amount::{amount_for_offer, to_unit, Amount};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
@@ -105,7 +105,7 @@ impl MintLightning for Cln {
     // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let last_pay_index = self.get_last_pay_index().await?;
         let cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
@@ -197,7 +197,13 @@ impl MintLightning for Cln {
                                 None => payment_hash,
                             };
 
-                            break Some(((request_look_up, amount_sats.into()), (cln_client, last_pay_idx, cancel_token, is_active)));
+                            let response = WaitInvoiceResponse {
+                                payment_lookup_id: request_look_up,
+                                payment_amount: amount_sats.into(),
+                                unit: CurrencyUnit::Sat
+                            };
+
+                            break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));
                                 }
                                 Err(e) => {
                                     tracing::warn!("Error fetching invoice: {e}");

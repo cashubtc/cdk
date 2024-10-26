@@ -16,7 +16,7 @@ use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
 };
 use cdk::mint;
 use cdk::mint::types::PaymentRequest;
@@ -122,11 +122,16 @@ impl MintLightning for FakeWallet {
 
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = (String, Amount)> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
         self.wait_invoice_is_active.store(true, Ordering::SeqCst);
-        Ok(Box::pin(receiver_stream.map(|label| (label, Amount::ZERO))))
+
+        Ok(Box::pin(receiver_stream.map(|label| WaitInvoiceResponse {
+            payment_lookup_id: label,
+            payment_amount: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+        })))
     }
 
     async fn get_payment_quote(

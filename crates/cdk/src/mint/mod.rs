@@ -209,8 +209,8 @@ impl Mint {
                     result = ln.wait_any_invoice() => {
                         match result {
                             Ok(mut stream) => {
-                                while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id.0, request_lookup_id.1).await {
+                                while let Some(wait_invoice_response) = stream.next().await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_invoice_response).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }

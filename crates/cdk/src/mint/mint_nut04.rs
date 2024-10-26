@@ -1,6 +1,9 @@
 use tracing::instrument;
 
-use crate::{nuts::MintQuoteState, types::LnKey, util::unix_time, Amount, Error};
+use crate::{
+    cdk_lightning::WaitInvoiceResponse, nuts::MintQuoteState, types::LnKey, util::unix_time,
+    Amount, Error,
+};
 
 use super::{
     nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
@@ -193,17 +196,22 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn pay_mint_quote_for_request_id(
         &self,
-        request_lookup_id: &str,
-        amount: Amount,
+        wait_invoice_response: WaitInvoiceResponse,
     ) -> Result<(), Error> {
+        let WaitInvoiceResponse {
+            payment_lookup_id,
+            payment_amount,
+            unit,
+        } = wait_invoice_response;
         if let Ok(Some(mint_quote)) = self
             .localstore
-            .get_mint_quote_by_request_lookup_id(request_lookup_id)
+            .get_mint_quote_by_request_lookup_id(&payment_lookup_id)
             .await
         {
             tracing::debug!(
-                "Received payment notification for mint quote {}",
-                mint_quote.id
+                "Quote {} paid by lookup id {}",
+                mint_quote.id,
+                payment_lookup_id
             );
             self.localstore
                 .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
@@ -214,7 +222,9 @@ impl Mint {
                 .await?
                 .unwrap();
 
-            let amount_paid = quote.amount_paid + amount;
+            let amount_paid = quote.amount_paid + payment_amount;
+
+            assert!(unit == quote.unit);
 
             let quote = MintQuote {
                 id: quote.id,
