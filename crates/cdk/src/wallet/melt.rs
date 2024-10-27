@@ -286,7 +286,7 @@ impl Wallet {
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 
-        let available_proofs = self.get_proofs().await?;
+        let available_proofs = self.get_unspent_proofs().await?;
 
         let input_proofs = self
             .select_proofs_to_swap(inputs_needed_amount, available_proofs)

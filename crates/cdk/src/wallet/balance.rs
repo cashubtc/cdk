@@ -2,44 +2,24 @@ use std::collections::HashMap;
 
 use tracing::instrument;
 
-use crate::{
-    nuts::{CurrencyUnit, State},
-    Amount, Error, Wallet,
-};
+use crate::nuts::nut00::ProofsMethods;
+use crate::{nuts::CurrencyUnit, Amount, Error, Wallet};
 
 impl Wallet {
     /// Total unspent balance of wallet
     #[instrument(skip(self))]
     pub async fn total_balance(&self) -> Result<Amount, Error> {
-        let proofs = self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit),
-                Some(vec![State::Unspent]),
-                None,
-            )
-            .await?;
-        let balance = Amount::try_sum(proofs.iter().map(|p| p.proof.amount))?;
-
-        Ok(balance)
+        Ok(self.get_unspent_proofs().await?.total_amount()?)
     }
 
     /// Total pending balance
     #[instrument(skip(self))]
     pub async fn total_pending_balance(&self) -> Result<HashMap<CurrencyUnit, Amount>, Error> {
-        let proofs = self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit),
-                Some(vec![State::Pending]),
-                None,
-            )
-            .await?;
+        let proofs = self.get_pending_proofs().await?;
 
+        // TODO If only the proofs for this wallet's unit are retrieved, why build a map with key = unit?
         let balances = proofs.iter().fold(HashMap::new(), |mut acc, proof| {
-            *acc.entry(proof.unit).or_insert(Amount::ZERO) += proof.proof.amount;
+            *acc.entry(self.unit).or_insert(Amount::ZERO) += proof.amount;
             acc
         });
 
@@ -49,18 +29,11 @@ impl Wallet {
     /// Total reserved balance
     #[instrument(skip(self))]
     pub async fn total_reserved_balance(&self) -> Result<HashMap<CurrencyUnit, Amount>, Error> {
-        let proofs = self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit),
-                Some(vec![State::Reserved]),
-                None,
-            )
-            .await?;
+        let proofs = self.get_reserved_proofs().await?;
 
+        // TODO If only the proofs for this wallet's unit are retrieved, why build a map with key = unit?
         let balances = proofs.iter().fold(HashMap::new(), |mut acc, proof| {
-            *acc.entry(proof.unit).or_insert(Amount::ZERO) += proof.proof.amount;
+            *acc.entry(self.unit).or_insert(Amount::ZERO) += proof.amount;
             acc
         });
 

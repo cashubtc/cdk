@@ -111,7 +111,7 @@ async fn test_restore() -> Result<()> {
     assert!(wallet_2.total_balance().await? == 0.into());
 
     let restored = wallet_2.restore().await?;
-    let proofs = wallet_2.get_proofs().await?;
+    let proofs = wallet_2.get_unspent_proofs().await?;
 
     wallet_2
         .swap(None, SplitTarget::default(), proofs, None, false)
@@ -121,7 +121,7 @@ async fn test_restore() -> Result<()> {
 
     assert!(wallet_2.total_balance().await? == 100.into());
 
-    let proofs = wallet.get_proofs().await?;
+    let proofs = wallet.get_unspent_proofs().await?;
 
     let states = wallet.check_proofs_spent(proofs).await?;
 
