@@ -125,7 +125,7 @@ impl MultiMintWallet {
         let mut mint_proofs = BTreeMap::new();
 
         for (WalletKey { mint_url, unit: u }, wallet) in self.wallets.lock().await.iter() {
-            let wallet_proofs = wallet.get_proofs().await?;
+            let wallet_proofs = wallet.get_unspent_proofs().await?;
             mint_proofs.insert(mint_url.clone(), (wallet_proofs, *u));
         }
         Ok(mint_proofs)

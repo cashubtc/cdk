@@ -181,7 +181,7 @@ impl Wallet {
     /// Get amounts needed to refill proof state
     #[instrument(skip(self))]
     pub async fn amounts_needed_for_state_target(&self) -> Result<Vec<Amount>, Error> {
-        let unspent_proofs = self.get_proofs().await?;
+        let unspent_proofs = self.get_unspent_proofs().await?;
 
         let amounts_count: HashMap<usize, usize> =
             unspent_proofs
