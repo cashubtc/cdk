@@ -104,7 +104,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
     assert!(melt.is_err());
 
     // The mint should have unset proofs from pending since payment failed
-    let all_proof = wallet.get_proofs().await?;
+    let all_proof = wallet.get_unspent_proofs().await?;
     let states = wallet.check_proofs_spent(all_proof).await?;
     for state in states {
         assert!(state.state == State::Unspent);
@@ -344,7 +344,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
 
-    let proofs = wallet.get_proofs().await?;
+    let proofs = wallet.get_unspent_proofs().await?;
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 

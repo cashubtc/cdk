@@ -48,7 +48,7 @@ async fn main() {
         println!("Minted {}", receive_amount);
     }
 
-    let proofs = wallet.get_proofs().await.unwrap();
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
 
     let selected = wallet
         .select_proofs_to_send(Amount::from(64), proofs, false)
