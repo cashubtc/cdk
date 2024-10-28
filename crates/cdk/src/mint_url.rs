@@ -91,6 +91,12 @@ impl fmt::Display for MintUrl {
     }
 }
 
+impl From<Url> for MintUrl {
+    fn from(url: Url) -> Self {
+        Self(url.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
