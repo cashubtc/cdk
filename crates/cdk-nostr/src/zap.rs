@@ -134,17 +134,12 @@ impl NutZapper {
                 false,
             )
             .await?;
-        let proofs = token
-            .proofs()
-            .get(&mint_url)
-            .ok_or(Error::MissingProofs)?
-            .clone();
         send_zap_proofs(
             &self.client,
             pubkey,
             mint_url,
             unit,
-            proofs,
+            token.proofs(),
             content,
             zapped_event_id,
         )
