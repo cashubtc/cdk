@@ -1,5 +1,7 @@
 //! Wallet client
 
+use std::time::Duration;
+
 use reqwest::Client;
 use serde_json::Value;
 use tracing::instrument;
@@ -88,6 +90,12 @@ impl HttpClient {
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
             .build()?;
 
+        Ok(Self { inner: client })
+    }
+
+    /// Create new [`HttpClient`] with a timeout.
+    pub fn with_timeout(timeout: Duration) -> Result<Self, Error> {
+        let client = reqwest::Client::builder().timeout(timeout).build()?;
         Ok(Self { inner: client })
     }
 
