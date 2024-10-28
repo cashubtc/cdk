@@ -9,10 +9,10 @@ use std::str::FromStr;
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
 use bitcoin::base64::{alphabet, Engine as _};
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 use super::{Error, Proof, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{CurrencyUnit, Id};
 use crate::Amount;
 
@@ -43,7 +43,7 @@ impl Token {
         mint_url: MintUrl,
         proofs: Proofs,
         memo: Option<String>,
-        unit: Option<CurrencyUnit>,
+        unit: CurrencyUnit,
     ) -> Self {
         let proofs = proofs
             .into_iter()
@@ -66,7 +66,7 @@ impl Token {
     }
 
     /// Proofs in [`Token`]
-    pub fn proofs(&self) -> HashMap<MintUrl, Proofs> {
+    pub fn proofs(&self) -> Proofs {
         match self {
             Self::TokenV3(token) => token.proofs(),
             Self::TokenV4(token) => token.proofs(),
@@ -90,10 +90,26 @@ impl Token {
     }
 
     /// Unit
-    pub fn unit(&self) -> &Option<CurrencyUnit> {
+    pub fn unit(&self) -> Option<CurrencyUnit> {
         match self {
-            Self::TokenV3(token) => token.unit(),
-            Self::TokenV4(token) => token.unit(),
+            Self::TokenV3(token) => *token.unit(),
+            Self::TokenV4(token) => Some(token.unit()),
+        }
+    }
+
+    /// Mint url
+    pub fn mint_url(&self) -> Result<MintUrl, Error> {
+        match self {
+            Self::TokenV3(token) => {
+                let mint_urls = token.mint_urls();
+
+                if mint_urls.len() != 1 {
+                    return Err(Error::UnsupportedToken);
+                }
+
+                Ok(mint_urls.first().expect("Length is checked above").clone())
+            }
+            Self::TokenV4(token) => Ok(token.mint_url.clone()),
         }
     }
 
@@ -180,9 +196,6 @@ impl TokenV3 {
             return Err(Error::ProofsRequired);
         }
 
-        // Check Url is valid
-        let _: Url = (&mint_url).try_into().map_err(|_| Error::InvalidUrl)?;
-
         Ok(Self {
             token: vec![TokenV3Token::new(mint_url, proofs)],
             memo,
@@ -190,40 +203,46 @@ impl TokenV3 {
         })
     }
 
-    fn proofs(&self) -> HashMap<MintUrl, Proofs> {
-        let mut proofs: HashMap<MintUrl, Proofs> = HashMap::new();
-
-        for token in self.token.clone() {
-            let mint_url = token.mint;
-            let mut mint_proofs = token.proofs;
-
-            proofs
-                .entry(mint_url)
-                .and_modify(|p| p.append(&mut mint_proofs))
-                .or_insert(mint_proofs);
-        }
-
-        proofs
+    /// Proofs
+    pub fn proofs(&self) -> Proofs {
+        self.token
+            .iter()
+            .flat_map(|token| token.proofs.clone())
+            .collect()
     }
 
+    /// Value
     #[inline]
-    fn value(&self) -> Result<Amount, Error> {
+    pub fn value(&self) -> Result<Amount, Error> {
         Ok(Amount::try_sum(
             self.token
                 .iter()
-                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .map(|t| t.proofs.total_amount())
                 .collect::<Result<Vec<Amount>, _>>()?,
         )?)
     }
 
+    /// Memo
     #[inline]
-    fn memo(&self) -> &Option<String> {
+    pub fn memo(&self) -> &Option<String> {
         &self.memo
     }
 
+    /// Unit
     #[inline]
-    fn unit(&self) -> &Option<CurrencyUnit> {
+    pub fn unit(&self) -> &Option<CurrencyUnit> {
         &self.unit
+    }
+
+    /// Mint Url
+    pub fn mint_urls(&self) -> Vec<MintUrl> {
+        let mut mint_urls = Vec::new();
+
+        for token in self.token.iter() {
+            mint_urls.push(token.mint.clone());
+        }
+
+        mint_urls
     }
 }
 
@@ -252,15 +271,12 @@ impl fmt::Display for TokenV3 {
 
 impl From<TokenV4> for TokenV3 {
     fn from(token: TokenV4) -> Self {
-        let (mint_url, proofs) = token
-            .proofs()
-            .into_iter()
-            .next()
-            .expect("Token has no proofs");
+        let proofs = token.proofs();
+
         TokenV3 {
-            token: vec![TokenV3Token::new(mint_url, proofs)],
+            token: vec![TokenV3Token::new(token.mint_url, proofs)],
             memo: token.memo,
-            unit: token.unit,
+            unit: Some(token.unit),
         }
     }
 }
@@ -272,42 +288,28 @@ pub struct TokenV4 {
     #[serde(rename = "m")]
     pub mint_url: MintUrl,
     /// Token Unit
-    #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
-    pub unit: Option<CurrencyUnit>,
+    #[serde(rename = "u")]
+    pub unit: CurrencyUnit,
     /// Memo for token
     #[serde(rename = "d", skip_serializing_if = "Option::is_none")]
     pub memo: Option<String>,
-    /// Proofs
-    ///
-    /// Proofs separated by keyset_id
+    /// Proofs grouped by keyset_id
     #[serde(rename = "t")]
     pub token: Vec<TokenV4Token>,
 }
 
 impl TokenV4 {
     /// Proofs from token
-    pub fn proofs(&self) -> HashMap<MintUrl, Proofs> {
-        let mint_url = &self.mint_url;
-        let mut proofs: HashMap<MintUrl, Proofs> = HashMap::new();
-
-        for token in self.token.clone() {
-            let mut mint_proofs = token
-                .proofs
-                .iter()
-                .map(|p| p.into_proof(&token.keyset_id))
-                .collect();
-
-            proofs
-                .entry(mint_url.clone())
-                .and_modify(|p| p.append(&mut mint_proofs))
-                .or_insert(mint_proofs);
-        }
-
-        proofs
+    pub fn proofs(&self) -> Proofs {
+        self.token
+            .iter()
+            .flat_map(|token| token.proofs.iter().map(|p| p.into_proof(&token.keyset_id)))
+            .collect()
     }
 
+    /// Value
     #[inline]
-    fn value(&self) -> Result<Amount, Error> {
+    pub fn value(&self) -> Result<Amount, Error> {
         Ok(Amount::try_sum(
             self.token
                 .iter()
@@ -316,14 +318,16 @@ impl TokenV4 {
         )?)
     }
 
+    /// Memo
     #[inline]
-    fn memo(&self) -> &Option<String> {
+    pub fn memo(&self) -> &Option<String> {
         &self.memo
     }
 
+    /// Unit
     #[inline]
-    fn unit(&self) -> &Option<CurrencyUnit> {
-        &self.unit
+    pub fn unit(&self) -> CurrencyUnit {
+        self.unit
     }
 }
 
@@ -355,13 +359,15 @@ impl TryFrom<TokenV3> for TokenV4 {
     type Error = Error;
     fn try_from(token: TokenV3) -> Result<Self, Self::Error> {
         let proofs = token.proofs();
-        if proofs.len() != 1 {
+        let mint_urls = token.mint_urls();
+
+        if mint_urls.len() != 1 {
             return Err(Error::UnsupportedToken);
         }
 
-        let (mint_url, mint_proofs) = proofs.iter().next().expect("No proofs");
+        let mint_url = mint_urls.first().expect("Len is checked");
 
-        let proofs = mint_proofs
+        let proofs = proofs
             .iter()
             .fold(HashMap::new(), |mut acc, val| {
                 acc.entry(val.keyset_id)
@@ -374,10 +380,10 @@ impl TryFrom<TokenV3> for TokenV4 {
             .collect();
 
         Ok(TokenV4 {
-            mint_url: mint_url.to_owned(),
+            mint_url: mint_url.clone(),
             token: proofs,
             memo: token.memo,
-            unit: token.unit,
+            unit: token.unit.ok_or(Error::UnsupportedUnit)?,
         })
     }
 }
@@ -472,8 +478,7 @@ mod tests {
 
         assert_eq!(amount, Amount::from(4));
 
-        let unit = (*token.unit()).unwrap();
-
+        let unit = token.unit().unwrap();
         assert_eq!(CurrencyUnit::Sat, unit);
 
         match token {

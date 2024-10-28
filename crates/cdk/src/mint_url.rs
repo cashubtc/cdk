@@ -6,7 +6,7 @@
 use core::fmt;
 use core::str::FromStr;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::{ParseError, Url};
 
@@ -22,7 +22,7 @@ pub enum Error {
 }
 
 /// MintUrl Url
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MintUrl(String);
 
 impl MintUrl {
@@ -60,25 +60,16 @@ impl MintUrl {
         Ok(formatted_url)
     }
 
-    /// Empty mint url
-    pub fn empty() -> Self {
-        Self(String::new())
-    }
-
     /// Join onto url
     pub fn join(&self, path: &str) -> Result<Url, Error> {
-        let url: Url = self.try_into()?;
-        Ok(url.join(path)?)
+        Url::parse(&self.0)
+            .and_then(|url| url.join(path))
+            .map_err(Into::into)
     }
-}
 
-impl<'de> Deserialize<'de> for MintUrl {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        MintUrl::from_str(&s).map_err(serde::de::Error::custom)
+    /// Append path elements onto the URL
+    pub fn join_paths(&self, path_elements: &[&str]) -> Result<Url, Error> {
+        self.join(&path_elements.join("/"))
     }
 }
 
@@ -91,22 +82,6 @@ impl FromStr for MintUrl {
             Ok(url) => Ok(Self(url)),
             Err(_) => Err(Error::InvalidUrl),
         }
-    }
-}
-
-impl TryFrom<MintUrl> for Url {
-    type Error = Error;
-
-    fn try_from(mint_url: MintUrl) -> Result<Url, Self::Error> {
-        Ok(Self::parse(&mint_url.0)?)
-    }
-}
-
-impl TryFrom<&MintUrl> for Url {
-    type Error = Error;
-
-    fn try_from(mint_url: &MintUrl) -> Result<Url, Self::Error> {
-        Ok(Self::parse(mint_url.0.as_str())?)
     }
 }
 

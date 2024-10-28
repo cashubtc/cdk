@@ -4,6 +4,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::{hashes::sha256::Hash as Sha256Hash, XOnlyPublicKey};
 use tracing::instrument;
 
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Token};
 use crate::{
@@ -33,10 +34,7 @@ impl Wallet {
             .await?
             .is_none()
         {
-            tracing::debug!(
-                "Mint not in localstore fetching info for: {}",
-                self.mint_url
-            );
+            tracing::debug!("Mint not in localstore fetching info for: {mint_url}");
             self.get_mint_info().await?;
         }
 
@@ -133,7 +131,7 @@ impl Wallet {
 
         let swap_response = self
             .client
-            .post_swap(mint_url.clone().try_into()?, pre_swap.swap_request)
+            .post_swap(mint_url.clone(), pre_swap.swap_request)
             .await?;
 
         // Proof to keep
@@ -148,7 +146,7 @@ impl Wallet {
             .increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
             .await?;
 
-        let total_amount = Amount::try_sum(recv_proofs.iter().map(|p| p.amount))?;
+        let total_amount = recv_proofs.total_amount()?;
 
         let recv_proof_infos = recv_proofs
             .into_iter()
@@ -209,9 +207,7 @@ impl Wallet {
             return Err(Error::MultiMintTokenNotSupported);
         }
 
-        let (mint_url, proofs) = proofs.into_iter().next().expect("Token has proofs");
-
-        if self.mint_url != mint_url {
+        if self.mint_url != token_data.mint_url()? {
             return Err(Error::IncorrectMint);
         }
 

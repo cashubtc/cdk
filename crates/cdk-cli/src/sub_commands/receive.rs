@@ -137,7 +137,7 @@ async fn receive_token(
 ) -> Result<Amount> {
     let token: Token = Token::from_str(token_str)?;
 
-    let mint_url = token.proofs().into_keys().next().expect("Mint in token");
+    let mint_url = token.mint_url()?;
 
     let wallet_key = WalletKey::new(mint_url.clone(), token.unit().unwrap_or_default());
 
@@ -193,9 +193,9 @@ async fn nostr_receive(
     let events = client
         .get_events_of(
             vec![filter],
-            nostr_sdk::EventSource::Both {
+            nostr_sdk::EventSource::Relays {
                 timeout: None,
-                specific_relays: None,
+                specific_relays: Some(relays),
             },
         )
         .await?;

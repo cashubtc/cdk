@@ -1,6 +1,7 @@
 use tracing::instrument;
 
 use super::MintQuote;
+use crate::nuts::nut00::ProofsMethods;
 use crate::{
     amount::SplitTarget,
     dhke::construct_proofs,
@@ -47,7 +48,6 @@ impl Wallet {
         let unit = self.unit;
 
         // If we have a description, we check that the mint supports it.
-        // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let mint_method_settings = self
                 .localstore
@@ -66,7 +66,7 @@ impl Wallet {
 
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone().try_into()?, amount, unit, description)
+            .post_mint_quote(mint_url.clone(), amount, unit, description)
             .await?;
 
         let quote = MintQuote {
@@ -89,7 +89,7 @@ impl Wallet {
     pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
         let response = self
             .client
-            .get_mint_quote_status(self.mint_url.clone().try_into()?, quote_id)
+            .get_mint_quote_status(self.mint_url.clone(), quote_id)
             .await?;
 
         match self.localstore.get_mint_quote(quote_id).await? {
@@ -214,11 +214,7 @@ impl Wallet {
 
         let mint_res = self
             .client
-            .post_mint(
-                self.mint_url.clone().try_into()?,
-                quote_id,
-                premint_secrets.clone(),
-            )
+            .post_mint(self.mint_url.clone(), quote_id, premint_secrets.clone())
             .await?;
 
         let keys = self.get_keyset_keys(active_keyset_id).await?;
@@ -242,7 +238,7 @@ impl Wallet {
             &keys,
         )?;
 
-        let minted_amount = Amount::try_sum(proofs.iter().map(|p| p.amount))?;
+        let minted_amount = proofs.total_amount()?;
 
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;

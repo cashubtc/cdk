@@ -9,6 +9,7 @@ use url::Url;
 
 use super::Error;
 use crate::error::ErrorResponse;
+use crate::mint_url::MintUrl;
 use crate::nuts::nut15::Mpp;
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
@@ -18,24 +19,6 @@ use crate::nuts::{
     SwapRequest, SwapResponse,
 };
 use crate::{Amount, Bolt11Invoice};
-
-fn join_url(url: Url, paths: &[&str]) -> Result<Url, Error> {
-    let mut url = url;
-    for path in paths {
-        if !url.path().ends_with('/') {
-            url.path_segments_mut()
-                .map_err(|_| Error::UrlPathSegments)?
-                .push(path);
-        } else {
-            url.path_segments_mut()
-                .map_err(|_| Error::UrlPathSegments)?
-                .pop()
-                .push(path);
-        }
-    }
-
-    Ok(url)
-}
 
 /// Http Client
 #[derive(Debug, Clone)]
@@ -101,8 +84,8 @@ impl HttpClient {
 
     /// Get Active Mint Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_mint_keys(&self, mint_url: Url) -> Result<Vec<KeySet>, Error> {
-        let url = join_url(mint_url, &["v1", "keys"])?;
+    pub async fn get_mint_keys(&self, mint_url: MintUrl) -> Result<Vec<KeySet>, Error> {
+        let url = mint_url.join_paths(&["v1", "keys"])?;
         let keys = self.inner.get(url).send().await?.json::<Value>().await?;
 
         match serde_json::from_value::<KeysResponse>(keys.clone()) {
@@ -113,8 +96,8 @@ impl HttpClient {
 
     /// Get Keyset Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_mint_keyset(&self, mint_url: Url, keyset_id: Id) -> Result<KeySet, Error> {
-        let url = join_url(mint_url, &["v1", "keys", &keyset_id.to_string()])?;
+    pub async fn get_mint_keyset(&self, mint_url: MintUrl, keyset_id: Id) -> Result<KeySet, Error> {
+        let url = mint_url.join_paths(&["v1", "keys", &keyset_id.to_string()])?;
         let keys = self.inner.get(url).send().await?.json::<Value>().await?;
 
         match serde_json::from_value::<KeysResponse>(keys.clone()) {
@@ -125,8 +108,8 @@ impl HttpClient {
 
     /// Get Keysets [NUT-02]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_mint_keysets(&self, mint_url: Url) -> Result<KeysetResponse, Error> {
-        let url = join_url(mint_url, &["v1", "keysets"])?;
+    pub async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<KeysetResponse, Error> {
+        let url = mint_url.join_paths(&["v1", "keysets"])?;
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
         match serde_json::from_value::<KeysetResponse>(res.clone()) {
@@ -139,12 +122,12 @@ impl HttpClient {
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn post_mint_quote(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<MintQuoteBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11"])?;
+        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11"])?;
 
         let request = MintQuoteBolt11Request {
             amount,
@@ -174,10 +157,10 @@ impl HttpClient {
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_mint_quote_status(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "mint", "quote", "bolt11", quote_id])?;
+        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
@@ -194,11 +177,11 @@ impl HttpClient {
     #[instrument(skip(self, quote, premint_secrets), fields(mint_url = %mint_url))]
     pub async fn post_mint(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         quote: &str,
         premint_secrets: PreMintSecrets,
     ) -> Result<MintBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "mint", "bolt11"])?;
+        let url = mint_url.join_paths(&["v1", "mint", "bolt11"])?;
 
         let request = MintBolt11Request {
             quote: quote.to_string(),
@@ -224,12 +207,12 @@ impl HttpClient {
     #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_melt_quote(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         unit: CurrencyUnit,
         request: Bolt11Invoice,
         mpp_amount: Option<Amount>,
     ) -> Result<MeltQuoteBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "melt", "quote", "bolt11"])?;
+        let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11"])?;
 
         let options = mpp_amount.map(|amount| Mpp { amount });
 
@@ -258,10 +241,10 @@ impl HttpClient {
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn get_melt_quote_status(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "melt", "quote", "bolt11", quote_id])?;
+        let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
@@ -276,12 +259,12 @@ impl HttpClient {
     #[instrument(skip(self, quote, inputs, outputs), fields(mint_url = %mint_url))]
     pub async fn post_melt(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         quote: String,
         inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> Result<MeltQuoteBolt11Response, Error> {
-        let url = join_url(mint_url, &["v1", "melt", "bolt11"])?;
+        let url = mint_url.join_paths(&["v1", "melt", "bolt11"])?;
 
         let request = MeltBolt11Request {
             quote,
@@ -313,10 +296,10 @@ impl HttpClient {
     #[instrument(skip(self, swap_request), fields(mint_url = %mint_url))]
     pub async fn post_swap(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        let url = join_url(mint_url, &["v1", "swap"])?;
+        let url = mint_url.join_paths(&["v1", "swap"])?;
 
         let res = self
             .inner
@@ -335,8 +318,8 @@ impl HttpClient {
 
     /// Get Mint Info [NUT-06]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
-    pub async fn get_mint_info(&self, mint_url: Url) -> Result<MintInfo, Error> {
-        let url = join_url(mint_url, &["v1", "info"])?;
+    pub async fn get_mint_info(&self, mint_url: MintUrl) -> Result<MintInfo, Error> {
+        let url = mint_url.join_paths(&["v1", "info"])?;
 
         let res = self.inner.get(url).send().await?.json::<Value>().await?;
 
@@ -353,10 +336,10 @@ impl HttpClient {
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     pub async fn post_check_state(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         ys: Vec<PublicKey>,
     ) -> Result<CheckStateResponse, Error> {
-        let url = join_url(mint_url, &["v1", "checkstate"])?;
+        let url = mint_url.join_paths(&["v1", "checkstate"])?;
         let request = CheckStateRequest { ys };
 
         let res = self
@@ -378,10 +361,10 @@ impl HttpClient {
     #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     pub async fn post_restore(
         &self,
-        mint_url: Url,
+        mint_url: MintUrl,
         request: RestoreRequest,
     ) -> Result<RestoreResponse, Error> {
-        let url = join_url(mint_url, &["v1", "restore"])?;
+        let url = mint_url.join_paths(&["v1", "restore"])?;
 
         let res = self
             .inner

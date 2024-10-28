@@ -29,7 +29,7 @@ Once the node is running, create an invoice using the phoenixd-cli to fund your 
 
 ## Check Channel state
 
-After paying the invoice view that a channal has been opened.
+After paying the invoice view that a channel has been opened.
 ```sh
 ./phoenix-cli listchannels
 ```

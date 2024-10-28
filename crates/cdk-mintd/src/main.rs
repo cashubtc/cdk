@@ -36,6 +36,8 @@ use tokio::sync::{Mutex, Notify};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use url::Url;
+#[cfg(feature = "swagger")]
+use utoipa::OpenApi;
 
 mod cli;
 mod config;
@@ -451,7 +453,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Checks the status of all pending melt quotes
     // Pending melt quotes where the payment has gone through inputs are burnt
-    // Pending melt quotes where the paynment has **failed** inputs are reset to unspent
+    // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     check_pending_melt_quotes(Arc::clone(&mint), &ln_backends).await?;
 
     let listen_addr = settings.info.listen_host;
@@ -474,6 +476,16 @@ async fn main() -> anyhow::Result<()> {
     let mut mint_service = Router::new()
         .merge(v1_service)
         .layer(CorsLayer::permissive());
+
+    #[cfg(feature = "swagger")]
+    {
+        if settings.info.enable_swagger_ui.unwrap_or(false) {
+            mint_service = mint_service.merge(
+                utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
+                    .url("/api-docs/openapi.json", cdk_axum::ApiDocV1::openapi()),
+            );
+        }
+    }
 
     for router in ln_routers {
         mint_service = mint_service.merge(router);

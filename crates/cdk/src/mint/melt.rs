@@ -5,6 +5,12 @@ use anyhow::bail;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
+use crate::cdk_lightning;
+use crate::cdk_lightning::MintLightning;
+use crate::cdk_lightning::PayInvoiceResponse;
+use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut11::enforce_sig_flag;
+use crate::nuts::nut11::EnforceSigFlag;
 use crate::{
     amount::to_unit,
     cdk_lightning::{self, MintLightning, PayInvoiceResponse},
@@ -37,36 +43,20 @@ impl Mint {
             return Err(Error::MeltingDisabled);
         }
 
-        match nut05.get_settings(&unit, &method) {
-            Some(settings) => {
-                if settings
-                    .max_amount
-                    .map_or(false, |max_amount| amount > max_amount)
-                {
-                    return Err(Error::AmountOutofLimitRange(
-                        settings.min_amount.unwrap_or_default(),
-                        settings.max_amount.unwrap_or_default(),
-                        amount,
-                    ));
-                }
+        let settings = nut05
+            .get_settings(&unit, &method)
+            .ok_or(Error::UnitUnsupported)?;
 
-                if settings
-                    .min_amount
-                    .map_or(false, |min_amount| amount < min_amount)
-                {
-                    return Err(Error::AmountOutofLimitRange(
-                        settings.min_amount.unwrap_or_default(),
-                        settings.max_amount.unwrap_or_default(),
-                        amount,
-                    ));
-                }
-            }
-            None => {
-                return Err(Error::UnitUnsupported);
-            }
+        let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
+        let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
+        match is_above_max || is_below_min {
+            true => Err(Error::AmountOutofLimitRange(
+                settings.min_amount.unwrap_or_default(),
+                settings.max_amount.unwrap_or_default(),
+                amount,
+            )),
+            false => Ok(()),
         }
-
-        Ok(())
     }
 
     /// Get melt bolt11 quote
@@ -255,23 +245,13 @@ impl Mint {
             .await?;
 
         match state {
-            MeltQuoteState::Unpaid | MeltQuoteState::Failed => (),
-            MeltQuoteState::Pending => {
-                return Err(Error::PendingQuote);
-            }
-            MeltQuoteState::Paid => {
-                return Err(Error::PaidQuote);
-            }
-            MeltQuoteState::Unknown => {
-                return Err(Error::UnknownPaymentState);
-            }
-        }
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => Ok(()),
+            MeltQuoteState::Pending => Err(Error::PendingQuote),
+            MeltQuoteState::Paid => Err(Error::PaidQuote),
+            MeltQuoteState::Unknown => Err(Error::UnknownPaymentState),
+        }?;
 
-        let ys = melt_request
-            .inputs
-            .iter()
-            .map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let ys = melt_request.inputs.ys()?;
 
         // Ensure proofs are unique and not being double spent
         if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
@@ -377,11 +357,7 @@ impl Mint {
     /// quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
-        let input_ys = melt_request
-            .inputs
-            .iter()
-            .map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let input_ys = melt_request.inputs.ys()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Unspent)
@@ -618,11 +594,7 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let input_ys = melt_request
-            .inputs
-            .iter()
-            .map(|p| hash_to_curve(&p.secret.to_bytes()))
-            .collect::<Result<Vec<PublicKey>, _>>()?;
+        let input_ys = melt_request.inputs.ys()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Spent)

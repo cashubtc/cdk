@@ -26,7 +26,16 @@
 - cdk: Bump `lightning-invoice` to `0.32.2` ([prusnak]).
 - cdk: Bump `lightning` to `0.0.124` ([prusnak]).
 - cdk: `PaymentMethod` as a `non_exhaustive` enum ([thesimplekid]).
-- cdk: `CurrencyUnit` as a `non_exhaustive` enum ([thesimpekid]).
+- cdk: `CurrencyUnit` as a `non_exhaustive` enum ([thesimplekid]).
+- cdk: Enforce token is single mint ([thesimplekid]).
+- cdk: Mint will return change for over paid melt even over fee reserve ([davidcaseria]).
+- cdk: Refactor ln_backeds to be on the `cdk::Mint` and not with axum ([thesimplekid]).
+- cdk: Change is returned in the check quote response ([thesimplekid]).
+- cdk: Move unit conversion util fn to amount module ([davidcaseria]).
+- cdk: Remove spent proofs from db when check state is called ([mubarak23]).
+- cdk: Use `MintUrl` directly in wallet client ([ok300]).
+- cdk-cli: Change cdk-cli pay command to melt ([mubarak23]). 
+
 
 ### Added
 - cdk: Added description to `MintQuoteBolt11Request` ([lollerfirst]).
@@ -34,10 +43,22 @@
 - cdk: Add `amount` and `fee_paid` to `Melted` ([davidcaseria]).
 - cdk: Add `from_proofs` on `Melted` ([davidcaseria]). 
 - cdk: Add unit on `PaymentResponse` ([thesimplekid]).
+- cdk: Add description for mint quote ([lollerfirst]).
+- cdk-axum: Add cache to some endpoints ([lollerfirst]).
+- cdk: Add Proofs trait ([ok300]).
+- cdk: Wallet verifiys keyset id when first fetching keys ([thesimplekid]).
+- cdk-mind: Add swagger docs ([ok300]).
+- cdk: NUT18 payment request support ([thesimplekid]).
 
 ### Removed
 - cdk: Remove `MintMeltSettings` since it is no longer used ([lollerfirst]).
 - cdk: `PaymentMethod::Custom` ([thesimplekid]).
+- cdk: Remove deprecated `MeltBolt11Response` ([thesimplekid]).
+
+### Fixed
+- cdk: Check of inputs to include fee ([thesimplekid]).
+- cdk: Make unit mandatory in tokenv4 ([ok300]).
+
 
 
 
@@ -174,4 +195,5 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [ok300]: https://github.com/ok300
 [lollerfirst]: https://github.com/lollerfirst
 [prusnak]: https://github.com/prusnak
+[mubarak23]: https://github.com/mubarak23
 
