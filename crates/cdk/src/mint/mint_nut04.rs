@@ -126,8 +126,6 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let paid = quote.state == MintQuoteState::Paid;
-
         // Since the pending state is not part of the NUT it should not be part of the
         // response. In practice the wallet should not be checking the state of
         // a quote while waiting for the mint response.
@@ -139,7 +137,6 @@ impl Mint {
         Ok(MintQuoteBolt11Response {
             quote: quote.id,
             request: quote.request,
-            paid: Some(paid),
             state,
             expiry: Some(quote.expiry),
         })
