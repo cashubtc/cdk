@@ -15,9 +15,14 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
+use crate::nuts::nutdlc::{
+    ClaimDLCPayout, DLCOutcome, DLCPayout, DLCPayoutWitness, DLCRegistrationResponse,
+    DLCSettlement, DLCStatusResponse, PostDLCPayoutRequest, PostDLCRegistrationRequest,
+    PostSettleDLCRequest, DLC,
+};
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
-    RestoreRequest, SpendingConditions, State,
+    nut10, BlindedMessage, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof,
+    Proofs, RestoreRequest, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::{Amount, HttpClient};
@@ -383,6 +388,13 @@ impl Wallet {
                 ),
                 None => (None, None, None, None),
             },
+            SpendingConditions::DLCConditions { .. } => {
+                todo!()
+            }
+
+            SpendingConditions::SCTConditions { .. } => {
+                todo!()
+            }
         };
 
         if refund_keys.is_some() && locktime.is_none() {
@@ -515,5 +527,150 @@ impl Wallet {
         }
 
         Ok(())
+    }
+
+    /// Register a DLC
+    #[instrument(skip(self))]
+    pub async fn register_dlc(&self, dlc: DLC) -> Result<(), Error> {
+        let fund_dlc_request = PostDLCRegistrationRequest {
+            registrations: vec![dlc],
+        };
+
+        // TODO: the matching on the response seems to always be `Success` even if there are errors
+        let fund_dlc_response = match self
+            .client
+            .post_register_dlc(self.mint_url.clone(), fund_dlc_request)
+            .await?
+        {
+            DLCRegistrationResponse::Success { funded } => funded,
+            DLCRegistrationResponse::Error { errors, .. } => {
+                println!("Error registering DLC: {:?}", errors);
+                tracing::error!("Error registering DLC: {:?}", errors);
+                return Err(Error::Custom("Error registering DLC".to_string()));
+            }
+        };
+
+        // we are not properly catching the error, so if `funded` is empty, we know the registration failed
+        assert!(!fund_dlc_response.is_empty(), "DLC registration failed");
+
+        for funded_dlc in fund_dlc_response {
+            let dlc_root = funded_dlc.dlc_root;
+            let funding_proof = funded_dlc.funding_proof;
+            println!("Funded DLC: {:?}", dlc_root);
+            println!("Funding Proof: {:?}", funding_proof);
+        }
+
+        Ok(())
+    }
+
+    /// Settle DLC
+    pub async fn settle_dlc(
+        &self,
+        dlc_root: &String,
+        outcome: DLCOutcome,
+        merkle_proof: Vec<[u8; 32]>,
+    ) -> Result<(), Error> {
+        let merkle_proof_string = merkle_proof
+            .iter()
+            .map(|p| crate::util::hex::encode(p))
+            .collect::<Vec<String>>();
+        let settle_dlc_request = PostSettleDLCRequest {
+            settlements: vec![DLCSettlement {
+                dlc_root: dlc_root.clone(),
+                outcome,
+                merkle_proof: merkle_proof_string,
+            }],
+        };
+
+        match self
+            .client
+            .post_settle_dlc(self.mint_url.clone(), settle_dlc_request)
+            .await
+        {
+            Ok(settle_dlc_response) => {
+                println!("Settled DLC: {:?}", settle_dlc_response);
+                if settle_dlc_response.settled.is_empty() {
+                    tracing::error!("No settled DLCs");
+                    return Err(Error::Custom("No settled DLCs".to_string()));
+                }
+                let mut has_root = false;
+                for settled_dlc in settle_dlc_response.settled {
+                    if settled_dlc.dlc_root == *dlc_root {
+                        has_root = true;
+                        break;
+                    }
+                }
+                if !has_root {
+                    tracing::error!("No settled DLC with root with root: {:?}", dlc_root);
+                    return Err(Error::Custom("No settled DLC with root".to_string()));
+                } else {
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                println!("Error settling DLC: {:?}", err);
+                tracing::error!("Error settling DLC: {:?}", err);
+                return Err(Error::Custom("Error settling DLC".to_string()));
+            }
+        };
+    }
+
+    /// Get status of DLC
+    pub async fn dlc_status(&self, dlc_root: String) -> Result<DLCStatusResponse, Error> {
+        let dlc_status_response = match self.client.status(self.mint_url.clone(), &dlc_root).await {
+            Ok(dlc_status_response) => dlc_status_response,
+            Err(err) => {
+                println!("Error: {:?}", err);
+                tracing::error!("Error getting DLC status: {:?}", err);
+                return Err(Error::Custom("Error getting DLC status".to_string()));
+            }
+        };
+
+        Ok(dlc_status_response)
+    }
+
+    /// Claim payout for DLC
+    pub async fn claim_dlc_payout(
+        &self,
+        dlc_root: String,
+        pubkey: String,
+        outputs: Vec<BlindedMessage>,
+        signature: Option<String>,
+    ) -> Result<DLCPayout, Error> {
+        let payout = ClaimDLCPayout {
+            dlc_root,
+            pubkey,
+            outputs,
+            witness: DLCPayoutWitness {
+                secret: None,
+                signature: signature.clone(),
+            },
+        };
+
+        let payout_request = PostDLCPayoutRequest {
+            payouts: vec![payout],
+        };
+
+        let payout_response = match self
+            .client
+            .payout(self.mint_url.clone(), payout_request)
+            .await
+        {
+            Ok(payout_response) => payout_response,
+            Err(err) => {
+                println!("Error: {:?}", err);
+                tracing::error!("Error claiming DLC payout: {:?}", err);
+                return Err(Error::Custom("Error claiming DLC payout".to_string()));
+            }
+        };
+
+        if let Some(errors) = payout_response.errors {
+            for error in errors {
+                println!("Error: {:?}", error);
+            }
+            return Err(Error::Custom("Error claiming DLC payout".to_string()));
+        }
+
+        Ok(payout_response.paid[0].clone())
     }
 }

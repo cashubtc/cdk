@@ -78,6 +78,8 @@ enum Commands {
     PayRequest(sub_commands::pay_request::PayRequestSubCommand),
     /// Create Payment request
     CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
+    // Create and manage DLC offers
+    DLC(sub_commands::dlc::DLCSubCommand),
 }
 
 #[tokio::main]
@@ -218,6 +220,9 @@ async fn main() -> Result<()> {
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::DLC(sub_command_args) => {
+            sub_commands::dlc::dlc(&multi_mint_wallet, sub_command_args).await
         }
     }
 }

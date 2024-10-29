@@ -4,6 +4,7 @@ pub mod check_spent;
 pub mod create_request;
 pub mod decode_request;
 pub mod decode_token;
+pub mod dlc;
 pub mod list_mint_proofs;
 pub mod melt;
 pub mod mint;

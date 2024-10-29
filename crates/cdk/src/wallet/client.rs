@@ -9,6 +9,10 @@ use super::Error;
 use crate::error::ErrorResponse;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut15::Mpp;
+use crate::nuts::nutdlc::{
+    DLCRegistrationResponse, DLCStatusResponse, PostDLCPayoutRequest, PostDLCPayoutResponse,
+    PostDLCRegistrationRequest, PostSettleDLCRequest, SettleDLCResponse,
+};
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
     KeysetResponse, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
@@ -363,6 +367,87 @@ impl HttpClient {
 
         match serde_json::from_value::<RestoreResponse>(res.clone()) {
             Ok(melt_quote_response) => Ok(melt_quote_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        }
+    }
+
+    /// Fund a DLC
+    pub async fn post_register_dlc(
+        &self,
+        mint_url: MintUrl,
+        fund_dlc_request: PostDLCRegistrationRequest,
+    ) -> Result<DLCRegistrationResponse, Error> {
+        let url = mint_url.join_paths(&["v1", "dlc", "fund"])?;
+        let res = self
+            .inner
+            .post(url)
+            .json(&fund_dlc_request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<DLCRegistrationResponse>(res.clone()) {
+            Ok(dlc_response) => Ok(dlc_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        }
+    }
+
+    /// Settle DLC
+    pub async fn post_settle_dlc(
+        &self,
+        mint_url: MintUrl,
+        settle_dlc_request: PostSettleDLCRequest,
+    ) -> Result<SettleDLCResponse, Error> {
+        let url = mint_url.join_paths(&["v1", "dlc", "settle"])?;
+        let res = self
+            .inner
+            .post(url)
+            .json(&settle_dlc_request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<SettleDLCResponse>(res.clone()) {
+            Ok(settle_dlc_response) => Ok(settle_dlc_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        }
+    }
+
+    /// Get status of DLC
+    pub async fn status(
+        &self,
+        mint_url: MintUrl,
+        dlc_root: &str,
+    ) -> Result<DLCStatusResponse, Error> {
+        let url = mint_url.join_paths(&["v1", "dlc", "status", dlc_root])?;
+        let res = self.inner.get(url).send().await?.json::<Value>().await?;
+
+        match serde_json::from_value::<DLCStatusResponse>(res.clone()) {
+            Ok(dlc_status_response) => Ok(dlc_status_response),
+            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
+        }
+    }
+
+    /// Claim payout for DLC
+    pub async fn payout(
+        &self,
+        mint_url: MintUrl,
+        request: PostDLCPayoutRequest,
+    ) -> Result<PostDLCPayoutResponse, Error> {
+        let url = mint_url.join_paths(&["v1", "dlc", "payout"])?;
+        let res = self
+            .inner
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        match serde_json::from_value::<PostDLCPayoutResponse>(res.clone()) {
+            Ok(dlc_status_response) => Ok(dlc_status_response),
             Err(_) => Err(ErrorResponse::from_value(res)?.into()),
         }
     }
