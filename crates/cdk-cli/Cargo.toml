@@ -37,3 +37,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "socks",
 ]}
 url = "2.3"
+dlc-messages = { version = "0.5.0", features = ["use-serde"] }
+lightning = "0.0.121"
+schnorr_fun = { version = "0.9.2", features = ["bincode", "serde"] }
+sha2 = "0.10.8"
+dlc = "0.5.0"

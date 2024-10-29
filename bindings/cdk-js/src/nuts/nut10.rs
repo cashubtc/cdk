@@ -14,6 +14,8 @@ impl From<Kind> for JsKind {
         match inner {
             Kind::P2PK => JsKind::P2PK,
             Kind::HTLC => JsKind::HTLC,
+            Kind::DLC => todo!(),
+            Kind::SCT => todo!(),
         }
     }
 }

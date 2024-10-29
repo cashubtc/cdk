@@ -338,6 +338,14 @@ impl Mint {
                 Kind::HTLC => {
                     proof.verify_htlc()?;
                 }
+                
+                Kind::DLC => {
+                    todo!()
+                }
+
+                Kind::SCT => {
+                    todo!()
+                }
             }
         }
 
