@@ -9,6 +9,14 @@ use cdk::nuts::{
 
 use crate::{into_response, MintState};
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/mint/quote/bolt12",
+    responses(
+        (status = 200, description = "Successful response", body = MintQuoteBolt12Response, content_type = "application/json")
+    )
+))]
 /// Get mint bolt12 quote
 pub async fn get_mint_bolt12_quote(
     State(state): State<MintState>,
@@ -23,6 +31,18 @@ pub async fn get_mint_bolt12_quote(
     Ok(Json(quote))
 }
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/mint/quote/bolt12/{quote_id}",
+    params(
+        ("quote_id" = String, description = "The quote ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = MintQuoteBolt12Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
 /// Get mint bolt12 quote
 pub async fn get_check_mint_bolt12_quote(
     State(state): State<MintState>,
@@ -37,6 +57,16 @@ pub async fn get_check_mint_bolt12_quote(
     Ok(Json(quote))
 }
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/bolt12",
+    request_body(content = MintBolt11Request, description = "Request params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MintBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
 /// Request a quote for melting tokens
 pub async fn post_mint_bolt12(
     State(state): State<MintState>,
@@ -54,6 +84,16 @@ pub async fn post_mint_bolt12(
     Ok(Json(res))
 }
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/melt/quote/bolt12",
+    request_body(content = MeltQuoteBolt12Request, description = "Quote params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
 pub async fn get_melt_bolt12_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt12Request>,
@@ -67,6 +107,19 @@ pub async fn get_melt_bolt12_quote(
     Ok(Json(quote))
 }
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/melt/bolt12",
+    request_body(content = MeltBolt12Request, description = "Melt params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
+///
+/// Requests tokens to be destroyed and sent out via Lightning.
 pub async fn post_melt_bolt12(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt12Request>,
