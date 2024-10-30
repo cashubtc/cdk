@@ -16,8 +16,6 @@ use crate::Amount;
 use crate::Error;
 use crate::Wallet;
 
-use super::client::HttpClientMethods;
-
 impl Wallet {
     /// Swap
     #[instrument(skip(self, input_proofs))]

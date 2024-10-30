@@ -1,5 +1,7 @@
 //! Wallet client
 
+use std::fmt::Debug;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
@@ -374,7 +376,7 @@ impl HttpClientMethods for HttpClient {
 
 /// Http Client Methods
 #[async_trait]
-pub trait HttpClientMethods {
+pub trait HttpClientMethods: Debug {
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self, mint_url: MintUrl) -> Result<Vec<KeySet>, Error>;
 

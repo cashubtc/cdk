@@ -10,8 +10,6 @@ use crate::{
     Amount, Error, Wallet,
 };
 
-use super::client::HttpClientMethods;
-
 impl Wallet {
     /// Get unspent proofs for mint
     #[instrument(skip(self))]

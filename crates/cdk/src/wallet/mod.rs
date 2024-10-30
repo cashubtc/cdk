@@ -56,7 +56,7 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     xpriv: Xpriv,
-    client: HttpClient,
+    client: Arc<dyn HttpClientMethods>,
 }
 
 impl Wallet {
@@ -89,7 +89,7 @@ impl Wallet {
         Ok(Self {
             mint_url: MintUrl::from_str(mint_url)?,
             unit,
-            client: HttpClient::new(),
+            client: Arc::new(HttpClient::new()),
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
@@ -97,8 +97,8 @@ impl Wallet {
     }
 
     /// Change HTTP client
-    pub fn set_client(&mut self, client: HttpClient) {
-        self.client = client;
+    pub fn set_client<C: HttpClientMethods + 'static>(&mut self, client: C) {
+        self.client = Arc::new(client);
     }
 
     /// Fee required for proof set

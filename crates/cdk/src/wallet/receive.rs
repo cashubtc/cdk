@@ -16,8 +16,6 @@ use crate::{
     Amount, Error, Wallet, SECP256K1,
 };
 
-use super::client::HttpClientMethods;
-
 impl Wallet {
     /// Receive proofs
     #[instrument(skip_all)]

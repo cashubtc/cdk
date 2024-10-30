@@ -6,8 +6,6 @@ use crate::nuts::Keys;
 use crate::Error;
 use crate::Wallet;
 
-use super::client::HttpClientMethods;
-
 impl Wallet {
     /// Get keys for mint keyset
     ///

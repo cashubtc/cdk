@@ -1,6 +1,5 @@
 use tracing::instrument;
 
-use super::client::HttpClientMethods;
 use super::MintQuote;
 use crate::nuts::nut00::ProofsMethods;
 use crate::{
