@@ -215,7 +215,7 @@ impl NostrWalletConnect {
                 .unwrap_or_default()
                 .into_values(),
         )?;
-        Ok(msat_balance + (sat_balance * 1000.into()))
+        Ok(msat_balance + to_unit(sat_balance, &CurrencyUnit::Sat, &CurrencyUnit::Msat)?)
     }
 
     async fn get_wallet_to_send(&self, amount_msats: Amount) -> Result<Wallet, Error> {
@@ -362,7 +362,10 @@ impl NostrWalletConnect {
                 .get_wallet(&WalletKey::new(mint_url, CurrencyUnit::Sat))
                 .await
             {
-                Some(wallet) => (wallet, amount_msats / 1000.into()),
+                Some(wallet) => (
+                    wallet,
+                    to_unit(amount_msats, &CurrencyUnit::Msat, &CurrencyUnit::Sat)?,
+                ),
                 None => return Err(Error::NoWallet),
             },
         };
