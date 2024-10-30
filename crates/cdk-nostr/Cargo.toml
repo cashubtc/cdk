@@ -1,0 +1,28 @@
+[package]
+name = "cdk-nostr"
+version = "0.4.0"
+edition = "2021"
+authors = ["CDK Developers"]
+license = "MIT"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.63.0"
+description = "CDK implementation of relevant Nostr NIPs"
+
+[dependencies]
+cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = [
+    "wallet",
+] }
+lightning-invoice = "0.32.0"
+nostr-relay-pool = { version = "0.35.0", default-features = false }
+nostr-sdk = { version = "0.35.0", default-features = false }
+thiserror = "1"
+tracing = { version = "0.1", default-features = false, features = [
+    "attributes",
+    "log",
+] }
+tokio = { version = "1", default-features = false, features = ["sync"] }
+
+[features]
+default = ["nip47"]
+nip47 = ["nostr-sdk/nip47"]
