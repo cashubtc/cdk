@@ -103,7 +103,7 @@ impl MintLightning for Strike {
 
         let strike_api = self.strike_api.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
-        let unit = self.unit.clone();
+        let unit = self.unit;
 
         Ok(futures::stream::unfold(
             (
