@@ -403,7 +403,7 @@ impl MintLightning for Lnd {
         &self,
         _melt_quote_request: &MeltQuoteBolt12Request,
     ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
-        todo!()
+        Err(Error::UnsupportedMethod.into())
     }
 
     /// Pay a bolt12 offer
@@ -413,7 +413,7 @@ impl MintLightning for Lnd {
         _amount: Option<Amount>,
         _max_fee_amount: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        todo!()
+        Err(Error::UnsupportedMethod.into())
     }
 
     /// Create bolt12 offer
@@ -425,6 +425,6 @@ impl MintLightning for Lnd {
         _unix_expiry: u64,
         _single_use: bool,
     ) -> Result<CreateOfferResponse, Self::Err> {
-        todo!()
+        Err(Error::UnsupportedMethod.into())
     }
 }

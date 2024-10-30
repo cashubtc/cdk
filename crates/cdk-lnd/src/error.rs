@@ -20,6 +20,9 @@ pub enum Error {
     /// Payment failed
     #[error("LND payment failed")]
     PaymentFailed,
+    /// Unsupported method
+    #[error("Unsupported method")]
+    UnsupportedMethod,
     /// Wrong invoice type
     #[error("Wrong invoice type")]
     WrongRequestType,
