@@ -6,7 +6,6 @@ use anyhow::{bail, Result};
 use cdk::amount::Amount;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::{MultiMintWallet, WalletKey};
-// use cdk::Bolt11Invoice;
 use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;

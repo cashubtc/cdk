@@ -153,18 +153,20 @@ async fn main() -> anyhow::Result<()> {
                 cln.clone(),
             );
 
-            let ln_key = LnKey {
-                unit: CurrencyUnit::Sat,
-                method: PaymentMethod::Bolt12,
-            };
-            ln_backends.insert(ln_key, cln.clone());
+            if cln_settings.bolt12 {
+                let ln_key = LnKey {
+                    unit: CurrencyUnit::Sat,
+                    method: PaymentMethod::Bolt12,
+                };
+                ln_backends.insert(ln_key, cln.clone());
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt12,
-                mint_melt_limits,
-                cln,
-            )
+                mint_builder = mint_builder.add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt12,
+                    mint_melt_limits,
+                    cln,
+                )
+            }
         }
         LnBackend::Strike => {
             let strike_settings = settings.clone().strike.expect("Checked on config load");

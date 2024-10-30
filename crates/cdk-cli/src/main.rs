@@ -25,7 +25,7 @@ const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 #[derive(Parser)]
 #[command(name = "cashu-tool")]
 #[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = "0.1.0")]
+#[command(version = "0.4.0")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
@@ -85,7 +85,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
-    let default_filter = "warn";
+    let default_filter = args.log_level;
 
     let sqlx_filter = "sqlx=warn";
 
