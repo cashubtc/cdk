@@ -198,13 +198,41 @@ impl Mint {
             .await
         {
             tracing::debug!(
-                "Quote {} paid by lookup id {}",
-                mint_quote.id,
-                request_lookup_id
+                "Received payment notification for mint quote {}",
+                mint_quote.id
             );
-            self.localstore
-                .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
-                .await?;
+
+            if mint_quote.state != MintQuoteState::Issued
+                && mint_quote.state != MintQuoteState::Paid
+            {
+                let unix_time = unix_time();
+
+                if mint_quote.expiry < unix_time {
+                    tracing::warn!(
+                        "Mint quote {} paid at {} expired at {}, leaving current state",
+                        mint_quote.id,
+                        mint_quote.expiry,
+                        unix_time,
+                    );
+                    return Err(Error::ExpiredQuote(mint_quote.expiry, unix_time));
+                }
+
+                tracing::debug!(
+                    "Marking quote {} paid by lookup id {}",
+                    mint_quote.id,
+                    request_lookup_id
+                );
+
+                self.localstore
+                    .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
+                    .await?;
+            } else {
+                tracing::debug!(
+                    "{} Quote already {} continuing",
+                    mint_quote.id,
+                    mint_quote.state
+                );
+            }
         }
         Ok(())
     }
@@ -215,16 +243,13 @@ impl Mint {
         &self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
-        // Check quote is known and not expired
-        match self.localstore.get_mint_quote(&mint_request.quote).await? {
-            Some(quote) => {
-                if quote.expiry < unix_time() {
-                    return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
-                }
-            }
-            None => {
-                return Err(Error::UnknownQuote);
-            }
+        if self
+            .localstore
+            .get_mint_quote(&mint_request.quote)
+            .await?
+            .is_none()
+        {
+            return Err(Error::UnknownQuote);
         }
 
         let state = self
