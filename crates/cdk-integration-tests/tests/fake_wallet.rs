@@ -6,7 +6,10 @@ use cdk::{
     amount::SplitTarget,
     cdk_database::WalletMemoryDatabase,
     nuts::{CurrencyUnit, MeltQuoteState, PreMintSecrets, State},
-    wallet::{client::HttpClient, Wallet},
+    wallet::{
+        client::{HttpClient, HttpClientMethods},
+        Wallet,
+    },
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;

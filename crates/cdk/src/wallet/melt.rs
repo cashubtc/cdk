@@ -12,6 +12,7 @@ use crate::{
     Amount, Error, Wallet,
 };
 
+use super::client::HttpClientMethods;
 use super::MeltQuote;
 
 impl Wallet {

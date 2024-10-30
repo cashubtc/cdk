@@ -6,7 +6,10 @@ use cdk::{
     amount::{Amount, SplitTarget},
     cdk_database::WalletMemoryDatabase,
     nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PreMintSecrets, State},
-    wallet::{client::HttpClient, Wallet},
+    wallet::{
+        client::{HttpClient, HttpClientMethods},
+        Wallet,
+    },
 };
 use cdk_integration_tests::init_regtest::{get_mint_url, init_cln_client, init_lnd_client};
 use lightning_invoice::Bolt11Invoice;

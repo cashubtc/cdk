@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
+use client::HttpClientMethods;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;

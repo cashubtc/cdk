@@ -15,7 +15,7 @@ use cdk::nuts::{
     Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
 use cdk::types::{LnKey, QuoteTTL};
-use cdk::wallet::client::HttpClient;
+use cdk::wallet::client::{HttpClient, HttpClientMethods};
 use cdk::{Mint, Wallet};
 use cdk_fake_wallet::FakeWallet;
 use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
