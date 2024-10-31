@@ -14,6 +14,7 @@ use tracing::instrument;
 
 use self::types::PaymentRequest;
 use crate::cdk_database::{self, MintDatabase};
+use crate::cdk_lightning::bolt12::MintBolt12Lightning;
 use crate::cdk_lightning::{self, MintLightning};
 use crate::dhke::{sign_message, verify_message};
 use crate::error::Error;
@@ -48,6 +49,9 @@ pub struct Mint {
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
     /// Ln backends for mint
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    /// Ln backends for mint
+    pub bolt12_backends:
+        HashMap<LnKey, Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Active Mint Keysets
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
@@ -63,6 +67,10 @@ impl Mint {
         quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+        bolt12: HashMap<
+            LnKey,
+            Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>,
+        >,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     ) -> Result<Self, Error> {
@@ -178,6 +186,7 @@ impl Mint {
             localstore,
             mint_info,
             ln,
+            bolt12_backends: bolt12,
         })
     }
 
@@ -718,6 +727,7 @@ mod tests {
             config.mint_info,
             config.quote_ttl,
             localstore,
+            HashMap::new(),
             HashMap::new(),
             config.supported_units,
         )

@@ -15,15 +15,13 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
-    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    WaitInvoiceResponse,
 };
 use cdk::mint;
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
-use cdk::nuts::{
-    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
-};
+use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::unix_time;
 use error::Error;
 use futures::stream::StreamExt;
@@ -288,35 +286,6 @@ impl MintLightning for FakeWallet {
             total_spent: Amount::ZERO,
             unit: self.get_settings().unit,
         })
-    }
-
-    async fn get_bolt12_payment_quote(
-        &self,
-        _melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
-        todo!()
-    }
-
-    /// Pay a bolt12 offer
-    async fn pay_bolt12_offer(
-        &self,
-        _melt_quote: mint::MeltQuote,
-        _amount: Option<Amount>,
-        _max_fee_amount: Option<Amount>,
-    ) -> Result<PayInvoiceResponse, Self::Err> {
-        todo!()
-    }
-
-    /// Create bolt12 offer
-    async fn create_bolt12_offer(
-        &self,
-        _amount: Option<Amount>,
-        _unit: &CurrencyUnit,
-        _description: String,
-        _unix_expiry: u64,
-        _single_use: bool,
-    ) -> Result<CreateOfferResponse, Self::Err> {
-        todo!()
     }
 }
 

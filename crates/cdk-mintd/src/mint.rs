@@ -219,6 +219,8 @@ impl MintBuilder {
                 .clone()
                 .ok_or(anyhow!("Localstore not set"))?,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
+            //     TODO: bolt12
+            HashMap::new(),
             self.supported_units.clone(),
         )
         .await?)

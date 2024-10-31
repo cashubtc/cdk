@@ -9,9 +9,10 @@ use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::nuts::nut20::MeltQuoteBolt12Request;
 use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use crate::{mint, Amount};
+
+pub mod bolt12;
 
 /// CDK Lightning Error
 #[derive(Debug, Error)]
@@ -118,30 +119,6 @@ pub trait MintLightning {
         &self,
         request_lookup_id: &str,
     ) -> Result<PayInvoiceResponse, Self::Err>;
-
-    /// Bolt12 Payment quote
-    async fn get_bolt12_payment_quote(
-        &self,
-        melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err>;
-
-    /// Pay a bolt12 offer
-    async fn pay_bolt12_offer(
-        &self,
-        melt_quote: mint::MeltQuote,
-        amount: Option<Amount>,
-        max_fee_amount: Option<Amount>,
-    ) -> Result<PayInvoiceResponse, Self::Err>;
-
-    /// Create bolt12 offer
-    async fn create_bolt12_offer(
-        &self,
-        amount: Option<Amount>,
-        unit: &CurrencyUnit,
-        description: String,
-        unix_expiry: u64,
-        single_use: bool,
-    ) -> Result<CreateOfferResponse, Self::Err>;
 }
 
 /// Create invoice response

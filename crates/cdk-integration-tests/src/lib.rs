@@ -79,9 +79,11 @@ pub async fn start_mint(
         quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
         ln_backends.clone(),
+        HashMap::new(),
         supported_units,
     )
     .await?;
+
     let cache_time_to_live = 3600;
     let cache_time_to_idle = 3600;
 

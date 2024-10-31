@@ -169,6 +169,7 @@ where
         quote_ttl,
         Arc::new(database),
         ln_backends,
+        HashMap::new(),
         supported_units,
     )
     .await?;

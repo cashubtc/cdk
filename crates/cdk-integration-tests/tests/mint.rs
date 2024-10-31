@@ -48,6 +48,7 @@ async fn new_mint(fee: u64) -> Mint {
         quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
         HashMap::new(),
+        HashMap::new(),
         supported_units,
     )
     .await
@@ -75,7 +76,7 @@ async fn mint_proofs(
         request_lookup.to_string(),
         Amount::ZERO,
         Amount::ZERO,
-        None,
+        true,
     );
 
     mint.localstore.add_mint_quote(quote.clone()).await?;

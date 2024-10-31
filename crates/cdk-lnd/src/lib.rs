@@ -15,14 +15,12 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
-    self, Bolt12PaymentQuoteResponse, CreateInvoiceResponse, CreateOfferResponse, MintLightning,
-    PayInvoiceResponse, PaymentQuoteResponse, Settings, WaitInvoiceResponse,
+    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    WaitInvoiceResponse,
 };
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
-use cdk::nuts::{
-    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt12Request, MeltQuoteState, MintQuoteState,
-};
+use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -397,34 +395,5 @@ impl MintLightning for Lnd {
 
         // If the stream is exhausted without a final status
         Err(Error::UnknownPaymentStatus.into())
-    }
-
-    async fn get_bolt12_payment_quote(
-        &self,
-        _melt_quote_request: &MeltQuoteBolt12Request,
-    ) -> Result<Bolt12PaymentQuoteResponse, Self::Err> {
-        Err(Error::UnsupportedMethod.into())
-    }
-
-    /// Pay a bolt12 offer
-    async fn pay_bolt12_offer(
-        &self,
-        _melt_quote: mint::MeltQuote,
-        _amount: Option<Amount>,
-        _max_fee_amount: Option<Amount>,
-    ) -> Result<PayInvoiceResponse, Self::Err> {
-        Err(Error::UnsupportedMethod.into())
-    }
-
-    /// Create bolt12 offer
-    async fn create_bolt12_offer(
-        &self,
-        _amount: Option<Amount>,
-        _unit: &CurrencyUnit,
-        _description: String,
-        _unix_expiry: u64,
-        _single_use: bool,
-    ) -> Result<CreateOfferResponse, Self::Err> {
-        Err(Error::UnsupportedMethod.into())
     }
 }

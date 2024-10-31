@@ -34,7 +34,7 @@ impl Mint {
         }
 
         let ln = self
-            .ln
+            .bolt12_backends
             .get(&LnKey::new(unit, PaymentMethod::Bolt12))
             .ok_or_else(|| {
                 tracing::info!("Bolt11 mint request for unsupported unit");
@@ -46,11 +46,6 @@ impl Mint {
             Some(expiry) => expiry,
             None => unix_time() + self.quote_ttl.mint_ttl,
         };
-
-        if description.is_some() && !ln.get_settings().invoice_description {
-            tracing::error!("Backend does not support invoice description");
-            return Err(Error::InvoiceDescriptionUnsupported);
-        }
 
         let create_invoice_response = ln
             .create_bolt12_offer(

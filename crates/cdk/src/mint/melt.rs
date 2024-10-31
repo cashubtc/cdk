@@ -148,7 +148,7 @@ impl Mint {
         self.check_melt_request_acceptable(amount, *unit, PaymentMethod::Bolt12)?;
 
         let ln = self
-            .ln
+            .bolt12_backends
             .get(&LnKey::new(*unit, PaymentMethod::Bolt12))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
@@ -557,10 +557,42 @@ impl Mint {
 
                 let attempt_to_pay = match melt_request.get_payment_method() {
                     PaymentMethod::Bolt11 => {
+                        let ln = match self.ln.get(&LnKey::new(quote.unit, PaymentMethod::Bolt11)) {
+                            Some(ln) => ln,
+                            None => {
+                                tracing::info!(
+                                    "Could not get ln backend for {}, bolt11 ",
+                                    quote.unit
+                                );
+                                if let Err(err) = self.process_unpaid_melt(melt_request).await {
+                                    tracing::error!("Could not reset melt quote state: {}", err);
+                                }
+
+                                return Err(Error::UnitUnsupported);
+                            }
+                        };
                         ln.pay_invoice(quote.clone(), partial_amount, Some(quote.fee_reserve))
                             .await
                     }
                     PaymentMethod::Bolt12 => {
+                        let ln = match self
+                            .bolt12_backends
+                            .get(&LnKey::new(quote.unit, PaymentMethod::Bolt12))
+                        {
+                            Some(ln) => ln,
+                            None => {
+                                tracing::info!(
+                                    "Could not get ln backend for {}, bolt11 ",
+                                    quote.unit
+                                );
+                                if let Err(err) = self.process_unpaid_melt(melt_request).await {
+                                    tracing::error!("Could not reset melt quote state: {}", err);
+                                }
+
+                                return Err(Error::UnitUnsupported);
+                            }
+                        };
+
                         ln.pay_bolt12_offer(quote.clone(), partial_amount, Some(quote.fee_reserve))
                             .await
                     }
