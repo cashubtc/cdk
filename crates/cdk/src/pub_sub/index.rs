@@ -60,7 +60,7 @@ where
         self.prefix.cmp(&other.prefix)
     }
 
-    /// Returns a globaly unique id for the Index
+    /// Returns a globally unique id for the Index
     pub fn unique_id(&self) -> usize {
         self.counter.0
     }
