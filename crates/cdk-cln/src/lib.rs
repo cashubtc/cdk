@@ -618,12 +618,16 @@ impl MintLightning for Cln {
             None => "any".to_string(),
         };
 
+        // It seems that the only way to force cln to create a unique offer
+        // is to encode some random data in the offer
+        let issuer = Uuid::new_v4().to_string();
+
         let cln_response = cln_client
             .call(cln_rpc::Request::Offer(OfferRequest {
                 absolute_expiry: Some(unix_expiry),
                 description: Some(description),
                 label: Some(label),
-                issuer: None,
+                issuer: Some(issuer),
                 quantity_max: None,
                 recurrence: None,
                 recurrence_base: None,
