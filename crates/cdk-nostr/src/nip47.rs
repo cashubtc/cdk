@@ -106,11 +106,15 @@ impl NostrWalletConnect {
             .collect()
     }
 
-    /// Handle a NWC event.
+    /// Handle a NWC request event.
     pub async fn handle_event(
         &self,
         event: Event,
     ) -> Result<(Event, Option<PaymentDetails>), Error> {
+        if event.kind != Kind::WalletConnectRequest {
+            return Err(Error::InvalidKind);
+        }
+
         let event_id = event.id;
         let mut response_events = self.response_event_cache.lock().await;
         if let Some(res) = response_events.get(&event_id) {
@@ -569,6 +573,9 @@ pub enum Error {
     /// Invalid invoice error.
     #[error("Invalid invoice")]
     InvalidInvoice,
+    /// Invalid kind error.
+    #[error("Invalid kind")]
+    InvalidKind,
     /// Error parsing an invoice.
     #[error(transparent)]
     InvoiceParse(#[from] lightning_invoice::ParseOrSemanticError),
