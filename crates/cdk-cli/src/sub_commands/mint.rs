@@ -26,6 +26,12 @@ pub struct MintSubCommand {
     method: String,
     /// Quote description
     description: Option<String>,
+    /// Expiry
+    #[arg(short, long)]
+    expiry: Option<u64>,
+    /// Expiry
+    #[arg(short, long)]
+    single_use: Option<bool>,
 }
 
 pub async fn mint(
@@ -71,8 +77,8 @@ pub async fn mint(
                 .mint_bolt12_quote(
                     sub_command_args.amount.map(|a| a.into()),
                     description,
-                    false,
-                    None,
+                    sub_command_args.single_use.unwrap_or(false),
+                    sub_command_args.expiry,
                 )
                 .await?
         }
