@@ -2,6 +2,7 @@ use tracing::instrument;
 
 use super::MintQuote;
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::{MintBolt11Request, MintQuoteBolt11Request};
 use crate::{
     amount::SplitTarget,
     dhke::construct_proofs,
@@ -64,9 +65,15 @@ impl Wallet {
             }
         }
 
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit,
+            description,
+        };
+
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone(), amount, unit, description)
+            .post_mint_quote(mint_url.clone(), request)
             .await?;
 
         let quote = MintQuote {
@@ -212,9 +219,14 @@ impl Wallet {
             )?,
         };
 
+        let request = MintBolt11Request {
+            quote: quote_id.to_string(),
+            outputs: premint_secrets.blinded_messages(),
+        };
+
         let mint_res = self
             .client
-            .post_mint(self.mint_url.clone(), quote_id, premint_secrets.clone())
+            .post_mint(self.mint_url.clone(), request)
             .await?;
 
         let keys = self.get_keyset_keys(active_keyset_id).await?;

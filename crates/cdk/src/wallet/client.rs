@@ -11,15 +11,12 @@ use url::Url;
 use super::Error;
 use crate::error::ErrorResponse;
 use crate::mint_url::MintUrl;
-use crate::nuts::nut15::Mpp;
 use crate::nuts::{
-    BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
-    KeysetResponse, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, PreMintSecrets, Proof, PublicKey, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
+    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
+    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
-use crate::{Amount, Bolt11Invoice};
 
 /// Http Client
 #[derive(Debug, Clone)]
@@ -115,17 +112,9 @@ impl HttpClientMethods for HttpClient {
     async fn post_mint_quote(
         &self,
         mint_url: MintUrl,
-        amount: Amount,
-        unit: CurrencyUnit,
-        description: Option<String>,
+        request: MintQuoteBolt11Request,
     ) -> Result<MintQuoteBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11"])?;
-
-        let request = MintQuoteBolt11Request {
-            amount,
-            unit,
-            description,
-        };
 
         let res = self
             .inner
@@ -166,19 +155,13 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Mint Tokens [NUT-04]
-    #[instrument(skip(self, quote, premint_secrets), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     async fn post_mint(
         &self,
         mint_url: MintUrl,
-        quote: &str,
-        premint_secrets: PreMintSecrets,
+        request: MintBolt11Request,
     ) -> Result<MintBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "bolt11"])?;
-
-        let request = MintBolt11Request {
-            quote: quote.to_string(),
-            outputs: premint_secrets.blinded_messages(),
-        };
 
         let res = self
             .inner
@@ -200,19 +183,9 @@ impl HttpClientMethods for HttpClient {
     async fn post_melt_quote(
         &self,
         mint_url: MintUrl,
-        unit: CurrencyUnit,
-        request: Bolt11Invoice,
-        mpp_amount: Option<Amount>,
+        request: MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11"])?;
-
-        let options = mpp_amount.map(|amount| Mpp { amount });
-
-        let request = MeltQuoteBolt11Request {
-            request,
-            unit,
-            options,
-        };
 
         let res = self
             .inner
@@ -248,21 +221,13 @@ impl HttpClientMethods for HttpClient {
 
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
-    #[instrument(skip(self, quote, inputs, outputs), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     async fn post_melt(
         &self,
         mint_url: MintUrl,
-        quote: String,
-        inputs: Vec<Proof>,
-        outputs: Option<Vec<BlindedMessage>>,
+        request: MeltBolt11Request,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "melt", "bolt11"])?;
-
-        let request = MeltBolt11Request {
-            quote,
-            inputs,
-            outputs,
-        };
 
         let res = self
             .inner
@@ -284,7 +249,7 @@ impl HttpClientMethods for HttpClient {
         }
     }
 
-    /// Split Token [NUT-06]
+    /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %mint_url))]
     async fn post_swap(
         &self,
@@ -325,14 +290,13 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Spendable check [NUT-07]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
     async fn post_check_state(
         &self,
         mint_url: MintUrl,
-        ys: Vec<PublicKey>,
+        request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
         let url = mint_url.join_paths(&["v1", "checkstate"])?;
-        let request = CheckStateRequest { ys };
 
         let res = self
             .inner
@@ -390,9 +354,7 @@ pub trait HttpClientMethods: Debug {
     async fn post_mint_quote(
         &self,
         mint_url: MintUrl,
-        amount: Amount,
-        unit: CurrencyUnit,
-        description: Option<String>,
+        request: MintQuoteBolt11Request,
     ) -> Result<MintQuoteBolt11Response, Error>;
 
     /// Mint Quote status
@@ -406,17 +368,14 @@ pub trait HttpClientMethods: Debug {
     async fn post_mint(
         &self,
         mint_url: MintUrl,
-        quote: &str,
-        premint_secrets: PreMintSecrets,
+        request: MintBolt11Request,
     ) -> Result<MintBolt11Response, Error>;
 
     /// Melt Quote [NUT-05]
     async fn post_melt_quote(
         &self,
         mint_url: MintUrl,
-        unit: CurrencyUnit,
-        request: Bolt11Invoice,
-        mpp_amount: Option<Amount>,
+        request: MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response, Error>;
 
     /// Melt Quote Status
@@ -431,16 +390,14 @@ pub trait HttpClientMethods: Debug {
     async fn post_melt(
         &self,
         mint_url: MintUrl,
-        quote: String,
-        inputs: Vec<Proof>,
-        outputs: Option<Vec<BlindedMessage>>,
+        request: MeltBolt11Request,
     ) -> Result<MeltQuoteBolt11Response, Error>;
 
     /// Split Token [NUT-06]
     async fn post_swap(
         &self,
         mint_url: MintUrl,
-        swap_request: SwapRequest,
+        request: SwapRequest,
     ) -> Result<SwapResponse, Error>;
 
     /// Get Mint Info [NUT-06]
@@ -450,7 +407,7 @@ pub trait HttpClientMethods: Debug {
     async fn post_check_state(
         &self,
         mint_url: MintUrl,
-        ys: Vec<PublicKey>,
+        request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error>;
 
     /// Restore request [NUT-13]
