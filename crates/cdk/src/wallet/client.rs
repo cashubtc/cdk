@@ -9,7 +9,7 @@ use super::Error;
 use crate::error::ErrorResponse;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut15::Mpp;
-use crate::nuts::nut19::MintQuoteBolt12Response;
+use crate::nuts::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
     KeysetResponse, MeltBolt11Request, MeltBolt12Request, MeltQuoteBolt11Request,
@@ -145,17 +145,9 @@ impl HttpClient {
     pub async fn post_mint_bolt12_quote(
         &self,
         mint_url: MintUrl,
-        amount: Amount,
-        unit: CurrencyUnit,
-        description: Option<String>,
+        request: MintQuoteBolt12Request,
     ) -> Result<MintQuoteBolt12Response, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt12"])?;
-
-        let request = MintQuoteBolt11Request {
-            amount,
-            unit,
-            description,
-        };
 
         let res = self.inner.post(url).json(&request).send().await?;
         println!("{:?}", res);

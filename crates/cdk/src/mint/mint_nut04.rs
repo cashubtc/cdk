@@ -107,7 +107,7 @@ impl Mint {
             create_invoice_response.request_lookup_id.clone(),
             Amount::ZERO,
             Amount::ZERO,
-            None,
+            true,
         );
 
         tracing::debug!(
@@ -237,7 +237,7 @@ impl Mint {
                 request_lookup_id: quote.request_lookup_id,
                 amount_paid,
                 amount_issued: quote.amount_issued,
-                single_use: None,
+                single_use: quote.single_use,
             };
 
             tracing::debug!(
@@ -358,7 +358,7 @@ impl Mint {
                     .total_amount()
                     .map_err(|_| Error::AmountOverflow)?,
             request_lookup_id: quote.request_lookup_id,
-            single_use: None,
+            single_use: quote.single_use,
         };
 
         self.localstore.add_mint_quote(mint_quote).await?;

@@ -9,17 +9,15 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
-use cdk::Amount;
 use clap::Args;
-use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
-#[derive(Args, Serialize, Deserialize)]
+#[derive(Args)]
 pub struct MintSubCommand {
     /// Mint url
     mint_url: MintUrl,
     /// Amount
-    amount: u64,
+    amount: Option<u64>,
     /// Currency unit e.g. sat
     #[arg(short, long, default_value = "sat")]
     unit: String,
@@ -27,7 +25,6 @@ pub struct MintSubCommand {
     #[arg(long, default_value = "bolt11")]
     method: String,
     /// Quote description
-    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 }
 
@@ -60,12 +57,23 @@ pub async fn mint(
         PaymentMethod::Bolt11 => {
             println!("Bolt11");
             wallet
-                .mint_quote(Amount::from(sub_command_args.amount), description)
+                .mint_quote(
+                    sub_command_args
+                        .amount
+                        .expect("Amount must be defined")
+                        .into(),
+                    description,
+                )
                 .await?
         }
         PaymentMethod::Bolt12 => {
             wallet
-                .mint_bolt12_quote(Amount::from(sub_command_args.amount), description)
+                .mint_bolt12_quote(
+                    sub_command_args.amount.map(|a| a.into()),
+                    description,
+                    false,
+                    None,
+                )
                 .await?
         }
         _ => panic!("Unsupported unit"),

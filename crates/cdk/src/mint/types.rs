@@ -30,11 +30,14 @@ pub struct MintQuote {
     /// Value used by ln backend to look up state of request
     pub request_lookup_id: String,
     /// Amount paid
+    #[serde(default)]
     pub amount_paid: Amount,
     /// Amount issued
+    #[serde(default)]
     pub amount_issued: Amount,
     /// Single use
-    pub single_use: Option<bool>,
+    #[serde(default)]
+    pub single_use: bool,
 }
 
 impl MintQuote {
@@ -49,7 +52,7 @@ impl MintQuote {
         request_lookup_id: String,
         amount_paid: Amount,
         amount_issued: Amount,
-        single_use: Option<bool>,
+        single_use: bool,
     ) -> Self {
         let id = Uuid::new_v4();
 

@@ -1300,7 +1300,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         // TODO: Get these values
         amount_paid: Amount::ZERO,
         amount_issued: Amount::ZERO,
-        single_use: None,
+        single_use: true,
     })
 }
 

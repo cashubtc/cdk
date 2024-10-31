@@ -2,7 +2,7 @@ use tracing::instrument;
 
 use super::MintQuote;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::nut19::MintQuoteBolt12Response;
+use crate::nuts::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use crate::nuts::PaymentMethod;
 use crate::{
     amount::SplitTarget,
@@ -18,8 +18,10 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn mint_bolt12_quote(
         &self,
-        amount: Amount,
+        amount: Option<Amount>,
         description: Option<String>,
+        single_use: bool,
+        expiry: Option<u64>,
     ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = self.unit;
@@ -41,16 +43,24 @@ impl Wallet {
             }
         }
 
+        let mint_request = MintQuoteBolt12Request {
+            amount,
+            unit,
+            description,
+            single_use,
+            expiry,
+        };
+
         let quote_res = self
             .client
-            .post_mint_bolt12_quote(mint_url.clone(), amount, unit, description)
+            .post_mint_bolt12_quote(mint_url.clone(), mint_request)
             .await?;
 
         let quote = MintQuote {
             mint_url,
             id: quote_res.quote.clone(),
             payment_method: PaymentMethod::Bolt12,
-            amount,
+            amount: amount.unwrap_or(Amount::ZERO),
             unit,
             request: quote_res.request,
             state: crate::nuts::MintQuoteState::Unpaid,

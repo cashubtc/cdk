@@ -29,7 +29,7 @@ pub struct MintQuoteBolt12Request {
     /// Memo to create the invoice with
     pub description: Option<String>,
     /// Single use
-    pub single_use: Option<bool>,
+    pub single_use: bool,
     /// Expiry
     pub expiry: Option<u64>,
 }
@@ -42,7 +42,7 @@ pub struct MintQuoteBolt12Response {
     /// Payment request to fulfil
     pub request: String,
     /// Single use
-    pub single_use: Option<bool>,
+    pub single_use: bool,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
     /// Amount that has been paid

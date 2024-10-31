@@ -2,7 +2,7 @@
   description = "CDK Flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -63,7 +63,7 @@
           pkg-config
           curl
           just
-          protobuf3_20
+          protobuf
           nixpkgs-fmt
           rust-analyzer
           typos

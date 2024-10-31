@@ -52,8 +52,6 @@ impl Mint {
             return Err(Error::InvoiceDescriptionUnsupported);
         }
 
-        let single_use = single_use.unwrap_or(true);
-
         let create_invoice_response = ln
             .create_bolt12_offer(
                 amount,
@@ -77,7 +75,7 @@ impl Mint {
             create_invoice_response.request_lookup_id.clone(),
             Amount::ZERO,
             Amount::ZERO,
-            Some(single_use),
+            single_use,
         );
 
         tracing::debug!(

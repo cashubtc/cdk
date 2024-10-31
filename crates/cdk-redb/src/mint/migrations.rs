@@ -176,7 +176,7 @@ impl From<V1MintQuote> for MintQuote {
             // TODO: Create real migrations
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
-            single_use: None,
+            single_use: true,
         }
     }
 }
