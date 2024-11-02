@@ -47,7 +47,7 @@
 - cdk: Add description for mint quote ([lollerfirst]).
 - cdk-axum: Add cache to some endpoints ([lollerfirst]).
 - cdk: Add Proofs trait ([ok300]).
-- cdk: Wallet verifiys keyset id when first fetching keys ([thesimplekid]).
+- cdk: Wallet verifies keyset id when first fetching keys ([thesimplekid]).
 - cdk-mind: Add swagger docs ([ok300]).
 - cdk: NUT18 payment request support ([thesimplekid]).
 - cdk: Add `Wallet::get_proofs_with` ([ok300]).
@@ -148,7 +148,7 @@
 ## [v0.2.0]
 
 ### Summary
-This release introduces TokenV4, which uses CBOR encoding as the default token format. It also includes fee support for both wallet and mint operations.
+This release introduces TokenV4, which uses CBOR encoding as the default token format. It also includes free support for both wallet and mint operations.
 
 When sending, the sender can choose to include the necessary fee to ensure that the receiver can redeem the full sent amount. If this is not done, the receiver will be responsible for the fee.
 
