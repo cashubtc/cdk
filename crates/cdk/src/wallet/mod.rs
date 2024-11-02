@@ -56,7 +56,7 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     xpriv: Xpriv,
-    client: Arc<dyn HttpClientMethods>,
+    client: Arc<dyn HttpClientMethods + Send + Sync>,
 }
 
 impl Wallet {
@@ -97,7 +97,7 @@ impl Wallet {
     }
 
     /// Change HTTP client
-    pub fn set_client<C: HttpClientMethods + 'static>(&mut self, client: C) {
+    pub fn set_client<C: HttpClientMethods + 'static + Send + Sync>(&mut self, client: C) {
         self.client = Arc::new(client);
     }
 
