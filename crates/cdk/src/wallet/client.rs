@@ -69,7 +69,8 @@ impl HttpClient {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl HttpClientMethods for HttpClient {
     /// Get Active Mint Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
@@ -339,7 +340,8 @@ impl HttpClientMethods for HttpClient {
 }
 
 /// Http Client Methods
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait HttpClientMethods: Debug {
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self, mint_url: MintUrl) -> Result<Vec<KeySet>, Error>;
