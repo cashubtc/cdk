@@ -139,6 +139,7 @@
               cargo update -p bumpalo --precise 3.12.0
               cargo update -p moka --precise 0.11.1
               cargo update -p triomphe --precise 0.1.11
+              cargo update -p url --precise 2.5.2
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
@@ -160,6 +161,7 @@
               cargo update -p tokio-stream --precise 0.1.15
               cargo update -p serde_with --precise 3.1.0
               cargo update -p reqwest --precise 0.12.4
+              cargo update -p url --precise 2.5.2
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
               inherit nativeBuildInputs;
