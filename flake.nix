@@ -37,7 +37,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable.latest.default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.82.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
 
@@ -63,7 +63,7 @@
           pkg-config
           curl
           just
-          protobuf3_20
+          protobuf
           nixpkgs-fmt
           rust-analyzer
           typos
