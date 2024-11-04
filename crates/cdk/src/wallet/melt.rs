@@ -4,6 +4,7 @@ use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::{MeltBolt11Request, MeltQuoteBolt11Request, Mpp};
 use crate::{
     dhke::construct_proofs,
     nuts::{CurrencyUnit, MeltQuoteBolt11Response, PreMintSecrets, Proofs, State},
@@ -57,9 +58,17 @@ impl Wallet {
             _ => return Err(Error::UnitUnsupported),
         };
 
+        let options = mpp.map(|amount| Mpp { amount });
+
+        let quote_request = MeltQuoteBolt11Request {
+            request: Bolt11Invoice::from_str(&request)?,
+            unit: self.unit,
+            options,
+        };
+
         let quote_res = self
             .client
-            .post_melt_quote(self.mint_url.clone(), self.unit, invoice, mpp)
+            .post_melt_quote(self.mint_url.clone(), quote_request)
             .await?;
 
         if quote_res.amount != amount {
@@ -146,15 +155,13 @@ impl Wallet {
             proofs_total - quote_info.amount,
         )?;
 
-        let melt_response = self
-            .client
-            .post_melt(
-                self.mint_url.clone(),
-                quote_id.to_string(),
-                proofs.clone(),
-                Some(premint_secrets.blinded_messages()),
-            )
-            .await;
+        let request = MeltBolt11Request {
+            quote: quote_id.to_string(),
+            inputs: proofs.clone(),
+            outputs: Some(premint_secrets.blinded_messages()),
+        };
+
+        let melt_response = self.client.post_melt(self.mint_url.clone(), request).await;
 
         let melt_response = match melt_response {
             Ok(melt_response) => melt_response,
