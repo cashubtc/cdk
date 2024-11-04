@@ -84,9 +84,10 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     continue;
                 };
 
-                if socket.send(Message::Text(message)).await.is_err() {
-                    break;
-                }
+          if let Err(err)= socket.send(Message::Text(message)).await {
+                   tracing::error!("Could not send websocket message: {}", err);
+                     break;
+          }
             }
             Some(Ok(Message::Text(text))) = socket.next() => {
                 let request = match serde_json::from_str::<WsRequest>(&text) {

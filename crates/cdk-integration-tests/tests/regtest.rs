@@ -101,7 +101,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     assert_eq!(
         reader.next().await.unwrap().unwrap().to_text().unwrap(),
-        r#"{"jsonrpc":"2.0","result":{"status":"OK","sub_id":"test-sub"},"id":2}"#
+        r#"{"jsonrpc":"2.0","result":{"status":"OK","subId":"test-sub"},"id":2}"#
     );
 
     let melt_response = wallet.melt(&melt.id).await.unwrap();

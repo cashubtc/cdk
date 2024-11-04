@@ -158,8 +158,8 @@ where
 
     /// Task to remove dropped subscriptions from the storage struct
     ///
-    /// This task will run in the background (and will dropped when the Manager
-    /// is ) and will remove subscriptions from the storage struct it is dropped.
+    /// This task will run in the background (and will be dropped when the [`Manager`]
+    /// is) and will remove subscriptions from the storage struct it is dropped.
     async fn remove_subscription(
         mut receiver: mpsc::Receiver<(SubId, Vec<Index<I>>)>,
         storage: IndexTree<T, I>,

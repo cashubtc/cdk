@@ -3,6 +3,7 @@ use cdk::pub_sub::SubId;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Method {
+    #[serde(rename = "subId")]
     pub sub_id: SubId,
 }
 
