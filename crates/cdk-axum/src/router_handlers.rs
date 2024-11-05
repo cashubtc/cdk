@@ -130,7 +130,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 /// Request a quote for minting of new tokens
 ///
 /// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
-pub async fn get_mint_bolt11_quote(
+pub async fn post_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response>, Response> {
@@ -216,7 +216,7 @@ pub async fn post_mint_bolt11(
     )
 ))]
 /// Request a quote for melting tokens
-pub async fn get_melt_bolt11_quote(
+pub async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
