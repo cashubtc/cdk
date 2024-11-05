@@ -216,7 +216,7 @@ pub async fn post_mint_bolt11(
     )
 ))]
 /// Request a quote for melting tokens
-pub async fn get_melt_bolt11_quote(
+pub async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {

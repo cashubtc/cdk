@@ -120,7 +120,7 @@ pub struct MintState {
         get_mint_bolt11_quote,
         get_check_mint_bolt11_quote,
         post_mint_bolt11,
-        get_melt_bolt11_quote,
+        post_melt_bolt11_quote,
         get_check_melt_bolt11_quote,
         post_melt_bolt11,
         post_swap,
@@ -153,7 +153,7 @@ pub async fn create_mint_router(mint: Arc<Mint>, cache_ttl: u64, cache_tti: u64)
             get(get_check_mint_bolt11_quote),
         )
         .route("/mint/bolt11", post(cache_post_mint_bolt11))
-        .route("/melt/quote/bolt11", post(get_melt_bolt11_quote))
+        .route("/melt/quote/bolt11", post(post_melt_bolt11_quote))
         .route(
             "/melt/quote/bolt11/:quote_id",
             get(get_check_melt_bolt11_quote),
