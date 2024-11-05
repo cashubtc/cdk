@@ -12,8 +12,7 @@ use thiserror::Error;
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
 #[cfg(feature = "mint")]
-use crate::mint;
-use crate::mint::MeltQuote;
+use crate::mint::{self, MeltQuote};
 use crate::nuts::MeltQuoteState;
 use crate::{Amount, Bolt11Invoice};
 
