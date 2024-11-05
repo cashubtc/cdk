@@ -361,7 +361,7 @@ where
 
 /// Currency Unit
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum CurrencyUnit {
     /// Sat
@@ -373,17 +373,20 @@ pub enum CurrencyUnit {
     Usd,
     /// Euro
     Eur,
+    /// Custom currency unit
+    Custom(String),
 }
 
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
-    pub fn derivation_index(&self) -> u32 {
+    pub fn derivation_index(&self) -> Option<u32> {
         match self {
-            Self::Sat => 0,
-            Self::Msat => 1,
-            Self::Usd => 2,
-            Self::Eur => 3,
+            Self::Sat => Some(0),
+            Self::Msat => Some(1),
+            Self::Usd => Some(2),
+            Self::Eur => Some(3),
+            _ => None,
         }
     }
 }
@@ -397,7 +400,7 @@ impl FromStr for CurrencyUnit {
             "msat" => Ok(Self::Msat),
             "usd" => Ok(Self::Usd),
             "eur" => Ok(Self::Eur),
-            _ => Err(Error::UnsupportedUnit),
+            c => Ok(Self::Custom(c.to_string())),
         }
     }
 }
@@ -405,15 +408,16 @@ impl FromStr for CurrencyUnit {
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            CurrencyUnit::Sat => "sat",
-            CurrencyUnit::Msat => "msat",
-            CurrencyUnit::Usd => "usd",
-            CurrencyUnit::Eur => "eur",
+            CurrencyUnit::Sat => "SAT",
+            CurrencyUnit::Msat => "MSAT",
+            CurrencyUnit::Usd => "USD",
+            CurrencyUnit::Eur => "EUR",
+            CurrencyUnit::Custom(unit) => unit,
         };
         if let Some(width) = f.width() {
-            write!(f, "{:width$}", s, width = width)
+            write!(f, "{:width$}", s.to_lowercase(), width = width)
         } else {
-            write!(f, "{}", s)
+            write!(f, "{}", s.to_lowercase())
         }
     }
 }

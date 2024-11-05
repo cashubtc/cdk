@@ -144,7 +144,6 @@ jobs:
             -p cdk --no-default-features,
             -p cdk --no-default-features --features wallet,
             -p cdk --no-default-features --features mint,
-            -p cdk --no-default-features --features "mint swagger",
             -p cdk-axum,
             -p cdk-strike,
             -p cdk-lnbits,

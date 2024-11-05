@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or(vec![CurrencyUnit::Sat])
             {
                 let strike = strike_settings
-                    .setup(&mut ln_routers, &settings, unit)
+                    .setup(&mut ln_routers, &settings, unit.clone())
                     .await?;
 
                 mint_builder = mint_builder.add_ln_backend(
@@ -238,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
                 let fake = Arc::new(fake);
 
                 mint_builder = mint_builder.add_ln_backend(
-                    unit,
+                    unit.clone(),
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
                     fake.clone(),

@@ -35,7 +35,7 @@ impl Mint {
 
         let ln = self
             .bolt12_backends
-            .get(&LnKey::new(unit, PaymentMethod::Bolt12))
+            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt12))
             .ok_or_else(|| {
                 tracing::info!("Bolt11 mint request for unsupported unit");
 
@@ -64,7 +64,7 @@ impl Mint {
         let quote = MintQuote::new(
             self.mint_url.clone(),
             create_invoice_response.request.to_string(),
-            unit,
+            unit.clone(),
             amount,
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),

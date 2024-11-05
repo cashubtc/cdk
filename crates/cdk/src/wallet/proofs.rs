@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use tracing::instrument;
 
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::CheckStateRequest;
 use crate::{
     amount::SplitTarget,
     nuts::{Proof, ProofState, Proofs, PublicKey, SpendingConditions, State},
@@ -40,7 +41,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit),
+                Some(self.unit.clone()),
                 state,
                 spending_conditions,
             )
@@ -65,7 +66,7 @@ impl Wallet {
 
         let spendable = self
             .client
-            .post_check_state(self.mint_url.clone(), proof_ys)
+            .post_check_state(self.mint_url.clone(), CheckStateRequest { ys: proof_ys })
             .await?
             .states;
 
@@ -86,7 +87,10 @@ impl Wallet {
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
-            .post_check_state(self.mint_url.clone(), proofs.ys()?)
+            .post_check_state(
+                self.mint_url.clone(),
+                CheckStateRequest { ys: proofs.ys()? },
+            )
             .await?;
         let spent_ys: Vec<_> = spendable
             .states
@@ -111,7 +115,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit),
+                Some(self.unit.clone()),
                 Some(vec![State::Pending, State::Reserved]),
                 None,
             )

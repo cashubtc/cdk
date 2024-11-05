@@ -3,6 +3,7 @@ use tracing::instrument;
 use super::MintQuote;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::PaymentMethod;
+use crate::nuts::{MintBolt11Request, MintQuoteBolt11Request};
 use crate::{
     amount::SplitTarget,
     dhke::construct_proofs,
@@ -46,7 +47,7 @@ impl Wallet {
         description: Option<String>,
     ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
-        let unit = self.unit;
+        let unit = self.unit.clone();
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
@@ -65,9 +66,15 @@ impl Wallet {
             }
         }
 
+        let request = MintQuoteBolt11Request {
+            amount,
+            unit: unit.clone(),
+            description,
+        };
+
         let quote_res = self
             .client
-            .post_mint_quote(mint_url.clone(), amount, unit, description)
+            .post_mint_quote(mint_url.clone(), request)
             .await?;
 
         let quote = MintQuote {
@@ -75,7 +82,7 @@ impl Wallet {
             id: quote_res.quote.clone(),
             payment_method: PaymentMethod::Bolt11,
             amount,
-            unit,
+            unit: unit.clone(),
             request: quote_res.request,
             state: quote_res.state,
             expiry: quote_res.expiry.unwrap_or(0),
@@ -218,9 +225,14 @@ impl Wallet {
             )?,
         };
 
+        let request = MintBolt11Request {
+            quote: quote_id.to_string(),
+            outputs: premint_secrets.blinded_messages(),
+        };
+
         let mint_res = self
             .client
-            .post_mint(self.mint_url.clone(), quote_id, premint_secrets.clone())
+            .post_mint(self.mint_url.clone(), request)
             .await?;
 
         let keys = self.get_keyset_keys(active_keyset_id).await?;
@@ -263,7 +275,7 @@ impl Wallet {
                     proof,
                     self.mint_url.clone(),
                     State::Unspent,
-                    quote_info.unit,
+                    quote_info.unit.clone(),
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;

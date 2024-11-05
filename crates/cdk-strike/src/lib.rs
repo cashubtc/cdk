@@ -69,7 +69,7 @@ impl MintLightning for Strike {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: false,
-            unit: self.unit,
+            unit: self.unit.clone(),
             bolt12_mint: false,
             bolt12_melt: false,
             invoice_description: true,
@@ -101,7 +101,7 @@ impl MintLightning for Strike {
 
         let strike_api = self.strike_api.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
-        let unit = self.unit;
+        let unit = self.unit.clone();
 
         Ok(futures::stream::unfold(
             (
@@ -132,7 +132,7 @@ impl MintLightning for Strike {
                                     let wait_response = WaitInvoiceResponse {
                                         payment_lookup_id: msg,
                                         payment_amount: Amount::ZERO,
-                                        unit
+                                        unit: unit.clone()
                                     };
                                     Some((wait_response , (receiver, strike_api, cancel_token, is_active, unit)))
                                 } else {
@@ -287,7 +287,7 @@ impl MintLightning for Strike {
                     payment_preimage: None,
                     status: state,
                     total_spent: from_strike_amount(invoice.total_amount, &self.unit)?.into(),
-                    unit: self.unit,
+                    unit: self.unit.clone(),
                 }
             }
             Err(err) => match err {
@@ -296,7 +296,7 @@ impl MintLightning for Strike {
                     payment_preimage: None,
                     status: MeltQuoteState::Unknown,
                     total_spent: Amount::ZERO,
-                    unit: self.unit,
+                    unit: self.unit.clone(),
                 },
                 _ => {
                     return Err(Error::from(err).into());

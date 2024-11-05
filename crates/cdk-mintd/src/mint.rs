@@ -108,7 +108,10 @@ impl MintBuilder {
         limits: MintMeltLimits,
         ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     ) -> Self {
-        let ln_key = LnKey { unit, method };
+        let ln_key = LnKey {
+            unit: unit.clone(),
+            method,
+        };
 
         let mut ln = self.ln.unwrap_or_default();
 
@@ -117,7 +120,7 @@ impl MintBuilder {
         if settings.mpp {
             let mpp_settings = MppMethodSettings {
                 method,
-                unit,
+                unit: unit.clone(),
                 mpp: true,
             };
             let mut mpp = self.mint_info.nuts.nut15.clone().unwrap_or_default();
@@ -131,7 +134,7 @@ impl MintBuilder {
             PaymentMethod::Bolt11 => {
                 let mint_method_settings = MintMethodSettings {
                     method,
-                    unit,
+                    unit: unit.clone(),
                     min_amount: Some(limits.mint_min),
                     max_amount: Some(limits.mint_max),
                     description: settings.invoice_description,
@@ -152,7 +155,7 @@ impl MintBuilder {
             PaymentMethod::Bolt12 => {
                 let mint_method_settings = MintMethodSettings {
                     method,
-                    unit,
+                    unit: unit.clone(),
                     min_amount: Some(limits.mint_min),
                     max_amount: Some(limits.mint_max),
                     description: settings.invoice_description,
@@ -167,7 +170,7 @@ impl MintBuilder {
 
                 let melt_method_settings = MeltMethodSettings {
                     method,
-                    unit,
+                    unit: unit.clone(),
                     min_amount: Some(limits.melt_min),
                     max_amount: Some(limits.melt_max),
                 };
@@ -181,7 +184,7 @@ impl MintBuilder {
             _ => panic!("Unsupported unit"),
         }
 
-        ln.insert(ln_key, ln_backend);
+        ln.insert(ln_key.clone(), ln_backend);
 
         let mut supported_units = self.supported_units.clone();
 
@@ -222,6 +225,7 @@ impl MintBuilder {
             //     TODO: bolt12
             HashMap::new(),
             self.supported_units.clone(),
+            HashMap::new(),
         )
         .await?)
     }

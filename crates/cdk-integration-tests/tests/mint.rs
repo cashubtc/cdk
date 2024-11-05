@@ -50,6 +50,7 @@ async fn new_mint(fee: u64) -> Mint {
         HashMap::new(),
         HashMap::new(),
         supported_units,
+        HashMap::new(),
     )
     .await
     .unwrap()
@@ -281,7 +282,8 @@ async fn test_swap_unbalanced() -> Result<()> {
 async fn test_swap_overpay_underpay_fee() -> Result<()> {
     let mint = new_mint(1).await;
 
-    mint.rotate_keyset(CurrencyUnit::Sat, 1, 32, 1).await?;
+    mint.rotate_keyset(CurrencyUnit::Sat, 1, 32, 1, HashMap::new())
+        .await?;
 
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);

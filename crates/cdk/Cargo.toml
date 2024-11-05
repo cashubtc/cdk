@@ -13,6 +13,7 @@ license = "MIT"
 [features]
 default = ["mint", "wallet"]
 mint = ["dep:futures"]
+# We do not commit to a MSRV with swagger enabled
 swagger = ["mint", "dep:utoipa"]
 wallet = ["dep:reqwest"]
 bench = []
