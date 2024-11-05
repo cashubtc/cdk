@@ -5,8 +5,11 @@ use bip39::Mnemonic;
 use cdk::{
     amount::SplitTarget,
     cdk_database::WalletMemoryDatabase,
-    nuts::{CurrencyUnit, MeltQuoteState, PreMintSecrets, State},
-    wallet::{client::HttpClient, Wallet},
+    nuts::{CurrencyUnit, MeltBolt11Request, MeltQuoteState, PreMintSecrets, State},
+    wallet::{
+        client::{HttpClient, HttpClientMethods},
+        Wallet,
+    },
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;
@@ -354,28 +357,23 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let client = HttpClient::new();
 
-    let melt_response = client
-        .post_melt(
-            MINT_URL.parse()?,
-            melt_quote.id.clone(),
-            proofs.clone(),
-            Some(premint_secrets.blinded_messages()),
-        )
-        .await?;
+    let melt_request = MeltBolt11Request {
+        quote: melt_quote.id.clone(),
+        inputs: proofs.clone(),
+        outputs: Some(premint_secrets.blinded_messages()),
+    };
+
+    let melt_response = client.post_melt(MINT_URL.parse()?, melt_request).await?;
 
     assert!(melt_response.change.is_some());
 
     let check = wallet.melt_quote_status(&melt_quote.id).await?;
+    let mut melt_change = melt_response.change.unwrap();
+    melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
 
-    assert_eq!(
-        melt_response
-            .change
-            .unwrap()
-            .sort_by(|a, b| a.amount.cmp(&b.amount)),
-        check
-            .change
-            .unwrap()
-            .sort_by(|a, b| a.amount.cmp(&b.amount))
-    );
+    let mut check = check.change.unwrap();
+    check.sort_by(|a, b| a.amount.cmp(&b.amount));
+
+    assert_eq!(melt_change, check);
     Ok(())
 }

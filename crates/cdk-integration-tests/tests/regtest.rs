@@ -6,9 +6,13 @@ use cdk::{
     amount::{Amount, SplitTarget},
     cdk_database::WalletMemoryDatabase,
     nuts::{
-        CurrencyUnit, MeltQuoteState, MintQuoteState, NotificationPayload, PreMintSecrets, State,
+        CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
+        PreMintSecrets, State,
     },
-    wallet::{client::HttpClient, Wallet},
+    wallet::{
+        client::{HttpClient, HttpClientMethods},
+        Wallet,
+    },
 };
 use cdk_integration_tests::init_regtest::{
     get_mint_url, get_mint_ws_url, init_cln_client, init_lnd_client,
@@ -362,15 +366,16 @@ async fn test_cached_mint() -> Result<()> {
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
 
+    let request = MintBolt11Request {
+        quote: quote.id,
+        outputs: premint_secrets.blinded_messages(),
+    };
+
     let response = http_client
-        .post_mint(
-            get_mint_url().as_str().parse()?,
-            &quote.id,
-            premint_secrets.clone(),
-        )
+        .post_mint(get_mint_url().as_str().parse()?, request.clone())
         .await?;
     let response1 = http_client
-        .post_mint(get_mint_url().as_str().parse()?, &quote.id, premint_secrets)
+        .post_mint(get_mint_url().as_str().parse()?, request)
         .await?;
 
     assert!(response == response1);

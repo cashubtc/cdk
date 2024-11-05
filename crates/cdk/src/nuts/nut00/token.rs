@@ -92,8 +92,8 @@ impl Token {
     /// Unit
     pub fn unit(&self) -> Option<CurrencyUnit> {
         match self {
-            Self::TokenV3(token) => *token.unit(),
-            Self::TokenV4(token) => Some(token.unit()),
+            Self::TokenV3(token) => token.unit().clone(),
+            Self::TokenV4(token) => Some(token.unit().clone()),
         }
     }
 
@@ -326,8 +326,8 @@ impl TokenV4 {
 
     /// Unit
     #[inline]
-    pub fn unit(&self) -> CurrencyUnit {
-        self.unit
+    pub fn unit(&self) -> &CurrencyUnit {
+        &self.unit
     }
 }
 
@@ -525,7 +525,7 @@ mod tests {
             token.token[0].proofs[0].clone().keyset_id,
             Id::from_str("009a1f293253e41e").unwrap()
         );
-        assert_eq!(token.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(token.unit.clone().unwrap(), CurrencyUnit::Sat);
 
         let encoded = &token.to_string();
 

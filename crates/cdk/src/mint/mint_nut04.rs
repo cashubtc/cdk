@@ -12,7 +12,7 @@ impl Mint {
     fn check_mint_request_acceptable(
         &self,
         amount: Amount,
-        unit: CurrencyUnit,
+        unit: &CurrencyUnit,
     ) -> Result<(), Error> {
         let nut04 = &self.mint_info.nuts.nut04;
 
@@ -20,7 +20,7 @@ impl Mint {
             return Err(Error::MintingDisabled);
         }
 
-        match nut04.get_settings(&unit, &PaymentMethod::Bolt11) {
+        match nut04.get_settings(unit, &PaymentMethod::Bolt11) {
             Some(settings) => {
                 if settings
                     .max_amount
@@ -64,11 +64,11 @@ impl Mint {
             description,
         } = mint_quote_request;
 
-        self.check_mint_request_acceptable(amount, unit)?;
+        self.check_mint_request_acceptable(amount, &unit)?;
 
         let ln = self
             .ln
-            .get(&LnKey::new(unit, PaymentMethod::Bolt11))
+            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt11))
             .ok_or_else(|| {
                 tracing::info!("Bolt11 mint request for unsupported unit");
 
@@ -98,7 +98,7 @@ impl Mint {
         let quote = MintQuote::new(
             self.mint_url.clone(),
             create_invoice_response.request.to_string(),
-            unit,
+            unit.clone(),
             amount,
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
