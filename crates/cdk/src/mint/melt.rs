@@ -16,7 +16,6 @@ use crate::{
     Amount, Error,
 };
 
-use super::ProofState;
 use super::{
     CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     Mint, PaymentMethod, PublicKey, State,
@@ -365,14 +364,8 @@ impl Mint {
         }
 
         for public_key in input_ys {
-            self.pubsub_manager.broadcast(
-                ProofState {
-                    y: public_key,
-                    state: State::Unspent,
-                    witness: None,
-                }
-                .into(),
-            );
+            self.pubsub_manager
+                .proof_state((public_key, State::Unspent));
         }
 
         Ok(())
@@ -620,14 +613,7 @@ impl Mint {
         );
 
         for public_key in input_ys {
-            self.pubsub_manager.broadcast(
-                ProofState {
-                    y: public_key,
-                    state: State::Spent,
-                    witness: None,
-                }
-                .into(),
-            );
+            self.pubsub_manager.proof_state((public_key, State::Spent));
         }
 
         let mut change = None;

@@ -1,7 +1,5 @@
 //! Specific Subscription for the cdk crate
 
-#[cfg(feature = "mint")]
-use crate::mint::{MeltQuote, MintQuote};
 use crate::{
     nuts::{
         MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
@@ -162,35 +160,12 @@ impl Deref for PubSubManager {
     }
 }
 
-#[cfg(feature = "mint")]
-impl From<&MintQuote> for MintQuoteBolt11Response {
-    fn from(mint_quote: &MintQuote) -> MintQuoteBolt11Response {
-        MintQuoteBolt11Response {
-            quote: mint_quote.id.clone(),
-            request: mint_quote.request.clone(),
-            state: mint_quote.state,
-            expiry: Some(mint_quote.expiry),
-        }
-    }
-}
-
-#[cfg(feature = "mint")]
-impl From<&MeltQuote> for MeltQuoteBolt11Response {
-    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response {
-        MeltQuoteBolt11Response {
-            quote: melt_quote.id.clone(),
-            payment_preimage: None,
-            change: None,
-            state: melt_quote.state,
-            paid: Some(melt_quote.state == MeltQuoteState::Paid),
-            expiry: melt_quote.expiry,
-            amount: melt_quote.amount,
-            fee_reserve: melt_quote.fee_reserve,
-        }
-    }
-}
-
 impl PubSubManager {
+    /// Helper function to emit a ProofState status
+    pub fn proof_state<E: Into<ProofState>>(&self, event: E) {
+        self.broadcast(event.into().into());
+    }
+
     /// Helper function to emit a MintQuoteBolt11Response status
     pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response>>(
         &self,

@@ -6,7 +6,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::Error;
 
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
-use super::{Id, Mint, ProofState, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
+use super::{Id, Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
 
 impl Mint {
     /// Process Swap
@@ -167,14 +167,7 @@ impl Mint {
             .await?;
 
         for pub_key in input_ys {
-            self.pubsub_manager.broadcast(
-                ProofState {
-                    y: pub_key,
-                    state: State::Spent,
-                    witness: None,
-                }
-                .into(),
-            );
+            self.pubsub_manager.proof_state((pub_key, State::Spent));
         }
 
         self.localstore

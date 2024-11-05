@@ -58,14 +58,7 @@ impl Mint {
         }
 
         for public_key in ys {
-            self.pubsub_manager.broadcast(
-                ProofState {
-                    y: *public_key,
-                    state: proof_state,
-                    witness: None,
-                }
-                .into(),
-            );
+            self.pubsub_manager.proof_state((*public_key, proof_state));
         }
 
         Ok(())

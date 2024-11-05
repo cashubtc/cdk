@@ -77,16 +77,17 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     continue;
                 }
                 let notification: WsNotification<Notification> = (sub_id, payload).into();
-                let message = if let Ok(message) = serde_json::to_string(&notification) {
-                    message
-                } else {
-                    tracing::error!("Could not serialize notification");
-                    continue;
+                let message = match serde_json::to_string(&notification) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        tracing::error!("Could not serialize notification: {}", err);
+                        continue;
+                    }
                 };
 
           if let Err(err)= socket.send(Message::Text(message)).await {
-                   tracing::error!("Could not send websocket message: {}", err);
-                     break;
+                tracing::error!("Could not send websocket message: {}", err);
+                break;
           }
             }
             Some(Ok(Message::Text(text))) = socket.next() => {
@@ -100,11 +101,11 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
 
                 match request.method.process(request.id, &mut context).await {
                     Ok(result) => {
-                        if socket
+                        if let Err(err) = socket
                             .send(Message::Text(result.to_string()))
                             .await
-                            .is_err()
                         {
+                            tracing::error!("Could not send request: {}", err);
                             break;
                         }
                     }

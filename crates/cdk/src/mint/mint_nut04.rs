@@ -239,7 +239,7 @@ impl Mint {
             }
 
             self.pubsub_manager
-                .mint_quote_bolt11_status(&mint_quote, MintQuoteState::Paid);
+                .mint_quote_bolt11_status(mint_quote, MintQuoteState::Paid);
         }
         Ok(())
     }
@@ -302,7 +302,7 @@ impl Mint {
                 .unwrap();
 
             self.pubsub_manager
-                .mint_quote_bolt11_status(&mint_quote, MintQuoteState::Paid);
+                .mint_quote_bolt11_status(mint_quote, MintQuoteState::Paid);
 
             return Err(Error::BlindedMessageAlreadySigned);
         }
@@ -331,7 +331,7 @@ impl Mint {
             .await?;
 
         self.pubsub_manager
-            .mint_quote_bolt11_status(&mint_quote, MintQuoteState::Issued);
+            .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);
 
         Ok(nut04::MintBolt11Response {
             signatures: blind_signatures,

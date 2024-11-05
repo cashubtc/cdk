@@ -545,7 +545,7 @@ async fn check_pending_mint_quotes(
                     mint.localstore
                         .update_mint_quote_state(&quote.id, state)
                         .await?;
-                    mint.pubsub_manager.mint_quote_bolt11_status(&quote, state);
+                    mint.pubsub_manager.mint_quote_bolt11_status(quote, state);
                 }
             }
 

@@ -13,6 +13,7 @@ use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, 
 use super::nut15::Mpp;
 #[cfg(feature = "mint")]
 use crate::mint;
+use crate::mint::MeltQuote;
 use crate::nuts::MeltQuoteState;
 use crate::{Amount, Bolt11Invoice};
 
@@ -109,6 +110,22 @@ pub struct MeltQuoteBolt11Response {
     /// Change
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Vec<BlindSignature>>,
+}
+
+#[cfg(feature = "mint")]
+impl From<&MeltQuote> for MeltQuoteBolt11Response {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response {
+        MeltQuoteBolt11Response {
+            quote: melt_quote.id.clone(),
+            payment_preimage: None,
+            change: None,
+            state: melt_quote.state,
+            paid: Some(melt_quote.state == MeltQuoteState::Paid),
+            expiry: melt_quote.expiry,
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
+        }
+    }
 }
 
 // A custom deserializer is needed until all mints

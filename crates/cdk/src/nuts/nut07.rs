@@ -88,6 +88,16 @@ pub struct ProofState {
     pub witness: Option<String>,
 }
 
+impl From<(PublicKey, State)> for ProofState {
+    fn from(value: (PublicKey, State)) -> Self {
+        Self {
+            y: value.0,
+            state: value.1,
+            witness: None,
+        }
+    }
+}
+
 /// Check Spendable Response [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
