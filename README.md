@@ -59,7 +59,6 @@ The project is split up into several crates in the `crates/` directory:
 | [16][16] | Animated QR codes | :x: |
 | [17][17] | WebSocket subscriptions  | :construction: |
 
-MSRV
 
 ## Bindings
 
@@ -74,6 +73,9 @@ Code is under the [MIT License](LICENSE)
 All contributions welcome.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, shall be licensed as above, without any additional terms or conditions.
+
+Please see the [development guide](DEVELOPMENT.md).
+
 
 [00]: https://github.com/cashubtc/nuts/blob/main/00.md
 [01]: https://github.com/cashubtc/nuts/blob/main/01.md
