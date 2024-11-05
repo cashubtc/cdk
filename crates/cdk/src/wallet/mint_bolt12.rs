@@ -35,7 +35,7 @@ impl Wallet {
                 .ok_or(Error::IncorrectMint)?
                 .nuts
                 .nut04
-                .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
+                .get_settings(unit, &crate::nuts::PaymentMethod::Bolt11)
                 .ok_or(Error::UnsupportedUnit)?;
 
             if !mint_method_settings.description {
