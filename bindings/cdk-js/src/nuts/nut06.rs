@@ -78,6 +78,7 @@ impl JsMintInfo {
         contact: Option<Vec<JsContactInfo>>,
         nuts: JsValue,
         icon_url: Option<String>,
+        urls: Option<Vec<String>>,
         motd: Option<String>,
         time: Option<u64>,
     ) -> Result<JsMintInfo> {
@@ -92,6 +93,7 @@ impl JsMintInfo {
                     .map(|contacts| contacts.iter().map(|c| c.deref().clone()).collect()),
                 nuts: serde_wasm_bindgen::from_value(nuts).map_err(into_err)?,
                 icon_url,
+                urls,
                 motd,
                 time,
             },
