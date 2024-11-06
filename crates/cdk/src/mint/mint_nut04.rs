@@ -301,9 +301,6 @@ impl Mint {
                 .await
                 .unwrap();
 
-            self.pubsub_manager
-                .mint_quote_bolt11_status(mint_quote, MintQuoteState::Paid);
-
             return Err(Error::BlindedMessageAlreadySigned);
         }
 
