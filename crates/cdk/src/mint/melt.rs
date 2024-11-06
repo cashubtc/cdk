@@ -358,6 +358,16 @@ impl Mint {
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Unpaid)
             .await?;
 
+        if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
+            self.pubsub_manager
+                .melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
+        }
+
+        for public_key in input_ys {
+            self.pubsub_manager
+                .proof_state((public_key, State::Unspent));
+        }
+
         Ok(())
     }
 
@@ -597,6 +607,17 @@ impl Mint {
         self.localstore
             .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
             .await?;
+
+        self.pubsub_manager.melt_quote_status(
+            &quote,
+            payment_preimage.clone(),
+            None,
+            MeltQuoteState::Paid,
+        );
+
+        for public_key in input_ys {
+            self.pubsub_manager.proof_state((public_key, State::Spent));
+        }
 
         let mut change = None;
 

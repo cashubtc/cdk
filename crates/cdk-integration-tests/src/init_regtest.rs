@@ -45,6 +45,10 @@ pub fn get_mint_url() -> String {
     format!("http://{}:{}", get_mint_addr(), get_mint_port())
 }
 
+pub fn get_mint_ws_url() -> String {
+    format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port())
+}
+
 pub fn get_temp_dir() -> PathBuf {
     let dir = env::var("cdk_itests").expect("Temp dir set");
     std::fs::create_dir_all(&dir).unwrap();

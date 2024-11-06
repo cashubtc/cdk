@@ -166,6 +166,10 @@ impl Mint {
             .update_proofs_states(&input_ys, State::Spent)
             .await?;
 
+        for pub_key in input_ys {
+            self.pubsub_manager.proof_state((pub_key, State::Spent));
+        }
+
         self.localstore
             .add_blind_signatures(
                 &swap_request

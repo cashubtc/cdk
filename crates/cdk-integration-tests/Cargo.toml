@@ -7,7 +7,7 @@ description = "Core Cashu Development Kit library implementing the Cashu protoco
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0" # MSRV
+rust-version = "1.63.0"                                                            # MSRV
 
 
 [features]
@@ -20,12 +20,14 @@ bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
 cdk = { path = "../cdk", version = "0.4.0", features = ["mint", "wallet"] }
 cdk-cln = { path = "../cdk-cln", version = "0.4.0" }
-cdk-axum = { path = "../cdk-axum"}
-cdk-sqlite = { path = "../cdk-sqlite"}
-cdk-redb = { path = "../cdk-redb"}
+cdk-axum = { path = "../cdk-axum" }
+cdk-sqlite = { path = "../cdk-sqlite" }
+cdk-redb = { path = "../cdk-redb" }
 cdk-fake-wallet = { path = "../cdk-fake-wallet" }
 tower-http = { version = "0.4.4", features = ["cors"] }
-futures = { version = "0.3.28", default-features = false, features = ["executor"] }
+futures = { version = "0.3.28", default-features = false, features = [
+    "executor",
+] }
 once_cell = "1.19.0"
 uuid = { version = "1", features = ["v4"] }
 serde = "1"
@@ -33,9 +35,13 @@ serde_json = "1"
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
 ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "1d88d3d0b" }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+tracing = { version = "0.1", default-features = false, features = [
+    "attributes",
+    "log",
+] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tower-service = "0.3.3"
+tokio-tungstenite = "0.24.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = [
@@ -52,7 +58,7 @@ instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
 rand = "0.8.5"
-bip39 = { version= "2.0", features = ["rand"] }
+bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-axum = { path = "../cdk-axum" }

@@ -20,6 +20,8 @@ pub mod util;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+pub mod pub_sub;
+
 pub mod fees;
 
 #[doc(hidden)]
