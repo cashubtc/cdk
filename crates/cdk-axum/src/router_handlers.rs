@@ -1,5 +1,5 @@
 use anyhow::Result;
-use axum::extract::{Json, Path, State};
+use axum::extract::{ws::WebSocketUpgrade, Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
@@ -13,7 +13,7 @@ use cdk::util::unix_time;
 use cdk::Error;
 use paste::paste;
 
-use crate::MintState;
+use crate::{ws::main_websocket, MintState};
 
 macro_rules! post_cache_wrapper {
     ($handler:ident, $request_type:ty, $response_type:ty) => {
@@ -172,6 +172,15 @@ pub async fn get_check_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
+pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(|ws| main_websocket(ws, state))
+}
+
+/// Mint tokens by paying a BOLT11 Lightning invoice.
+///
+/// Requests the minting of tokens belonging to a paid payment request.
+///
+/// Call this endpoint after `POST /v1/mint/quote`.
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1",
@@ -182,11 +191,6 @@ pub async fn get_check_mint_bolt11_quote(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-/// Mint tokens by paying a BOLT11 Lightning invoice.
-///
-/// Requests the minting of tokens belonging to a paid payment request.
-///
-/// Call this endpoint after `POST /v1/mint/quote`.
 pub async fn post_mint_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request>,

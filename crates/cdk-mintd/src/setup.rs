@@ -221,7 +221,7 @@ impl LnBackendSetup for config::FakeWallet {
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
-            0,
+            3,
         );
 
         Ok(fake_wallet)

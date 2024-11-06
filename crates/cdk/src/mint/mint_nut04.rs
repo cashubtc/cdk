@@ -7,7 +7,7 @@ use crate::{
 
 use super::{
     nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    PaymentMethod, PublicKey,
+    NotificationPayload, PaymentMethod, PublicKey,
 };
 
 impl Mint {
@@ -120,7 +120,12 @@ impl Mint {
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
-        Ok(quote.into())
+        let quote: MintQuoteBolt11Response = quote.into();
+
+        self.pubsub_manager
+            .broadcast(NotificationPayload::MintQuoteBolt11Response(quote.clone()));
+
+        Ok(quote)
     }
 
     /// Check mint quote
@@ -247,7 +252,8 @@ impl Mint {
                 quote.amount_issued
             );
 
-            self.localstore.add_mint_quote(quote).await?;
+            self.pubsub_manager
+                .mint_quote_bolt11_status(mint_quote, MintQuoteState::Paid);
         }
         Ok(())
     }
@@ -258,25 +264,17 @@ impl Mint {
         &self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
-        if self
-            .localstore
-            .get_mint_quote(&mint_request.quote)
-            .await?
-            .is_none()
-        {
-            return Err(Error::UnknownQuote);
-        }
+        let quote =
+            if let Some(mint_quote) = self.localstore.get_mint_quote(&mint_request.quote).await? {
+                mint_quote
+            } else {
+                return Err(Error::UnknownQuote);
+            };
 
         let state = self
             .localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)
             .await?;
-
-        let quote = self
-            .localstore
-            .get_mint_quote(&mint_request.quote)
-            .await?
-            .unwrap();
 
         match state {
             MintQuoteState::Unpaid => {
@@ -316,8 +314,8 @@ impl Mint {
 
             self.localstore
                 .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                .await
-                .unwrap();
+                .await?;
+
             return Err(Error::BlindedMessageAlreadySigned);
         }
 
@@ -361,7 +359,10 @@ impl Mint {
             single_use: quote.single_use,
         };
 
-        self.localstore.add_mint_quote(mint_quote).await?;
+        self.localstore.add_mint_quote(mint_quote.clone()).await?;
+
+        self.pubsub_manager
+            .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);
 
         Ok(nut04::MintBolt11Response {
             signatures: blind_signatures,

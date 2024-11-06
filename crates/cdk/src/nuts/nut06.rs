@@ -78,6 +78,9 @@ pub struct MintInfo {
     /// Mint's icon URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_url: Option<String>,
+    /// Mint's endpoint URLs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub urls: Option<Vec<String>>,
     /// message of the day that the wallet must display to the user
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motd: Option<String>,
@@ -240,6 +243,10 @@ pub struct Nuts {
     #[serde(rename = "19")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut19: Option<nut05::Settings>,
+    /// NUT17 Settings
+    #[serde(default)]
+    #[serde(rename = "17")]
+    pub nut17: SupportedSettings,
 }
 
 impl Nuts {

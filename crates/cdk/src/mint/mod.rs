@@ -54,6 +54,8 @@ pub struct Mint {
     /// Ln backends for mint
     pub bolt12_backends:
         HashMap<LnKey, Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    /// Subscription manager
+    pub pubsub_manager: Arc<PubSubManager>,
     /// Active Mint Keysets
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
     secp_ctx: Secp256k1<secp256k1::All>,
@@ -193,6 +195,7 @@ impl Mint {
         Ok(Self {
             mint_url: MintUrl::from_str(mint_url)?,
             keysets: Arc::new(RwLock::new(active_keysets)),
+            pubsub_manager: Default::default(),
             secp_ctx,
             quote_ttl,
             xpriv,
