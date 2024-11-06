@@ -8,10 +8,7 @@ use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
-};
+use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use crate::{mint, Amount};
 
 /// CDK Lightning Error
@@ -148,10 +145,6 @@ pub struct PaymentQuoteResponse {
 pub struct Settings {
     /// MPP supported
     pub mpp: bool,
-    /// Min amount to mint
-    pub mint_settings: MintMethodSettings,
-    /// Max amount to mint
-    pub melt_settings: MeltMethodSettings,
     /// Base unit of backend
     pub unit: CurrencyUnit,
     /// Invoice Description supported

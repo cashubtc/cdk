@@ -23,6 +23,7 @@ use crate::types::{LnKey, QuoteTTL};
 use crate::util::unix_time;
 use crate::Amount;
 
+mod builder;
 mod check_spendable;
 mod info;
 mod keysets;
@@ -31,6 +32,7 @@ mod mint_nut04;
 mod swap;
 pub mod types;
 
+pub use builder::{MintBuilder, MintMeltLimits};
 pub use types::{MeltQuote, MintQuote};
 
 /// Cashu Mint
