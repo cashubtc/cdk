@@ -39,7 +39,7 @@ pub fn create_backends_fake_wallet(
     let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11);
 
     let wallet = Arc::new(FakeWallet::new(
-        fee_reserve,
+        fee_reserve.clone(),
         HashMap::default(),
         HashSet::default(),
         0,
