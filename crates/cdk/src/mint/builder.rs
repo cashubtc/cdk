@@ -1,8 +1,10 @@
-use core::panic;
+//! Mint Builder
+
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::anyhow;
-use cdk::{
+
+use crate::{
     amount::Amount,
     cdk_database::{self, MintDatabase},
     cdk_lightning::{self, MintLightning},
@@ -31,6 +33,7 @@ pub struct MintBuilder {
 }
 
 impl MintBuilder {
+    /// New mint builder
     pub fn new() -> MintBuilder {
         MintBuilder::default()
     }
@@ -44,7 +47,7 @@ impl MintBuilder {
         self
     }
 
-    // Set mint url
+    /// Set mint url
     pub fn with_mint_url(mut self, mint_url: String) -> Self {
         self.mint_url = Some(mint_url);
         self
@@ -181,7 +184,6 @@ impl MintBuilder {
 
                 self.mint_info.nuts.nut19 = Some(nut19_settings);
             }
-            _ => panic!("Unsupported unit"),
         }
 
         ln.insert(ln_key.clone(), ln_backend);
@@ -206,12 +208,13 @@ impl MintBuilder {
     }
 
     /// Set pubkey
-    pub fn with_pubkey(mut self, pubkey: cdk::nuts::PublicKey) -> Self {
+    pub fn with_pubkey(mut self, pubkey: crate::nuts::PublicKey) -> Self {
         self.mint_info.pubkey = Some(pubkey);
 
         self
     }
 
+    /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
         Ok(Mint::new(
             self.mint_url.as_ref().ok_or(anyhow!("Mint url not set"))?,
@@ -231,10 +234,15 @@ impl MintBuilder {
     }
 }
 
+/// Mint Melt Limits
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct MintMeltLimits {
+    /// Min mint amount
     pub mint_min: Amount,
+    /// Max mint amount
     pub mint_max: Amount,
+    /// Min melt amount
     pub melt_min: Amount,
+    /// Max melt amount
     pub melt_max: Amount,
 }

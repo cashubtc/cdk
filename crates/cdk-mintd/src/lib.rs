@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 pub mod cli;
 pub mod config;
-pub mod mint;
 pub mod setup;
 
 fn expand_path(path: &str) -> Option<PathBuf> {
