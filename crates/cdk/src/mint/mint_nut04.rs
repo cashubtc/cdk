@@ -64,6 +64,7 @@ impl Mint {
             amount,
             unit,
             description,
+            pubkey,
         } = mint_quote_request;
 
         self.check_mint_request_acceptable(amount, &unit)?;
@@ -104,6 +105,7 @@ impl Mint {
             amount,
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
+            pubkey,
         );
 
         tracing::debug!(
@@ -146,6 +148,7 @@ impl Mint {
             request: quote.request,
             state,
             expiry: Some(quote.expiry),
+            pubkey: quote.pubkey,
         })
     }
 
@@ -275,6 +278,12 @@ impl Mint {
                 return Err(Error::IssuedQuote);
             }
             MintQuoteState::Paid => (),
+        }
+
+        // If the there is a public key provoided in mint quote request
+        // verify the signature is provided for the mint request
+        if let Some(pubkey) = mint_quote.pubkey {
+            mint_request.verify_witness(pubkey)?;
         }
 
         let blinded_messages: Vec<PublicKey> = mint_request

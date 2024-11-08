@@ -21,6 +21,7 @@ pub mod nut15;
 #[cfg(feature = "mint")]
 pub mod nut17;
 pub mod nut18;
+pub mod nut19;
 
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, PreMint, PreMintSecrets, Proof,

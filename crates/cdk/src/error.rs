@@ -162,6 +162,12 @@ pub enum Error {
     /// Invoice Description not supported
     #[error("Invoice Description not supported")]
     InvoiceDescriptionUnsupported,
+    /// Secretkey to sign mint quote not provided
+    #[error("Secretkey to sign mint quote not provided")]
+    SecretKeyNotProvided,
+    /// Incorrect secret key provided
+    #[error("Incorrect secretkey provided")]
+    IncorrectSecretKey,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
@@ -176,7 +182,7 @@ pub enum Error {
     /// Parse int error
     #[error(transparent)]
     ParseInt(#[from] std::num::ParseIntError),
-    /// Parse Url Error
+    /// Parse 9rl Error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
     /// Utf8 parse error
@@ -239,6 +245,9 @@ pub enum Error {
     /// NUT18 Error
     #[error(transparent)]
     NUT18(#[from] crate::nuts::nut18::Error),
+    /// NUT19 Error
+    #[error(transparent)]
+    NUT19(#[from] crate::nuts::nut19::Error),
     /// Database Error
     #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]
@@ -373,6 +382,11 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::NUT19(err) => ErrorResponse {
+                code: ErrorCode::WitnessMissingOrInvalid,
+                error: Some(err.to_string()),
+                detail: None,
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),
@@ -443,6 +457,8 @@ pub enum ErrorCode {
     TransactionUnbalanced,
     /// Amount outside of allowed range
     AmountOutofLimitRange,
+    /// Witness missing or invalid
+    WitnessMissingOrInvalid,
     /// Unknown error code
     Unknown(u16),
 }
@@ -467,6 +483,7 @@ impl ErrorCode {
             20005 => Self::QuotePending,
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
+            20008 => Self::WitnessMissingOrInvalid,
             _ => Self::Unknown(code),
         }
     }
@@ -490,6 +507,7 @@ impl ErrorCode {
             Self::QuotePending => 20005,
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
+            Self::WitnessMissingOrInvalid => 20008,
             Self::Unknown(code) => *code,
         }
     }
