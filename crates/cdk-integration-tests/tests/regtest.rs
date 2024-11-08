@@ -113,6 +113,18 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     assert!(melt_response.state == MeltQuoteState::Paid);
 
     let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    // first message is the current state
+    assert_eq!("test-sub", sub_id);
+    let payload = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(payload.amount + payload.fee_reserve, 100.into());
+    assert_eq!(payload.quote, melt.id);
+    assert_eq!(payload.state, MeltQuoteState::Unpaid);
+
+    // get current state
+    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
     assert_eq!("test-sub", sub_id);
     let payload = match payload {
         NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
