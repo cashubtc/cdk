@@ -221,7 +221,6 @@ impl LnBackendSetup for config::FakeWallet {
         // calculate random delay time
         let mut rng = rand::thread_rng();
         let delay_time = rng.gen_range(self.min_delay_time..=self.max_delay_time);
-       
 
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
             fee_reserve,
