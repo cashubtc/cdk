@@ -6,7 +6,7 @@ use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     nut12, MintBolt11Request, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
-    SpendingConditions, State,
+    PublicKey, SecretKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -35,7 +35,7 @@ impl Wallet {
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
     ///     let amount = Amount::from(100);
     ///
-    ///     let quote = wallet.mint_quote(amount, None).await?;
+    ///     let quote = wallet.mint_quote(amount, None, None).await?;
     ///     Ok(())
     /// }
     /// ```
@@ -44,6 +44,7 @@ impl Wallet {
         &self,
         amount: Amount,
         description: Option<String>,
+        pubkey: Option<PublicKey>,
     ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
@@ -69,6 +70,7 @@ impl Wallet {
             amount,
             unit: unit.clone(),
             description,
+            pubkey,
         };
 
         let quote_res = self.client.post_mint_quote(request).await?;
@@ -81,6 +83,7 @@ impl Wallet {
             request: quote_res.request,
             state: quote_res.state,
             expiry: quote_res.expiry.unwrap_or(0),
+            pubkey,
         };
 
         self.localstore.add_mint_quote(quote.clone()).await?;
@@ -121,8 +124,9 @@ impl Wallet {
             let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
 
             if mint_quote_response.state == MintQuoteState::Paid {
+                // TODO: Need to pass in keys here
                 let amount = self
-                    .mint(&mint_quote.id, SplitTarget::default(), None)
+                    .mint(&mint_quote.id, SplitTarget::default(), None, None)
                     .await?;
                 total_amount += amount;
             } else if mint_quote.expiry.le(&unix_time()) {
@@ -154,10 +158,12 @@ impl Wallet {
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
-    ///     let quote = wallet.mint_quote(amount, None).await?;
+    ///     let quote = wallet.mint_quote(amount, None, None).await?;
     ///     let quote_id = quote.id;
     ///     // To be called after quote request is paid
-    ///     let amount_minted = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    ///     let amount_minted = wallet
+    ///         .mint(&quote_id, SplitTarget::default(), None, None)
+    ///         .await?;
     ///
     ///     Ok(())
     /// }
@@ -168,6 +174,7 @@ impl Wallet {
         quote_id: &str,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
+        secret_key: Option<SecretKey>,
     ) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self
@@ -216,10 +223,20 @@ impl Wallet {
             )?,
         };
 
-        let request = MintBolt11Request {
+        let mut request = MintBolt11Request {
             quote: quote_id.to_string(),
             outputs: premint_secrets.blinded_messages(),
+            signature: None,
         };
+
+        if let Some(pubkey) = quote_info.pubkey {
+            let secret_key = secret_key.ok_or(Error::SecretKeyNotProvided)?;
+            if pubkey != secret_key.public_key() {
+                return Err(Error::IncorrectSecretKey);
+            }
+
+            request.sign(secret_key)?;
+        }
 
         let mint_res = self.client.post_mint(request).await?;
 

@@ -128,7 +128,7 @@ pub async fn wallet_mint(
     split_target: SplitTarget,
     description: Option<String>,
 ) -> Result<()> {
-    let quote = wallet.mint_quote(amount, description).await?;
+    let quote = wallet.mint_quote(amount, description, None).await?;
 
     let mut subscription = wallet
         .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
@@ -144,7 +144,7 @@ pub async fn wallet_mint(
         }
     }
 
-    let receive_amount = wallet.mint(&quote.id, split_target, None).await?;
+    let receive_amount = wallet.mint(&quote.id, split_target, None, None).await?;
 
     println!("Minted: {}", receive_amount);
 
@@ -167,6 +167,7 @@ pub async fn mint_proofs(
         amount,
         unit: CurrencyUnit::Sat,
         description,
+        pubkey: None,
     };
 
     let mint_quote = wallet_client.post_mint_quote(request).await?;
@@ -199,6 +200,7 @@ pub async fn mint_proofs(
     let request = MintBolt11Request {
         quote: mint_quote.quote,
         outputs: premint_secrets.blinded_messages(),
+        signature: None,
     };
 
     let mint_response = wallet_client.post_mint(request).await?;

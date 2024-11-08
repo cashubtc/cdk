@@ -12,7 +12,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
-use super::MintQuoteState;
+use super::{MintQuoteState, PublicKey};
 use crate::Amount;
 
 /// NUT04 Error
@@ -35,7 +35,11 @@ pub struct MintQuoteBolt11Request {
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
     /// Memo to create the invoice with
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
 }
 
 /// Possible states of a quote
@@ -94,6 +98,9 @@ pub struct MintQuoteBolt11Response<Q> {
     pub state: MintQuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
 }
 
 impl<Q: ToString> MintQuoteBolt11Response<Q> {
@@ -104,6 +111,7 @@ impl<Q: ToString> MintQuoteBolt11Response<Q> {
             request: self.request.clone(),
             state: self.state,
             expiry: self.expiry,
+            pubkey: self.pubkey,
         }
     }
 }
@@ -116,6 +124,7 @@ impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
             request: value.request,
             state: value.state,
             expiry: value.expiry,
+            pubkey: value.pubkey,
         }
     }
 }
@@ -128,6 +137,7 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response<Uuid> {
             request: mint_quote.request,
             state: mint_quote.state,
             expiry: Some(mint_quote.expiry),
+            pubkey: mint_quote.pubkey,
         }
     }
 }
@@ -143,6 +153,9 @@ pub struct MintBolt11Request<Q> {
     /// Outputs
     #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
+    /// Signature
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[cfg(feature = "mint")]
@@ -153,6 +166,7 @@ impl TryFrom<MintBolt11Request<String>> for MintBolt11Request<Uuid> {
         Ok(Self {
             quote: Uuid::from_str(&value.quote)?,
             outputs: value.outputs,
+            signature: value.signature,
         })
     }
 }
