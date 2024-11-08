@@ -16,7 +16,7 @@ use super::types::SendKind;
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, Proof, SecretKey, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, Proof, PublicKey, SecretKey, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
@@ -166,13 +166,14 @@ impl MultiMintWallet {
         wallet_key: &WalletKey,
         amount: Amount,
         description: Option<String>,
+        pubkey: Option<PublicKey>,
     ) -> Result<MintQuote, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        wallet.mint_quote(amount, description).await
+        wallet.mint_quote(amount, description, pubkey).await
     }
 
     /// Check all mint quotes
@@ -215,13 +216,14 @@ impl MultiMintWallet {
         wallet_key: &WalletKey,
         quote_id: &str,
         conditions: Option<SpendingConditions>,
+        secret_key: Option<SecretKey>,
     ) -> Result<Amount, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
         wallet
-            .mint(quote_id, SplitTarget::default(), conditions)
+            .mint(quote_id, SplitTarget::default(), conditions, secret_key)
             .await
     }
 

@@ -342,8 +342,8 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(id, mint_url, amount, unit, request, state, expiry, pubkey)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -353,6 +353,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(quote.request)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
+        .bind(quote.pubkey.map(|p| p.to_string()))
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -823,8 +824,13 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
     let row_request: String = row.try_get("request").map_err(Error::from)?;
     let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+    let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
 
     let state = MintQuoteState::from_str(&row_state)?;
+
+    let pubkey = row_pubkey
+        .map(|key| PublicKey::from_str(&key))
+        .transpose()?;
 
     Ok(MintQuote {
         id: row_id,
@@ -834,6 +840,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         request: row_request,
         state,
         expiry: row_expiry as u64,
+        pubkey,
     })
 }
 

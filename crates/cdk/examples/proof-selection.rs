@@ -24,7 +24,7 @@ async fn main() {
 
     for amount in [64] {
         let amount = Amount::from(amount);
-        let quote = wallet.mint_quote(amount, None).await.unwrap();
+        let quote = wallet.mint_quote(amount, None, None).await.unwrap();
 
         println!("Pay request: {}", quote.request);
 
@@ -41,7 +41,7 @@ async fn main() {
         }
 
         let receive_amount = wallet
-            .mint(&quote.id, SplitTarget::default(), None)
+            .mint(&quote.id, SplitTarget::default(), None, None)
             .await
             .unwrap();
 

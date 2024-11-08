@@ -205,8 +205,8 @@ WHERE active = 1
         let res = sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, request_lookup_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+(id, mint_url, amount, unit, request, state, expiry, request_lookup_id, pubkey)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -217,6 +217,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .bind(quote.request_lookup_id)
+        .bind(quote.pubkey.map(|p| p.to_string()))
         .execute(&mut transaction)
         .await;
 
@@ -1277,6 +1278,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
     let row_request_lookup_id: Option<String> =
         row.try_get("request_lookup_id").map_err(Error::from)?;
+    let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
 
     let request_lookup_id = match row_request_lookup_id {
         Some(id) => id,
@@ -1285,6 +1287,10 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
             Err(_) => row_request.clone(),
         },
     };
+
+    let pubkey = row_pubkey
+        .map(|key| PublicKey::from_str(&key))
+        .transpose()?;
 
     Ok(MintQuote {
         id: row_id,
@@ -1295,6 +1301,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         state: MintQuoteState::from_str(&row_state).map_err(Error::from)?,
         expiry: row_expiry as u64,
         request_lookup_id,
+        pubkey,
     })
 }
 
