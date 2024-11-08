@@ -216,12 +216,14 @@ impl LnBackendSetup for config::FakeWallet {
             min_fee_reserve: self.reserve_fee_min,
             percent_fee_reserve: self.fee_percent,
         };
+        // calculate
+        let delay_time = (self.min_delay_time + self.max_delay_time) / 2;
 
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
-            3,
+            delay_time,
         );
 
         Ok(fake_wallet)
