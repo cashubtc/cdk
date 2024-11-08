@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use config::{Config, ConfigError, File};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -111,15 +110,12 @@ pub struct FakeWallet {
 
 impl Default for FakeWallet {
     fn default() -> Self {
-        let mut rng = rand::thread_rng();
-        let min_rang = rng.gen_range(1..=1000);
-        let max_rang = rng.gen_range(1..=1000);
         Self {
             supported_units: vec![CurrencyUnit::Sat],
             fee_percent: 0.02,
             reserve_fee_min: 2.into(),
-            min_delay_time: min_rang,
-            max_delay_time: max_rang,
+            min_delay_time: 1,
+            max_delay_time: 3,
         }
     }
 }

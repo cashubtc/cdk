@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{anyhow, bail};
 use axum::{async_trait, Router};
+use rand::Rng;
 
 use cdk::{cdk_lightning::MintLightning, mint::FeeReserve, mint_url::MintUrl, nuts::CurrencyUnit};
 use tokio::sync::Mutex;
@@ -216,8 +217,11 @@ impl LnBackendSetup for config::FakeWallet {
             min_fee_reserve: self.reserve_fee_min,
             percent_fee_reserve: self.fee_percent,
         };
-        // calculate
-        let delay_time = (self.min_delay_time + self.max_delay_time) / 2;
+
+        // calculate random delay time
+        let mut rng = rand::thread_rng();
+        let delay_time = rng.gen_range(self.min_delay_time..=self.max_delay_time);
+       
 
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
             fee_reserve,
