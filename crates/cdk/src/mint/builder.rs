@@ -46,7 +46,8 @@ impl MintBuilder {
             .nut10(true)
             .nut11(true)
             .nut12(true)
-            .nut14(true);
+            .nut14(true)
+            .nut20(true);
 
         builder.mint_info.nuts = nuts;
 

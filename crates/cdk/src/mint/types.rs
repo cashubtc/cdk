@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::CurrencyUnit;
+use super::{CurrencyUnit, PublicKey};
 use crate::mint_url::MintUrl;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::Amount;
@@ -27,6 +27,8 @@ pub struct MintQuote {
     pub expiry: u64,
     /// Value used by ln backend to look up state of request
     pub request_lookup_id: String,
+    /// Pubkey
+    pub pubkey: Option<PublicKey>,
 }
 
 impl MintQuote {
@@ -38,6 +40,7 @@ impl MintQuote {
         amount: Amount,
         expiry: u64,
         request_lookup_id: String,
+        pubkey: Option<PublicKey>,
     ) -> Self {
         let id = Uuid::new_v4();
 
@@ -50,6 +53,7 @@ impl MintQuote {
             state: MintQuoteState::Unpaid,
             expiry,
             request_lookup_id,
+            pubkey,
         }
     }
 }
