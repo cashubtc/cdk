@@ -104,6 +104,8 @@ pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+    pub min_delay_time: u64,
+    pub max_delay_time: u64,
 }
 
 impl Default for FakeWallet {
@@ -112,6 +114,8 @@ impl Default for FakeWallet {
             supported_units: vec![CurrencyUnit::Sat],
             fee_percent: 0.02,
             reserve_fee_min: 2.into(),
+            min_delay_time: 1,
+            max_delay_time: 3,
         }
     }
 }
