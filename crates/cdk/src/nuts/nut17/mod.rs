@@ -1,15 +1,21 @@
 //! Specific Subscription for the cdk crate
 
+use super::{BlindSignature, CurrencyUnit, PaymentMethod};
+use crate::cdk_database::{self, MintDatabase};
+pub use crate::pub_sub::SubId;
 use crate::{
-    cdk_database::{self, MintDatabase},
     nuts::{
         MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
         ProofState,
     },
-    pub_sub::{self, Index, Indexable, OnNewSubscription, SubscriptionGlobalId},
+    pub_sub::{self, Index, Indexable, SubscriptionGlobalId},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::Arc};
+
+mod on_subscription;
+
+pub use on_subscription::OnSubscription;
 
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,10 +63,6 @@ impl Default for SupportedMethods {
         }
     }
 }
-
-pub use crate::pub_sub::SubId;
-
-use super::{BlindSignature, CurrencyUnit, PaymentMethod, PublicKey};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -145,125 +147,28 @@ impl From<Params> for Vec<Index<(String, Kind)>> {
     }
 }
 
-#[derive(Default)]
-/// Subscription Init
-///
-/// This struct triggers code when a new subscription is created.
-///
-/// It is used to send the initial state of the subscription to the client.
-pub struct SubscriptionInit(Option<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>>);
-
-#[async_trait::async_trait]
-impl OnNewSubscription for SubscriptionInit {
-    type Event = NotificationPayload;
-    type Index = (String, Kind);
-
-    async fn on_new_subscription(
-        &self,
-        request: &[&Self::Index],
-    ) -> Result<Vec<Self::Event>, String> {
-        let datastore = if let Some(localstore) = self.0.as_ref() {
-            localstore
-        } else {
-            return Ok(vec![]);
-        };
-
-        let mut to_return = vec![];
-
-        for (kind, values) in request.iter().fold(
-            HashMap::new(),
-            |mut acc: HashMap<&Kind, Vec<&String>>, (data, kind)| {
-                acc.entry(kind).or_default().push(data);
-                acc
-            },
-        ) {
-            match kind {
-                Kind::Bolt11MeltQuote => {
-                    let queries = values
-                        .iter()
-                        .map(|id| datastore.get_melt_quote(id))
-                        .collect::<Vec<_>>();
-
-                    to_return.extend(
-                        futures::future::try_join_all(queries)
-                            .await
-                            .map(|quotes| {
-                                quotes
-                                    .into_iter()
-                                    .filter_map(|quote| quote.map(|x| x.into()))
-                                    .map(|x: MeltQuoteBolt11Response| x.into())
-                                    .collect::<Vec<_>>()
-                            })
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-                Kind::Bolt11MintQuote => {
-                    let queries = values
-                        .iter()
-                        .map(|id| datastore.get_mint_quote(id))
-                        .collect::<Vec<_>>();
-
-                    to_return.extend(
-                        futures::future::try_join_all(queries)
-                            .await
-                            .map(|quotes| {
-                                quotes
-                                    .into_iter()
-                                    .filter_map(|quote| quote.map(|x| x.into()))
-                                    .map(|x: MintQuoteBolt11Response| x.into())
-                                    .collect::<Vec<_>>()
-                            })
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-                Kind::ProofState => {
-                    let public_keys = values
-                        .iter()
-                        .map(PublicKey::from_hex)
-                        .collect::<Result<Vec<PublicKey>, _>>()
-                        .map_err(|e| e.to_string())?;
-
-                    to_return.extend(
-                        datastore
-                            .get_proofs_states(&public_keys)
-                            .await
-                            .map_err(|e| e.to_string())?
-                            .into_iter()
-                            .enumerate()
-                            .filter_map(|(idx, state)| {
-                                state.map(|state| (public_keys[idx], state).into())
-                            })
-                            .map(|state: ProofState| state.into()),
-                    );
-                }
-            }
-        }
-
-        Ok(to_return)
-    }
-}
-
 /// Manager
 /// Publish–subscribe manager
 ///
 /// Nut-17 implementation is system-wide and not only through the WebSocket, so
 /// it is possible for another part of the system to subscribe to events.
-pub struct PubSubManager(pub_sub::Manager<NotificationPayload, (String, Kind), SubscriptionInit>);
+pub struct PubSubManager(pub_sub::Manager<NotificationPayload, (String, Kind), OnSubscription>);
 
+#[allow(clippy::default_constructed_unit_structs)]
 impl Default for PubSubManager {
     fn default() -> Self {
-        PubSubManager(SubscriptionInit::default().into())
+        PubSubManager(OnSubscription::default().into())
     }
 }
 
 impl From<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>> for PubSubManager {
     fn from(val: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>) -> Self {
-        PubSubManager(SubscriptionInit(Some(val)).into())
+        PubSubManager(OnSubscription(Some(val)).into())
     }
 }
 
 impl Deref for PubSubManager {
-    type Target = pub_sub::Manager<NotificationPayload, (String, Kind), SubscriptionInit>;
+    type Target = pub_sub::Manager<NotificationPayload, (String, Kind), OnSubscription>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
