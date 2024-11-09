@@ -162,6 +162,7 @@
               cargo update -p serde_with --precise 3.1.0
               cargo update -p reqwest --precise 0.12.4
               cargo update -p url --precise 2.5.2
+              cargo update -p allocator-api2 --precise 0.2.18
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
               inherit nativeBuildInputs;
