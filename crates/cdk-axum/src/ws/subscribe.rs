@@ -3,10 +3,7 @@ use super::{
     WsContext, WsError, JSON_RPC_VERSION,
 };
 use cdk::{
-    nuts::{
-        nut17::{Kind, NotificationPayload, Params},
-        MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey,
-    },
+    nuts::nut17::{NotificationPayload, Params},
     pub_sub::SubId,
 };
 
@@ -67,80 +64,6 @@ impl WsHandle for Method {
             .subscribe(self.0.clone())
             .await;
         let publisher = context.publisher.clone();
-
-        let current_notification_to_send: Vec<NotificationPayload> = match self.0.kind {
-            Kind::Bolt11MeltQuote => {
-                let queries = self
-                    .0
-                    .filters
-                    .iter()
-                    .map(|id| context.state.mint.localstore.get_melt_quote(id))
-                    .collect::<Vec<_>>();
-
-                futures::future::try_join_all(queries)
-                    .await
-                    .map(|quotes| {
-                        quotes
-                            .into_iter()
-                            .filter_map(|quote| quote.map(|x| x.into()))
-                            .map(|x: MeltQuoteBolt11Response| x.into())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            }
-            Kind::Bolt11MintQuote => {
-                let queries = self
-                    .0
-                    .filters
-                    .iter()
-                    .map(|id| context.state.mint.localstore.get_mint_quote(id))
-                    .collect::<Vec<_>>();
-
-                futures::future::try_join_all(queries)
-                    .await
-                    .map(|quotes| {
-                        quotes
-                            .into_iter()
-                            .filter_map(|quote| quote.map(|x| x.into()))
-                            .map(|x: MintQuoteBolt11Response| x.into())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            }
-            Kind::ProofState => {
-                if let Ok(public_keys) = self
-                    .0
-                    .filters
-                    .iter()
-                    .map(PublicKey::from_hex)
-                    .collect::<Result<Vec<PublicKey>, _>>()
-                {
-                    context
-                        .state
-                        .mint
-                        .localstore
-                        .get_proofs_states(&public_keys)
-                        .await
-                        .map(|x| {
-                            x.into_iter()
-                                .enumerate()
-                                .filter_map(|(idx, state)| {
-                                    state.map(|state| (public_keys[idx], state).into())
-                                })
-                                .map(|x: ProofState| x.into())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            }
-        };
-
-        for notification in current_notification_to_send.into_iter() {
-            let _ = publisher.send((sub_id.clone(), notification)).await;
-        }
-
         context.subscriptions.insert(
             sub_id.clone(),
             tokio::spawn(async move {

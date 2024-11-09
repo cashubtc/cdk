@@ -35,7 +35,7 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
         .unwrap();
 
     let mut response: serde_json::Value =
-        serde_json::from_str(&msg.to_text().unwrap()).expect("valid json");
+        serde_json::from_str(msg.to_text().unwrap()).expect("valid json");
 
     let mut params_raw = response
         .as_object_mut()
