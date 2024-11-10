@@ -1,13 +1,14 @@
 //! On Subscription
 //!
 //! This module contains the code that is triggered when a new subscription is created.
+use std::{collections::HashMap, sync::Arc};
+
 use super::{Kind, NotificationPayload};
 use crate::{
     cdk_database::{self, MintDatabase},
     nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey},
     pub_sub::OnNewSubscription,
 };
-use std::{collections::HashMap, sync::Arc};
 
 #[derive(Default)]
 /// Subscription Init
