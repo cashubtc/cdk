@@ -100,7 +100,7 @@ impl Wallet {
         let keyset_with_lowest_fee = active_keysets
             .into_iter()
             .min_by_key(|key| key.input_fee_ppk)
-            .ok_or(Error::NoActiveKeysetWithLowestFee)?;
+            .ok_or(Error::NoActiveKeyset)?;
         Ok(keyset_with_lowest_fee)
     }
 }
