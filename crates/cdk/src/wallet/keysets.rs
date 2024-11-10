@@ -88,4 +88,16 @@ impl Wallet {
 
         Ok(active_keysets)
     }
+
+    /// Get active keyset for mint with the lowest fees
+    ///
+    /// Queries mint for current keysets then gets [`Keys`] for any unknown
+    /// keysets
+    #[instrument(skip(self))]
+    pub async fn get_active_mint_keyset(&self) -> Result<KeySetInfo, Error> {
+        let active_keysets =  self.get_active_mint_keysets().await?;
+
+        let keyset_with_lowest_fee = active_keysets.into_iter().min_by_key(|key| key.input_fee_ppk).ok_or(Error::NoActiveKeysetWithLowestFee)?;
+        Ok(keyset_with_lowest_fee)
+    }
 }
