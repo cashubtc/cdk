@@ -5,7 +5,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-use super::{nut04, nut05, nut15, nut17, MppMethodSettings};
+use super::{nut04, nut05, nut15, MppMethodSettings};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -238,7 +238,8 @@ pub struct Nuts {
     /// NUT17 Settings
     #[serde(default)]
     #[serde(rename = "17")]
-    pub nut17: nut17::SupportedSettings,
+    #[cfg(feature = "mint")]
+    pub nut17: super::nut17::SupportedSettings,
 }
 
 impl Nuts {

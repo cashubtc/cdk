@@ -185,7 +185,7 @@ impl Mint {
         Ok(Self {
             mint_url: MintUrl::from_str(mint_url)?,
             keysets: Arc::new(RwLock::new(active_keysets)),
-            pubsub_manager: Default::default(),
+            pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
             quote_ttl,
             xpriv,
