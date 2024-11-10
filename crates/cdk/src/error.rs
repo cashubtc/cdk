@@ -154,7 +154,7 @@ pub enum Error {
     /// No active keyset
     #[error("No active keyset")]
     NoActiveKeyset,
-     /// No active keyset
+    /// No active keyset
     #[error("No active keyset with lowest fee")]
     NoActiveKeysetWithLowestFee,
     /// Incorrect quote amount
