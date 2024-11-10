@@ -1,8 +1,13 @@
 //! Specific Subscription for the cdk crate
 
-use super::{BlindSignature, CurrencyUnit, PaymentMethod};
+use std::{ops::Deref, sync::Arc};
+
+use serde::{Deserialize, Serialize};
+
+mod on_subscription;
+
 use crate::cdk_database::{self, MintDatabase};
-pub use crate::pub_sub::SubId;
+use crate::nuts::{BlindSignature, CurrencyUnit, PaymentMethod};
 use crate::{
     nuts::{
         MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
@@ -10,11 +15,8 @@ use crate::{
     },
     pub_sub::{self, Index, Indexable, SubscriptionGlobalId},
 };
-use serde::{Deserialize, Serialize};
-use std::{ops::Deref, sync::Arc};
 
-mod on_subscription;
-
+pub use crate::pub_sub::SubId;
 pub use on_subscription::OnSubscription;
 
 /// Subscription Parameter according to the standard
