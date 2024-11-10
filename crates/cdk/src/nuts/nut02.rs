@@ -561,4 +561,15 @@ mod test {
         let id_from_uppercase = Id::from_str(&SHORT_KEYSET_ID.to_uppercase());
         assert!(id_from_uppercase.is_ok());
     }
+
+    #[test]
+    fn test_id_u64_conversion() {
+        let id = generate_random_id();
+        let u64_value = id.to_u64();
+        let converted_id = Id::from_u64(u64_value).unwrap();
+
+        assert_eq!(id, converted_id);
+        assert_eq!(id.version, converted_id.version);
+        assert_eq!(id.id, converted_id.id);
+    }
 }
