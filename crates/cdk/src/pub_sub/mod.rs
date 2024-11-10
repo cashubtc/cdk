@@ -37,6 +37,25 @@ pub const DEFAULT_REMOVE_SIZE: usize = 10_000;
 /// Default channel size for subscription buffering
 pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 
+#[async_trait::async_trait]
+/// On New Subscription trait
+///
+/// This trait is optional and it is used to notify the application when a new
+/// subscription is created. This is useful when the application needs to send
+/// the initial state to the subscriber upon subscription
+pub trait OnNewSubscription {
+    /// Index type
+    type Index;
+    /// Subscription event type
+    type Event;
+
+    /// Called when a new subscription is created
+    async fn on_new_subscription(
+        &self,
+        request: &[&Self::Index],
+    ) -> Result<Vec<Self::Event>, String>;
+}
+
 /// Subscription manager
 ///
 /// This object keep track of all subscription listener and it is also
@@ -45,21 +64,24 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 /// The content of the notification is not relevant to this scope and it is up
 /// to the application, therefore the generic T is used instead of a specific
 /// type
-pub struct Manager<T, I>
+pub struct Manager<T, I, F>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
     I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
+    F: OnNewSubscription<Index = I, Event = T> + 'static,
 {
     indexes: IndexTree<T, I>,
+    on_new_subscription: Option<F>,
     unsubscription_sender: mpsc::Sender<(SubId, Vec<Index<I>>)>,
     active_subscriptions: Arc<AtomicUsize>,
     background_subscription_remover: Option<JoinHandle<()>>,
 }
 
-impl<T, I> Default for Manager<T, I>
+impl<T, I, F> Default for Manager<T, I, F>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
     I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
+    F: OnNewSubscription<Index = I, Event = T> + 'static,
 {
     fn default() -> Self {
         let (sender, receiver) = mpsc::channel(DEFAULT_REMOVE_SIZE);
@@ -72,6 +94,7 @@ where
                 storage.clone(),
                 active_subscriptions.clone(),
             ))),
+            on_new_subscription: None,
             unsubscription_sender: sender,
             active_subscriptions,
             indexes: storage,
@@ -79,10 +102,24 @@ where
     }
 }
 
-impl<T, I> Manager<T, I>
+impl<T, I, F> From<F> for Manager<T, I, F>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
-    I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
+    I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
+    F: OnNewSubscription<Index = I, Event = T> + 'static,
+{
+    fn from(value: F) -> Self {
+        let mut manager: Self = Default::default();
+        manager.on_new_subscription = Some(value);
+        manager
+    }
+}
+
+impl<T, I, F> Manager<T, I, F>
+where
+    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
+    I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
+    F: OnNewSubscription<Index = I, Event = T> + 'static,
 {
     #[inline]
     /// Broadcast an event to all listeners
@@ -132,7 +169,28 @@ where
     ) -> ActiveSubscription<T, I> {
         let (sender, receiver) = mpsc::channel(10);
         let sub_id: SubId = params.as_ref().clone();
+
         let indexes: Vec<Index<I>> = params.into();
+
+        if let Some(on_new_subscription) = self.on_new_subscription.as_ref() {
+            match on_new_subscription
+                .on_new_subscription(&indexes.iter().map(|x| x.deref()).collect::<Vec<_>>())
+                .await
+            {
+                Ok(events) => {
+                    for event in events {
+                        let _ = sender.try_send((sub_id.clone(), event));
+                    }
+                }
+                Err(err) => {
+                    tracing::info!(
+                        "Failed to get initial state for subscription: {:?}, {}",
+                        sub_id,
+                        err
+                    );
+                }
+            }
+        }
 
         let mut index_storage = self.indexes.write().await;
         for index in indexes.clone() {
@@ -180,10 +238,11 @@ where
 }
 
 /// Manager goes out of scope, stop all background tasks
-impl<T, I> Drop for Manager<T, I>
+impl<T, I, F> Drop for Manager<T, I, F>
 where
     T: Indexable<Type = I> + Clone + Send + Sync + 'static,
     I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
+    F: OnNewSubscription<Index = I, Event = T> + 'static,
 {
     fn drop(&mut self) {
         if let Some(handler) = self.background_subscription_remover.take() {

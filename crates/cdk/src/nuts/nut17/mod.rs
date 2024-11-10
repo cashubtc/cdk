@@ -1,5 +1,8 @@
 //! Specific Subscription for the cdk crate
 
+use super::{BlindSignature, CurrencyUnit, PaymentMethod};
+use crate::cdk_database::{self, MintDatabase};
+pub use crate::pub_sub::SubId;
 use crate::{
     nuts::{
         MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
@@ -8,7 +11,11 @@ use crate::{
     pub_sub::{self, Index, Indexable, SubscriptionGlobalId},
 };
 use serde::{Deserialize, Serialize};
-use std::ops::Deref;
+use std::{ops::Deref, sync::Arc};
+
+mod on_subscription;
+
+pub use on_subscription::OnSubscription;
 
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,10 +63,6 @@ impl Default for SupportedMethods {
         }
     }
 }
-
-pub use crate::pub_sub::SubId;
-
-use super::{BlindSignature, CurrencyUnit, PaymentMethod};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -145,15 +148,27 @@ impl From<Params> for Vec<Index<(String, Kind)>> {
 }
 
 /// Manager
-#[derive(Default)]
 /// Publish–subscribe manager
 ///
 /// Nut-17 implementation is system-wide and not only through the WebSocket, so
 /// it is possible for another part of the system to subscribe to events.
-pub struct PubSubManager(pub_sub::Manager<NotificationPayload, (String, Kind)>);
+pub struct PubSubManager(pub_sub::Manager<NotificationPayload, (String, Kind), OnSubscription>);
+
+#[allow(clippy::default_constructed_unit_structs)]
+impl Default for PubSubManager {
+    fn default() -> Self {
+        PubSubManager(OnSubscription::default().into())
+    }
+}
+
+impl From<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>> for PubSubManager {
+    fn from(val: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>) -> Self {
+        PubSubManager(OnSubscription(Some(val)).into())
+    }
+}
 
 impl Deref for PubSubManager {
-    type Target = pub_sub::Manager<NotificationPayload, (String, Kind)>;
+    type Target = pub_sub::Manager<NotificationPayload, (String, Kind), OnSubscription>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
