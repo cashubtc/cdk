@@ -1013,27 +1013,25 @@ impl Node {
     }
 
     pub fn get_mint_settings(&self) -> MintSettings {
-        let settings = self.get_settings();
         MintSettings {
             methods: vec![MintMethodSettings {
                 method: PaymentMethod::Bolt11,
                 unit: CurrencyUnit::Sat,
                 description: false,
-                min_amount: settings.mint_settings.min_amount,
-                max_amount: settings.mint_settings.max_amount,
+                min_amount: Some(Amount::from(1)),
+                max_amount: Some(Amount::from(10_000_000)),
             }],
             disabled: false,
         }
     }
 
     pub fn get_melt_settings(&self) -> MeltSettings {
-        let settings = self.get_settings();
         MeltSettings {
             methods: vec![MeltMethodSettings {
                 method: PaymentMethod::Bolt11,
                 unit: CurrencyUnit::Sat,
-                min_amount: settings.melt_settings.min_amount,
-                max_amount: settings.melt_settings.max_amount,
+                min_amount: Some(Amount::from(1)),
+                max_amount: Some(Amount::from(10_000_000)),
             }],
             disabled: false,
         }
@@ -1221,19 +1219,6 @@ impl MintLightning for Node {
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: false,
-            mint_settings: MintMethodSettings {
-                method: PaymentMethod::Bolt11,
-                unit: CurrencyUnit::Sat,
-                description: false,
-                min_amount: Some(Amount::from(1)),
-                max_amount: Some(Amount::from(10_000_000)),
-            },
-            melt_settings: MeltMethodSettings {
-                method: PaymentMethod::Bolt11,
-                unit: CurrencyUnit::Sat,
-                min_amount: Some(Amount::from(1)),
-                max_amount: Some(Amount::from(10_000_000)),
-            },
             unit: CurrencyUnit::Sat,
             invoice_description: false,
         }
