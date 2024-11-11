@@ -1,17 +1,60 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{fmt::Debug, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::{
     amount::{Amount, SplitTarget},
     cdk_database::WalletMemoryDatabase,
-    nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PreMintSecrets, State},
-    wallet::{client::HttpClient, Wallet},
+    nuts::{
+        CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
+        PreMintSecrets, State,
+    },
+    wallet::{
+        client::{HttpClient, HttpClientMethods},
+        Wallet,
+    },
 };
-use cdk_integration_tests::init_regtest::{get_mint_url, init_cln_client, init_lnd_client};
+use cdk_integration_tests::init_regtest::{
+    get_mint_url, get_mint_ws_url, init_cln_client, init_lnd_client,
+};
+use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::InvoiceStatus;
-use tokio::time::sleep;
+use serde_json::json;
+use tokio::time::{sleep, timeout};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
+    reader: &mut T,
+    timeout_to_wait: Duration,
+) -> (String, NotificationPayload) {
+    let msg = timeout(timeout_to_wait, reader.next())
+        .await
+        .expect("timeout")
+        .unwrap()
+        .unwrap();
+
+    let mut response: serde_json::Value =
+        serde_json::from_str(msg.to_text().unwrap()).expect("valid json");
+
+    let mut params_raw = response
+        .as_object_mut()
+        .expect("object")
+        .remove("params")
+        .expect("valid params");
+
+    let params_map = params_raw.as_object_mut().expect("params is object");
+
+    (
+        params_map
+            .remove("subId")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string(),
+        serde_json::from_value(params_map.remove("payload").unwrap()).unwrap(),
+    )
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
@@ -24,6 +67,11 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
+
+    let (ws_stream, _) = connect_async(get_mint_ws_url())
+        .await
+        .expect("Failed to connect");
+    let (mut write, mut reader) = ws_stream.split();
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -39,11 +87,52 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     let melt = wallet.melt_quote(invoice, None).await?;
 
-    let melt = wallet.melt(&melt.id).await.unwrap();
+    write
+        .send(Message::Text(serde_json::to_string(&json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "subscribe",
+                "params": {
+                  "kind": "bolt11_melt_quote",
+                  "filters": [
+                    melt.id.clone(),
+                  ],
+                  "subId": "test-sub",
+                }
 
-    assert!(melt.preimage.is_some());
+        }))?))
+        .await?;
 
-    assert!(melt.state == MeltQuoteState::Paid);
+    assert_eq!(
+        reader.next().await.unwrap().unwrap().to_text().unwrap(),
+        r#"{"jsonrpc":"2.0","result":{"status":"OK","subId":"test-sub"},"id":2}"#
+    );
+
+    let melt_response = wallet.melt(&melt.id).await.unwrap();
+    assert!(melt_response.preimage.is_some());
+    assert!(melt_response.state == MeltQuoteState::Paid);
+
+    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    // first message is the current state
+    assert_eq!("test-sub", sub_id);
+    let payload = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(payload.amount + payload.fee_reserve, 100.into());
+    assert_eq!(payload.quote, melt.id);
+    assert_eq!(payload.state, MeltQuoteState::Unpaid);
+
+    // get current state
+    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    assert_eq!("test-sub", sub_id);
+    let payload = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(payload.amount + payload.fee_reserve, 100.into());
+    assert_eq!(payload.quote, melt.id);
+    assert_eq!(payload.state, MeltQuoteState::Paid);
 
     Ok(())
 }
@@ -111,7 +200,7 @@ async fn test_restore() -> Result<()> {
     assert!(wallet_2.total_balance().await? == 0.into());
 
     let restored = wallet_2.restore().await?;
-    let proofs = wallet_2.get_proofs().await?;
+    let proofs = wallet_2.get_unspent_proofs().await?;
 
     wallet_2
         .swap(None, SplitTarget::default(), proofs, None, false)
@@ -121,7 +210,7 @@ async fn test_restore() -> Result<()> {
 
     assert!(wallet_2.total_balance().await? == 100.into());
 
-    let proofs = wallet.get_proofs().await?;
+    let proofs = wallet.get_unspent_proofs().await?;
 
     let states = wallet.check_proofs_spent(proofs).await?;
 
@@ -289,15 +378,16 @@ async fn test_cached_mint() -> Result<()> {
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
 
+    let request = MintBolt11Request {
+        quote: quote.id,
+        outputs: premint_secrets.blinded_messages(),
+    };
+
     let response = http_client
-        .post_mint(
-            get_mint_url().as_str().parse()?,
-            &quote.id,
-            premint_secrets.clone(),
-        )
+        .post_mint(get_mint_url().as_str().parse()?, request.clone())
         .await?;
     let response1 = http_client
-        .post_mint(get_mint_url().as_str().parse()?, &quote.id, premint_secrets)
+        .post_mint(get_mint_url().as_str().parse()?, request)
         .await?;
 
     assert!(response == response1);

@@ -45,7 +45,7 @@ test: build
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo test
+  cargo test --lib
 
 # run `cargo clippy` on everything
 clippy *ARGS="--locked --offline --workspace --all-targets":

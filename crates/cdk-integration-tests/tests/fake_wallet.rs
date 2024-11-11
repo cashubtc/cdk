@@ -5,8 +5,13 @@ use bip39::Mnemonic;
 use cdk::{
     amount::SplitTarget,
     cdk_database::WalletMemoryDatabase,
-    nuts::{CurrencyUnit, MeltQuoteState, PreMintSecrets, State},
-    wallet::{client::HttpClient, Wallet},
+    nuts::{
+        CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, PreMintSecrets, State,
+    },
+    wallet::{
+        client::{HttpClient, HttpClientMethods},
+        Wallet,
+    },
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;
@@ -27,7 +32,7 @@ async fn test_fake_tokens_pending() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_millis(5)).await;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -67,7 +72,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_millis(5)).await;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -104,7 +109,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
     assert!(melt.is_err());
 
     // The mint should have unset proofs from pending since payment failed
-    let all_proof = wallet.get_proofs().await?;
+    let all_proof = wallet.get_unspent_proofs().await?;
     let states = wallet.check_proofs_spent(all_proof).await?;
     for state in states {
         assert!(state.state == State::Unspent);
@@ -130,7 +135,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_millis(5)).await;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -175,7 +180,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_millis(5)).await;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -235,7 +240,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_millis(5)).await;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -296,7 +301,7 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_millis(5)).await;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -334,7 +339,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    sleep(Duration::from_millis(5)).await;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -344,7 +349,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
 
-    let proofs = wallet.get_proofs().await?;
+    let proofs = wallet.get_unspent_proofs().await?;
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
@@ -354,28 +359,35 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let client = HttpClient::new();
 
-    let melt_response = client
-        .post_melt(
-            MINT_URL.parse()?,
-            melt_quote.id.clone(),
-            proofs.clone(),
-            Some(premint_secrets.blinded_messages()),
-        )
-        .await?;
+    let melt_request = MeltBolt11Request {
+        quote: melt_quote.id.clone(),
+        inputs: proofs.clone(),
+        outputs: Some(premint_secrets.blinded_messages()),
+    };
+
+    let melt_response = client.post_melt(MINT_URL.parse()?, melt_request).await?;
 
     assert!(melt_response.change.is_some());
 
     let check = wallet.melt_quote_status(&melt_quote.id).await?;
+    let mut melt_change = melt_response.change.unwrap();
+    melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
 
-    assert_eq!(
-        melt_response
-            .change
-            .unwrap()
-            .sort_by(|a, b| a.amount.cmp(&b.amount)),
-        check
-            .change
-            .unwrap()
-            .sort_by(|a, b| a.amount.cmp(&b.amount))
-    );
+    let mut check = check.change.unwrap();
+    check.sort_by(|a, b| a.amount.cmp(&b.amount));
+
+    assert_eq!(melt_change, check);
     Ok(())
+}
+
+// Keep polling the state of the mint quote id until it's paid
+async fn wait_for_mint_to_be_paid(wallet: &Wallet, mint_quote_id: &str) -> Result<()> {
+    loop {
+        let status = wallet.mint_quote_state(mint_quote_id).await?;
+        if status.state == MintQuoteState::Paid {
+            return Ok(());
+        }
+
+        sleep(Duration::from_millis(5)).await;
+    }
 }

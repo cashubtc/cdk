@@ -18,10 +18,7 @@ use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint::FeeReserve;
-use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
-};
+use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
@@ -43,8 +40,6 @@ pub struct Lnd {
     macaroon_file: PathBuf,
     client: Arc<Mutex<Client>>,
     fee_reserve: FeeReserve,
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
 }
@@ -56,8 +51,6 @@ impl Lnd {
         cert_file: PathBuf,
         macaroon_file: PathBuf,
         fee_reserve: FeeReserve,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
     ) -> Result<Self, Error> {
         let client = fedimint_tonic_lnd::connect(address.to_string(), &cert_file, &macaroon_file)
             .await
@@ -72,8 +65,6 @@ impl Lnd {
             macaroon_file,
             client: Arc::new(Mutex::new(client)),
             fee_reserve,
-            mint_settings,
-            melt_settings,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         })
@@ -88,8 +79,6 @@ impl MintLightning for Lnd {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
             invoice_description: true,
         }
     }

@@ -15,10 +15,7 @@ use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
 use cdk::mint::FeeReserve;
-use cdk::nuts::{
-    CurrencyUnit, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteState, MintMethodSettings,
-    MintQuoteState,
-};
+use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::{mint, Bolt11Invoice};
 use error::Error;
 use futures::{Stream, StreamExt};
@@ -32,8 +29,6 @@ pub mod error;
 /// Phoenixd
 #[derive(Clone)]
 pub struct Phoenixd {
-    mint_settings: MintMethodSettings,
-    melt_settings: MeltMethodSettings,
     phoenixd_api: PhoenixdApi,
     fee_reserve: FeeReserve,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<WebhookResponse>>>>,
@@ -47,16 +42,12 @@ impl Phoenixd {
     pub fn new(
         api_password: String,
         api_url: String,
-        mint_settings: MintMethodSettings,
-        melt_settings: MeltMethodSettings,
         fee_reserve: FeeReserve,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<WebhookResponse>>>>,
         webhook_url: String,
     ) -> Result<Self, Error> {
         let phoenixd = PhoenixdApi::new(&api_password, &api_url)?;
         Ok(Self {
-            mint_settings,
-            melt_settings,
             phoenixd_api: phoenixd,
             fee_reserve,
             receiver,
@@ -86,8 +77,6 @@ impl MintLightning for Phoenixd {
         Settings {
             mpp: false,
             unit: CurrencyUnit::Sat,
-            mint_settings: self.mint_settings,
-            melt_settings: self.melt_settings,
             invoice_description: true,
         }
     }

@@ -7,7 +7,7 @@ use cdk::{
     cdk_database::{self, MintDatabase},
     cdk_lightning::MintLightning,
     mint::{FeeReserve, Mint},
-    nuts::{CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings},
+    nuts::{CurrencyUnit, MintInfo},
     types::{LnKey, QuoteTTL},
 };
 use cdk_cln::Cln as CdkCln;
@@ -43,6 +43,10 @@ pub fn get_mint_port() -> u16 {
 
 pub fn get_mint_url() -> String {
     format!("http://{}:{}", get_mint_addr(), get_mint_port())
+}
+
+pub fn get_mint_ws_url() -> String {
+    format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port())
 }
 
 pub fn get_temp_dir() -> PathBuf {
@@ -131,13 +135,7 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
         percent_fee_reserve: 1.0,
     };
 
-    Ok(CdkCln::new(
-        rpc_path,
-        fee_reserve,
-        MintMethodSettings::default(),
-        MeltMethodSettings::default(),
-    )
-    .await?)
+    Ok(CdkCln::new(rpc_path, fee_reserve).await?)
 }
 
 pub async fn create_mint<D>(
@@ -176,6 +174,7 @@ where
         Arc::new(database),
         ln_backends,
         supported_units,
+        HashMap::new(),
     )
     .await?;
 

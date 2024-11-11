@@ -35,12 +35,27 @@ pub enum LnBackend {
     Lnd,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
     pub invoice_description: Option<String>,
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
+    pub min_mint: Amount,
+    pub max_mint: Amount,
+    pub min_melt: Amount,
+    pub max_melt: Amount,
+}
+
+impl Default for Ln {
+    fn default() -> Self {
+        Ln {
+            ln_backend: LnBackend::default(),
+            invoice_description: None,
+            min_mint: 1.into(),
+            max_mint: 500_000.into(),
+            min_melt: 1.into(),
+            max_melt: 500_000.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -54,11 +69,16 @@ pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
     pub lnbits_api: String,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
+    pub bolt12: bool,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -66,23 +86,36 @@ pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
     pub macaroon_file: PathBuf,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Phoenixd {
     pub api_password: String,
     pub api_url: String,
+    pub bolt12: bool,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
+    pub fee_percent: f32,
+    pub reserve_fee_min: Amount,
+    pub min_delay_time: u64,
+    pub max_delay_time: u64,
 }
 
 impl Default for FakeWallet {
     fn default() -> Self {
         Self {
             supported_units: vec![CurrencyUnit::Sat],
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+            min_delay_time: 1,
+            max_delay_time: 3,
         }
     }
 }

@@ -16,7 +16,12 @@ impl Wallet {
         let ys = proofs.ys()?;
         self.localstore.reserve_proofs(ys).await?;
 
-        Ok(Token::new(self.mint_url.clone(), proofs, memo, self.unit))
+        Ok(Token::new(
+            self.mint_url.clone(),
+            proofs,
+            memo,
+            self.unit.clone(),
+        ))
     }
 
     /// Send
@@ -43,19 +48,14 @@ impl Wallet {
             }
         }
 
-        let mint_url = &self.mint_url;
-        let unit = &self.unit;
         let available_proofs = self
-            .localstore
-            .get_proofs(
-                Some(mint_url.clone()),
-                Some(*unit),
+            .get_proofs_with(
                 Some(vec![State::Unspent]),
                 conditions.clone().map(|c| vec![c]),
             )
             .await?;
 
-        let (available_proofs, proofs_sum) = available_proofs.into_iter().map(|p| p.proof).fold(
+        let (available_proofs, proofs_sum) = available_proofs.into_iter().fold(
             (Vec::new(), Amount::ZERO),
             |(mut acc1, mut acc2), p| {
                 acc2 += p.amount;
@@ -66,20 +66,9 @@ impl Wallet {
         let available_proofs = if proofs_sum < amount {
             match &conditions {
                 Some(conditions) => {
-                    let available_proofs = self
-                        .localstore
-                        .get_proofs(
-                            Some(mint_url.clone()),
-                            Some(*unit),
-                            Some(vec![State::Unspent]),
-                            None,
-                        )
-                        .await?;
+                    let unspent_proofs = self.get_unspent_proofs().await?;
 
-                    let available_proofs = available_proofs.into_iter().map(|p| p.proof).collect();
-
-                    let proofs_to_swap =
-                        self.select_proofs_to_swap(amount, available_proofs).await?;
+                    let proofs_to_swap = self.select_proofs_to_swap(amount, unspent_proofs).await?;
 
                     let proofs_with_conditions = self
                         .swap(
@@ -90,12 +79,10 @@ impl Wallet {
                             include_fees,
                         )
                         .await?;
-                    proofs_with_conditions.ok_or(Error::InsufficientFunds)?
+                    proofs_with_conditions.ok_or(Error::InsufficientFunds)
                 }
-                None => {
-                    return Err(Error::InsufficientFunds);
-                }
-            }
+                None => Err(Error::InsufficientFunds),
+            }?
         } else {
             available_proofs
         };

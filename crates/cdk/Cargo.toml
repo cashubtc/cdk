@@ -13,6 +13,7 @@ license = "MIT"
 [features]
 default = ["mint", "wallet"]
 mint = ["dep:futures"]
+# We do not commit to a MSRV with swagger enabled
 swagger = ["mint", "dep:utoipa"]
 wallet = ["dep:reqwest"]
 bench = []
@@ -35,10 +36,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 ], optional = true }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
-serde_with = "3.1"
+serde_with = "3"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 thiserror = "1"
-futures = { version = "0.3.28", default-features = false, optional = true }
+futures = { version = "0.3.28", default-features = false, optional = true, features = ["alloc"] }
 url = "2.3"
 utoipa = { version = "4", optional = true }
 uuid = { version = "1", features = ["v4"] }

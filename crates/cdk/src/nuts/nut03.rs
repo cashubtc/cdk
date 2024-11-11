@@ -32,11 +32,11 @@ pub struct PreSwap {
     pub fee: Amount,
 }
 
-/// Split Request [NUT-06]
+/// Swap Request [NUT-03]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SwapRequest {
-    /// Proofs that are to be spent in `Split`
+    /// Proofs that are to be spent in a `Swap`
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<Proof>))]
     pub inputs: Proofs,
     /// Blinded Messages for Mint to sign

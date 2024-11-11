@@ -55,7 +55,7 @@ impl MultiMintWallet {
             wallets: Arc::new(Mutex::new(
                 wallets
                     .into_iter()
-                    .map(|w| (WalletKey::new(w.mint_url.clone(), w.unit), w))
+                    .map(|w| (WalletKey::new(w.mint_url.clone(), w.unit.clone()), w))
                     .collect(),
             )),
         }
@@ -64,7 +64,7 @@ impl MultiMintWallet {
     /// Add wallet to MultiMintWallet
     #[instrument(skip(self, wallet))]
     pub async fn add_wallet(&self, wallet: Wallet) {
-        let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit);
+        let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit.clone());
 
         let mut wallets = self.wallets.lock().await;
 
@@ -125,8 +125,8 @@ impl MultiMintWallet {
         let mut mint_proofs = BTreeMap::new();
 
         for (WalletKey { mint_url, unit: u }, wallet) in self.wallets.lock().await.iter() {
-            let wallet_proofs = wallet.get_proofs().await?;
-            mint_proofs.insert(mint_url.clone(), (wallet_proofs, *u));
+            let wallet_proofs = wallet.get_unspent_proofs().await?;
+            mint_proofs.insert(mint_url.clone(), (wallet_proofs, u.clone()));
         }
         Ok(mint_proofs)
     }
@@ -198,7 +198,7 @@ impl MultiMintWallet {
                     let amount = wallet.check_all_mint_quotes().await?;
 
                     amount_minted
-                        .entry(wallet.unit)
+                        .entry(wallet.unit.clone())
                         .and_modify(|b| *b += amount)
                         .or_insert(amount);
                 }
@@ -246,7 +246,7 @@ impl MultiMintWallet {
         let mint_url = token_data.mint_url()?;
 
         // Check that all mints in tokes have wallets
-        let wallet_key = WalletKey::new(mint_url.clone(), unit);
+        let wallet_key = WalletKey::new(mint_url.clone(), unit.clone());
         if !self.has(&wallet_key).await {
             return Err(Error::UnknownWallet(wallet_key.clone()));
         }

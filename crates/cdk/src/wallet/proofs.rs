@@ -3,9 +3,10 @@ use std::collections::HashSet;
 use tracing::instrument;
 
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::CheckStateRequest;
 use crate::{
     amount::SplitTarget,
-    nuts::{Proof, ProofState, Proofs, PublicKey, State},
+    nuts::{Proof, ProofState, Proofs, PublicKey, SpendingConditions, State},
     types::ProofInfo,
     Amount, Error, Wallet,
 };
@@ -13,48 +14,36 @@ use crate::{
 impl Wallet {
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
-    pub async fn get_proofs(&self) -> Result<Proofs, Error> {
-        Ok(self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit),
-                Some(vec![State::Unspent]),
-                None,
-            )
-            .await?
-            .into_iter()
-            .map(|p| p.proof)
-            .collect())
+    pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::Unspent]), None).await
     }
 
     /// Get pending [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_pending_proofs(&self) -> Result<Proofs, Error> {
-        Ok(self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit),
-                Some(vec![State::Pending]),
-                None,
-            )
-            .await?
-            .into_iter()
-            .map(|p| p.proof)
-            .collect())
+        self.get_proofs_with(Some(vec![State::Pending]), None).await
     }
 
     /// Get reserved [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_reserved_proofs(&self) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::Reserved]), None)
+            .await
+    }
+
+    /// Get this wallet's [Proofs] that match the args
+    pub async fn get_proofs_with(
+        &self,
+        state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Proofs, Error> {
         Ok(self
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit),
-                Some(vec![State::Reserved]),
-                None,
+                Some(self.unit.clone()),
+                state,
+                spending_conditions,
             )
             .await?
             .into_iter()
@@ -77,7 +66,7 @@ impl Wallet {
 
         let spendable = self
             .client
-            .post_check_state(self.mint_url.clone(), proof_ys)
+            .post_check_state(self.mint_url.clone(), CheckStateRequest { ys: proof_ys })
             .await?
             .states;
 
@@ -98,7 +87,10 @@ impl Wallet {
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
-            .post_check_state(self.mint_url.clone(), proofs.ys()?)
+            .post_check_state(
+                self.mint_url.clone(),
+                CheckStateRequest { ys: proofs.ys()? },
+            )
             .await?;
         let spent_ys: Vec<_> = spendable
             .states
@@ -123,7 +115,7 @@ impl Wallet {
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
-                Some(self.unit),
+                Some(self.unit.clone()),
                 Some(vec![State::Pending, State::Reserved]),
                 None,
             )

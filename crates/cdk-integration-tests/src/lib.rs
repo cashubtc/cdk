@@ -11,11 +11,11 @@ use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MeltMethodSettings, MintInfo, MintMethodSettings, MintQuoteState,
+    CurrencyUnit, Id, KeySet, MintBolt11Request, MintInfo, MintQuoteBolt11Request, MintQuoteState,
     Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
 use cdk::types::{LnKey, QuoteTTL};
-use cdk::wallet::client::HttpClient;
+use cdk::wallet::client::{HttpClient, HttpClientMethods};
 use cdk::{Mint, Wallet};
 use cdk_fake_wallet::FakeWallet;
 use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
@@ -40,8 +40,6 @@ pub fn create_backends_fake_wallet(
 
     let wallet = Arc::new(FakeWallet::new(
         fee_reserve.clone(),
-        MintMethodSettings::default(),
-        MeltMethodSettings::default(),
         HashMap::default(),
         HashSet::default(),
         0,
@@ -82,6 +80,7 @@ pub async fn start_mint(
         Arc::new(MintMemoryDatabase::default()),
         ln_backends.clone(),
         supported_units,
+        HashMap::new(),
     )
     .await?;
     let cache_time_to_live = 3600;
@@ -158,8 +157,14 @@ pub async fn mint_proofs(
 
     let wallet_client = HttpClient::new();
 
+    let request = MintQuoteBolt11Request {
+        amount,
+        unit: CurrencyUnit::Sat,
+        description,
+    };
+
     let mint_quote = wallet_client
-        .post_mint_quote(mint_url.parse()?, 1.into(), CurrencyUnit::Sat, description)
+        .post_mint_quote(mint_url.parse()?, request)
         .await?;
 
     println!("Please pay: {}", mint_quote.request);
@@ -179,13 +184,12 @@ pub async fn mint_proofs(
 
     let premint_secrets = PreMintSecrets::random(keyset_id, amount, &SplitTarget::default())?;
 
-    let mint_response = wallet_client
-        .post_mint(
-            mint_url.parse()?,
-            &mint_quote.quote,
-            premint_secrets.clone(),
-        )
-        .await?;
+    let request = MintBolt11Request {
+        quote: mint_quote.quote,
+        outputs: premint_secrets.blinded_messages(),
+    };
+
+    let mint_response = wallet_client.post_mint(mint_url.parse()?, request).await?;
 
     let pre_swap_proofs = construct_proofs(
         mint_response.signatures,

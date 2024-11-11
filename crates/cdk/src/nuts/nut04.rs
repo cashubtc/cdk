@@ -5,8 +5,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
@@ -80,96 +79,25 @@ impl FromStr for QuoteState {
 }
 
 /// Mint quote response [NUT-04]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteBolt11Response {
     /// Quote Id
     pub quote: String,
     /// Payment request to fulfil
     pub request: String,
-    // TODO: To be deprecated
-    /// Whether the the request haas be paid
-    /// Deprecated
-    pub paid: Option<bool>,
     /// Quote State
     pub state: MintQuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
 }
 
-// A custom deserializer is needed until all mints
-// update some will return without the required state.
-impl<'de> Deserialize<'de> for MintQuoteBolt11Response {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-
-        let quote: String = serde_json::from_value(
-            value
-                .get("quote")
-                .ok_or(serde::de::Error::missing_field("quote"))?
-                .clone(),
-        )
-        .map_err(|_| serde::de::Error::custom("Invalid quote id string"))?;
-
-        let request: String = serde_json::from_value(
-            value
-                .get("request")
-                .ok_or(serde::de::Error::missing_field("request"))?
-                .clone(),
-        )
-        .map_err(|_| serde::de::Error::custom("Invalid request string"))?;
-
-        let paid: Option<bool> = value.get("paid").and_then(|p| p.as_bool());
-
-        let state: Option<String> = value
-            .get("state")
-            .and_then(|s| serde_json::from_value(s.clone()).ok());
-
-        let (state, paid) = match (state, paid) {
-            (None, None) => return Err(serde::de::Error::custom("State or paid must be defined")),
-            (Some(state), _) => {
-                let state: QuoteState = QuoteState::from_str(&state)
-                    .map_err(|_| serde::de::Error::custom("Unknown state"))?;
-                let paid = state == QuoteState::Paid;
-
-                (state, paid)
-            }
-            (None, Some(paid)) => {
-                let state = if paid {
-                    QuoteState::Paid
-                } else {
-                    QuoteState::Unpaid
-                };
-                (state, paid)
-            }
-        };
-
-        let expiry = value
-            .get("expiry")
-            .ok_or(serde::de::Error::missing_field("expiry"))?
-            .as_u64();
-
-        Ok(Self {
-            quote,
-            request,
-            paid: Some(paid),
-            state,
-            expiry,
-        })
-    }
-}
-
 #[cfg(feature = "mint")]
 impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
     fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response {
-        let paid = mint_quote.state == QuoteState::Paid;
         MintQuoteBolt11Response {
             quote: mint_quote.id,
             request: mint_quote.request,
-            paid: Some(paid),
             state: mint_quote.state,
             expiry: Some(mint_quote.expiry),
         }
@@ -209,7 +137,7 @@ pub struct MintBolt11Response {
 }
 
 /// Mint Method Settings
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
@@ -251,7 +179,7 @@ impl Settings {
     ) -> Option<MintMethodSettings> {
         for method_settings in self.methods.iter() {
             if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
-                return Some(*method_settings);
+                return Some(method_settings.clone());
             }
         }
 

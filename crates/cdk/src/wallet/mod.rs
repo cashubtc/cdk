@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
+use client::HttpClientMethods;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -55,7 +56,7 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     xpriv: Xpriv,
-    client: HttpClient,
+    client: Arc<dyn HttpClientMethods + Send + Sync>,
 }
 
 impl Wallet {
@@ -88,7 +89,7 @@ impl Wallet {
         Ok(Self {
             mint_url: MintUrl::from_str(mint_url)?,
             unit,
-            client: HttpClient::new(),
+            client: Arc::new(HttpClient::new()),
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
@@ -96,8 +97,8 @@ impl Wallet {
     }
 
     /// Change HTTP client
-    pub fn set_client(&mut self, client: HttpClient) {
-        self.client = client;
+    pub fn set_client<C: HttpClientMethods + 'static + Send + Sync>(&mut self, client: C) {
+        self.client = Arc::new(client);
     }
 
     /// Fee required for proof set
@@ -181,7 +182,7 @@ impl Wallet {
     /// Get amounts needed to refill proof state
     #[instrument(skip(self))]
     pub async fn amounts_needed_for_state_target(&self) -> Result<Vec<Amount>, Error> {
-        let unspent_proofs = self.get_proofs().await?;
+        let unspent_proofs = self.get_unspent_proofs().await?;
 
         let amounts_count: HashMap<usize, usize> =
             unspent_proofs
@@ -329,7 +330,12 @@ impl Wallet {
                 let unspent_proofs = unspent_proofs
                     .into_iter()
                     .map(|proof| {
-                        ProofInfo::new(proof, self.mint_url.clone(), State::Unspent, keyset.unit)
+                        ProofInfo::new(
+                            proof,
+                            self.mint_url.clone(),
+                            State::Unspent,
+                            keyset.unit.clone(),
+                        )
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
 

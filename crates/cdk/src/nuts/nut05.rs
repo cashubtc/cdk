@@ -12,7 +12,7 @@ use thiserror::Error;
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
 #[cfg(feature = "mint")]
-use crate::mint;
+use crate::mint::{self, MeltQuote};
 use crate::nuts::MeltQuoteState;
 use crate::{Amount, Bolt11Invoice};
 
@@ -109,6 +109,22 @@ pub struct MeltQuoteBolt11Response {
     /// Change
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Vec<BlindSignature>>,
+}
+
+#[cfg(feature = "mint")]
+impl From<&MeltQuote> for MeltQuoteBolt11Response {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response {
+        MeltQuoteBolt11Response {
+            quote: melt_quote.id.clone(),
+            payment_preimage: None,
+            change: None,
+            state: melt_quote.state,
+            paid: Some(melt_quote.state == MeltQuoteState::Paid),
+            expiry: melt_quote.expiry,
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
+        }
+    }
 }
 
 // A custom deserializer is needed until all mints
@@ -235,7 +251,7 @@ impl MeltBolt11Request {
 }
 
 /// Melt Method Settings
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
@@ -264,7 +280,7 @@ impl Settings {
     ) -> Option<MeltMethodSettings> {
         for method_settings in self.methods.iter() {
             if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
-                return Some(*method_settings);
+                return Some(method_settings.clone());
             }
         }
 
