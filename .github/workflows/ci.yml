@@ -21,7 +21,7 @@ jobs:
           fail-mode: true
 
   pre-commit-checks:
-    name: "Pre-commit checks: cargo fmt, typos"
+    name: "Cargo fmt, typos"
     runs-on: ubuntu-latest
     steps:
       - name: checkout
@@ -32,8 +32,15 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v6
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Pre-commit checks
-        run: nix develop -i -L .#stable --command pre-commit run --all-files
+      - name: Cargo fmt
+        run: |
+          nix develop -i -L .#nightly --command bash -c '
+            # Force use of Nix-provided rustfmt
+            export RUSTFMT=$(command -v rustfmt)
+            cargo fmt --check
+          '
+      - name: typos
+        run: nix develop -i -L .#nightly --command typos    
 
   clippy:
     name: "Stable build, clippy and test"

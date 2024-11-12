@@ -6,3 +6,4 @@
 *.redb
 *.sqlite*
 config.toml
+.pre-commit-config.yaml
