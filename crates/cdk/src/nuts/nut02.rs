@@ -514,7 +514,7 @@ mod test {
     }
 
     #[test]
-    fn test_u64_to_id_and_back_conversion() {
+    fn test_to_u64_and_back() {
         let id = Id::from_str("009a1f293253e41e").unwrap();
 
         let id_long = u64::try_from(id).unwrap();
