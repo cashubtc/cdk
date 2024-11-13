@@ -170,7 +170,7 @@ impl PreMintSecrets {
 }
 
 fn derive_path_from_keyset_id(id: Id) -> Result<DerivationPath, Error> {
-    let index = (u64::try_from(id)? % (2u64.pow(31) - 1)) as u32;
+    let index = u32::try_from(id)? % (2u32.pow(31) - 1);
     let keyset_child_number = ChildNumber::from_hardened_idx(index)?;
     Ok(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(129372)?,

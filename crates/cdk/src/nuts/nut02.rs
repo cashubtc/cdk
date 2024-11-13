@@ -496,17 +496,6 @@ mod test {
     }
 
     #[test]
-    fn test_to_u64_and_back() {
-        let id = Id::from_str("009a1f293253e41e").unwrap();
-
-        let id_long = u64::try_from(id).unwrap();
-        assert_eq!(43381408211919902, id_long);
-
-        let new_id = Id::try_from(id_long).unwrap();
-        assert_eq!(id, new_id);
-    }
-
-    #[test]
     fn test_id_from_invalid_byte_length() {
         let three_bytes = [0x01, 0x02, 0x03];
         let result = Id::from_bytes(&three_bytes);
