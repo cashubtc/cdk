@@ -126,24 +126,6 @@ impl TryFrom<Id> for u32 {
     }
 }
 
-impl TryFrom<u64> for Id {
-    type Error = Error;
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        let bytes = value.to_be_bytes();
-        Self::from_bytes(&bytes)
-    }
-}
-
-impl TryFrom<Id> for u64 {
-    type Error = Error;
-
-    fn try_from(value: Id) -> Result<Self, Self::Error> {
-        let bytes = value.to_bytes();
-        let byte_array: [u8; 8] = bytes.try_into().map_err(|_| Error::Length)?;
-        Ok(u64::from_be_bytes(byte_array))
-    }
-}
-
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&format!("{}{}", self.version, hex::encode(self.id)))
