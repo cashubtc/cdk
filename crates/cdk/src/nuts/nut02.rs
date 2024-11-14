@@ -112,17 +112,24 @@ impl Id {
             id: bytes[1..].try_into()?,
         })
     }
+
+    /// [`Id`] as bytes
+    pub fn as_bytes(&self) -> [u8; Self::BYTELEN + 1] {
+        let mut bytes = [0u8; Self::BYTELEN + 1];
+        bytes[0] = self.version.to_byte();
+        bytes[1..].copy_from_slice(&self.id);
+        bytes
+    }
 }
 
-impl TryFrom<Id> for u32 {
-    type Error = Error;
-    fn try_from(value: Id) -> Result<Self, Self::Error> {
-        let hex_bytes: [u8; 8] = value.to_bytes().try_into().map_err(|_| Error::Length)?;
+// Used to generate a compressed unique identifier as part of the NUT13 spec
+impl From<Id> for u32 {
+    fn from(value: Id) -> Self {
+        let hex_bytes: [u8; 8] = value.as_bytes();
 
         let int = u64::from_be_bytes(hex_bytes);
 
-        let result = (int % (2_u64.pow(31) - 1)) as u32;
-        Ok(result)
+        (int % (2_u64.pow(31) - 1)) as u32
     }
 }
 
@@ -491,7 +498,7 @@ mod test {
     fn test_to_int() {
         let id = Id::from_str("009a1f293253e41e").unwrap();
 
-        let id_int = u32::try_from(id).unwrap();
+        let id_int = u32::from(id);
         assert_eq!(864559728, id_int)
     }
 
