@@ -123,6 +123,7 @@ impl Id {
 }
 
 // Used to generate a compressed unique identifier as part of the NUT13 spec
+// This is a one-way function
 impl From<Id> for u32 {
     fn from(value: Id) -> Self {
         let hex_bytes: [u8; 8] = value.as_bytes();
