@@ -3,12 +3,11 @@ use std::collections::{HashMap, HashSet};
 use bitcoin::bip32::DerivationPath;
 use tracing::instrument;
 
-use crate::Error;
-
 use super::{
     create_new_keyset, derivation_path_from_unit, CurrencyUnit, Id, KeySet, KeySetInfo,
     KeysResponse, KeysetResponse, Mint, MintKeySet, MintKeySetInfo,
 };
+use crate::Error;
 
 impl Mint {
     /// Retrieve the public keys of the active keyset for distribution to wallet

@@ -1,20 +1,19 @@
 //! Mint Builder
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::anyhow;
 
-use crate::{
-    amount::Amount,
-    cdk_database::{self, MintDatabase},
-    cdk_lightning::{self, MintLightning},
-    mint::Mint,
-    nuts::{
-        ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-        MppMethodSettings, PaymentMethod,
-    },
-    types::{LnKey, QuoteTTL},
+use crate::amount::Amount;
+use crate::cdk_database::{self, MintDatabase};
+use crate::cdk_lightning::{self, MintLightning};
+use crate::mint::Mint;
+use crate::nuts::{
+    ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
+    MppMethodSettings, PaymentMethod,
 };
+use crate::types::{LnKey, QuoteTTL};
 
 /// Cashu Mint
 #[derive(Default)]

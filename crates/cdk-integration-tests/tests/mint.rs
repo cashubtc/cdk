@@ -1,5 +1,9 @@
 //! Mint tests
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
@@ -15,9 +19,6 @@ use cdk::nuts::{
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::OnceCell;
 use tokio::time::sleep;
 

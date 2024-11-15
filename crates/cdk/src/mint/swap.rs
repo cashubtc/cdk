@@ -2,11 +2,10 @@ use std::collections::HashSet;
 
 use tracing::instrument;
 
-use crate::nuts::nut00::ProofsMethods;
-use crate::Error;
-
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
 use super::{Id, Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
+use crate::nuts::nut00::ProofsMethods;
+use crate::Error;
 
 impl Mint {
     /// Process Swap

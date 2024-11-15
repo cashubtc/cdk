@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use cdk::{
-    mint_url::MintUrl,
-    nuts::{CurrencyUnit, Proof},
-    wallet::multi_mint_wallet::MultiMintWallet,
-};
+use cdk::mint_url::MintUrl;
+use cdk::nuts::{CurrencyUnit, Proof};
+use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 
 pub async fn proofs(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
     list_proofs(multi_mint_wallet).await?;

@@ -2,9 +2,8 @@ use std::collections::HashSet;
 
 use tracing::instrument;
 
-use crate::Error;
-
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, PublicKey, State};
+use crate::Error;
 
 impl Mint {
     /// Check state

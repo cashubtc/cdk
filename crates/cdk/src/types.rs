@@ -176,13 +176,10 @@ impl QuoteTTL {
 mod tests {
     use std::str::FromStr;
 
-    use crate::{
-        nuts::{Id, Proof, PublicKey},
-        secret::Secret,
-        Amount,
-    };
-
     use super::Melted;
+    use crate::nuts::{Id, Proof, PublicKey};
+    use crate::secret::Secret;
+    use crate::Amount;
 
     #[test]
     fn test_melted() {

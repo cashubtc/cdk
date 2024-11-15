@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use tracing::instrument;
 
 use crate::nuts::nut00::ProofsMethods;
-use crate::{nuts::CurrencyUnit, Amount, Error, Wallet};
+use crate::nuts::CurrencyUnit;
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Total unspent balance of wallet

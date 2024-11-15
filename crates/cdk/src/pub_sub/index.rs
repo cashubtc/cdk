@@ -1,9 +1,8 @@
+use std::fmt::Debug;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::SubId;
-use std::{
-    fmt::Debug,
-    ops::Deref,
-    sync::atomic::{AtomicUsize, Ordering},
-};
 
 /// Indexable trait
 pub trait Indexable {

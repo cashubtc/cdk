@@ -1,8 +1,7 @@
 use tracing::instrument;
 
-use crate::mint_url::MintUrl;
-
 use super::{Mint, MintInfo};
+use crate::mint_url::MintUrl;
 
 impl Mint {
     /// Set Mint Url

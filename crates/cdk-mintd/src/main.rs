@@ -14,10 +14,11 @@ use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{MeltQuote, Mint};
-use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::mint::{MeltQuote, Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::{ContactInfo, CurrencyUnit, MeltQuoteState, MintVersion, PaymentMethod};
 use cdk::types::LnKey;
+use cdk_mintd::cli::CLIArgs;
+use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -27,9 +28,6 @@ use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
-
-use cdk_mintd::cli::CLIArgs;
-use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;

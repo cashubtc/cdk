@@ -8,22 +8,17 @@
 //! generic type that must be converted to a vector of indexes.
 //!
 //! Events are also generic that should implement the `Indexable` trait.
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
+use std::fmt::Debug;
+use std::ops::{Deref, DerefMut};
+use std::str::FromStr;
+use std::sync::atomic::{self, AtomicUsize};
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
-use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, HashSet},
-    fmt::Debug,
-    ops::{Deref, DerefMut},
-    str::FromStr,
-    sync::{
-        atomic::{self, AtomicUsize},
-        Arc,
-    },
-};
-use tokio::{
-    sync::{mpsc, RwLock},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinHandle;
 
 mod index;
 
@@ -345,8 +340,9 @@ impl Deref for SubId {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use tokio::sync::mpsc;
+
+    use super::*;
 
     #[test]
     fn test_active_subscription_drop() {

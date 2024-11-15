@@ -1,5 +1,6 @@
-use super::{WsContext, WsError, JSON_RPC_VERSION};
 use serde::Serialize;
+
+use super::{WsContext, WsError, JSON_RPC_VERSION};
 
 impl From<WsError> for WsErrorResponse {
     fn from(val: WsError) -> Self {

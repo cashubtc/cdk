@@ -1,18 +1,15 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use bip39::Mnemonic;
-use cdk::{
-    amount::SplitTarget,
-    cdk_database::WalletMemoryDatabase,
-    nuts::{
-        CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, PreMintSecrets, State,
-    },
-    wallet::{
-        client::{HttpClient, HttpClientMethods},
-        Wallet,
-    },
+use cdk::amount::SplitTarget;
+use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::nuts::{
+    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, PreMintSecrets, State,
 };
+use cdk::wallet::client::{HttpClient, HttpClientMethods};
+use cdk::wallet::Wallet;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;
 use tokio::time::sleep;

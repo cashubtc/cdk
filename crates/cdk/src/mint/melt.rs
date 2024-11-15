@@ -5,21 +5,19 @@ use anyhow::bail;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use crate::cdk_lightning;
-use crate::cdk_lightning::MintLightning;
-use crate::cdk_lightning::PayInvoiceResponse;
-use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::nut11::enforce_sig_flag;
-use crate::nuts::nut11::EnforceSigFlag;
-use crate::{
-    amount::to_unit, mint::SigFlag, nuts::Id, nuts::MeltQuoteState, types::LnKey, util::unix_time,
-    Amount, Error,
-};
-
 use super::{
     CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     Mint, PaymentMethod, PublicKey, State,
 };
+use crate::amount::to_unit;
+use crate::cdk_lightning::{MintLightning, PayInvoiceResponse};
+use crate::mint::SigFlag;
+use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
+use crate::nuts::{Id, MeltQuoteState};
+use crate::types::LnKey;
+use crate::util::unix_time;
+use crate::{cdk_lightning, Amount, Error};
 
 impl Mint {
     fn check_melt_request_acceptable(

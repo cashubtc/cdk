@@ -2,19 +2,17 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/18.md>
 
-use std::{fmt, str::FromStr};
+use std::fmt;
+use std::str::FromStr;
 
-use bitcoin::base64::{
-    alphabet,
-    engine::{general_purpose, GeneralPurpose},
-    Engine,
-};
+use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
+use bitcoin::base64::{alphabet, Engine};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{mint_url::MintUrl, Amount};
-
 use super::{CurrencyUnit, Proofs};
+use crate::mint_url::MintUrl;
+use crate::Amount;
 
 const PAYMENT_REQUEST_PREFIX: &str = "creqA";
 

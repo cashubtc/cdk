@@ -1,13 +1,11 @@
 use anyhow::Result;
-use cdk::{
-    nuts::{
-        nut18::TransportType, CurrencyUnit, PaymentRequest, PaymentRequestPayload, Token, Transport,
-    },
-    wallet::MultiMintWallet,
-};
+use cdk::nuts::nut18::TransportType;
+use cdk::nuts::{CurrencyUnit, PaymentRequest, PaymentRequestPayload, Token, Transport};
+use cdk::wallet::MultiMintWallet;
 use clap::Args;
+use nostr_sdk::nips::nip19::Nip19Profile;
 use nostr_sdk::prelude::*;
-use nostr_sdk::{nips::nip19::Nip19Profile, Client as NostrClient, Filter, Keys, ToBech32};
+use nostr_sdk::{Client as NostrClient, Filter, Keys, ToBech32};
 
 #[derive(Args)]
 pub struct CreateRequestSubCommand {
