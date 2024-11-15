@@ -170,7 +170,8 @@ impl PreMintSecrets {
 }
 
 fn derive_path_from_keyset_id(id: Id) -> Result<DerivationPath, Error> {
-    let index = (u64::try_from(id)? % (2u64.pow(31) - 1)) as u32;
+    let index = u32::from(id);
+
     let keyset_child_number = ChildNumber::from_hardened_idx(index)?;
     Ok(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(129372)?,
@@ -184,6 +185,7 @@ mod tests {
     use std::str::FromStr;
 
     use bip39::Mnemonic;
+    use bitcoin::bip32::DerivationPath;
     use bitcoin::Network;
 
     use super::*;
@@ -230,6 +232,25 @@ mod tests {
         for (i, test_r) in test_rs.iter().enumerate() {
             let r = SecretKey::from_xpriv(xpriv, keyset_id, i.try_into().unwrap()).unwrap();
             assert_eq!(r, SecretKey::from_hex(test_r).unwrap())
+        }
+    }
+
+    #[test]
+    fn test_derive_path_from_keyset_id() {
+        let test_cases = [
+            ("009a1f293253e41e", "m/129372'/0'/864559728'"),
+            ("0000000000000000", "m/129372'/0'/0'"),
+            ("00ffffffffffffff", "m/129372'/0'/33554431'"),
+        ];
+
+        for (id_hex, expected_path) in test_cases {
+            let id = Id::from_str(id_hex).unwrap();
+            let path = derive_path_from_keyset_id(id).unwrap();
+            assert_eq!(
+                DerivationPath::from_str(expected_path).unwrap(),
+                path,
+                "Path derivation failed for ID {id_hex}"
+            );
         }
     }
 }
