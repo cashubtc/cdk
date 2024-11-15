@@ -1,23 +1,21 @@
 //! Specific Subscription for the cdk crate
 
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 mod on_subscription;
 
-use crate::cdk_database::{self, MintDatabase};
-use crate::nuts::{BlindSignature, CurrencyUnit, PaymentMethod};
-use crate::{
-    nuts::{
-        MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, MintQuoteState,
-        ProofState,
-    },
-    pub_sub::{self, Index, Indexable, SubscriptionGlobalId},
-};
-
-pub use crate::pub_sub::SubId;
 pub use on_subscription::OnSubscription;
+
+use crate::cdk_database::{self, MintDatabase};
+use crate::nuts::{
+    BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
+    MintQuoteState, PaymentMethod, ProofState,
+};
+pub use crate::pub_sub::SubId;
+use crate::pub_sub::{self, Index, Indexable, SubscriptionGlobalId};
 
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,11 +212,12 @@ impl PubSubManager {
 
 #[cfg(test)]
 mod test {
-    use crate::nuts::{PublicKey, State};
+    use std::time::Duration;
+
+    use tokio::time::sleep;
 
     use super::*;
-    use std::time::Duration;
-    use tokio::time::sleep;
+    use crate::nuts::{PublicKey, State};
 
     #[tokio::test]
     async fn active_and_drop() {

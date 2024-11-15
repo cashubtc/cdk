@@ -1,11 +1,8 @@
-use super::{
-    handler::{WsHandle, WsNotification},
-    WsContext, WsError, JSON_RPC_VERSION,
-};
-use cdk::{
-    nuts::nut17::{NotificationPayload, Params},
-    pub_sub::SubId,
-};
+use cdk::nuts::nut17::{NotificationPayload, Params};
+use cdk::pub_sub::SubId;
+
+use super::handler::{WsHandle, WsNotification};
+use super::{WsContext, WsError, JSON_RPC_VERSION};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Method(Params);

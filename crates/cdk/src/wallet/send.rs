@@ -1,13 +1,10 @@
 use tracing::instrument;
 
-use crate::nuts::nut00::ProofsMethods;
-use crate::{
-    amount::SplitTarget,
-    nuts::{Proofs, SpendingConditions, State, Token},
-    Amount, Error, Wallet,
-};
-
 use super::SendKind;
+use crate::amount::SplitTarget;
+use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::{Proofs, SpendingConditions, State, Token};
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Send specific proofs

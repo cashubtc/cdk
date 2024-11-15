@@ -2,14 +2,13 @@ use std::collections::HashSet;
 
 use tracing::instrument;
 
+use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::CheckStateRequest;
-use crate::{
-    amount::SplitTarget,
-    nuts::{Proof, ProofState, Proofs, PublicKey, SpendingConditions, State},
-    types::ProofInfo,
-    Amount, Error, Wallet,
+use crate::nuts::{
+    CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
+use crate::types::ProofInfo;
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Get unspent proofs for mint

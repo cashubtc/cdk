@@ -1,10 +1,7 @@
 use tracing::instrument;
 
-use crate::nuts::Id;
-use crate::nuts::KeySetInfo;
-use crate::nuts::Keys;
-use crate::Error;
-use crate::Wallet;
+use crate::nuts::{Id, KeySetInfo, Keys};
+use crate::{Error, Wallet};
 
 impl Wallet {
     /// Get keys for mint keyset

@@ -1,20 +1,18 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use axum::{async_trait, Router};
+use cdk::cdk_lightning::MintLightning;
+use cdk::mint::FeeReserve;
+use cdk::mint_url::MintUrl;
+use cdk::nuts::CurrencyUnit;
 use rand::Rng;
-
-use cdk::{cdk_lightning::MintLightning, mint::FeeReserve, mint_url::MintUrl, nuts::CurrencyUnit};
 use tokio::sync::Mutex;
 use url::Url;
 
-use crate::{
-    config::{self, Settings},
-    expand_path,
-};
+use crate::config::{self, Settings};
+use crate::expand_path;
 
 #[async_trait]
 pub trait LnBackendSetup {

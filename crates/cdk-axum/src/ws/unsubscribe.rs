@@ -1,5 +1,7 @@
-use super::{handler::WsHandle, WsContext, WsError};
 use cdk::pub_sub::SubId;
+
+use super::handler::WsHandle;
+use super::{WsContext, WsError};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Method {

@@ -1,20 +1,19 @@
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
+use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use bitcoin::{hashes::sha256::Hash as Sha256Hash, XOnlyPublicKey};
+use bitcoin::XOnlyPublicKey;
 use tracing::instrument;
 
+use crate::amount::SplitTarget;
+use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, Token};
-use crate::{
-    amount::SplitTarget,
-    dhke::construct_proofs,
-    nuts::{Proofs, PublicKey, SecretKey, SigFlag, State},
-    types::ProofInfo,
-    util::hex,
-    Amount, Error, Wallet, SECP256K1,
-};
+use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State, Token};
+use crate::types::ProofInfo;
+use crate::util::hex;
+use crate::{Amount, Error, Wallet, SECP256K1};
 
 impl Wallet {
     /// Receive proofs

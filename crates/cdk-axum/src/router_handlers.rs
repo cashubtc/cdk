@@ -1,5 +1,6 @@
 use anyhow::Result;
-use axum::extract::{ws::WebSocketUpgrade, Json, Path, State};
+use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
@@ -13,7 +14,8 @@ use cdk::util::unix_time;
 use cdk::Error;
 use paste::paste;
 
-use crate::{ws::main_websocket, MintState};
+use crate::ws::main_websocket;
+use crate::MintState;
 
 macro_rules! post_cache_wrapper {
     ($handler:ident, $request_type:ty, $response_type:ty) => {

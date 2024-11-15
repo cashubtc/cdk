@@ -608,9 +608,8 @@ mod tests {
     use bitcoin::Network;
     use secp256k1::Secp256k1;
 
-    use crate::types::LnKey;
-
     use super::*;
+    use crate::types::LnKey;
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {

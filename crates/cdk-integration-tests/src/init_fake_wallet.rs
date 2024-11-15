@@ -1,17 +1,13 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::Result;
 use axum::Router;
-use cdk::{
-    cdk_database::{self, MintDatabase},
-    cdk_lightning::MintLightning,
-    mint::FeeReserve,
-    nuts::CurrencyUnit,
-    types::LnKey,
-};
+use cdk::cdk_database::{self, MintDatabase};
+use cdk::cdk_lightning::MintLightning;
+use cdk::mint::FeeReserve;
+use cdk::nuts::CurrencyUnit;
+use cdk::types::LnKey;
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
