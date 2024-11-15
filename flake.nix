@@ -39,6 +39,7 @@
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable."1.82.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
+          extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
         };
 
         # MSRV stable
@@ -54,7 +55,7 @@
 
         # Nighly for creating lock files
         nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-          extensions = [ "rustfmt" ];
+          extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
         });
 
         # Common inputs
@@ -67,7 +68,6 @@
           just
           protobuf
           nixpkgs-fmt
-          rust-analyzer
           typos
           lnd
           clightning
