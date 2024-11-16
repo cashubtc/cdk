@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,12 +11,13 @@ use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MintBolt11Request, MintInfo, MintQuoteBolt11Request, MintQuoteState,
     Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
 use cdk::types::{LnKey, QuoteTTL};
-use cdk::wallet::client::{HttpClient, HttpClientMethods};
+use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::{Mint, Wallet};
 use cdk_fake_wallet::FakeWallet;
 use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
@@ -155,7 +157,7 @@ pub async fn mint_proofs(
     println!("Minting for ecash");
     println!();
 
-    let wallet_client = HttpClient::new();
+    let wallet_client = HttpClient::new(MintUrl::from_str(mint_url)?);
 
     let request = MintQuoteBolt11Request {
         amount,
@@ -163,15 +165,13 @@ pub async fn mint_proofs(
         description,
     };
 
-    let mint_quote = wallet_client
-        .post_mint_quote(mint_url.parse()?, request)
-        .await?;
+    let mint_quote = wallet_client.post_mint_quote(request).await?;
 
     println!("Please pay: {}", mint_quote.request);
 
     loop {
         let status = wallet_client
-            .get_mint_quote_status(mint_url.parse()?, &mint_quote.quote)
+            .get_mint_quote_status(&mint_quote.quote)
             .await?;
 
         if status.state == MintQuoteState::Paid {
@@ -189,7 +189,7 @@ pub async fn mint_proofs(
         outputs: premint_secrets.blinded_messages(),
     };
 
-    let mint_response = wallet_client.post_mint(mint_url.parse()?, request).await?;
+    let mint_response = wallet_client.post_mint(request).await?;
 
     let pre_swap_proofs = construct_proofs(
         mint_response.signatures,
