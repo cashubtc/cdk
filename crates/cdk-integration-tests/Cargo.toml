@@ -57,6 +57,7 @@ getrandom = { version = "0.2", features = ["js"] }
 instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
+async-trait = "0.1"
 rand = "0.8.5"
 bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
