@@ -260,6 +260,7 @@ impl Mint {
 
             let amount_paid = quote.amount_paid + payment_amount;
 
+            // Since this is the first time we've seen this payment we add it to seen payment.
             payment_ids.push(payment_id);
 
             let quote = MintQuote {

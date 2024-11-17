@@ -49,6 +49,7 @@ pub struct Cln {
     bolt12_melt: bool,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
+    bolt12_wait_invoice_is_active: Arc<AtomicBool>,
 }
 
 impl Cln {
@@ -69,6 +70,7 @@ impl Cln {
             bolt12_melt,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
+            bolt12_wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -163,38 +165,9 @@ impl MintLightning for Cln {
                             let amount_msats = wait_any_response.amount_received_msat.expect("status is paid there should be an amount");
                             let amount_sats =  amount_msats.msat() / 1000;
 
-                            let request_lookup_id = match wait_any_response.bolt12 {
-                                // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
-                                // Since this is not returned in the wait any response,
-                                // we need to do a second query for it.
-                                Some(_) => {
-                                    match fetch_invoice_by_payment_hash(
-                                        &mut cln_client,
-                                        &payment_hash,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(invoice)) => {
-                                            if let Some(local_offer_id) = invoice.local_offer_id {
-                                                local_offer_id.to_string()
-                                            } else {
-                                                continue;
-                                            }
-                                        }
-                                        Ok(None) => continue,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Error fetching invoice by payment hash: {e}"
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                }
-                                None => payment_hash.clone(),
-                            };
 
                             let response = WaitInvoiceResponse {
-                                request_lookup_id,
+                                request_lookup_id: payment_hash.clone(),
                                 payment_amount: amount_sats.into(),
                                 unit: CurrencyUnit::Sat,
                                 payment_id: payment_hash

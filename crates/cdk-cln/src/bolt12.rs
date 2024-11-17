@@ -1,5 +1,8 @@
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk::amount::{amount_for_offer, to_unit, Amount};
@@ -12,26 +15,152 @@ use cdk::mint;
 use cdk::mint::types::PaymentRequest;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt12Request, MeltQuoteState};
 use cdk::util::{hex, unix_time};
-use cln_rpc::model::requests::{FetchinvoiceRequest, OfferRequest, PayRequest};
-use cln_rpc::model::responses::PayStatus;
+use cln_rpc::model::requests::{
+    FetchinvoiceRequest, OfferRequest, PayRequest, WaitanyinvoiceRequest,
+};
+use cln_rpc::model::responses::{PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus};
 use cln_rpc::model::Request;
 use cln_rpc::primitives::Amount as CLN_Amount;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use lightning::offers::invoice::Bolt12Invoice;
 use lightning::offers::offer::Offer;
 use uuid::Uuid;
 
 use super::{Cln, Error};
+use crate::fetch_invoice_by_payment_hash;
 
 #[async_trait]
 impl MintBolt12Lightning for Cln {
     type Err = cdk_lightning::Error;
 
+    /// Is wait invoice active
+    fn is_wait_invoice_active(&self) -> bool {
+        self.wait_invoice_is_active.load(Ordering::SeqCst)
+    }
+
+    /// Cancel wait invoice
+    fn cancel_wait_invoice(&self) {
+        self.wait_invoice_cancel_token.cancel()
+    }
+
     /// Listen for bolt12 offers to be paid
     async fn wait_any_offer(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
-        todo!()
+        let last_pay_index = self.get_last_pay_index().await?;
+        let cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
+
+        let stream = futures::stream::unfold(
+            (
+                cln_client,
+                last_pay_index,
+                self.wait_invoice_cancel_token.clone(),
+                Arc::clone(&self.bolt12_wait_invoice_is_active),
+            ),
+            |(mut cln_client, mut last_pay_idx, cancel_token, is_active)| async move {
+                // Set the stream as active
+                is_active.store(true, Ordering::SeqCst);
+
+                loop {
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            // Set the stream as inactive
+                            is_active.store(false, Ordering::SeqCst);
+                            // End the stream
+                            return None;
+                        }
+                        result = cln_client.call(cln_rpc::Request::WaitAnyInvoice(WaitanyinvoiceRequest {
+                            timeout: None,
+                            lastpay_index: last_pay_idx,
+                        })) => {
+                            match result {
+                                Ok(invoice) => {
+
+                                        // Try to convert the invoice to WaitanyinvoiceResponse
+                            let wait_any_response_result: Result<WaitanyinvoiceResponse, _> =
+                                invoice.try_into();
+
+                            let wait_any_response = match wait_any_response_result {
+                                Ok(response) => response,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to parse WaitAnyInvoice response: {:?}",
+                                        e
+                                    );
+                                    // Continue to the next iteration without panicking
+                                    continue;
+                                }
+                            };
+
+                            // Check the status of the invoice
+                            // We only want to yield invoices that have been paid
+                            match wait_any_response.status {
+                                WaitanyinvoiceStatus::PAID => (),
+                                WaitanyinvoiceStatus::EXPIRED => continue,
+                            }
+
+                            last_pay_idx = wait_any_response.pay_index;
+
+                            let payment_hash = wait_any_response.payment_hash.to_string();
+
+
+                            // TODO: Handle unit conversion
+                            let amount_msats = wait_any_response.amount_received_msat.expect("status is paid there should be an amount");
+                            let amount_sats =  amount_msats.msat() / 1000;
+
+                            let request_lookup_id = match wait_any_response.bolt12 {
+                                // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
+                                // Since this is not returned in the wait any response,
+                                // we need to do a second query for it.
+                                Some(_) => {
+                                    match fetch_invoice_by_payment_hash(
+                                        &mut cln_client,
+                                        &payment_hash,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(invoice)) => {
+                                            if let Some(local_offer_id) = invoice.local_offer_id {
+                                                local_offer_id.to_string()
+                                            } else {
+                                                continue;
+                                            }
+                                        }
+                                        Ok(None) => continue,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Error fetching invoice by payment hash: {e}"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                None => payment_hash.clone(),
+                            };
+
+                            let response = WaitInvoiceResponse {
+                                request_lookup_id,
+                                payment_amount: amount_sats.into(),
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
+                            };
+
+                            break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Error fetching invoice: {e}");
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        .boxed();
+
+        Ok(stream)
     }
 
     async fn get_bolt12_payment_quote(

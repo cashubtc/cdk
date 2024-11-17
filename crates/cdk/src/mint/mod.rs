@@ -264,6 +264,64 @@ impl Mint {
         Ok(())
     }
 
+    /// Wait for any offer to be paid
+    /// For each backend starts a task that waits for any offers to be paid
+    /// Once invoice is paid mint quote status is updated
+    #[allow(clippy::incompatible_msrv)]
+    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
+    pub async fn wait_for_paid_offers(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
+        let mint_arc = Arc::new(self.clone());
+
+        let mut join_set = JoinSet::new();
+
+        for (key, bolt12) in self.bolt12_backends.iter() {
+            if !bolt12.is_wait_invoice_active() {
+                let mint = Arc::clone(&mint_arc);
+                let bolt12 = Arc::clone(bolt12);
+                let shutdown = Arc::clone(&shutdown);
+                let key = key.clone();
+                join_set.spawn(async move {
+            if !bolt12.is_wait_invoice_active() {
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => {
+                        tracing::info!("Shutdown signal received, stopping task for {:?}", key);
+                        bolt12.cancel_wait_invoice();
+                        break;
+                    }
+                    result = bolt12.wait_any_offer() => {
+                        match result {
+                            Ok(mut stream) => {
+                                while let Some(wait_invoice_response) = stream.next().await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_invoice_response).await {
+                                        tracing::warn!("{:?}", err);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!("Could not get invoice stream for {:?}: {}",key, err);
+                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            }
+                        }
+                    }
+                    }
+                }
+            }
+        });
+            }
+        }
+
+        // Spawn a task to manage the JoinSet
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(_) => tracing::info!("A task completed successfully."),
+                Err(err) => tracing::warn!("A task failed: {:?}", err),
+            }
+        }
+
+        Ok(())
+    }
+
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {

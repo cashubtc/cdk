@@ -18,6 +18,12 @@ pub trait MintBolt12Lightning {
     /// Mint Lightning Error
     type Err: Into<Error> + From<Error>;
 
+    /// Is wait invoice active
+    fn is_wait_invoice_active(&self) -> bool;
+
+    /// Cancel wait invoice
+    fn cancel_wait_invoice(&self);
+
     /// Listen for bolt12 offers to be paid
     async fn wait_any_offer(
         &self,

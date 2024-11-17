@@ -23,6 +23,16 @@ use crate::Phoenixd;
 impl MintBolt12Lightning for Phoenixd {
     type Err = cdk_lightning::Error;
 
+    fn is_wait_invoice_active(&self) -> bool {
+        // Paying to PHD bolt12 offer is not supported so this can never be active
+        false
+    }
+
+    fn cancel_wait_invoice(&self) {
+        // Paying to PHD bolt12 offer is not supported so there is nothing to cancel
+        ()
+    }
+
     async fn get_bolt12_payment_quote(
         &self,
         melt_quote_request: &MeltQuoteBolt12Request,
