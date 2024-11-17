@@ -2,9 +2,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::nut05::MeltRequestTrait;
+use super::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use crate::Amount;
-
-use super::{nut05::MeltRequestTrait, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 
 /// NUT18 Error
 #[derive(Debug, Error)]

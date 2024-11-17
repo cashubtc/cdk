@@ -6,9 +6,8 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
 use lightning::offers::offer::Offer;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::nuts::CurrencyUnit;
@@ -25,9 +24,9 @@ pub enum Error {
     /// Cannot convert units
     #[error("Cannot convert units")]
     CannotConvertUnits,
-    /// Amount undefinded
+    /// Amount undefined
     #[error("Amount undefined")]
-    AmountUndefinded,
+    AmountUndefined,
     /// Utf8 parse error
     #[error(transparent)]
     Utf8ParseError(#[from] std::string::FromUtf8Error),
@@ -310,7 +309,7 @@ where
 
 /// Convert offer to amount in unit
 pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Error> {
-    let offer_amount = offer.amount().ok_or(Error::AmountUndefinded)?;
+    let offer_amount = offer.amount().ok_or(Error::AmountUndefined)?;
 
     let (amount, currency) = match offer_amount {
         lightning::offers::offer::Amount::Bitcoin { amount_msats } => {

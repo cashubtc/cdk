@@ -150,9 +150,11 @@ pub enum PaymentRequest {
 }
 
 mod offer_serde {
-    use super::Offer;
-    use serde::{self, Deserialize, Deserializer, Serializer};
     use std::str::FromStr;
+
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    use super::Offer;
 
     pub fn serialize<S>(offer: &Offer, serializer: S) -> Result<S::Ok, S::Error>
     where

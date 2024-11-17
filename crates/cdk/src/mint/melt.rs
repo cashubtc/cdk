@@ -6,30 +6,21 @@ use anyhow::bail;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
-use crate::amount::amount_for_offer;
-use crate::cdk_lightning;
-use crate::cdk_lightning::MintLightning;
-use crate::cdk_lightning::PayInvoiceResponse;
-use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::nut11::enforce_sig_flag;
-use crate::nuts::nut11::EnforceSigFlag;
-use crate::{
-    amount::to_unit, mint::SigFlag, nuts::Id, nuts::MeltQuoteState, types::LnKey, util::unix_time,
-    Amount, Error,
-};
-
 use super::nut05::MeltRequestTrait;
 use super::types::PaymentRequest;
-use super::BlindSignature;
-use super::CurrencyUnit;
-use super::MeltQuote;
-use super::MeltQuoteBolt11Request;
-use super::MeltQuoteBolt11Response;
-use super::MeltQuoteBolt12Request;
-use super::Mint;
-use super::PaymentMethod;
-use super::State;
-use crate::nuts::PublicKey;
+use super::{
+    BlindSignature, CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteBolt12Request, Mint, PaymentMethod, State,
+};
+use crate::amount::{amount_for_offer, to_unit};
+use crate::cdk_lightning::{MintLightning, PayInvoiceResponse};
+use crate::mint::SigFlag;
+use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
+use crate::nuts::{Id, MeltQuoteState, PublicKey};
+use crate::types::LnKey;
+use crate::util::unix_time;
+use crate::{cdk_lightning, Amount, Error};
 
 impl Mint {
     fn check_melt_request_acceptable(
@@ -460,7 +451,7 @@ impl Mint {
 
         if let Ok(Some(quote)) = self
             .localstore
-            .get_melt_quote(&melt_request.get_quote_id())
+            .get_melt_quote(melt_request.get_quote_id())
             .await
         {
             self.pubsub_manager

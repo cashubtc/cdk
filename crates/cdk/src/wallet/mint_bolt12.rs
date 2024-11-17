@@ -1,17 +1,16 @@
 use tracing::instrument;
 
 use super::MintQuote;
+use crate::amount::SplitTarget;
+use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
-use crate::nuts::{MintBolt11Request, PaymentMethod};
-use crate::{
-    amount::SplitTarget,
-    dhke::construct_proofs,
-    nuts::{nut12, PreMintSecrets, SpendingConditions, State},
-    types::ProofInfo,
-    util::unix_time,
-    Amount, Error, Wallet,
+use crate::nuts::{
+    nut12, MintBolt11Request, PaymentMethod, PreMintSecrets, SpendingConditions, State,
 };
+use crate::types::ProofInfo;
+use crate::util::unix_time;
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Mint Bolt12

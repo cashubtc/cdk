@@ -14,8 +14,8 @@ use cdk::mint::MintQuote;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut17::Params;
 use cdk::nuts::{
-    CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PreMintSecrets,
-    ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PaymentMethod,
+    PreMintSecrets, ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
@@ -76,6 +76,7 @@ async fn mint_proofs(
     let quote = MintQuote::new(
         mint.mint_url.clone(),
         "".to_string(),
+        PaymentMethod::Bolt11,
         CurrencyUnit::Sat,
         Some(amount),
         unix_time() + 36000,
@@ -83,14 +84,13 @@ async fn mint_proofs(
         Amount::ZERO,
         Amount::ZERO,
         true,
-        true,
         vec![],
     );
 
     mint.localstore.add_mint_quote(quote.clone()).await?;
 
     let wait_invoice = WaitInvoiceResponse {
-        request_lookup_id: request_lookup,
+        request_lookup_id: request_lookup.clone(),
         payment_amount: amount,
         unit: CurrencyUnit::Sat,
         payment_id: request_lookup,

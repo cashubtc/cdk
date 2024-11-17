@@ -2,7 +2,7 @@
   description = "CDK Flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -53,7 +53,7 @@
           targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
 
-        # Nighly for creating lock files
+        # Nightly for creating lock files
         nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
           extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
         });

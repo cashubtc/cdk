@@ -21,8 +21,7 @@ use lightning::offers::invoice::Bolt12Invoice;
 use lightning::offers::offer::Offer;
 use uuid::Uuid;
 
-use super::Cln;
-use super::Error;
+use super::{Cln, Error};
 
 #[async_trait]
 impl MintBolt12Lightning for Cln {

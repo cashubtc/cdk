@@ -1,11 +1,10 @@
 use tracing::instrument;
 
-use crate::{types::LnKey, util::unix_time, Amount, Error};
-
-use super::{
-    nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response},
-    Mint, MintQuote, PaymentMethod,
-};
+use super::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
+use super::{Mint, MintQuote, PaymentMethod};
+use crate::types::LnKey;
+use crate::util::unix_time;
+use crate::{Amount, Error};
 
 impl Mint {
     /// Create new mint bolt11 quote

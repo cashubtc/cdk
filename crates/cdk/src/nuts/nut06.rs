@@ -237,7 +237,7 @@ pub struct Nuts {
     pub nut15: Option<nut15::Settings>,
     /// NUT17 Settings
     #[cfg(feature = "mint")]
-    pub nut17: super::nut17::SupportedSettings,
+    pub nut17: Option<super::nut17::SupportedSettings>,
     /// NUT04 Settings
     #[serde(rename = "18")]
     #[serde(skip_serializing_if = "Option::is_none")]
