@@ -206,8 +206,8 @@ WHERE active = 1
         let res = sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, request_lookup_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+(id, mint_url, amount, unit, request, state, expiry, request_lookup_id, single_use, payment_method, payment_ids, amount_paid, amount_issued)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -219,6 +219,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .bind(quote.request_lookup_id)
+        .bind(quote.single_use)
+        .bind(quote.payment_method.to_string())
+        .bind(serde_json::to_string(&quote.payment_ids)?)
+        .bind(u64::from(quote.amount_paid) as i64)
+        .bind(u64::from(quote.amount_issued) as i64 )
         .execute(&mut transaction)
         .await;
 
@@ -1279,6 +1284,11 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
     let row_request_lookup_id: Option<String> =
         row.try_get("request_lookup_id").map_err(Error::from)?;
+    let row_single_use: Option<bool> = row.try_get("single_use").map_err(Error::from)?;
+    let row_amount_paid: Option<i64> = row.try_get("amount_paid").map_err(Error::from)?;
+    let row_amount_issued: Option<i64> = row.try_get("amount_issued").map_err(Error::from)?;
+    let row_payment_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
+    let row_payment_ids: Option<String> = row.try_get("payment_ids").map_err(Error::from)?;
 
     let request_lookup_id = match row_request_lookup_id {
         Some(id) => id,
@@ -1286,6 +1296,16 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
             Ok(invoice) => invoice.payment_hash().to_string(),
             Err(_) => row_request.clone(),
         },
+    };
+
+    let payment_method = match row_payment_method {
+        Some(method) => PaymentMethod::from_str(&method)?,
+        None => PaymentMethod::Bolt11,
+    };
+
+    let payment_ids: Vec<String> = match row_payment_ids {
+        Some(ids) => serde_json::from_str(&ids)?,
+        None => vec![],
     };
 
     Ok(MintQuote {
@@ -1297,12 +1317,11 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         state: MintQuoteState::from_str(&row_state).map_err(Error::from)?,
         expiry: row_expiry as u64,
         request_lookup_id,
-        // TODO: Get these values
-        amount_paid: Amount::ZERO,
-        amount_issued: Amount::ZERO,
-        single_use: true,
-        payment_method: PaymentMethod::Bolt11,
-        payment_ids: Vec::new(),
+        amount_paid: (row_amount_paid.unwrap_or_default() as u64).into(),
+        amount_issued: (row_amount_issued.unwrap_or_default() as u64).into(),
+        single_use: row_single_use.unwrap_or(true),
+        payment_method,
+        payment_ids,
     })
 }
 
