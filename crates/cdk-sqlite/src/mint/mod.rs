@@ -1301,6 +1301,8 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         amount_paid: Amount::ZERO,
         amount_issued: Amount::ZERO,
         single_use: true,
+        payment_method: PaymentMethod::Bolt11,
+        payment_ids: Vec::new(),
     })
 }
 

@@ -133,9 +133,10 @@ impl MintLightning for Phoenixd {
                                 Ok(state) => {
                                     if state.is_paid {
                                         let wait_invoice = WaitInvoiceResponse {
-                                            payment_lookup_id: msg.payment_hash,
+                                            request_lookup_id: msg.payment_hash.clone(),
                                             payment_amount: Amount::ZERO,
-                                            unit: CurrencyUnit::Sat
+                                            unit: CurrencyUnit::Sat,
+                                            payment_id: msg.payment_hash
                                         };
                                         // Yield the payment hash and continue the stream
                                         Some((wait_invoice, (receiver, phoenixd_api, cancel_token, is_active)))

@@ -101,6 +101,7 @@ impl Mint {
         let quote = MintQuote::new(
             self.mint_url.clone(),
             create_invoice_response.request.to_string(),
+            PaymentMethod::Bolt11,
             unit.clone(),
             Some(amount),
             create_invoice_response.expiry.unwrap_or(0),
@@ -108,6 +109,7 @@ impl Mint {
             Amount::ZERO,
             Amount::ZERO,
             true,
+            vec![],
         );
 
         tracing::debug!(
@@ -204,37 +206,67 @@ impl Mint {
         wait_invoice_response: WaitInvoiceResponse,
     ) -> Result<(), Error> {
         let WaitInvoiceResponse {
-            payment_lookup_id,
+            request_lookup_id,
             payment_amount,
             unit,
+            payment_id,
         } = wait_invoice_response;
         if let Ok(Some(mint_quote)) = self
             .localstore
-            .get_mint_quote_by_request_lookup_id(&payment_lookup_id)
+            .get_mint_quote_by_request_lookup_id(&request_lookup_id)
             .await
         {
             tracing::debug!(
-                "Quote {} paid by lookup id {}",
+                "Quote {} with lookup id {} paid by {}",
                 mint_quote.id,
-                payment_lookup_id
+                request_lookup_id,
+                payment_id
             );
+
+            if (mint_quote.single_use || mint_quote.payment_method == PaymentMethod::Bolt11)
+                && mint_quote.state == MintQuoteState::Issued
+            {
+                tracing::info!(
+                    "Payment notification for quote {} already issued.",
+                    mint_quote.id
+                );
+                return Err(Error::IssuedQuote);
+            }
+
             self.localstore
                 .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
                 .await?;
+
             let quote = self
                 .localstore
                 .get_mint_quote(&mint_quote.id)
                 .await?
                 .unwrap();
 
+            assert!(unit == quote.unit);
+
+            let mut payment_ids = quote.payment_ids;
+
+            // We check if this payment has already been seen for this mint quote
+            // If it is we do not want to continue and add it to the paid balance of the quote
+            if payment_ids.contains(&payment_id) {
+                tracing::info!(
+                    "Received update for payment {} already seen for quote {}",
+                    payment_id,
+                    mint_quote.id
+                );
+                return Err(Error::PaymentAlreadySeen);
+            }
+
             let amount_paid = quote.amount_paid + payment_amount;
 
-            assert!(unit == quote.unit);
+            payment_ids.push(payment_id);
 
             let quote = MintQuote {
                 id: quote.id,
                 mint_url: quote.mint_url,
                 amount: quote.amount,
+                payment_method: quote.payment_method,
                 unit: quote.unit,
                 request: quote.request,
                 state: MintQuoteState::Paid,
@@ -243,6 +275,7 @@ impl Mint {
                 amount_paid,
                 amount_issued: quote.amount_issued,
                 single_use: quote.single_use,
+                payment_ids,
             };
 
             tracing::debug!(
@@ -345,6 +378,7 @@ impl Mint {
         let mint_quote = MintQuote {
             id: quote.id,
             mint_url: quote.mint_url,
+            payment_method: quote.payment_method,
             amount: quote.amount,
             unit: quote.unit,
             request: quote.request,
@@ -357,6 +391,7 @@ impl Mint {
                     .map_err(|_| Error::AmountOverflow)?,
             request_lookup_id: quote.request_lookup_id,
             single_use: quote.single_use,
+            payment_ids: quote.payment_ids,
         };
 
         self.localstore.add_mint_quote(mint_quote.clone()).await?;

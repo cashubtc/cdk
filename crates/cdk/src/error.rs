@@ -105,6 +105,9 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
+    /// Payment already added to quote
+    #[error("Payment is already accounted for in quote")]
+    PaymentAlreadySeen,
 
     // Wallet Errors
     /// P2PK spending conditions not met

@@ -130,9 +130,10 @@ impl MintLightning for Strike {
                             Ok(state) => {
                                 if state.state == InvoiceState::Paid {
                                     let wait_response = WaitInvoiceResponse {
-                                        payment_lookup_id: msg,
+                                        request_lookup_id: msg.clone(),
                                         payment_amount: Amount::ZERO,
-                                        unit: unit.clone()
+                                        unit: unit.clone(),
+                                        payment_id: msg
                                     };
                                     Some((wait_response , (receiver, strike_api, cancel_token, is_active, unit)))
                                 } else {

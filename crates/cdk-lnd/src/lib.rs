@@ -139,11 +139,12 @@ impl MintLightning for Lnd {
                 match msg {
                     Ok(Some(msg)) => {
                         if msg.state == 1 {
+                                let payment_hash =  hex::encode(msg.r_hash);
                             let wait_response = WaitInvoiceResponse {
-                                payment_lookup_id: hex::encode(msg.r_hash),
+                                request_lookup_id: payment_hash.clone(),
                                 payment_amount: Amount::ZERO,
-                                unit: CurrencyUnit::Sat
-
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
                             };
 
                             Some((wait_response , (stream, cancel_token, is_active)))

@@ -82,14 +82,17 @@ async fn mint_proofs(
         Amount::ZERO,
         Amount::ZERO,
         true,
+        true,
+        vec![],
     );
 
     mint.localstore.add_mint_quote(quote.clone()).await?;
 
     let wait_invoice = WaitInvoiceResponse {
-        payment_lookup_id: request_lookup,
+        request_lookup_id: request_lookup,
         payment_amount: amount,
         unit: CurrencyUnit::Sat,
+        payment_id: request_lookup,
     };
 
     mint.pay_mint_quote_for_request_id(wait_invoice).await?;

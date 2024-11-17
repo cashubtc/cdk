@@ -55,12 +55,16 @@ pub enum Error {
 /// Wait any invoice response
 #[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
 pub struct WaitInvoiceResponse {
-    /// Payment look up id
-    pub payment_lookup_id: String,
+    /// Request look up id
+    /// Id that relates the quote and payment request
+    pub request_lookup_id: String,
     /// Payment amount
     pub payment_amount: Amount,
     /// Unit
     pub unit: CurrencyUnit,
+    /// Unique id of payment
+    // Payment hash
+    pub payment_id: String,
 }
 
 /// MintLighting Trait

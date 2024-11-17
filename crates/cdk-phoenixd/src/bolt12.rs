@@ -1,3 +1,4 @@
+use std::pin::Pin;
 use std::str::FromStr;
 
 use anyhow::anyhow;
@@ -6,11 +7,13 @@ use cdk::amount::{amount_for_offer, Amount};
 use cdk::cdk_lightning::bolt12::MintBolt12Lightning;
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateOfferResponse, MintLightning, PayInvoiceResponse,
+    WaitInvoiceResponse,
 };
 use cdk::mint;
 use cdk::mint::types::PaymentRequest;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt12Request, MeltQuoteState};
 use cdk::util::hex;
+use futures::Stream;
 use lightning::offers::offer::Offer;
 
 use super::Error;
@@ -19,6 +22,7 @@ use crate::Phoenixd;
 #[async_trait]
 impl MintBolt12Lightning for Phoenixd {
     type Err = cdk_lightning::Error;
+
     async fn get_bolt12_payment_quote(
         &self,
         melt_quote_request: &MeltQuoteBolt12Request,
@@ -109,6 +113,13 @@ impl MintBolt12Lightning for Phoenixd {
         _unix_expiry: u64,
         _single_use: bool,
     ) -> Result<CreateOfferResponse, Self::Err> {
+        Err(Error::UnsupportedMethod.into())
+    }
+
+    /// Listen for bolt12 offers to be paid
+    async fn wait_any_offer(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         Err(Error::UnsupportedMethod.into())
     }
 }

@@ -128,9 +128,10 @@ impl MintLightning for LNbits {
                                 Ok(state) => {
                                     if state {
                                         let response = WaitInvoiceResponse {
-                                            payment_lookup_id: msg,
+                                            request_lookup_id: msg.clone(),
                                             payment_amount: Amount::ZERO,
-                                            unit: CurrencyUnit::Sat
+                                            unit: CurrencyUnit::Sat,
+                                            payment_id: msg
                                         };
 
                                         Some((response , (receiver, lnbits_api, cancel_token, is_active)))

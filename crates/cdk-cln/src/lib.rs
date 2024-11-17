@@ -163,7 +163,7 @@ impl MintLightning for Cln {
                             let amount_msats = wait_any_response.amount_received_msat.expect("status is paid there should be an amount");
                             let amount_sats =  amount_msats.msat() / 1000;
 
-                            let request_look_up = match wait_any_response.bolt12 {
+                            let request_lookup_id = match wait_any_response.bolt12 {
                                 // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
                                 // Since this is not returned in the wait any response,
                                 // we need to do a second query for it.
@@ -190,13 +190,14 @@ impl MintLightning for Cln {
                                         }
                                     }
                                 }
-                                None => payment_hash,
+                                None => payment_hash.clone(),
                             };
 
                             let response = WaitInvoiceResponse {
-                                payment_lookup_id: request_look_up,
+                                request_lookup_id,
                                 payment_amount: amount_sats.into(),
-                                unit: CurrencyUnit::Sat
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
                             };
 
                             break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));

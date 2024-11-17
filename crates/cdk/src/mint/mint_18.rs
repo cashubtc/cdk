@@ -64,6 +64,7 @@ impl Mint {
         let quote = MintQuote::new(
             self.mint_url.clone(),
             create_invoice_response.request.to_string(),
+            PaymentMethod::Bolt12,
             unit.clone(),
             amount,
             create_invoice_response.expiry.unwrap_or(0),
@@ -71,6 +72,7 @@ impl Mint {
             Amount::ZERO,
             Amount::ZERO,
             single_use,
+            vec![],
         );
 
         tracing::debug!(

@@ -126,9 +126,10 @@ impl MintLightning for FakeWallet {
         self.wait_invoice_is_active.store(true, Ordering::SeqCst);
 
         Ok(Box::pin(receiver_stream.map(|label| WaitInvoiceResponse {
-            payment_lookup_id: label,
+            request_lookup_id: label.clone(),
             payment_amount: Amount::ZERO,
             unit: CurrencyUnit::Sat,
+            payment_id: label,
         })))
     }
 

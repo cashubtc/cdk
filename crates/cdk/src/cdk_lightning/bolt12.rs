@@ -1,8 +1,13 @@
 //! CDK Mint Bolt12
 
-use async_trait::async_trait;
+use std::pin::Pin;
 
-use super::{Bolt12PaymentQuoteResponse, CreateOfferResponse, Error, PayInvoiceResponse};
+use async_trait::async_trait;
+use futures::Stream;
+
+use super::{
+    Bolt12PaymentQuoteResponse, CreateOfferResponse, Error, PayInvoiceResponse, WaitInvoiceResponse,
+};
 use crate::nuts::nut20::MeltQuoteBolt12Request;
 use crate::nuts::CurrencyUnit;
 use crate::{mint, Amount};
@@ -12,6 +17,11 @@ use crate::{mint, Amount};
 pub trait MintBolt12Lightning {
     /// Mint Lightning Error
     type Err: Into<Error> + From<Error>;
+
+    /// Listen for bolt12 offers to be paid
+    async fn wait_any_offer(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err>;
 
     /// Bolt12 Payment quote
     async fn get_bolt12_payment_quote(

@@ -1,3 +1,4 @@
+use std::pin::Pin;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -5,6 +6,7 @@ use cdk::amount::{amount_for_offer, to_unit, Amount};
 use cdk::cdk_lightning::bolt12::MintBolt12Lightning;
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateOfferResponse, MintLightning, PayInvoiceResponse,
+    WaitInvoiceResponse,
 };
 use cdk::mint;
 use cdk::mint::types::PaymentRequest;
@@ -14,6 +16,7 @@ use cln_rpc::model::requests::{FetchinvoiceRequest, OfferRequest, PayRequest};
 use cln_rpc::model::responses::PayStatus;
 use cln_rpc::model::Request;
 use cln_rpc::primitives::Amount as CLN_Amount;
+use futures::Stream;
 use lightning::offers::invoice::Bolt12Invoice;
 use lightning::offers::offer::Offer;
 use uuid::Uuid;
@@ -24,6 +27,13 @@ use super::Error;
 #[async_trait]
 impl MintBolt12Lightning for Cln {
     type Err = cdk_lightning::Error;
+
+    /// Listen for bolt12 offers to be paid
+    async fn wait_any_offer(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
+        todo!()
+    }
 
     async fn get_bolt12_payment_quote(
         &self,

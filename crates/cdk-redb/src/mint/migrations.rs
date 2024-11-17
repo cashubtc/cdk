@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cdk::mint::types::PaymentRequest;
 use cdk::mint::MintQuote;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, Proof, State};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PaymentMethod, Proof, State};
 use cdk::Amount;
 use lightning_invoice::Bolt11Invoice;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
@@ -177,6 +177,8 @@ impl From<V1MintQuote> for MintQuote {
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
             single_use: true,
+            payment_method: PaymentMethod::Bolt11,
+            payment_ids: vec![],
         }
     }
 }
