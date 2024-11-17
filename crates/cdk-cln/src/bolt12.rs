@@ -33,17 +33,16 @@ use crate::fetch_invoice_by_payment_hash;
 impl MintBolt12Lightning for Cln {
     type Err = cdk_lightning::Error;
 
-    /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
-    /// Cancel wait invoice
     fn cancel_wait_invoice(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    /// Listen for bolt12 offers to be paid
+    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
+    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_offer(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {

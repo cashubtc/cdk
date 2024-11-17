@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::*;
-use crate::types::{LnKey, QuoteTTL};
+use crate::types::QuoteTTL;
 use crate::util::unix_time;
 use crate::Amount;
 
@@ -50,10 +50,12 @@ pub struct Mint {
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
     /// Ln backends for mint
-    pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    pub ln: HashMap<CurrencyUnit, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Ln backends for mint
-    pub bolt12_backends:
-        HashMap<LnKey, Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    pub bolt12_backends: HashMap<
+        CurrencyUnit,
+        Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>,
+    >,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
     /// Active Mint Keysets
@@ -71,9 +73,9 @@ impl Mint {
         mint_info: MintInfo,
         quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
-        ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+        ln: HashMap<CurrencyUnit, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         bolt12: HashMap<
-            LnKey,
+            CurrencyUnit,
             Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>,
         >,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)

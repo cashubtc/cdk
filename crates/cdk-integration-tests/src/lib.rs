@@ -52,7 +52,7 @@ pub fn create_backends_fake_wallet(
 
 pub async fn start_mint(
     ln_backends: HashMap<
-        LnKey,
+        CurrencyUnit,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     >,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,

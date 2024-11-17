@@ -6,7 +6,6 @@ use super::{
 };
 use crate::cdk_lightning::WaitInvoiceResponse;
 use crate::nuts::MintQuoteState;
-use crate::types::LnKey;
 use crate::util::unix_time;
 use crate::{Amount, Error};
 
@@ -69,14 +68,11 @@ impl Mint {
 
         self.check_mint_request_acceptable(amount, &unit)?;
 
-        let ln = self
-            .ln
-            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt11))
-            .ok_or_else(|| {
-                tracing::info!("Bolt11 mint request for unsupported unit");
+        let ln = self.ln.get(&unit).ok_or_else(|| {
+            tracing::info!("Bolt11 mint request for unsupported unit");
 
-                Error::UnitUnsupported
-            })?;
+            Error::UnitUnsupported
+        })?;
 
         let quote_expiry = unix_time() + self.quote_ttl.mint_ttl;
 

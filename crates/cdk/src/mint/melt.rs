@@ -18,7 +18,6 @@ use crate::mint::SigFlag;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
 use crate::nuts::{Id, MeltQuoteState, PublicKey};
-use crate::types::LnKey;
 use crate::util::unix_time;
 use crate::{cdk_lightning, Amount, Error};
 
@@ -77,14 +76,11 @@ impl Mint {
 
         self.check_melt_request_acceptable(amount, unit.clone(), PaymentMethod::Bolt11)?;
 
-        let ln = self
-            .ln
-            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt11))
-            .ok_or_else(|| {
-                tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
+        let ln = self.ln.get(unit).ok_or_else(|| {
+            tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
 
-                Error::UnitUnsupported
-            })?;
+            Error::UnitUnsupported
+        })?;
 
         let payment_quote = ln.get_payment_quote(melt_request).await.map_err(|err| {
             tracing::error!(
@@ -143,14 +139,11 @@ impl Mint {
 
         self.check_melt_request_acceptable(amount, unit.clone(), PaymentMethod::Bolt12)?;
 
-        let ln = self
-            .bolt12_backends
-            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt12))
-            .ok_or_else(|| {
-                tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
+        let ln = self.bolt12_backends.get(unit).ok_or_else(|| {
+            tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
 
-                Error::UnitUnsupported
-            })?;
+            Error::UnitUnsupported
+        })?;
 
         let payment_quote = ln
             .get_bolt12_payment_quote(melt_request)
@@ -552,10 +545,7 @@ impl Mint {
                     }
                     _ => None,
                 };
-                let ln = match self
-                    .ln
-                    .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt11))
-                {
+                let ln = match self.ln.get(&quote.unit) {
                     Some(ln) => ln,
                     None => {
                         tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
@@ -569,10 +559,7 @@ impl Mint {
 
                 let attempt_to_pay = match melt_request.get_payment_method() {
                     PaymentMethod::Bolt11 => {
-                        let ln = match self
-                            .ln
-                            .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt11))
-                        {
+                        let ln = match self.ln.get(&quote.unit) {
                             Some(ln) => ln,
                             None => {
                                 tracing::info!(
@@ -590,10 +577,7 @@ impl Mint {
                             .await
                     }
                     PaymentMethod::Bolt12 => {
-                        let ln = match self
-                            .bolt12_backends
-                            .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt12))
-                        {
+                        let ln = match self.bolt12_backends.get(&quote.unit) {
                             Some(ln) => ln,
                             None => {
                                 tracing::info!(

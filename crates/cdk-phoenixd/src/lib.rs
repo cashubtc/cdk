@@ -81,8 +81,6 @@ impl MintLightning for Phoenixd {
         Settings {
             mpp: false,
             unit: CurrencyUnit::Sat,
-            bolt12_mint: false,
-            bolt12_melt: true,
             invoice_description: true,
         }
     }

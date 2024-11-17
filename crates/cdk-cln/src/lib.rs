@@ -45,8 +45,6 @@ pub struct Cln {
     rpc_socket: PathBuf,
     cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
     fee_reserve: FeeReserve,
-    bolt12_mint: bool,
-    bolt12_melt: bool,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     bolt12_wait_invoice_is_active: Arc<AtomicBool>,
@@ -54,20 +52,13 @@ pub struct Cln {
 
 impl Cln {
     /// Create new [`Cln`]
-    pub async fn new(
-        rpc_socket: PathBuf,
-        fee_reserve: FeeReserve,
-        bolt12_mint: bool,
-        bolt12_melt: bool,
-    ) -> Result<Self, Error> {
+    pub async fn new(rpc_socket: PathBuf, fee_reserve: FeeReserve) -> Result<Self, Error> {
         let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
 
         Ok(Self {
             rpc_socket,
             cln_client: Arc::new(Mutex::new(cln_client)),
             fee_reserve,
-            bolt12_mint,
-            bolt12_melt,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             bolt12_wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -83,8 +74,6 @@ impl MintLightning for Cln {
         Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
-            bolt12_mint: self.bolt12_mint,
-            bolt12_melt: self.bolt12_melt,
             invoice_description: true,
         }
     }
@@ -99,8 +88,8 @@ impl MintLightning for Cln {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    #[allow(clippy::incompatible_msrv)]
     // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
+    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {

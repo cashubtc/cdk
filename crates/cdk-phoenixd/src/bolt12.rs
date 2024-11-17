@@ -30,7 +30,6 @@ impl MintBolt12Lightning for Phoenixd {
 
     fn cancel_wait_invoice(&self) {
         // Paying to PHD bolt12 offer is not supported so there is nothing to cancel
-        ()
     }
 
     async fn get_bolt12_payment_quote(

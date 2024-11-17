@@ -44,7 +44,7 @@ impl LnBackendSetup for config::Cln {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let cln = cdk_cln::Cln::new(cln_socket, fee_reserve, true, true).await?;
+        let cln = cdk_cln::Cln::new(cln_socket, fee_reserve).await?;
 
         Ok(cln)
     }

@@ -7,13 +7,14 @@ use anyhow::anyhow;
 
 use crate::amount::Amount;
 use crate::cdk_database::{self, MintDatabase};
+use crate::cdk_lightning::bolt12::MintBolt12Lightning;
 use crate::cdk_lightning::{self, MintLightning};
 use crate::mint::Mint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod,
 };
-use crate::types::{LnKey, QuoteTTL};
+use crate::types::QuoteTTL;
 
 /// Cashu Mint
 #[derive(Default)]
@@ -24,8 +25,17 @@ pub struct MintBuilder {
     mint_info: MintInfo,
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>>,
-    /// Ln backends for mint
-    ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
+    /// Bolt11 ln backends for mint
+    ln: Option<
+        HashMap<CurrencyUnit, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    >,
+    /// Bolt12 backends for mint
+    bolt12_backends: Option<
+        HashMap<
+            CurrencyUnit,
+            Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>,
+        >,
+    >,
     seed: Option<Vec<u8>>,
     quote_ttl: Option<QuoteTTL>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
@@ -106,18 +116,14 @@ impl MintBuilder {
     pub fn add_ln_backend(
         mut self,
         unit: CurrencyUnit,
-        method: PaymentMethod,
         limits: MintMeltLimits,
         ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     ) -> Self {
-        let ln_key = LnKey {
-            unit: unit.clone(),
-            method,
-        };
-
         let mut ln = self.ln.unwrap_or_default();
 
         let settings = ln_backend.get_settings();
+
+        let method = PaymentMethod::Bolt11;
 
         if settings.mpp {
             let mpp_settings = MppMethodSettings {
@@ -132,67 +138,87 @@ impl MintBuilder {
             self.mint_info.nuts.nut15 = Some(mpp);
         }
 
-        match method {
-            PaymentMethod::Bolt11 => {
-                let mint_method_settings = MintMethodSettings {
-                    method,
-                    unit: unit.clone(),
-                    min_amount: Some(limits.mint_min),
-                    max_amount: Some(limits.mint_max),
-                    description: settings.invoice_description,
-                };
+        let mint_method_settings = MintMethodSettings {
+            method,
+            unit: unit.clone(),
+            min_amount: Some(limits.mint_min),
+            max_amount: Some(limits.mint_max),
+            description: settings.invoice_description,
+        };
 
-                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-                self.mint_info.nuts.nut04.disabled = false;
+        self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+        self.mint_info.nuts.nut04.disabled = false;
 
-                let melt_method_settings = MeltMethodSettings {
-                    method,
-                    unit,
-                    min_amount: Some(limits.melt_min),
-                    max_amount: Some(limits.melt_max),
-                };
-                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-                self.mint_info.nuts.nut05.disabled = false;
-            }
-            PaymentMethod::Bolt12 => {
-                let mint_method_settings = MintMethodSettings {
-                    method,
-                    unit: unit.clone(),
-                    min_amount: Some(limits.mint_min),
-                    max_amount: Some(limits.mint_max),
-                    description: settings.invoice_description,
-                };
+        let melt_method_settings = MeltMethodSettings {
+            method,
+            unit: unit.clone(),
+            min_amount: Some(limits.melt_min),
+            max_amount: Some(limits.melt_max),
+        };
+        self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+        self.mint_info.nuts.nut05.disabled = false;
 
-                let mut nut18_settings = self.mint_info.nuts.nut18.unwrap_or_default();
-
-                nut18_settings.methods.push(mint_method_settings);
-                nut18_settings.disabled = false;
-
-                self.mint_info.nuts.nut18 = Some(nut18_settings);
-
-                let melt_method_settings = MeltMethodSettings {
-                    method,
-                    unit: unit.clone(),
-                    min_amount: Some(limits.melt_min),
-                    max_amount: Some(limits.melt_max),
-                };
-
-                let mut nut19_settings = self.mint_info.nuts.nut19.unwrap_or_default();
-                nut19_settings.methods.push(melt_method_settings);
-                nut19_settings.disabled = false;
-
-                self.mint_info.nuts.nut19 = Some(nut19_settings);
-            }
-        }
-
-        ln.insert(ln_key.clone(), ln_backend);
+        ln.insert(unit.clone(), ln_backend);
 
         let mut supported_units = self.supported_units.clone();
 
-        supported_units.insert(ln_key.unit, (0, 32));
+        // TODO: The max order and fee should be configutable
+        supported_units.insert(unit, (0, 32));
         self.supported_units = supported_units;
 
         self.ln = Some(ln);
+
+        self
+    }
+
+    /// Add ln backend
+    pub fn add_bolt12_ln_backend(
+        mut self,
+        unit: CurrencyUnit,
+        limits: MintMeltLimits,
+        ln_backend: Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>,
+    ) -> Self {
+        let mut ln = self.bolt12_backends.unwrap_or_default();
+
+        let method = PaymentMethod::Bolt12;
+
+        let mint_method_settings = MintMethodSettings {
+            method,
+            unit: unit.clone(),
+            min_amount: Some(limits.mint_min),
+            max_amount: Some(limits.mint_max),
+            description: true,
+        };
+
+        let mut nut18_settings = self.mint_info.nuts.nut18.unwrap_or_default();
+
+        nut18_settings.methods.push(mint_method_settings);
+        nut18_settings.disabled = false;
+
+        self.mint_info.nuts.nut18 = Some(nut18_settings);
+
+        let melt_method_settings = MeltMethodSettings {
+            method,
+            unit: unit.clone(),
+            min_amount: Some(limits.melt_min),
+            max_amount: Some(limits.melt_max),
+        };
+
+        let mut nut19_settings = self.mint_info.nuts.nut19.unwrap_or_default();
+        nut19_settings.methods.push(melt_method_settings);
+        nut19_settings.disabled = false;
+
+        self.mint_info.nuts.nut19 = Some(nut19_settings);
+
+        ln.insert(unit.clone(), ln_backend);
+
+        let mut supported_units = self.supported_units.clone();
+
+        // TODO: The max order and fee should be configutable
+        supported_units.insert(unit, (0, 32));
+        self.supported_units = supported_units;
+
+        self.bolt12_backends = Some(ln);
 
         self
     }

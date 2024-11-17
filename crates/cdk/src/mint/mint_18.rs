@@ -2,7 +2,6 @@ use tracing::instrument;
 
 use super::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use super::{Mint, MintQuote, PaymentMethod};
-use crate::types::LnKey;
 use crate::util::unix_time;
 use crate::{Amount, Error};
 
@@ -32,14 +31,11 @@ impl Mint {
             return Err(Error::MintingDisabled);
         }
 
-        let ln = self
-            .bolt12_backends
-            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt12))
-            .ok_or_else(|| {
-                tracing::info!("Bolt11 mint request for unsupported unit");
+        let ln = self.bolt12_backends.get(&unit).ok_or_else(|| {
+            tracing::info!("Bolt11 mint request for unsupported unit");
 
-                Error::UnitUnsupported
-            })?;
+            Error::UnitUnsupported
+        })?;
 
         let quote_expiry = match expiry {
             Some(expiry) => expiry,

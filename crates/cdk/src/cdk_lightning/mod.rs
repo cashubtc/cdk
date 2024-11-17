@@ -195,10 +195,6 @@ pub struct Bolt12PaymentQuoteResponse {
 pub struct Settings {
     /// MPP supported
     pub mpp: bool,
-    /// Supports bolt12 mint
-    pub bolt12_mint: bool,
-    /// Supports bolt12 melt
-    pub bolt12_melt: bool,
     /// Base unit of backend
     pub unit: CurrencyUnit,
     /// Invoice Description supported

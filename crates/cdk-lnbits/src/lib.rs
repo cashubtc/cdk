@@ -73,8 +73,6 @@ impl MintLightning for LNbits {
         Settings {
             mpp: false,
             unit: CurrencyUnit::Sat,
-            bolt12_mint: false,
-            bolt12_melt: false,
             invoice_description: true,
         }
     }

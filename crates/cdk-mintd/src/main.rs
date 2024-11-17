@@ -144,12 +144,8 @@ async fn main() -> anyhow::Result<()> {
             };
             ln_backends.insert(ln_key, cln.clone());
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                cln.clone(),
-            );
+            mint_builder =
+                mint_builder.add_ln_backend(CurrencyUnit::Sat, mint_melt_limits, cln.clone());
 
             if cln_settings.bolt12 {
                 let ln_key = LnKey {
@@ -158,12 +154,8 @@ async fn main() -> anyhow::Result<()> {
                 };
                 ln_backends.insert(ln_key, cln.clone());
 
-                mint_builder = mint_builder.add_ln_backend(
-                    CurrencyUnit::Sat,
-                    PaymentMethod::Bolt12,
-                    mint_melt_limits,
-                    cln,
-                )
+                mint_builder =
+                    mint_builder.add_bolt12_ln_backend(CurrencyUnit::Sat, mint_melt_limits, cln)
             }
         }
         LnBackend::Strike => {
@@ -178,12 +170,8 @@ async fn main() -> anyhow::Result<()> {
                     .setup(&mut ln_routers, &settings, unit.clone())
                     .await?;
 
-                mint_builder = mint_builder.add_ln_backend(
-                    unit,
-                    PaymentMethod::Bolt11,
-                    mint_melt_limits,
-                    Arc::new(strike),
-                );
+                mint_builder =
+                    mint_builder.add_ln_backend(unit, mint_melt_limits, Arc::new(strike));
             }
         }
         LnBackend::LNbits => {
@@ -192,12 +180,8 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnbits),
-            );
+            mint_builder =
+                mint_builder.add_ln_backend(CurrencyUnit::Sat, mint_melt_limits, Arc::new(lnbits));
         }
         LnBackend::Phoenixd => {
             let phd_settings = settings.clone().phoenixd.expect("Checked at config load");
@@ -205,12 +189,8 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(phd),
-            );
+            mint_builder =
+                mint_builder.add_ln_backend(CurrencyUnit::Sat, mint_melt_limits, Arc::new(phd));
         }
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
@@ -218,12 +198,8 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnd),
-            );
+            mint_builder =
+                mint_builder.add_ln_backend(CurrencyUnit::Sat, mint_melt_limits, Arc::new(lnd));
         }
         LnBackend::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
@@ -235,32 +211,15 @@ async fn main() -> anyhow::Result<()> {
 
                 let fake = Arc::new(fake);
 
-                mint_builder = mint_builder.add_ln_backend(
-                    unit.clone(),
-                    PaymentMethod::Bolt11,
-                    mint_melt_limits,
-                    fake.clone(),
-                );
+                mint_builder =
+                    mint_builder.add_ln_backend(unit.clone(), mint_melt_limits, fake.clone());
 
-                mint_builder = mint_builder.add_ln_backend(
-                    unit,
-                    PaymentMethod::Bolt12,
-                    mint_melt_limits,
-                    fake.clone(),
-                );
+                // TODO: Bolt12 for fake
+                // mint_builder =
+                //     mint_builder.add_bolt12_ln_backend(unit, mint_melt_limits, fake.clone());
             }
         }
     };
-
-    let support_bolt12_mint = ln_backends.iter().any(|(_k, ln)| {
-        let settings = ln.get_settings();
-        settings.bolt12_mint
-    });
-
-    let support_bolt12_melt = ln_backends.iter().any(|(_k, ln)| {
-        let settings = ln.get_settings();
-        settings.bolt12_melt
-    });
 
     if let Some(long_description) = &settings.mint_info.description_long {
         mint_builder = mint_builder.with_long_description(long_description.to_string());
@@ -326,7 +285,7 @@ async fn main() -> anyhow::Result<()> {
         .seconds_to_extend_cache_by
         .unwrap_or(DEFAULT_CACHE_TTI_SECS);
 
-    let include_bolt12 = support_bolt12_mint || support_bolt12_melt;
+    let include_bolt12 = !mint.bolt12_backends.is_empty();
 
     let v1_service =
         cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti, include_bolt12)

@@ -70,8 +70,6 @@ impl MintLightning for Strike {
         Settings {
             mpp: false,
             unit: self.unit.clone(),
-            bolt12_mint: false,
-            bolt12_melt: false,
             invoice_description: true,
         }
     }
