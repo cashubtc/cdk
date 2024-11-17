@@ -1,12 +1,14 @@
-use crate::MintState;
+use std::collections::HashMap;
+
 use axum::extract::ws::{Message, WebSocket};
 use cdk::nuts::nut17::{NotificationPayload, SubId};
 use futures::StreamExt;
 use handler::{WsHandle, WsNotification};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use subscribe::Notification;
 use tokio::sync::mpsc;
+
+use crate::MintState;
 
 mod error;
 mod handler;

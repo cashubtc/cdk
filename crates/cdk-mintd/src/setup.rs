@@ -1,19 +1,18 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use axum::{async_trait, Router};
-
-use cdk::{cdk_lightning::MintLightning, mint::FeeReserve, mint_url::MintUrl, nuts::CurrencyUnit};
+use cdk::cdk_lightning::MintLightning;
+use cdk::mint::FeeReserve;
+use cdk::mint_url::MintUrl;
+use cdk::nuts::CurrencyUnit;
+use rand::Rng;
 use tokio::sync::Mutex;
 use url::Url;
 
-use crate::{
-    config::{self, Settings},
-    expand_path,
-};
+use crate::config::{self, Settings};
+use crate::expand_path;
 
 #[async_trait]
 pub trait LnBackendSetup {
@@ -217,11 +216,15 @@ impl LnBackendSetup for config::FakeWallet {
             percent_fee_reserve: self.fee_percent,
         };
 
+        // calculate random delay time
+        let mut rng = rand::thread_rng();
+        let delay_time = rng.gen_range(self.min_delay_time..=self.max_delay_time);
+
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
-            3,
+            delay_time,
         );
 
         Ok(fake_wallet)

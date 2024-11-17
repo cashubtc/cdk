@@ -1,20 +1,23 @@
-use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
+use std::collections::HashMap;
+use std::env;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use axum::Router;
 use bip39::Mnemonic;
-use cdk::{
-    cdk_database::{self, MintDatabase},
-    cdk_lightning::MintLightning,
-    mint::{FeeReserve, Mint},
-    nuts::{CurrencyUnit, MintInfo},
-    types::{LnKey, QuoteTTL},
-};
+use cdk::cdk_database::{self, MintDatabase};
+use cdk::cdk_lightning::MintLightning;
+use cdk::mint::{FeeReserve, Mint};
+use cdk::nuts::{CurrencyUnit, MintInfo};
+use cdk::types::{LnKey, QuoteTTL};
 use cdk_cln::Cln as CdkCln;
-use ln_regtest_rs::{
-    bitcoin_client::BitcoinClient, bitcoind::Bitcoind, cln::Clnd, cln_client::ClnClient, lnd::Lnd,
-    lnd_client::LndClient,
-};
+use ln_regtest_rs::bitcoin_client::BitcoinClient;
+use ln_regtest_rs::bitcoind::Bitcoind;
+use ln_regtest_rs::cln::Clnd;
+use ln_regtest_rs::cln_client::ClnClient;
+use ln_regtest_rs::lnd::Lnd;
+use ln_regtest_rs::lnd_client::LndClient;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;

@@ -4,18 +4,17 @@ use lightning::offers::offer::Offer;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{MeltBolt11Request, MeltQuoteBolt11Request, Mpp};
-use crate::{
-    amount::amount_for_offer,
-    dhke::construct_proofs,
-    nuts::{CurrencyUnit, MeltQuoteBolt11Response, PaymentMethod, PreMintSecrets, Proofs, State},
-    types::{Melted, ProofInfo},
-    util::unix_time,
-    Amount, Error, Wallet,
-};
-
 use super::MeltQuote;
+use crate::amount::amount_for_offer;
+use crate::dhke::construct_proofs;
+use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::{
+    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Mpp,
+    PaymentMethod, PreMintSecrets, Proofs, State,
+};
+use crate::types::{Melted, ProofInfo};
+use crate::util::unix_time;
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote

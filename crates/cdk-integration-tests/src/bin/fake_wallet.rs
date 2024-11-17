@@ -2,7 +2,8 @@ use std::env;
 
 use anyhow::Result;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk_integration_tests::{init_fake_wallet::start_fake_mint, init_regtest::get_temp_dir};
+use cdk_integration_tests::init_fake_wallet::start_fake_mint;
+use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 

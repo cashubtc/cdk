@@ -235,6 +235,9 @@ pub struct Nuts {
     #[serde(rename = "15")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut15: Option<nut15::Settings>,
+    /// NUT17 Settings
+    #[cfg(feature = "mint")]
+    pub nut17: super::nut17::SupportedSettings,
     /// NUT04 Settings
     #[serde(rename = "18")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -243,10 +246,6 @@ pub struct Nuts {
     #[serde(rename = "19")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut19: Option<nut05::Settings>,
-    /// NUT17 Settings
-    #[serde(default)]
-    #[serde(rename = "17")]
-    pub nut17: SupportedSettings,
 }
 
 impl Nuts {

@@ -1,14 +1,14 @@
 use tracing::instrument;
 
-use crate::{
-    cdk_lightning::WaitInvoiceResponse, nuts::MintQuoteState, types::LnKey, util::unix_time,
-    Amount, Error,
-};
-
 use super::{
     nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
     NotificationPayload, PaymentMethod, PublicKey,
 };
+use crate::cdk_lightning::WaitInvoiceResponse;
+use crate::nuts::MintQuoteState;
+use crate::types::LnKey;
+use crate::util::unix_time;
+use crate::{Amount, Error};
 
 impl Mint {
     /// Checks that minting is enabled, request is supported unit and within range

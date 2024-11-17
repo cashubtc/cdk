@@ -23,6 +23,7 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
     * [**cdk-strike**](./crates/cdk-strike/): Strike Lightning backend for mint.
     * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint.
+    * [**cdk-phoenixd**](./crates/cdk-phoenixd/): Phoenixd Lightning backend for mint.
     * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
@@ -70,7 +71,7 @@ Code is under the [MIT License](LICENSE)
 
 ## Contribution
 
-All contributions welcome.
+All contributions are welcome.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, shall be licensed as above, without any additional terms or conditions.
 

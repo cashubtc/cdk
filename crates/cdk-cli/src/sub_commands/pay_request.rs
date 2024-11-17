@@ -1,13 +1,13 @@
 use std::io::{self, Write};
 
 use anyhow::{anyhow, Result};
-use cdk::{
-    amount::SplitTarget,
-    nuts::{nut18::TransportType, PaymentRequest, PaymentRequestPayload},
-    wallet::{MultiMintWallet, SendKind},
-};
+use cdk::amount::SplitTarget;
+use cdk::nuts::nut18::TransportType;
+use cdk::nuts::{PaymentRequest, PaymentRequestPayload};
+use cdk::wallet::{MultiMintWallet, SendKind};
 use clap::Args;
-use nostr_sdk::{nips::nip19::Nip19Profile, Client as NostrClient, EventBuilder, FromBech32, Keys};
+use nostr_sdk::nips::nip19::Nip19Profile;
+use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys};
 use reqwest::Client;
 
 #[derive(Args)]

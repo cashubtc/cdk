@@ -19,12 +19,17 @@ use crate::{
 };
 
 use super::nut05::MeltRequestTrait;
+use super::types::PaymentRequest;
 use super::BlindSignature;
+use super::CurrencyUnit;
+use super::MeltQuote;
+use super::MeltQuoteBolt11Request;
+use super::MeltQuoteBolt11Response;
 use super::MeltQuoteBolt12Request;
-use super::{
-    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Mint, PaymentMethod,
-    PaymentRequest, PublicKey, State,
-};
+use super::Mint;
+use super::PaymentMethod;
+use super::State;
+use crate::nuts::PublicKey;
 
 impl Mint {
     fn check_melt_request_acceptable(
@@ -100,7 +105,7 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
-        let request = PaymentRequest::Bolt11 {
+        let request = crate::mint::types::PaymentRequest::Bolt11 {
             bolt11: request.clone(),
         };
 

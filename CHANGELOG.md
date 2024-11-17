@@ -36,6 +36,7 @@
 - cdk: Use `MintUrl` directly in wallet client ([ok300]).
 - cdk-cli: Change cdk-cli pay command to melt ([mubarak23]).
 - cdk: Rename `Wallet::get_proofs` to `Wallet::get_unspent_proofs` ([ok300]).
+- cdk: `Id` to `u32` changed from `TryFrom` to `From` ([vnrpc]). 
 
 
 ### Added
@@ -47,7 +48,7 @@
 - cdk: Add description for mint quote ([lollerfirst]).
 - cdk-axum: Add cache to some endpoints ([lollerfirst]).
 - cdk: Add Proofs trait ([ok300]).
-- cdk: Wallet verifiys keyset id when first fetching keys ([thesimplekid]).
+- cdk: Wallet verifies keyset id when first fetching keys ([thesimplekid]).
 - cdk-mind: Add swagger docs ([ok300]).
 - cdk: NUT18 payment request support ([thesimplekid]).
 - cdk: Add `Wallet::get_proofs_with` ([ok300]).
@@ -198,4 +199,5 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [lollerfirst]: https://github.com/lollerfirst
 [prusnak]: https://github.com/prusnak
 [mubarak23]: https://github.com/mubarak23
+[vnprc]: https://github.com/vnprc
 

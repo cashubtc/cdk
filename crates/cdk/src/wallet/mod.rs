@@ -37,9 +37,10 @@ mod swap;
 pub mod types;
 pub mod util;
 
-use crate::nuts::nut00::ProofsMethods;
 pub use multi_mint_wallet::MultiMintWallet;
 pub use types::{MeltQuote, MintQuote, SendKind};
+
+use crate::nuts::nut00::ProofsMethods;
 
 /// CDK Wallet
 ///

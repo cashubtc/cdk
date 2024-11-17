@@ -39,6 +39,7 @@
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable."1.82.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
+          extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
         };
 
         # MSRV stable
@@ -53,7 +54,9 @@
         };
 
         # Nighly for creating lock files
-        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default);
+        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
+          extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
+        });
 
         # Common inputs
         envVars = { };
@@ -65,12 +68,14 @@
           just
           protobuf
           nixpkgs-fmt
-          rust-analyzer
           typos
           lnd
           clightning
           bitcoind
           sqlx-cli
+
+          # Needed for github ci
+          libz
         ] ++ libsDarwin;
 
         # WASM deps
@@ -146,23 +151,24 @@
             } // envVars);
 
             stable = pkgs.mkShell ({
-              shellHook = "${_shellHook}";
+              shellHook = ''${_shellHook}'';
               buildInputs = buildInputs ++ WASMInputs ++ [ stable_toolchain ];
               inherit nativeBuildInputs;
             } // envVars);
 
 
             db_shell = pkgs.mkShell ({
-              shellHook = "
-              ${_shellHook}
-              cargo update -p half --precise 2.2.1
-              cargo update -p home --precise 0.5.5
-              cargo update -p tokio --precise 1.38.1
-              cargo update -p tokio-stream --precise 0.1.15
-              cargo update -p serde_with --precise 3.1.0
-              cargo update -p reqwest --precise 0.12.4
-              cargo update -p url --precise 2.5.2
-              ";
+              shellHook = ''
+                ${_shellHook}
+                cargo update -p half --precise 2.2.1
+                cargo update -p home --precise 0.5.5
+                cargo update -p tokio --precise 1.38.1
+                cargo update -p tokio-stream --precise 0.1.15
+                cargo update -p serde_with --precise 3.1.0
+                cargo update -p reqwest --precise 0.12.4
+                cargo update -p url --precise 2.5.2
+                cargo update -p allocator-api2 --precise 0.2.18
+              '';
               buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
               inherit nativeBuildInputs;
             } // envVars);
@@ -170,7 +176,13 @@
 
 
             nightly = pkgs.mkShell ({
-              shellHook = "${_shellHook}";
+              shellHook = ''
+                ${_shellHook}
+                # Needed for github ci
+                export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
+                  pkgs.zlib
+                  ]}:$LD_LIBRARY_PATH
+              '';
               buildInputs = buildInputs ++ [ nightly_toolchain ];
               inherit nativeBuildInputs;
             } // envVars);

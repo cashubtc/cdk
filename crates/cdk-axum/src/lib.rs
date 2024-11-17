@@ -31,12 +31,10 @@ mod swagger_imports {
     pub use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
     pub use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
     pub use cdk::nuts::nut03::{SwapRequest, SwapResponse};
-    pub use cdk::nuts::nut04;
     pub use cdk::nuts::nut04::{
         MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
-    pub use cdk::nuts::nut05;
     pub use cdk::nuts::nut05::{
         MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     };
@@ -46,9 +44,8 @@ mod swagger_imports {
     pub use cdk::nuts::nut11::P2PKWitness;
     pub use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
     pub use cdk::nuts::nut14::HTLCWitness;
-    pub use cdk::nuts::nut15;
     pub use cdk::nuts::nut15::{Mpp, MppMethodSettings};
-    pub use cdk::nuts::{MeltQuoteState, MintQuoteState};
+    pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
 }
 
 #[cfg(feature = "swagger")]

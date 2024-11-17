@@ -1,19 +1,18 @@
-use std::{fmt::Debug, str::FromStr, sync::Arc, time::Duration};
+use std::fmt::Debug;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
-use cdk::{
-    amount::{Amount, SplitTarget},
-    cdk_database::WalletMemoryDatabase,
-    nuts::{
-        CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
-        PreMintSecrets, State,
-    },
-    wallet::{
-        client::{HttpClient, HttpClientMethods},
-        Wallet,
-    },
+use cdk::amount::{Amount, SplitTarget};
+use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::nuts::{
+    CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
+    PreMintSecrets, State,
 };
+use cdk::wallet::client::{HttpClient, HttpClientMethods};
+use cdk::wallet::Wallet;
 use cdk_integration_tests::init_regtest::{
     get_mint_url, get_mint_ws_url, init_cln_client, init_lnd_client,
 };
@@ -22,7 +21,8 @@ use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::InvoiceStatus;
 use serde_json::json;
 use tokio::time::{sleep, timeout};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::protocol::Message;
 
 async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
@@ -35,7 +35,7 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
         .unwrap();
 
     let mut response: serde_json::Value =
-        serde_json::from_str(&msg.to_text().unwrap()).expect("valid json");
+        serde_json::from_str(msg.to_text().unwrap()).expect("valid json");
 
     let mut params_raw = response
         .as_object_mut()
@@ -112,6 +112,18 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     assert!(melt_response.preimage.is_some());
     assert!(melt_response.state == MeltQuoteState::Paid);
 
+    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    // first message is the current state
+    assert_eq!("test-sub", sub_id);
+    let payload = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(payload.amount + payload.fee_reserve, 100.into());
+    assert_eq!(payload.quote, melt.id);
+    assert_eq!(payload.state, MeltQuoteState::Unpaid);
+
+    // get current state
     let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
     assert_eq!("test-sub", sub_id);
     let payload = match payload {
