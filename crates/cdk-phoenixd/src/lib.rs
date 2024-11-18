@@ -4,16 +4,19 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use axum::Router;
-use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    WaitInvoiceResponse,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::{mint, Bolt11Invoice};
@@ -24,6 +27,7 @@ use phoenixd_rs::{InvoiceRequest, Phoenixd as PhoenixdApi};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+mod bolt12;
 pub mod error;
 
 /// Phoenixd
@@ -92,7 +96,7 @@ impl MintLightning for Phoenixd {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -126,8 +130,14 @@ impl MintLightning for Phoenixd {
                             match check {
                                 Ok(state) => {
                                     if state.is_paid {
+                                        let wait_invoice = WaitInvoiceResponse {
+                                            request_lookup_id: msg.payment_hash.clone(),
+                                            payment_amount: Amount::ZERO,
+                                            unit: CurrencyUnit::Sat,
+                                            payment_id: msg.payment_hash
+                                        };
                                         // Yield the payment hash and continue the stream
-                                        Some((msg.payment_hash, (receiver, phoenixd_api, cancel_token, is_active)))
+                                        Some((wait_invoice, (receiver, phoenixd_api, cancel_token, is_active)))
                                     } else {
                                         // Invoice not paid yet, continue waiting
                                         // We need to continue the stream, so we return the same state
@@ -199,9 +209,14 @@ impl MintLightning for Phoenixd {
         partial_amount: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
+
         let pay_response = self
             .phoenixd_api
-            .pay_bolt11_invoice(&melt_quote.request, partial_amount.map(|a| a.into()))
+            .pay_bolt11_invoice(&bolt11.to_string(), partial_amount.map(|a| a.into()))
             .await?;
 
         // The pay invoice response does not give the needed fee info so we have to check.
@@ -209,12 +224,10 @@ impl MintLightning for Phoenixd {
             .check_outgoing_payment(&pay_response.payment_id)
             .await?;
 
-        let bolt11: Bolt11Invoice = melt_quote.request.parse()?;
-
         Ok(PayInvoiceResponse {
             payment_lookup_id: bolt11.payment_hash().to_string(),
             payment_preimage: Some(pay_response.payment_preimage),
-            status: MeltQuoteState::Paid,
+            status: check_outgoing_response.status,
             total_spent: check_outgoing_response.total_spent,
             unit: CurrencyUnit::Sat,
         })
@@ -268,6 +281,19 @@ impl MintLightning for Phoenixd {
         &self,
         payment_id: &str,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        // We can only check the status of the payment if we have the payment id not if we only have a payment hash.
+        // In phd this is a uuid, that we get after getting a response from the pay invoice
+        if let Err(_err) = uuid::Uuid::from_str(payment_id) {
+            tracing::warn!("Could not check status of payment, no payment id");
+            return Ok(PayInvoiceResponse {
+                payment_lookup_id: payment_id.to_string(),
+                payment_preimage: None,
+                status: MeltQuoteState::Unknown,
+                total_spent: Amount::ZERO,
+                unit: CurrencyUnit::Sat,
+            });
+        }
+
         let res = self.phoenixd_api.get_outgoing_invoice(payment_id).await;
 
         let state = match res {
@@ -277,13 +303,11 @@ impl MintLightning for Phoenixd {
                     false => MeltQuoteState::Unpaid,
                 };
 
-                let total_spent = res.sent + (res.fees + 999) / MSAT_IN_SAT;
-
                 PayInvoiceResponse {
                     payment_lookup_id: res.payment_hash,
                     payment_preimage: Some(res.preimage),
                     status,
-                    total_spent: total_spent.into(),
+                    total_spent: res.sent.into(),
                     unit: CurrencyUnit::Sat,
                 }
             }

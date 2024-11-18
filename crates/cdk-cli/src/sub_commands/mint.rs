@@ -6,26 +6,32 @@ use anyhow::Result;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, SecretKey};
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
-use cdk::Amount;
 use clap::Args;
-use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
-#[derive(Args, Serialize, Deserialize)]
+#[derive(Args)]
 pub struct MintSubCommand {
     /// Mint url
     mint_url: MintUrl,
     /// Amount
-    amount: u64,
+    amount: Option<u64>,
     /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
+    #[arg(short, long, default_value = "sat")]
     unit: String,
+    /// Payment method
+    #[arg(long, default_value = "bolt11")]
+    method: String,
     /// Quote description
-    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    /// Expiry
+    #[arg(short, long)]
+    expiry: Option<u64>,
+    /// Expiry
+    #[arg(short, long)]
+    single_use: Option<bool>,
 }
 
 pub async fn mint(
@@ -51,9 +57,37 @@ pub async fn mint(
         }
     };
 
-    let quote = wallet
-        .mint_quote(Amount::from(sub_command_args.amount), description)
-        .await?;
+    let secret_key = SecretKey::generate();
+
+    let method = PaymentMethod::from_str(&sub_command_args.method)?;
+
+    let quote = match method {
+        PaymentMethod::Bolt11 => {
+            println!("Bolt11");
+            wallet
+                .mint_quote(
+                    sub_command_args
+                        .amount
+                        .expect("Amount must be defined")
+                        .into(),
+                    description,
+                    Some(secret_key.public_key()),
+                )
+                .await?
+        }
+        PaymentMethod::Bolt12 => {
+            wallet
+                .mint_bolt12_quote(
+                    sub_command_args.amount.map(|a| a.into()),
+                    description,
+                    sub_command_args.single_use.unwrap_or(false),
+                    sub_command_args.expiry,
+                    secret_key.public_key(),
+                )
+                .await?
+        }
+        _ => panic!("Unsupported unit"),
+    };
 
     println!("Quote: {:#?}", quote);
 
@@ -69,7 +103,9 @@ pub async fn mint(
         sleep(Duration::from_secs(2)).await;
     }
 
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let receive_amount = wallet
+        .mint(&quote.id, SplitTarget::default(), None, None)
+        .await?;
 
     println!("Received {receive_amount} from mint {mint_url}");
 

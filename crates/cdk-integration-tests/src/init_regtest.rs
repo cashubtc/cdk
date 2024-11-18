@@ -10,7 +10,7 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{FeeReserve, Mint};
 use cdk::nuts::{CurrencyUnit, MintInfo};
-use cdk::types::{LnKey, QuoteTTL};
+use cdk::types::QuoteTTL;
 use cdk_cln::Cln as CdkCln;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
@@ -144,7 +144,7 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
 pub async fn create_mint<D>(
     database: D,
     ln_backends: HashMap<
-        LnKey,
+        CurrencyUnit,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     >,
 ) -> Result<Mint>
@@ -176,6 +176,7 @@ where
         quote_ttl,
         Arc::new(database),
         ln_backends,
+        HashMap::new(),
         supported_units,
         HashMap::new(),
     )
@@ -206,14 +207,11 @@ where
     let cln_backend = create_cln_backend(&cln_client).await?;
 
     let mut ln_backends: HashMap<
-        LnKey,
+        CurrencyUnit,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     > = HashMap::new();
 
-    ln_backends.insert(
-        LnKey::new(CurrencyUnit::Sat, cdk::nuts::PaymentMethod::Bolt11),
-        Arc::new(cln_backend),
-    );
+    ln_backends.insert(CurrencyUnit::Sat, Arc::new(cln_backend));
 
     let mint = create_mint(database, ln_backends.clone()).await?;
     let cache_time_to_live = 3600;
@@ -224,6 +222,7 @@ where
         Arc::clone(&mint_arc),
         cache_time_to_live,
         cache_time_to_idle,
+        false,
     )
     .await
     .unwrap();

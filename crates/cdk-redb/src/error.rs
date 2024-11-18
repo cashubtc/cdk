@@ -58,6 +58,9 @@ pub enum Error {
     /// Unknown Database Version
     #[error("Unknown database version")]
     UnknownDatabaseVersion,
+    /// Anyhow error
+    #[error(transparent)]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl From<Error> for cdk::cdk_database::Error {

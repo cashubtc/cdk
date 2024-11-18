@@ -14,6 +14,9 @@ pub enum Error {
     /// Strikers error
     #[error(transparent)]
     StrikeRs(#[from] strike_rs::Error),
+    /// Unsupported method
+    #[error("Unsupported method")]
+    UnsupportedMethod,
     /// Anyhow error
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),

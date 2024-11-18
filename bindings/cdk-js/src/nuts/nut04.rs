@@ -88,10 +88,18 @@ impl From<MintBolt11Request> for JsMintBolt11Request {
 impl JsMintBolt11Request {
     /// Try From Base 64 String
     #[wasm_bindgen(constructor)]
-    pub fn new(quote: String, outputs: JsValue) -> Result<JsMintBolt11Request> {
+    pub fn new(
+        quote: String,
+        outputs: JsValue,
+        witness: Option<String>,
+    ) -> Result<JsMintBolt11Request> {
         let outputs = serde_wasm_bindgen::from_value(outputs).map_err(into_err)?;
         Ok(JsMintBolt11Request {
-            inner: MintBolt11Request { quote, outputs },
+            inner: MintBolt11Request {
+                quote,
+                outputs,
+                witness,
+            },
         })
     }
 

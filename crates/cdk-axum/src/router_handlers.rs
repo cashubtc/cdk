@@ -157,8 +157,6 @@ pub async fn post_mint_bolt11_quote(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-/// Get mint quote by ID
-///
 /// Get mint quote state.
 pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
@@ -283,11 +281,7 @@ pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
-    let res = state
-        .mint
-        .melt_bolt11(&payload)
-        .await
-        .map_err(into_response)?;
+    let res = state.mint.melt(&payload).await.map_err(into_response)?;
 
     Ok(Json(res))
 }

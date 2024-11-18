@@ -141,6 +141,7 @@ impl ProofInfo {
 
 /// Key used in hashmap of ln backends to identify what unit and payment method
 /// it is for
+// TODO: Check if this is actually used anywhere
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LnKey {
     /// Unit of Payment backend

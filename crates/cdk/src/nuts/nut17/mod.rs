@@ -118,10 +118,9 @@ impl Indexable for NotificationPayload {
     }
 }
 
+/// Kind
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-
-/// Kind
 pub enum Kind {
     /// Bolt 11 Melt Quote
     Bolt11MeltQuote,

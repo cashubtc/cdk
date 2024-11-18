@@ -4,12 +4,15 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
+use lightning::offers::offer::Offer;
 use lightning_invoice::{Bolt11Invoice, ParseOrSemanticError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use crate::{mint, Amount};
+
+pub mod bolt12;
 
 /// CDK Lightning Error
 #[derive(Debug, Error)]
@@ -20,12 +23,18 @@ pub enum Error {
     /// Invoice pay pending
     #[error("Invoice pay is pending")]
     InvoicePaymentPending,
+    /// Invoice amount unknown
+    #[error("Invoice amount unknown")]
+    InvoiceAmountUnknown,
     /// Unsupported unit
     #[error("Unsupported unit")]
     UnsupportedUnit,
     /// Payment state is unknown
     #[error("Payment state is unknown")]
     UnknownPaymentState,
+    /// Utf8 parse error
+    #[error(transparent)]
+    Utf8ParseError(#[from] std::string::FromUtf8Error),
     /// Lightning Error
     #[error(transparent)]
     Lightning(Box<dyn std::error::Error + Send + Sync>),
@@ -41,6 +50,21 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+}
+
+/// Wait any invoice response
+#[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
+pub struct WaitInvoiceResponse {
+    /// Request look up id
+    /// Id that relates the quote and payment request
+    pub request_lookup_id: String,
+    /// Payment amount
+    pub payment_amount: Amount,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Unique id of payment
+    // Payment hash
+    pub payment_id: String,
 }
 
 /// MintLighting Trait
@@ -80,7 +104,7 @@ pub trait MintLightning {
     /// Returns a stream of request_lookup_id once invoices are paid
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err>;
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err>;
 
     /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool;
@@ -102,12 +126,23 @@ pub trait MintLightning {
 }
 
 /// Create invoice response
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct CreateInvoiceResponse {
     /// Id that is used to look up the invoice from the ln backend
     pub request_lookup_id: String,
     /// Bolt11 payment request
     pub request: Bolt11Invoice,
+    /// Unix Expiry of Invoice
+    pub expiry: Option<u64>,
+}
+
+/// Create offer response
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CreateOfferResponse {
+    /// Id that is used to look up the invoice from the ln backend
+    pub request_lookup_id: String,
+    /// Bolt11 payment request
+    pub request: Offer,
     /// Unix Expiry of Invoice
     pub expiry: Option<u64>,
 }
@@ -140,8 +175,23 @@ pub struct PaymentQuoteResponse {
     pub state: MeltQuoteState,
 }
 
-/// Ln backend settings
+/// Payment quote response
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bolt12PaymentQuoteResponse {
+    /// Request look up id
+    pub request_lookup_id: String,
+    /// Amount
+    pub amount: Amount,
+    /// Fee required for melt
+    pub fee: Amount,
+    /// Status
+    pub state: MeltQuoteState,
+    /// Bolt12 invoice
+    pub invoice: Option<String>,
+}
+
+/// Ln backend settings
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// MPP supported
     pub mpp: bool,

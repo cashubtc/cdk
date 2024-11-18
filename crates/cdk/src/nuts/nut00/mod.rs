@@ -394,12 +394,12 @@ impl CurrencyUnit {
 impl FromStr for CurrencyUnit {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = &value.to_uppercase();
+        let value = value.to_lowercase();
         match value.as_str() {
-            "SAT" => Ok(Self::Sat),
-            "MSAT" => Ok(Self::Msat),
-            "USD" => Ok(Self::Usd),
-            "EUR" => Ok(Self::Eur),
+            "sat" => Ok(Self::Sat),
+            "msat" => Ok(Self::Msat),
+            "usd" => Ok(Self::Usd),
+            "eur" => Ok(Self::Eur),
             c => Ok(Self::Custom(c.to_string())),
         }
     }
@@ -449,13 +449,17 @@ pub enum PaymentMethod {
     /// Bolt11 payment type
     #[default]
     Bolt11,
+    /// Bolt12 offer
+    Bolt12,
 }
 
 impl FromStr for PaymentMethod {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
+        let value = value.to_lowercase();
+        match value.as_str() {
             "bolt11" => Ok(Self::Bolt11),
+            "bolt12" => Ok(Self::Bolt12),
             _ => Err(Error::UnsupportedPaymentMethod),
         }
     }
@@ -465,6 +469,7 @@ impl fmt::Display for PaymentMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentMethod::Bolt11 => write!(f, "bolt11"),
+            PaymentMethod::Bolt12 => write!(f, "bolt12"),
         }
     }
 }

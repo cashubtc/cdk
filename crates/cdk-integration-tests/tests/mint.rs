@@ -8,13 +8,14 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
+use cdk::cdk_lightning::WaitInvoiceResponse;
 use cdk::dhke::construct_proofs;
 use cdk::mint::MintQuote;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut17::Params;
 use cdk::nuts::{
-    CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PreMintSecrets,
-    ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PaymentMethod,
+    PreMintSecrets, ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
@@ -52,6 +53,7 @@ async fn new_mint(fee: u64) -> Mint {
         quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
         HashMap::new(),
+        HashMap::new(),
         supported_units,
         HashMap::new(),
     )
@@ -74,15 +76,28 @@ async fn mint_proofs(
     let quote = MintQuote::new(
         mint.mint_url.clone(),
         "".to_string(),
+        PaymentMethod::Bolt11,
         CurrencyUnit::Sat,
-        amount,
+        Some(amount),
         unix_time() + 36000,
         request_lookup.to_string(),
+        Amount::ZERO,
+        Amount::ZERO,
+        true,
+        vec![],
+        None,
     );
 
     mint.localstore.add_mint_quote(quote.clone()).await?;
 
-    mint.pay_mint_quote_for_request_id(&request_lookup).await?;
+    let wait_invoice = WaitInvoiceResponse {
+        request_lookup_id: request_lookup.clone(),
+        payment_amount: amount,
+        unit: CurrencyUnit::Sat,
+        payment_id: request_lookup,
+    };
+
+    mint.pay_mint_quote_for_request_id(wait_invoice).await?;
     let keyset_id = Id::from(&keys);
 
     let premint = PreMintSecrets::random(keyset_id, amount, split_target)?;
@@ -90,6 +105,7 @@ async fn mint_proofs(
     let mint_request = MintBolt11Request {
         quote: quote.id,
         outputs: premint.blinded_messages(),
+        witness: None,
     };
 
     let after_mint = mint.process_mint_request(mint_request).await?;

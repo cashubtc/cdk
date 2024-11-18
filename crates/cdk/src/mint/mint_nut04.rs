@@ -4,8 +4,8 @@ use super::{
     nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
     NotificationPayload, PaymentMethod, PublicKey,
 };
+use crate::cdk_lightning::WaitInvoiceResponse;
 use crate::nuts::MintQuoteState;
-use crate::types::LnKey;
 use crate::util::unix_time;
 use crate::{Amount, Error};
 
@@ -64,18 +64,16 @@ impl Mint {
             amount,
             unit,
             description,
+            pubkey,
         } = mint_quote_request;
 
         self.check_mint_request_acceptable(amount, &unit)?;
 
-        let ln = self
-            .ln
-            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt11))
-            .ok_or_else(|| {
-                tracing::info!("Bolt11 mint request for unsupported unit");
+        let ln = self.ln.get(&unit).ok_or_else(|| {
+            tracing::info!("Bolt11 mint request for unsupported unit");
 
-                Error::UnitUnsupported
-            })?;
+            Error::UnitUnsupported
+        })?;
 
         let quote_expiry = unix_time() + self.quote_ttl.mint_ttl;
 
@@ -100,14 +98,20 @@ impl Mint {
         let quote = MintQuote::new(
             self.mint_url.clone(),
             create_invoice_response.request.to_string(),
+            PaymentMethod::Bolt11,
             unit.clone(),
-            amount,
+            Some(amount),
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
+            Amount::ZERO,
+            Amount::ZERO,
+            true,
+            vec![],
+            pubkey,
         );
 
         tracing::debug!(
-            "New mint quote {} for {} {} with request id {}",
+            "New bolt11 mint quote {} for {} {} with request id {}",
             quote.id,
             amount,
             unit,
@@ -146,6 +150,7 @@ impl Mint {
             request: quote.request,
             state,
             expiry: Some(quote.expiry),
+            pubkey: quote.pubkey,
         })
     }
 
@@ -197,48 +202,89 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn pay_mint_quote_for_request_id(
         &self,
-        request_lookup_id: &str,
+        wait_invoice_response: WaitInvoiceResponse,
     ) -> Result<(), Error> {
+        let WaitInvoiceResponse {
+            request_lookup_id,
+            payment_amount,
+            unit,
+            payment_id,
+        } = wait_invoice_response;
         if let Ok(Some(mint_quote)) = self
             .localstore
-            .get_mint_quote_by_request_lookup_id(request_lookup_id)
+            .get_mint_quote_by_request_lookup_id(&request_lookup_id)
             .await
         {
             tracing::debug!(
-                "Received payment notification for mint quote {}",
-                mint_quote.id
+                "Quote {} with lookup id {} paid by {}",
+                mint_quote.id,
+                request_lookup_id,
+                payment_id
             );
-            if mint_quote.state != MintQuoteState::Issued
-                && mint_quote.state != MintQuoteState::Paid
+
+            if (mint_quote.single_use || mint_quote.payment_method == PaymentMethod::Bolt11)
+                && mint_quote.state == MintQuoteState::Issued
             {
-                let unix_time = unix_time();
-
-                if mint_quote.expiry < unix_time {
-                    tracing::warn!(
-                        "Mint quote {} paid at {} expired at {}, leaving current state",
-                        mint_quote.id,
-                        mint_quote.expiry,
-                        unix_time,
-                    );
-                    return Err(Error::ExpiredQuote(mint_quote.expiry, unix_time));
-                }
-
-                tracing::debug!(
-                    "Marking quote {} paid by lookup id {}",
-                    mint_quote.id,
-                    request_lookup_id
+                tracing::info!(
+                    "Payment notification for quote {} already issued.",
+                    mint_quote.id
                 );
-
-                self.localstore
-                    .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
-                    .await?;
-            } else {
-                tracing::debug!(
-                    "{} Quote already {} continuing",
-                    mint_quote.id,
-                    mint_quote.state
-                );
+                return Err(Error::IssuedQuote);
             }
+
+            self.localstore
+                .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
+                .await?;
+
+            let quote = self
+                .localstore
+                .get_mint_quote(&mint_quote.id)
+                .await?
+                .unwrap();
+
+            assert!(unit == quote.unit);
+
+            let mut payment_ids = quote.payment_ids;
+
+            // We check if this payment has already been seen for this mint quote
+            // If it is we do not want to continue and add it to the paid balance of the quote
+            if payment_ids.contains(&payment_id) {
+                tracing::info!(
+                    "Received update for payment {} already seen for quote {}",
+                    payment_id,
+                    mint_quote.id
+                );
+                return Err(Error::PaymentAlreadySeen);
+            }
+
+            let amount_paid = quote.amount_paid + payment_amount;
+
+            // Since this is the first time we've seen this payment we add it to seen payment.
+            payment_ids.push(payment_id);
+
+            let quote = MintQuote {
+                id: quote.id,
+                mint_url: quote.mint_url,
+                amount: quote.amount,
+                payment_method: quote.payment_method,
+                unit: quote.unit,
+                request: quote.request,
+                state: MintQuoteState::Paid,
+                expiry: quote.expiry,
+                request_lookup_id: quote.request_lookup_id,
+                amount_paid,
+                amount_issued: quote.amount_issued,
+                single_use: quote.single_use,
+                payment_ids,
+                pubkey: quote.pubkey,
+            };
+
+            tracing::debug!(
+                "Quote: {}, Amount paid: {}, amount issued: {}",
+                quote.id,
+                amount_paid,
+                quote.amount_issued
+            );
 
             self.pubsub_manager
                 .mint_quote_bolt11_status(mint_quote, MintQuoteState::Paid);
@@ -252,7 +298,7 @@ impl Mint {
         &self,
         mint_request: nut04::MintBolt11Request,
     ) -> Result<nut04::MintBolt11Response, Error> {
-        let mint_quote =
+        let quote =
             if let Some(mint_quote) = self.localstore.get_mint_quote(&mint_request.quote).await? {
                 mint_quote
             } else {
@@ -272,9 +318,17 @@ impl Mint {
                 return Err(Error::PendingQuote);
             }
             MintQuoteState::Issued => {
-                return Err(Error::IssuedQuote);
+                if quote.amount_issued >= quote.amount_paid {
+                    return Err(Error::IssuedQuote);
+                }
             }
             MintQuoteState::Paid => (),
+        }
+
+        // If the there is a public key provoided in mint quote request
+        // verify the signature is provided for the mint request
+        if let Some(pubkey) = quote.pubkey {
+            mint_request.verify_witness(pubkey)?;
         }
 
         let blinded_messages: Vec<PublicKey> = mint_request
@@ -300,8 +354,7 @@ impl Mint {
 
             self.localstore
                 .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                .await
-                .unwrap();
+                .await?;
 
             return Err(Error::BlindedMessageAlreadySigned);
         }
@@ -328,6 +381,28 @@ impl Mint {
         self.localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
             .await?;
+
+        let mint_quote = MintQuote {
+            id: quote.id,
+            mint_url: quote.mint_url,
+            payment_method: quote.payment_method,
+            amount: quote.amount,
+            unit: quote.unit,
+            request: quote.request,
+            state: MintQuoteState::Issued,
+            expiry: quote.expiry,
+            amount_paid: quote.amount_paid,
+            amount_issued: quote.amount_issued
+                + mint_request
+                    .total_amount()
+                    .map_err(|_| Error::AmountOverflow)?,
+            request_lookup_id: quote.request_lookup_id,
+            single_use: quote.single_use,
+            payment_ids: quote.payment_ids,
+            pubkey: quote.pubkey,
+        };
+
+        self.localstore.add_mint_quote(mint_quote.clone()).await?;
 
         self.pubsub_manager
             .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);

@@ -4,8 +4,7 @@
 //! These ensure that the status of the mint or melt quote matches in the mint db and on the node.
 
 use super::{Error, Mint};
-use crate::mint::{MeltQuote, MeltQuoteState, PaymentMethod};
-use crate::types::LnKey;
+use crate::mint::{MeltQuote, MeltQuoteState};
 
 impl Mint {
     /// Check the status of all pending mint quotes in the mint db
@@ -56,22 +55,15 @@ impl Mint {
             tracing::debug!("Checking status for melt quote {}.", pending_quote.id);
             let melt_request_ln_key = self.localstore.get_melt_request(&pending_quote.id).await?;
 
-            let (melt_request, ln_key) = match melt_request_ln_key {
-                None => {
-                    let ln_key = LnKey {
-                        unit: pending_quote.unit,
-                        method: PaymentMethod::Bolt11,
-                    };
-
-                    (None, ln_key)
-                }
-                Some((melt_request, ln_key)) => (Some(melt_request), ln_key),
+            let (melt_request, unit) = match melt_request_ln_key {
+                None => (None, pending_quote.unit),
+                Some((melt_request, ln_key)) => (Some(melt_request), ln_key.unit),
             };
 
-            let ln_backend = match self.ln.get(&ln_key) {
+            let ln_backend = match self.ln.get(&unit) {
                 Some(ln_backend) => ln_backend,
                 None => {
-                    tracing::warn!("No backend for ln key: {:?}", ln_key);
+                    tracing::warn!("No backend for ln key: {:?}", unit);
                     continue;
                 }
             };
@@ -87,7 +79,6 @@ impl Mint {
                             if let Err(err) = self
                                 .process_melt_request(
                                     &melt_request,
-                                    pay_invoice_response.payment_preimage,
                                     pay_invoice_response.total_spent,
                                 )
                                 .await

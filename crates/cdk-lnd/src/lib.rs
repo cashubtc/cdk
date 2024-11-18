@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    WaitInvoiceResponse,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::{hex, unix_time};
@@ -93,7 +95,7 @@ impl MintLightning for Lnd {
 
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let mut client =
             fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
                 .await
@@ -135,7 +137,15 @@ impl MintLightning for Lnd {
                 match msg {
                     Ok(Some(msg)) => {
                         if msg.state == 1 {
-                            Some((hex::encode(msg.r_hash), (stream, cancel_token, is_active)))
+                                let payment_hash =  hex::encode(msg.r_hash);
+                            let wait_response = WaitInvoiceResponse {
+                                request_lookup_id: payment_hash.clone(),
+                                payment_amount: Amount::ZERO,
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
+                            };
+
+                            Some((wait_response , (stream, cancel_token, is_active)))
                         } else {
                             None
                         }
@@ -199,10 +209,13 @@ impl MintLightning for Lnd {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let payment_request = melt_quote.request;
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
 
         let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
-            payment_request,
+            payment_request: bolt11.to_string(),
             fee_limit: max_fee.map(|f| {
                 let limit = Limit::Fixed(u64::from(f) as i64);
 

@@ -13,7 +13,9 @@ use axum::Router;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    WaitInvoiceResponse,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::unix_time;
@@ -86,7 +88,7 @@ impl MintLightning for LNbits {
     #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -123,7 +125,14 @@ impl MintLightning for LNbits {
                             match check {
                                 Ok(state) => {
                                     if state {
-                                        Some((msg, (receiver, lnbits_api, cancel_token, is_active)))
+                                        let response = WaitInvoiceResponse {
+                                            request_lookup_id: msg.clone(),
+                                            payment_amount: Amount::ZERO,
+                                            unit: CurrencyUnit::Sat,
+                                            payment_id: msg
+                                        };
+
+                                        Some((response , (receiver, lnbits_api, cancel_token, is_active)))
                                     } else {
                                         None
                                     }
@@ -187,9 +196,14 @@ impl MintLightning for LNbits {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
+
         let pay_response = self
             .lnbits_api
-            .pay_invoice(&melt_quote.request)
+            .pay_invoice(&bolt11.to_string())
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay invoice");

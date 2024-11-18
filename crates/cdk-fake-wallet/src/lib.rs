@@ -7,7 +7,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -17,8 +16,10 @@ use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    WaitInvoiceResponse,
 };
 use cdk::mint;
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::unix_time;
@@ -33,6 +34,7 @@ use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+mod bolt12;
 pub mod error;
 
 /// Fake Wallet
@@ -41,6 +43,8 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<String>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
+    bolt12_sender: tokio::sync::mpsc::Sender<String>,
+    bolt12_receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
@@ -57,11 +61,14 @@ impl FakeWallet {
         payment_delay: u64,
     ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let (bolt12_sender, bolt12_receiver) = tokio::sync::mpsc::channel(8);
 
         Self {
             fee_reserve,
             sender,
             receiver: Arc::new(Mutex::new(Some(receiver))),
+            bolt12_sender,
+            bolt12_receiver: Arc::new(Mutex::new(Some(bolt12_receiver))),
             payment_states: Arc::new(Mutex::new(payment_states)),
             failed_payment_check: Arc::new(Mutex::new(fail_payment_check)),
             payment_delay,
@@ -117,10 +124,17 @@ impl MintLightning for FakeWallet {
 
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
-        Ok(Box::pin(receiver_stream.map(|label| label)))
+        self.wait_invoice_is_active.store(true, Ordering::SeqCst);
+
+        Ok(Box::pin(receiver_stream.map(|label| WaitInvoiceResponse {
+            request_lookup_id: label.clone(),
+            payment_amount: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            payment_id: label,
+        })))
     }
 
     async fn get_payment_quote(
@@ -162,7 +176,10 @@ impl MintLightning for FakeWallet {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongRequestType.into()),
+        };
 
         let payment_hash = bolt11.payment_hash().to_string();
 

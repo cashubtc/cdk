@@ -9,8 +9,8 @@ use cdk::amount::Amount;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, PublicKey,
-    SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod,
+    Proof, PublicKey, SpendingConditions, State,
 };
 use cdk::secret::Secret;
 use cdk::types::ProofInfo;
@@ -342,8 +342,8 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(id, mint_url, amount, unit, request, state, expiry, payment_method, amount_paid, amount_minted, pubkey)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -353,6 +353,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(quote.request)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
+        .bind(quote.payment_method.to_string())
+        .bind(u64::from(quote.amount_paid) as i64)
+        .bind(u64::from(quote.amount_minted) as i64)
+        .bind(quote.pubkey.map(|p| p.to_string()))
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -425,8 +429,8 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(id, unit, amount, request, fee_reserve, state, expiry, payment_method)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -436,6 +440,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         .bind(u64::from(quote.fee_reserve) as i64)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
+        .bind(quote.payment_method.to_string())
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -823,8 +828,21 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
     let row_request: String = row.try_get("request").map_err(Error::from)?;
     let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+    let row_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
+    let row_amount_paid: Option<i64> = row.try_get("amount_paid").map_err(Error::from)?;
+    let row_amount_minted: Option<i64> = row.try_get("amount_minted").map_err(Error::from)?;
 
     let state = MintQuoteState::from_str(&row_state)?;
+
+    let payment_method = row_method.and_then(|m| PaymentMethod::from_str(&m).ok());
+
+    let amount_paid = row_amount_paid.unwrap_or(0) as u64;
+    let amount_minted = row_amount_minted.unwrap_or(0) as u64;
+    let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
+
+    let pubkey = row_pubkey
+        .map(|key| PublicKey::from_str(&key))
+        .transpose()?;
 
     Ok(MintQuote {
         id: row_id,
@@ -834,6 +852,10 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         request: row_request,
         state,
         expiry: row_expiry as u64,
+        payment_method: payment_method.unwrap_or_default(),
+        amount_minted: amount_minted.into(),
+        amount_paid: amount_paid.into(),
+        pubkey,
     })
 }
 
@@ -846,6 +868,9 @@ fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<wallet::MeltQuote, Error>
     let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
     let row_preimage: Option<String> = row.try_get("payment_preimage").map_err(Error::from)?;
+    let row_payment_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
+
+    let payment_method = row_payment_method.and_then(|p| PaymentMethod::from_str(&p).ok());
 
     let state = MeltQuoteState::from_str(&row_state)?;
     Ok(wallet::MeltQuote {
@@ -853,6 +878,7 @@ fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<wallet::MeltQuote, Error>
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
+        payment_method: payment_method.unwrap_or_default(),
         fee_reserve: Amount::from(row_fee_reserve as u64),
         state,
         expiry: row_expiry as u64,

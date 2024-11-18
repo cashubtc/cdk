@@ -14,7 +14,9 @@ use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+    WaitInvoiceResponse,
 };
+use cdk::mint::types::PaymentRequest;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::{hex, unix_time};
@@ -34,6 +36,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod bolt12;
 pub mod error;
 
 /// CLN mint backend
@@ -44,6 +47,7 @@ pub struct Cln {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
+    bolt12_wait_invoice_is_active: Arc<AtomicBool>,
 }
 
 impl Cln {
@@ -57,6 +61,7 @@ impl Cln {
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
+            bolt12_wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -83,11 +88,11 @@ impl MintLightning for Cln {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    #[allow(clippy::incompatible_msrv)]
     // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
+    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitInvoiceResponse> + Send>>, Self::Err> {
         let last_pay_index = self.get_last_pay_index().await?;
         let cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
@@ -144,37 +149,20 @@ impl MintLightning for Cln {
 
                             let payment_hash = wait_any_response.payment_hash.to_string();
 
-                            let request_look_up = match wait_any_response.bolt12 {
-                                // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
-                                // Since this is not returned in the wait any response,
-                                // we need to do a second query for it.
-                                Some(_) => {
-                                    match fetch_invoice_by_payment_hash(
-                                        &mut cln_client,
-                                        &payment_hash,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(invoice)) => {
-                                            if let Some(local_offer_id) = invoice.local_offer_id {
-                                                local_offer_id.to_string()
-                                            } else {
-                                                continue;
-                                            }
-                                        }
-                                        Ok(None) => continue,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Error fetching invoice by payment hash: {e}"
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                }
-                                None => payment_hash,
+
+                            // TODO: Handle unit conversion
+                            let amount_msats = wait_any_response.amount_received_msat.expect("status is paid there should be an amount");
+                            let amount_sats =  amount_msats.msat() / 1000;
+
+
+                            let response = WaitInvoiceResponse {
+                                request_lookup_id: payment_hash.clone(),
+                                payment_amount: amount_sats.into(),
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
                             };
 
-                            return Some((request_look_up, (cln_client, last_pay_idx, cancel_token, is_active)));
+                            break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));
                                 }
                                 Err(e) => {
                                     tracing::warn!("Error fetching invoice: {e}");
@@ -231,7 +219,11 @@ impl MintLightning for Cln {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let bolt11 = &match melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11,
+            PaymentRequest::Bolt12 { .. } => return Err(Error::WrongPaymentType.into()),
+        };
+
         let pay_state = self
             .check_outgoing_payment(&bolt11.payment_hash().to_string())
             .await?;
@@ -251,7 +243,7 @@ impl MintLightning for Cln {
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client
             .call(Request::Pay(PayRequest {
-                bolt11: melt_quote.request.to_string(),
+                bolt11: bolt11.to_string(),
                 amount_msat: None,
                 label: None,
                 riskfactor: None,
@@ -370,41 +362,19 @@ impl MintLightning for Cln {
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
-        let cln_response = cln_client
-            .call(Request::ListInvoices(ListinvoicesRequest {
-                payment_hash: Some(payment_hash.to_string()),
-                label: None,
-                invstring: None,
-                offer_id: None,
-                index: None,
-                limit: None,
-                start: None,
-            }))
-            .await
-            .map_err(Error::from)?;
-
-        let status = match cln_response {
-            cln_rpc::Response::ListInvoices(invoice_response) => {
-                match invoice_response.invoices.first() {
-                    Some(invoice_response) => {
-                        cln_invoice_status_to_mint_state(invoice_response.status)
-                    }
-                    None => {
-                        tracing::info!(
-                            "Check invoice called on unknown look up id: {}",
-                            payment_hash
-                        );
-                        return Err(Error::WrongClnResponse.into());
-                    }
-                }
+        match fetch_invoice_by_payment_hash(&mut cln_client, payment_hash).await? {
+            Some(invoice) => {
+                let status = cln_invoice_status_to_mint_state(invoice.status);
+                Ok(status)
             }
-            _ => {
-                tracing::warn!("CLN returned wrong response kind");
-                return Err(Error::WrongClnResponse.into());
+            None => {
+                tracing::info!(
+                    "Check invoice called on unknown payment hash: {}",
+                    payment_hash
+                );
+                Err(Error::UnknownInvoice.into())
             }
-        };
-
-        Ok(status)
+        }
     }
 
     async fn check_outgoing_payment(

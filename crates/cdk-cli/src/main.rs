@@ -25,7 +25,7 @@ const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 #[derive(Parser)]
 #[command(name = "cashu-tool")]
 #[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = "0.1.0")]
+#[command(version = "0.4.0")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
@@ -64,6 +64,8 @@ enum Commands {
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
     Mint(sub_commands::mint::MintSubCommand),
+    /// Remint
+    ReMint(sub_commands::remint_bolt12::ReMintSubCommand),
     /// Burn Spent tokens
     Burn(sub_commands::burn::BurnSubCommand),
     /// Restore proofs from seed
@@ -218,6 +220,15 @@ async fn main() -> Result<()> {
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::ReMint(sub_command_args) => {
+            sub_commands::remint_bolt12::remint(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+            )
+            .await
         }
     }
 }

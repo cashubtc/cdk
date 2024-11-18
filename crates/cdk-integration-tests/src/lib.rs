@@ -39,7 +39,7 @@ pub fn create_backends_fake_wallet(
     let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11);
 
     let wallet = Arc::new(FakeWallet::new(
-        fee_reserve.clone(),
+        fee_reserve,
         HashMap::default(),
         HashSet::default(),
         0,
@@ -52,7 +52,7 @@ pub fn create_backends_fake_wallet(
 
 pub async fn start_mint(
     ln_backends: HashMap<
-        LnKey,
+        CurrencyUnit,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     >,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
@@ -79,19 +79,21 @@ pub async fn start_mint(
         quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
         ln_backends.clone(),
+        HashMap::new(),
         supported_units,
         HashMap::new(),
     )
     .await?;
+
     let cache_time_to_live = 3600;
     let cache_time_to_idle = 3600;
 
     let mint_arc = Arc::new(mint);
-
     let v1_service = cdk_axum::create_mint_router(
         Arc::clone(&mint_arc),
         cache_time_to_live,
         cache_time_to_idle,
+        false,
     )
     .await?;
 
@@ -125,7 +127,7 @@ pub async fn wallet_mint(
     split_target: SplitTarget,
     description: Option<String>,
 ) -> Result<()> {
-    let quote = wallet.mint_quote(amount, description).await?;
+    let quote = wallet.mint_quote(amount, description, None).await?;
 
     loop {
         let status = wallet.mint_quote_state(&quote.id).await?;
@@ -138,7 +140,7 @@ pub async fn wallet_mint(
         sleep(Duration::from_secs(2)).await;
     }
 
-    let receive_amount = wallet.mint(&quote.id, split_target, None).await?;
+    let receive_amount = wallet.mint(&quote.id, split_target, None, None).await?;
 
     println!("Minted: {}", receive_amount);
 
@@ -161,6 +163,7 @@ pub async fn mint_proofs(
         amount,
         unit: CurrencyUnit::Sat,
         description,
+        pubkey: None,
     };
 
     let mint_quote = wallet_client
@@ -187,6 +190,7 @@ pub async fn mint_proofs(
     let request = MintBolt11Request {
         quote: mint_quote.quote,
         outputs: premint_secrets.blinded_messages(),
+        witness: None,
     };
 
     let mint_response = wallet_client.post_mint(mint_url.parse()?, request).await?;

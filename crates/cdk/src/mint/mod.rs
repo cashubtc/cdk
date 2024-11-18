@@ -12,14 +12,16 @@ use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinSet;
 use tracing::instrument;
 
+use self::types::PaymentRequest;
 use crate::cdk_database::{self, MintDatabase};
+use crate::cdk_lightning::bolt12::MintBolt12Lightning;
 use crate::cdk_lightning::{self, MintLightning};
 use crate::dhke::{sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::*;
-use crate::types::{LnKey, QuoteTTL};
+use crate::types::QuoteTTL;
 use crate::util::unix_time;
 use crate::Amount;
 
@@ -28,6 +30,7 @@ mod check_spendable;
 mod info;
 mod keysets;
 mod melt;
+mod mint_20;
 mod mint_nut04;
 mod start_up_check;
 mod swap;
@@ -48,7 +51,12 @@ pub struct Mint {
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
     /// Ln backends for mint
-    pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    pub ln: HashMap<CurrencyUnit, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    /// Ln backends for mint
+    pub bolt12_backends: HashMap<
+        CurrencyUnit,
+        Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>,
+    >,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
     /// Active Mint Keysets
@@ -66,7 +74,11 @@ impl Mint {
         mint_info: MintInfo,
         quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
-        ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+        ln: HashMap<CurrencyUnit, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+        bolt12: HashMap<
+            CurrencyUnit,
+            Arc<dyn MintBolt12Lightning<Err = cdk_lightning::Error> + Send + Sync>,
+        >,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -193,6 +205,7 @@ impl Mint {
             localstore,
             mint_info,
             ln,
+            bolt12_backends: bolt12,
         })
     }
 
@@ -224,8 +237,66 @@ impl Mint {
                     result = ln.wait_any_invoice() => {
                         match result {
                             Ok(mut stream) => {
-                                while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id).await {
+                                while let Some(wait_invoice_response) = stream.next().await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_invoice_response).await {
+                                        tracing::warn!("{:?}", err);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!("Could not get invoice stream for {:?}: {}",key, err);
+                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            }
+                        }
+                    }
+                    }
+                }
+            }
+        });
+            }
+        }
+
+        // Spawn a task to manage the JoinSet
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(_) => tracing::info!("A task completed successfully."),
+                Err(err) => tracing::warn!("A task failed: {:?}", err),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Wait for any offer to be paid
+    /// For each backend starts a task that waits for any offers to be paid
+    /// Once invoice is paid mint quote status is updated
+    #[allow(clippy::incompatible_msrv)]
+    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
+    pub async fn wait_for_paid_offers(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
+        let mint_arc = Arc::new(self.clone());
+
+        let mut join_set = JoinSet::new();
+
+        for (key, bolt12) in self.bolt12_backends.iter() {
+            if !bolt12.is_wait_invoice_active() {
+                let mint = Arc::clone(&mint_arc);
+                let bolt12 = Arc::clone(bolt12);
+                let shutdown = Arc::clone(&shutdown);
+                let key = key.clone();
+                join_set.spawn(async move {
+            if !bolt12.is_wait_invoice_active() {
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => {
+                        tracing::info!("Shutdown signal received, stopping task for {:?}", key);
+                        bolt12.cancel_wait_invoice();
+                        break;
+                    }
+                    result = bolt12.wait_any_offer() => {
+                        match result {
+                            Ok(mut stream) => {
+                                while let Some(wait_invoice_response) = stream.next().await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_invoice_response).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }
@@ -380,13 +451,14 @@ impl Mint {
     pub async fn handle_internal_melt_mint(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request,
+        inputs_amount: Amount,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        let request = match &melt_quote.request {
+            PaymentRequest::Bolt11 { bolt11 } => bolt11.to_string(),
+            PaymentRequest::Bolt12 { offer, invoice: _ } => offer.to_string(),
+        };
+
+        let mint_quote = match self.localstore.get_mint_quote_by_request(&request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -401,18 +473,13 @@ impl Mint {
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
-
         let mut mint_quote = mint_quote;
 
-        if mint_quote.amount > inputs_amount_quote_unit {
+        if mint_quote.amount.unwrap_or_default() > inputs_amount {
             tracing::debug!(
                 "Not enough inuts provided: {} needed {}",
-                inputs_amount_quote_unit,
-                mint_quote.amount
+                inputs_amount,
+                mint_quote.amount.unwrap_or_default()
             );
             return Err(Error::InsufficientFunds);
         }
@@ -507,7 +574,7 @@ impl Mint {
 }
 
 /// Mint Fee Reserve
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FeeReserve {
     /// Absolute expected min fee
     pub min_fee_reserve: Amount,
@@ -590,10 +657,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
 }
 
 fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
-    let unit_index = match unit.derivation_index() {
-        Some(index) => index,
-        None => return None,
-    };
+    let unit_index = unit.derivation_index()?;
 
     Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
@@ -742,6 +806,7 @@ mod tests {
             config.mint_info,
             config.quote_ttl,
             localstore,
+            HashMap::new(),
             HashMap::new(),
             config.supported_units,
             HashMap::new(),
