@@ -270,9 +270,7 @@ async fn main() -> anyhow::Result<()> {
     // In the event that the mint server is down but the ln node is not
     // it is possible that a mint quote was paid but the mint has not been updated
     // this will check and update the mint state of those quotes
-    for ln in ln_backends.values() {
-        check_pending_mint_quotes(Arc::clone(&mint), Arc::clone(ln)).await?;
-    }
+    mint.check_pending_mint_quotes().await?;
 
     // Checks the status of all pending melt quotes
     // Pending melt quotes where the payment has gone through inputs are burnt
@@ -340,42 +338,6 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!("{}", err);
 
             bail!("Axum exited with error")
-        }
-    }
-
-    Ok(())
-}
-
-/// Used on mint start up to check status of all pending mint quotes
-async fn check_pending_mint_quotes(
-    mint: Arc<Mint>,
-    ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-) -> Result<()> {
-    let mut pending_quotes = mint.get_pending_mint_quotes().await?;
-    tracing::info!("There are {} pending mint quotes.", pending_quotes.len());
-    let mut unpaid_quotes = mint.get_unpaid_mint_quotes().await?;
-    tracing::info!("There are {} unpaid mint quotes.", unpaid_quotes.len());
-
-    unpaid_quotes.append(&mut pending_quotes);
-
-    for quote in unpaid_quotes {
-        tracing::debug!("Checking status of mint quote: {}", quote.id);
-        let lookup_id = quote.request_lookup_id.as_str();
-        match ln.check_incoming_invoice_status(lookup_id).await {
-            Ok(state) => {
-                if state != quote.state {
-                    tracing::trace!("Mint quote status changed: {}", quote.id);
-                    mint.localstore
-                        .update_mint_quote_state(&quote.id, state)
-                        .await?;
-                    mint.pubsub_manager.mint_quote_bolt11_status(quote, state);
-                }
-            }
-
-            Err(err) => {
-                tracing::warn!("Could not check state of pending invoice: {}", lookup_id);
-                tracing::error!("{}", err);
-            }
         }
     }
 
