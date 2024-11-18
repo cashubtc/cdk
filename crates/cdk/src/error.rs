@@ -243,6 +243,10 @@ pub enum Error {
     #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]
     Database(#[from] crate::cdk_database::Error),
+    /// Lightning Error
+    #[cfg(feature = "mint")]
+    #[error(transparent)]
+    Lightning(#[from] crate::cdk_lightning::Error),
 }
 
 /// CDK Error Response
