@@ -93,7 +93,7 @@ impl JsWallet {
     ) -> Result<JsMintQuote> {
         let quote = self
             .inner
-            .mint_quote(amount.into(), description)
+            .mint_quote(amount.into(), description, None)
             .await
             .map_err(into_err)?;
 
@@ -142,7 +142,7 @@ impl JsWallet {
 
         Ok(self
             .inner
-            .mint(&quote_id, target, conditions)
+            .mint(&quote_id, target, conditions, None)
             .await
             .map_err(into_err)?
             .into())

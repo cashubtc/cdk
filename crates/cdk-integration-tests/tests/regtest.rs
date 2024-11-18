@@ -73,12 +73,12 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         .expect("Failed to connect");
     let (mut write, mut reader) = ws_stream.split();
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
     let mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None, None)
         .await?;
 
     assert!(mint_amount == 100.into());
@@ -151,14 +151,14 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
     let mint_amount = Amount::from(100);
 
-    let mint_quote = wallet.mint_quote(mint_amount, None).await?;
+    let mint_quote = wallet.mint_quote(mint_amount, None, None).await?;
 
     assert_eq!(mint_quote.amount, mint_amount);
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
     let mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None, None)
         .await?;
 
     assert!(mint_amount == 100.into());
@@ -179,12 +179,12 @@ async fn test_restore() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None, None)
         .await?;
 
     assert!(wallet.total_balance().await? == 100.into());
@@ -235,12 +235,12 @@ async fn test_pay_invoice_twice() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
     let mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None, None)
         .await?;
 
     assert_eq!(mint_amount, 100.into());
@@ -287,12 +287,12 @@ async fn test_regtest_internal_payment() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None, None)
         .await?;
 
     assert!(wallet.total_balance().await? == 100.into());
@@ -307,7 +307,7 @@ async fn test_regtest_internal_payment() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet_2.mint_quote(10.into(), None).await?;
+    let mint_quote = wallet_2.mint_quote(10.into(), None, None).await?;
 
     let melt = wallet.melt_quote(mint_quote.request.clone(), None).await?;
 
@@ -316,7 +316,7 @@ async fn test_regtest_internal_payment() -> Result<()> {
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
     let _wallet_2_mint = wallet_2
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, SplitTarget::default(), None, None)
         .await
         .unwrap();
 
@@ -358,7 +358,7 @@ async fn test_cached_mint() -> Result<()> {
 
     let mint_amount = Amount::from(100);
 
-    let quote = wallet.mint_quote(mint_amount, None).await?;
+    let quote = wallet.mint_quote(mint_amount, None, None).await?;
     lnd_client.pay_invoice(quote.request).await?;
 
     loop {
@@ -381,6 +381,7 @@ async fn test_cached_mint() -> Result<()> {
     let request = MintBolt11Request {
         quote: quote.id,
         outputs: premint_secrets.blinded_messages(),
+        witness: None,
     };
 
     let response = http_client

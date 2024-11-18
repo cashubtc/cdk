@@ -68,6 +68,8 @@ impl Mint {
             Amount::ZERO,
             single_use,
             vec![],
+            // TODO: Add pubkey to request
+            None,
         );
 
         tracing::debug!(

@@ -46,7 +46,10 @@ pub async fn remint(
         }
     };
 
-    let receive_amount = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    // TODO: Pubkey
+    let receive_amount = wallet
+        .mint(&quote_id, SplitTarget::default(), None, None)
+        .await?;
 
     println!("Received {receive_amount} from mint {mint_url}");
 

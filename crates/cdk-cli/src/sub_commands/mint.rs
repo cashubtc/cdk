@@ -69,6 +69,8 @@ pub async fn mint(
                         .expect("Amount must be defined")
                         .into(),
                     description,
+                    // TODO: Get pubkey
+                    None,
                 )
                 .await?
         }
@@ -99,7 +101,9 @@ pub async fn mint(
         sleep(Duration::from_secs(2)).await;
     }
 
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let receive_amount = wallet
+        .mint(&quote.id, SplitTarget::default(), None, None)
+        .await?;
 
     println!("Received {receive_amount} from mint {mint_url}");
 

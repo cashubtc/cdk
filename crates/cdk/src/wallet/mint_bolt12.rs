@@ -66,6 +66,8 @@ impl Wallet {
             expiry: quote_res.expiry.unwrap_or(0),
             amount_minted: Amount::ZERO,
             amount_paid: Amount::ZERO,
+            // TODO: Add pubkey
+            pubkey: None,
         };
 
         self.localstore.add_mint_quote(quote.clone()).await?;
@@ -143,6 +145,8 @@ impl Wallet {
         let mint_request = MintBolt11Request {
             quote: quote_id.to_string(),
             outputs: premint_secrets.blinded_messages(),
+            // Add witness
+            witness: None,
         };
 
         let mint_res = self

@@ -179,6 +179,7 @@ impl From<V1MintQuote> for MintQuote {
             single_use: true,
             payment_method: PaymentMethod::Bolt11,
             payment_ids: vec![],
+            pubkey: None,
         }
     }
 }

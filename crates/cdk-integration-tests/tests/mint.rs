@@ -85,6 +85,7 @@ async fn mint_proofs(
         Amount::ZERO,
         true,
         vec![],
+        None,
     );
 
     mint.localstore.add_mint_quote(quote.clone()).await?;
@@ -104,6 +105,7 @@ async fn mint_proofs(
     let mint_request = MintBolt11Request {
         quote: quote.id,
         outputs: premint.blinded_messages(),
+        witness: None,
     };
 
     let after_mint = mint.process_mint_request(mint_request).await?;

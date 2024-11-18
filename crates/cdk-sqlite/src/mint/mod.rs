@@ -206,8 +206,8 @@ WHERE active = 1
         let res = sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, request_lookup_id, single_use, payment_method, payment_ids, amount_paid, amount_issued)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+(id, mint_url, amount, unit, request, state, expiry, request_lookup_id, single_use, payment_method, payment_ids, amount_paid, amount_issued, pubkey)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -224,6 +224,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(serde_json::to_string(&quote.payment_ids)?)
         .bind(u64::from(quote.amount_paid) as i64)
         .bind(u64::from(quote.amount_issued) as i64 )
+        .bind(quote.pubkey.map(|p| p.to_string()))
         .execute(&mut transaction)
         .await;
 
@@ -1289,6 +1290,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_amount_issued: Option<i64> = row.try_get("amount_issued").map_err(Error::from)?;
     let row_payment_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
     let row_payment_ids: Option<String> = row.try_get("payment_ids").map_err(Error::from)?;
+    let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
 
     let request_lookup_id = match row_request_lookup_id {
         Some(id) => id,
@@ -1307,6 +1309,9 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         Some(ids) => serde_json::from_str(&ids)?,
         None => vec![],
     };
+    let pubkey = row_pubkey
+        .map(|key| PublicKey::from_str(&key))
+        .transpose()?;
 
     Ok(MintQuote {
         id: row_id,
@@ -1322,6 +1327,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         single_use: row_single_use.unwrap_or(true),
         payment_method,
         payment_ids,
+        pubkey,
     })
 }
 

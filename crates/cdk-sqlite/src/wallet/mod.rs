@@ -342,8 +342,8 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, payment_method, amount_paid, amount_minted)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+(id, mint_url, amount, unit, request, state, expiry, payment_method, amount_paid, amount_minted, pubkey)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -356,6 +356,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.payment_method.to_string())
         .bind(u64::from(quote.amount_paid) as i64)
         .bind(u64::from(quote.amount_minted) as i64)
+        .bind(quote.pubkey.map(|p| p.to_string()))
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -837,6 +838,11 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
 
     let amount_paid = row_amount_paid.unwrap_or(0) as u64;
     let amount_minted = row_amount_minted.unwrap_or(0) as u64;
+    let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
+
+    let pubkey = row_pubkey
+        .map(|key| PublicKey::from_str(&key))
+        .transpose()?;
 
     Ok(MintQuote {
         id: row_id,
@@ -849,6 +855,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         payment_method: payment_method.unwrap_or_default(),
         amount_minted: amount_minted.into(),
         amount_paid: amount_paid.into(),
+        pubkey,
     })
 }
 

@@ -238,6 +238,8 @@ impl HttpClientMethods for HttpClient {
         let request = MintBolt11Request {
             quote: quote.to_string(),
             outputs: premint_secrets.blinded_messages(),
+            // TODO: Add witness
+            witness: None,
         };
 
         let res = self

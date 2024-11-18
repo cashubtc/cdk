@@ -5,7 +5,7 @@ use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{CurrencyUnit, PaymentMethod};
+use super::{CurrencyUnit, PaymentMethod, PublicKey};
 use crate::mint_url::MintUrl;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::Amount;
@@ -44,6 +44,8 @@ pub struct MintQuote {
     /// Payment of payment(s) that filled quote
     #[serde(default)]
     pub payment_ids: Vec<String>,
+    /// Pubkey
+    pub pubkey: Option<PublicKey>,
 }
 
 impl MintQuote {
@@ -61,6 +63,7 @@ impl MintQuote {
         amount_issued: Amount,
         single_use: bool,
         payment_ids: Vec<String>,
+        pubkey: Option<PublicKey>,
     ) -> Self {
         let id = Uuid::new_v4();
 
@@ -78,6 +81,7 @@ impl MintQuote {
             amount_issued,
             single_use,
             payment_ids,
+            pubkey,
         }
     }
 }

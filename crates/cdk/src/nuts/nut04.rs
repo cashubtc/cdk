@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
-use super::MintQuoteState;
+use super::{MintQuoteState, PublicKey};
 use crate::Amount;
 
 /// NUT04 Error
@@ -32,7 +32,11 @@ pub struct MintQuoteBolt11Request {
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
     /// Memo to create the invoice with
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
 }
 
 /// Possible states of a quote
@@ -90,6 +94,9 @@ pub struct MintQuoteBolt11Response {
     pub state: MintQuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
 }
 
 #[cfg(feature = "mint")]
@@ -100,6 +107,7 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
             request: mint_quote.request,
             state: mint_quote.state,
             expiry: Some(mint_quote.expiry),
+            pubkey: mint_quote.pubkey,
         }
     }
 }
@@ -114,6 +122,9 @@ pub struct MintBolt11Request {
     /// Outputs
     #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
+    /// Signature
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub witness: Option<String>,
 }
 
 impl MintBolt11Request {
