@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk::amount::{amount_for_offer, to_unit, Amount};
-use cdk::cdk_lightning::bolt12::MintBolt12Lightning;
+use cdk::cdk_lightning::bolt12::{Bolt12Settings, MintBolt12Lightning};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateOfferResponse, MintLightning, PayInvoiceResponse,
     WaitInvoiceResponse,
@@ -32,6 +32,15 @@ use crate::fetch_invoice_by_payment_hash;
 #[async_trait]
 impl MintBolt12Lightning for Cln {
     type Err = cdk_lightning::Error;
+
+    fn get_settings(&self) -> Bolt12Settings {
+        Bolt12Settings {
+            mint: true,
+            melt: true,
+            unit: CurrencyUnit::Msat,
+            offer_description: true,
+        }
+    }
 
     fn is_wait_invoice_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)

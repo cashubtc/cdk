@@ -182,33 +182,41 @@ impl MintBuilder {
 
         let method = PaymentMethod::Bolt12;
 
-        let mint_method_settings = MintMethodSettings {
-            method,
-            unit: unit.clone(),
-            min_amount: Some(limits.mint_min),
-            max_amount: Some(limits.mint_max),
-            description: true,
-        };
+        let settings = ln_backend.get_settings();
 
-        let mut nut18_settings = self.mint_info.nuts.nut18.unwrap_or_default();
+        // If the backend supports minting we add it to info signalling
+        if settings.mint {
+            let mint_method_settings = MintMethodSettings {
+                method,
+                unit: unit.clone(),
+                min_amount: Some(limits.mint_min),
+                max_amount: Some(limits.mint_max),
+                description: true,
+            };
 
-        nut18_settings.methods.push(mint_method_settings);
-        nut18_settings.disabled = false;
+            let mut nut18_settings = self.mint_info.nuts.nut18.unwrap_or_default();
 
-        self.mint_info.nuts.nut18 = Some(nut18_settings);
+            nut18_settings.methods.push(mint_method_settings);
+            nut18_settings.disabled = false;
 
-        let melt_method_settings = MeltMethodSettings {
-            method,
-            unit: unit.clone(),
-            min_amount: Some(limits.melt_min),
-            max_amount: Some(limits.melt_max),
-        };
+            self.mint_info.nuts.nut18 = Some(nut18_settings);
+        }
 
-        let mut nut19_settings = self.mint_info.nuts.nut19.unwrap_or_default();
-        nut19_settings.methods.push(melt_method_settings);
-        nut19_settings.disabled = false;
+        // If the backend supports melting we add it to info signalling
+        if settings.melt {
+            let melt_method_settings = MeltMethodSettings {
+                method,
+                unit: unit.clone(),
+                min_amount: Some(limits.melt_min),
+                max_amount: Some(limits.melt_max),
+            };
 
-        self.mint_info.nuts.nut19 = Some(nut19_settings);
+            let mut nut19_settings = self.mint_info.nuts.nut19.unwrap_or_default();
+            nut19_settings.methods.push(melt_method_settings);
+            nut19_settings.disabled = false;
+
+            self.mint_info.nuts.nut19 = Some(nut19_settings);
+        }
 
         ln.insert(unit.clone(), ln_backend);
 

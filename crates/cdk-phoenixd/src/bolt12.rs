@@ -4,7 +4,7 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use cdk::amount::{amount_for_offer, Amount};
-use cdk::cdk_lightning::bolt12::MintBolt12Lightning;
+use cdk::cdk_lightning::bolt12::{Bolt12Settings, MintBolt12Lightning};
 use cdk::cdk_lightning::{
     self, Bolt12PaymentQuoteResponse, CreateOfferResponse, MintLightning, PayInvoiceResponse,
     WaitInvoiceResponse,
@@ -22,6 +22,15 @@ use crate::Phoenixd;
 #[async_trait]
 impl MintBolt12Lightning for Phoenixd {
     type Err = cdk_lightning::Error;
+
+    fn get_settings(&self) -> Bolt12Settings {
+        Bolt12Settings {
+            mint: true,
+            melt: false,
+            unit: CurrencyUnit::Sat,
+            offer_description: false,
+        }
+    }
 
     fn is_wait_invoice_active(&self) -> bool {
         // Paying to PHD bolt12 offer is not supported so this can never be active

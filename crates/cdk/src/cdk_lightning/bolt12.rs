@@ -4,6 +4,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 
 use super::{
     Bolt12PaymentQuoteResponse, CreateOfferResponse, Error, PayInvoiceResponse, WaitInvoiceResponse,
@@ -17,6 +18,9 @@ use crate::{mint, Amount};
 pub trait MintBolt12Lightning {
     /// Mint Lightning Error
     type Err: Into<Error> + From<Error>;
+
+    /// Backend Settings
+    fn get_settings(&self) -> Bolt12Settings;
 
     /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool;
@@ -52,4 +56,17 @@ pub trait MintBolt12Lightning {
         unix_expiry: u64,
         single_use: bool,
     ) -> Result<CreateOfferResponse, Self::Err>;
+}
+
+/// Ln backend settings
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bolt12Settings {
+    /// Mint supported
+    pub mint: bool,
+    /// Melt supported
+    pub melt: bool,
+    /// Base unit of backend
+    pub unit: CurrencyUnit,
+    /// Invoice Description supported
+    pub offer_description: bool,
 }

@@ -285,8 +285,8 @@ async fn main() -> anyhow::Result<()> {
         .seconds_to_extend_cache_by
         .unwrap_or(DEFAULT_CACHE_TTI_SECS);
 
+    // If there are any backend that support bolt12 we need to add the bolt12 router
     let include_bolt12 = !mint.bolt12_backends.is_empty();
-
     let v1_service =
         cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti, include_bolt12)
             .await?;
