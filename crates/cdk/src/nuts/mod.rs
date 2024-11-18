@@ -21,8 +21,8 @@ pub mod nut15;
 #[cfg(feature = "mint")]
 pub mod nut17;
 pub mod nut18;
-pub mod nut19;
 pub mod nut20;
+pub mod nut21;
 
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, PreMint, PreMintSecrets, Proof,
@@ -54,4 +54,5 @@ pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 #[cfg(feature = "mint")]
 pub use nut17::{NotificationPayload, PubSubManager};
 pub use nut18::{PaymentRequest, PaymentRequestPayload, Transport};
-pub use nut20::{MeltBolt12Request, MeltQuoteBolt12Request};
+pub use nut20::{MintQuoteBolt12Request, MintQuoteBolt12Response};
+pub use nut21::{MeltBolt12Request, MeltQuoteBolt12Request};

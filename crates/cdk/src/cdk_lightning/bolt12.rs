@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     Bolt12PaymentQuoteResponse, CreateOfferResponse, Error, PayInvoiceResponse, WaitInvoiceResponse,
 };
-use crate::nuts::nut20::MeltQuoteBolt12Request;
-use crate::nuts::CurrencyUnit;
+use crate::nuts::{CurrencyUnit, MeltQuoteBolt12Request};
 use crate::{mint, Amount};
 
 /// MintLighting Bolt12 Trait

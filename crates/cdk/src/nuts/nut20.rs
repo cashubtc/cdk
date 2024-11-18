@@ -1,77 +1,66 @@
-//! Bolt12
+//! NUT-17: Mint Tokens via Bolt11
+//!
+//! <https://github.com/cashubtc/nuts/blob/main/04.md>
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut05::MeltRequestTrait;
-use super::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
+use super::nut00::CurrencyUnit;
 use crate::Amount;
 
-/// NUT18 Error
+/// NUT04 Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Unknown Quote State
-    #[error("Unknown quote state")]
+    #[error("Unknown Quote State")]
     UnknownState,
     /// Amount overflow
-    #[error("Amount Overflow")]
+    #[error("Amount overflow")]
     AmountOverflow,
 }
 
-/// Melt quote request [NUT-18]
+/// Mint quote request [NUT-19]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltQuoteBolt12Request {
-    /// Bolt12 invoice to be paid
-    pub request: String,
+pub struct MintQuoteBolt12Request {
+    /// Amount
+    pub amount: Option<Amount>,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
-    /// Payment Options
-    pub amount: Option<Amount>,
+    /// Memo to create the invoice with
+    pub description: Option<String>,
+    /// Single use
+    pub single_use: bool,
+    /// Expiry
+    pub expiry: Option<u64>,
 }
 
-/// Melt Bolt12 Request [NUT-18]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeltBolt12Request {
-    /// Quote ID
+/// Mint quote response [NUT-19]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintQuoteBolt12Response {
+    /// Quote Id
     pub quote: String,
-    /// Proofs
-    pub inputs: Proofs,
-    /// Blinded Message that can be used to return change [NUT-08]
-    /// Amount field of BlindedMessages `SHOULD` be set to zero
-    pub outputs: Option<Vec<BlindedMessage>>,
+    /// Payment request to fulfil
+    pub request: String,
+    /// Single use
+    pub single_use: bool,
+    /// Unix timestamp until the quote is valid
+    pub expiry: Option<u64>,
+    /// Amount that has been paid
+    pub amount_paid: Amount,
+    /// Amount that has been issued
+    pub amount_issued: Amount,
 }
 
-impl MeltRequestTrait for MeltBolt12Request {
-    type Err = Error;
-
-    fn get_quote_id(&self) -> &str {
-        &self.quote
-    }
-
-    fn get_inputs(&self) -> &Proofs {
-        &self.inputs
-    }
-
-    fn get_outputs(&self) -> &Option<Vec<BlindedMessage>> {
-        &self.outputs
-    }
-
-    fn inputs_amount(&self) -> Result<Amount, Error> {
-        Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
-            .map_err(|_| Error::AmountOverflow)
-    }
-
-    fn outputs_amount(&self) -> Result<Amount, Error> {
-        Amount::try_sum(
-            self.outputs
-                .as_ref()
-                .unwrap_or(&vec![])
-                .iter()
-                .map(|proof| proof.amount),
-        )
-        .map_err(|_| Error::AmountOverflow)
-    }
-
-    fn get_payment_method(&self) -> PaymentMethod {
-        PaymentMethod::Bolt12
+#[cfg(feature = "mint")]
+impl From<crate::mint::MintQuote> for MintQuoteBolt12Response {
+    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt12Response {
+        MintQuoteBolt12Response {
+            quote: mint_quote.id,
+            request: mint_quote.request,
+            expiry: Some(mint_quote.expiry),
+            amount_paid: mint_quote.amount_paid,
+            amount_issued: mint_quote.amount_issued,
+            single_use: mint_quote.single_use,
+        }
     }
 }

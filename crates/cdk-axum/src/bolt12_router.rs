@@ -1,10 +1,9 @@
 use anyhow::Result;
 use axum::extract::{Json, Path, State};
 use axum::response::Response;
-use cdk::nuts::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::nuts::{
     MeltBolt12Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request, MintBolt11Request,
-    MintBolt11Response,
+    MintBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
 };
 
 use crate::{into_response, MintState};

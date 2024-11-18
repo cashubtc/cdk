@@ -4,9 +4,9 @@ use super::MintQuote;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use crate::nuts::{
-    nut12, MintBolt11Request, PaymentMethod, PreMintSecrets, SpendingConditions, State,
+    nut12, MintBolt11Request, MintQuoteBolt12Request, MintQuoteBolt12Response, PaymentMethod,
+    PreMintSecrets, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;

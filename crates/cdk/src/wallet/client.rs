@@ -11,13 +11,13 @@ use url::Url;
 use super::Error;
 use crate::error::ErrorResponse;
 use crate::mint_url::MintUrl;
-use crate::nuts::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use crate::nuts::{
     BlindedMessage, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysResponse,
     KeysetResponse, MeltBolt11Request, MeltBolt12Request, MeltQuoteBolt11Request,
     MeltQuoteBolt11Response, MeltQuoteBolt12Request, MintBolt11Request, MintBolt11Response,
-    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets, Proof,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteBolt12Request,
+    MintQuoteBolt12Response, PreMintSecrets, Proof, RestoreRequest, RestoreResponse, SwapRequest,
+    SwapResponse,
 };
 use crate::Amount;
 

@@ -1,6 +1,6 @@
 use tracing::instrument;
 
-use super::nut19::{MintQuoteBolt12Request, MintQuoteBolt12Response};
+use super::nut20::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use super::{Mint, MintQuote, PaymentMethod};
 use crate::util::unix_time;
 use crate::{Amount, Error};

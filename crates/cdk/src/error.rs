@@ -247,10 +247,10 @@ pub enum Error {
     NUT18(#[from] crate::nuts::nut18::Error),
     /// NUT19 Error
     #[error(transparent)]
-    NUT19(#[from] crate::nuts::nut19::Error),
+    NUT19(#[from] crate::nuts::nut20::Error),
     /// NUT18 Error
     #[error(transparent)]
-    NUT20(#[from] crate::nuts::nut20::Error),
+    NUT20(#[from] crate::nuts::nut21::Error),
     /// Database Error
     #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]
