@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut00::CurrencyUnit;
+use super::PublicKey;
 use crate::Amount;
 
 /// NUT04 Error
@@ -17,6 +18,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,
+    /// Publickey not defined
+    #[error("Publickey not defined")]
+    PublickeyUndefined,
 }
 
 /// Mint quote request [NUT-19]
@@ -32,6 +36,8 @@ pub struct MintQuoteBolt12Request {
     pub single_use: bool,
     /// Expiry
     pub expiry: Option<u64>,
+    /// Pubkey
+    pub pubkey: PublicKey,
 }
 
 /// Mint quote response [NUT-19]
@@ -49,18 +55,23 @@ pub struct MintQuoteBolt12Response {
     pub amount_paid: Amount,
     /// Amount that has been issued
     pub amount_issued: Amount,
+    /// Pubkey
+    pub pubkey: PublicKey,
 }
 
 #[cfg(feature = "mint")]
-impl From<crate::mint::MintQuote> for MintQuoteBolt12Response {
-    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt12Response {
-        MintQuoteBolt12Response {
+impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response {
+    type Error = Error;
+
+    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<MintQuoteBolt12Response, Error> {
+        Ok(MintQuoteBolt12Response {
             quote: mint_quote.id,
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
             amount_paid: mint_quote.amount_paid,
             amount_issued: mint_quote.amount_issued,
             single_use: mint_quote.single_use,
-        }
+            pubkey: mint_quote.pubkey.ok_or(Error::PublickeyUndefined)?,
+        })
     }
 }

@@ -18,6 +18,7 @@ impl Mint {
             description,
             single_use,
             expiry,
+            pubkey,
         } = mint_quote_request;
 
         let nut18 = &self
@@ -68,8 +69,7 @@ impl Mint {
             Amount::ZERO,
             single_use,
             vec![],
-            // TODO: Add pubkey to request
-            None,
+            Some(pubkey),
         );
 
         tracing::debug!(
@@ -82,7 +82,7 @@ impl Mint {
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
-        Ok(quote.into())
+        Ok(quote.try_into()?)
     }
 
     /// Check mint quote
@@ -97,6 +97,6 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        Ok(quote.into())
+        Ok(quote.try_into()?)
     }
 }

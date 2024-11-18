@@ -30,7 +30,7 @@ mod check_spendable;
 mod info;
 mod keysets;
 mod melt;
-mod mint_18;
+mod mint_20;
 mod mint_nut04;
 mod start_up_check;
 mod swap;

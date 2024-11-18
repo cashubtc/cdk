@@ -6,7 +6,7 @@ use anyhow::Result;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, SecretKey};
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use clap::Args;
@@ -57,6 +57,8 @@ pub async fn mint(
         }
     };
 
+    let secret_key = SecretKey::generate();
+
     let method = PaymentMethod::from_str(&sub_command_args.method)?;
 
     let quote = match method {
@@ -69,8 +71,7 @@ pub async fn mint(
                         .expect("Amount must be defined")
                         .into(),
                     description,
-                    // TODO: Get pubkey
-                    None,
+                    Some(secret_key.public_key()),
                 )
                 .await?
         }
@@ -81,6 +82,7 @@ pub async fn mint(
                     description,
                     sub_command_args.single_use.unwrap_or(false),
                     sub_command_args.expiry,
+                    secret_key.public_key(),
                 )
                 .await?
         }

@@ -6,7 +6,7 @@ use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     nut12, MintBolt11Request, MintQuoteBolt12Request, MintQuoteBolt12Response, PaymentMethod,
-    PreMintSecrets, SpendingConditions, State,
+    PreMintSecrets, PublicKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -21,6 +21,7 @@ impl Wallet {
         description: Option<String>,
         single_use: bool,
         expiry: Option<u64>,
+        pubkey: PublicKey,
     ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = &self.unit;
@@ -48,6 +49,7 @@ impl Wallet {
             description,
             single_use,
             expiry,
+            pubkey,
         };
 
         let quote_res = self
