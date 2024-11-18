@@ -374,7 +374,7 @@ pub enum CurrencyUnit {
     /// Euro
     Eur,
     /// Custom currency unit
-    Custom(String),
+    Custom(String, u32),
 }
 
 #[cfg(feature = "mint")]
@@ -386,7 +386,7 @@ impl CurrencyUnit {
             Self::Msat => Some(1),
             Self::Usd => Some(2),
             Self::Eur => Some(3),
-            _ => None,
+            Self::Custom(_, index) => Some(*index),
         }
     }
 }
@@ -394,13 +394,23 @@ impl CurrencyUnit {
 impl FromStr for CurrencyUnit {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = &value.to_uppercase();
-        match value.as_str() {
+        // Split on ':' to check for derivation index
+        let parts: Vec<&str> = value.split(':').collect();
+        let currency = parts[0].to_uppercase();
+
+        match currency.as_str() {
             "SAT" => Ok(Self::Sat),
             "MSAT" => Ok(Self::Msat),
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
-            c => Ok(Self::Custom(c.to_string())),
+            c => {
+                // Require explicit index for custom currencies
+                if parts.len() != 2 {
+                    return Err(Error::UnsupportedUnit);
+                }
+                let index = parts[1].parse().map_err(|_| Error::UnsupportedUnit)?;
+                Ok(Self::Custom(c.to_string(), index))
+            }
         }
     }
 }
@@ -408,11 +418,11 @@ impl FromStr for CurrencyUnit {
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            CurrencyUnit::Sat => "SAT",
-            CurrencyUnit::Msat => "MSAT",
-            CurrencyUnit::Usd => "USD",
-            CurrencyUnit::Eur => "EUR",
-            CurrencyUnit::Custom(unit) => unit,
+            CurrencyUnit::Sat => "SAT".to_string(),
+            CurrencyUnit::Msat => "MSAT".to_string(),
+            CurrencyUnit::Usd => "USD".to_string(),
+            CurrencyUnit::Eur => "EUR".to_string(),
+            CurrencyUnit::Custom(unit, index) => format!("{}:{}", unit, index),
         };
         if let Some(width) = f.width() {
             write!(f, "{:width$}", s.to_lowercase(), width = width)
@@ -762,5 +772,43 @@ mod tests {
         let b = PreMintSecrets::blank(Id::from_str("009a1f293253e41e").unwrap(), Amount::from(1))
             .unwrap();
         assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    fn test_currency_unit_parsing() {
+        // Standard currencies
+        assert_eq!(CurrencyUnit::from_str("SAT").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("sat").unwrap(), CurrencyUnit::Sat);
+        assert_eq!(CurrencyUnit::from_str("MSAT").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("msat").unwrap(), CurrencyUnit::Msat);
+        assert_eq!(CurrencyUnit::from_str("USD").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("usd").unwrap(), CurrencyUnit::Usd);
+        assert_eq!(CurrencyUnit::from_str("EUR").unwrap(), CurrencyUnit::Eur);
+        assert_eq!(CurrencyUnit::from_str("eur").unwrap(), CurrencyUnit::Eur);
+
+        // Custom currency
+        assert_eq!(
+            CurrencyUnit::from_str("GBP:1001").unwrap(),
+            CurrencyUnit::Custom("GBP".to_string(), 1001)
+        );
+
+        assert!(CurrencyUnit::from_str("GBP").is_err());
+        assert!(CurrencyUnit::from_str("GBP:").is_err());
+        assert!(CurrencyUnit::from_str("GBP:abc").is_err());
+    }
+
+    #[test]
+    fn test_currency_unit_display() {
+        // Standard currencies
+        assert_eq!(CurrencyUnit::Sat.to_string(), "sat");
+        assert_eq!(CurrencyUnit::Msat.to_string(), "msat");
+        assert_eq!(CurrencyUnit::Usd.to_string(), "usd");
+        assert_eq!(CurrencyUnit::Eur.to_string(), "eur");
+
+        // Custom currency
+        assert_eq!(
+            CurrencyUnit::Custom("GBP".to_string(), 1001).to_string(),
+            "gbp:1001"
+        );
     }
 }
