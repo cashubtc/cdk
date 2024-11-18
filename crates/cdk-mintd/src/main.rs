@@ -214,9 +214,8 @@ async fn main() -> anyhow::Result<()> {
                 mint_builder =
                     mint_builder.add_ln_backend(unit.clone(), mint_melt_limits, fake.clone());
 
-                // TODO: Bolt12 for fake
-                // mint_builder =
-                //     mint_builder.add_bolt12_ln_backend(unit, mint_melt_limits, fake.clone());
+                mint_builder =
+                    mint_builder.add_bolt12_ln_backend(unit, mint_melt_limits, fake.clone());
             }
         }
     };

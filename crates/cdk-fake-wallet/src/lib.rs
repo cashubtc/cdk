@@ -34,6 +34,7 @@ use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+mod bolt12;
 pub mod error;
 
 /// Fake Wallet
@@ -42,6 +43,8 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<String>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
+    bolt12_sender: tokio::sync::mpsc::Sender<String>,
+    bolt12_receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
@@ -58,11 +61,14 @@ impl FakeWallet {
         payment_delay: u64,
     ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let (bolt12_sender, bolt12_receiver) = tokio::sync::mpsc::channel(8);
 
         Self {
             fee_reserve,
             sender,
             receiver: Arc::new(Mutex::new(Some(receiver))),
+            bolt12_sender,
+            bolt12_receiver: Arc::new(Mutex::new(Some(bolt12_receiver))),
             payment_states: Arc::new(Mutex::new(payment_states)),
             failed_payment_check: Arc::new(Mutex::new(fail_payment_check)),
             payment_delay,
