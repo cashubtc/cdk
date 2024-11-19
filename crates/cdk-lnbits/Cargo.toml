@@ -20,6 +20,4 @@ tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7.11", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 thiserror = "1"
-# lnbits-rs = "0.2.0"
-# lnbits-rs = { path = "../../../../lnbits-rs" }
-lnbits-rs = { git = "https://github.com/thesimplekid/lnbits-rs.git", rev = "9fff4d" }
+lnbits-rs = "0.3.0"
