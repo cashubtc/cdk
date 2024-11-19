@@ -63,7 +63,7 @@ The project is split up into several crates in the `crates/` directory:
 
 ## Bindings
 
-Experimental bindings can be found in the [bindings](./bindings/) folder.
+Experimental JS bindings can be found in the [bindings repository](https://github.com/thesimplekid/cdk-js).
 
 ## License
 

@@ -207,7 +207,6 @@ jobs:
             -p cdk,
             -p cdk --no-default-features,
             -p cdk --no-default-features --features wallet,
-            -p cdk-js,
           ]
     steps:
       - name: checkout
