@@ -4,7 +4,6 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use reqwest::Client;
-use serde_json::Value;
 use tracing::instrument;
 use url::Url;
 
@@ -17,6 +16,18 @@ use crate::nuts::{
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest,
     RestoreResponse, SwapRequest, SwapResponse,
 };
+
+macro_rules! convert_http_response {
+    ($type:ty, $data:ident) => {
+        serde_json::from_str::<$type>(&$data).map_err(|err| {
+            tracing::warn!("Http Response error: {}", err);
+            match ErrorResponse::from_json(&$data) {
+                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
+                Err(err) => err.into(),
+            }
+        })
+    };
+}
 
 /// Http Client
 #[derive(Debug, Clone)]
@@ -76,36 +87,31 @@ impl HttpClientMethods for HttpClient {
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     async fn get_mint_keys(&self, mint_url: MintUrl) -> Result<Vec<KeySet>, Error> {
         let url = mint_url.join_paths(&["v1", "keys"])?;
-        let keys = self.inner.get(url).send().await?.json::<Value>().await?;
+        let keys = self.inner.get(url).send().await?.text().await?;
 
-        match serde_json::from_value::<KeysResponse>(keys.clone()) {
-            Ok(keys_response) => Ok(keys_response.keysets),
-            Err(_) => Err(ErrorResponse::from_value(keys)?.into()),
-        }
+        Ok(convert_http_response!(KeysResponse, keys)?.keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     async fn get_mint_keyset(&self, mint_url: MintUrl, keyset_id: Id) -> Result<KeySet, Error> {
         let url = mint_url.join_paths(&["v1", "keys", &keyset_id.to_string()])?;
-        let keys = self.inner.get(url).send().await?.json::<Value>().await?;
+        let keys = self.inner.get(url).send().await?.text().await?;
 
-        match serde_json::from_value::<KeysResponse>(keys.clone()) {
-            Ok(keys_response) => Ok(keys_response.keysets[0].clone()),
-            Err(_) => Err(ErrorResponse::from_value(keys)?.into()),
-        }
+        convert_http_response!(KeysResponse, keys)?
+            .keysets
+            .drain(0..1)
+            .next()
+            .ok_or_else(|| Error::UnknownKeySet)
     }
 
     /// Get Keysets [NUT-02]
     #[instrument(skip(self), fields(mint_url = %mint_url))]
     async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<KeysetResponse, Error> {
         let url = mint_url.join_paths(&["v1", "keysets"])?;
-        let res = self.inner.get(url).send().await?.json::<Value>().await?;
+        let res = self.inner.get(url).send().await?.text().await?;
 
-        match serde_json::from_value::<KeysetResponse>(res.clone()) {
-            Ok(keyset_response) => Ok(keyset_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
-        }
+        convert_http_response!(KeysetResponse, res)
     }
 
     /// Mint Quote [NUT-04]
@@ -123,16 +129,10 @@ impl HttpClientMethods for HttpClient {
             .json(&request)
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await?;
 
-        match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
-            Ok(mint_quote_response) => Ok(mint_quote_response),
-            Err(err) => {
-                tracing::warn!("{}", err);
-                Err(ErrorResponse::from_value(res)?.into())
-            }
-        }
+        convert_http_response!(MintQuoteBolt11Response, res)
     }
 
     /// Mint Quote status
@@ -144,15 +144,9 @@ impl HttpClientMethods for HttpClient {
     ) -> Result<MintQuoteBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?.json::<Value>().await?;
+        let res = self.inner.get(url).send().await?.text().await?;
 
-        match serde_json::from_value::<MintQuoteBolt11Response>(res.clone()) {
-            Ok(mint_quote_response) => Ok(mint_quote_response),
-            Err(err) => {
-                tracing::warn!("{}", err);
-                Err(ErrorResponse::from_value(res)?.into())
-            }
-        }
+        convert_http_response!(MintQuoteBolt11Response, res)
     }
 
     /// Mint Tokens [NUT-04]
@@ -170,13 +164,10 @@ impl HttpClientMethods for HttpClient {
             .json(&request)
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await?;
 
-        match serde_json::from_value::<MintBolt11Response>(res.clone()) {
-            Ok(mint_quote_response) => Ok(mint_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
-        }
+        convert_http_response!(MintBolt11Response, res)
     }
 
     /// Melt Quote [NUT-05]
@@ -194,13 +185,10 @@ impl HttpClientMethods for HttpClient {
             .json(&request)
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await?;
 
-        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
-        }
+        convert_http_response!(MeltQuoteBolt11Response, res)
     }
 
     /// Melt Quote Status
@@ -212,12 +200,9 @@ impl HttpClientMethods for HttpClient {
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?.json::<Value>().await?;
+        let res = self.inner.get(url).send().await?.text().await?;
 
-        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
-        }
+        convert_http_response!(MeltQuoteBolt11Response, res)
     }
 
     /// Melt [NUT-05]
@@ -236,18 +221,10 @@ impl HttpClientMethods for HttpClient {
             .json(&request)
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await?;
 
-        match serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => {
-                if let Ok(res) = serde_json::from_value::<MeltQuoteBolt11Response>(res.clone()) {
-                    return Ok(res);
-                }
-                Err(ErrorResponse::from_value(res)?.into())
-            }
-        }
+        convert_http_response!(MeltQuoteBolt11Response, res)
     }
 
     /// Swap Token [NUT-03]
@@ -265,13 +242,10 @@ impl HttpClientMethods for HttpClient {
             .json(&swap_request)
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await?;
 
-        match serde_json::from_value::<SwapResponse>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
-        }
+        convert_http_response!(SwapResponse, res)
     }
 
     /// Get Mint Info [NUT-06]
@@ -279,15 +253,9 @@ impl HttpClientMethods for HttpClient {
     async fn get_mint_info(&self, mint_url: MintUrl) -> Result<MintInfo, Error> {
         let url = mint_url.join_paths(&["v1", "info"])?;
 
-        let res = self.inner.get(url).send().await?.json::<Value>().await?;
+        let res = self.inner.get(url).send().await?.text().await?;
 
-        match serde_json::from_value::<MintInfo>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(err) => {
-                tracing::error!("Could not get mint info: {}", err);
-                Err(ErrorResponse::from_value(res)?.into())
-            }
-        }
+        convert_http_response!(MintInfo, res)
     }
 
     /// Spendable check [NUT-07]
@@ -305,13 +273,10 @@ impl HttpClientMethods for HttpClient {
             .json(&request)
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await?;
 
-        match serde_json::from_value::<CheckStateResponse>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
-        }
+        convert_http_response!(CheckStateResponse, res)
     }
 
     /// Restore request [NUT-13]
@@ -329,13 +294,10 @@ impl HttpClientMethods for HttpClient {
             .json(&request)
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await?;
 
-        match serde_json::from_value::<RestoreResponse>(res.clone()) {
-            Ok(melt_quote_response) => Ok(melt_quote_response),
-            Err(_) => Err(ErrorResponse::from_value(res)?.into()),
-        }
+        convert_http_response!(RestoreResponse, res)
     }
 }
 
