@@ -1,6 +1,6 @@
 [package]
 name = "cdk-mintd"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["CDK Developers"]
 license = "MIT"
@@ -12,16 +12,16 @@ description = "CDK mint binary"
 [dependencies]
 anyhow = "1"
 axum = "0.6.20"
-cdk = { path = "../cdk", version = "0.4.0", default-features = false, features = ["mint"] }
-cdk-redb = { path = "../cdk-redb", version = "0.4.0", default-features = false, features = ["mint"] }
-cdk-sqlite = { path = "../cdk-sqlite", version = "0.4.0", default-features = false, features = ["mint"] }
-cdk-cln = { path = "../cdk-cln", version = "0.4.0", default-features = false }
-cdk-lnbits = { path = "../cdk-lnbits", version = "0.4.0", default-features = false }
-cdk-phoenixd = { path = "../cdk-phoenixd", version = "0.4.0", default-features = false }
-cdk-lnd = { path = "../cdk-lnd", version = "0.4.0", default-features = false }
-cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.4.0", default-features = false }
-cdk-strike = { path = "../cdk-strike", version = "0.4.0" }
-cdk-axum = { path = "../cdk-axum", version = "0.4.0", default-features = false }
+cdk = { path = "../cdk", version = "0.5.0", default-features = false, features = ["mint"] }
+cdk-redb = { path = "../cdk-redb", version = "0.5.0", default-features = false, features = ["mint"] }
+cdk-sqlite = { path = "../cdk-sqlite", version = "0.5.0", default-features = false, features = ["mint"] }
+cdk-cln = { path = "../cdk-cln", version = "0.5.0", default-features = false }
+cdk-lnbits = { path = "../cdk-lnbits", version = "0.5.0", default-features = false }
+cdk-phoenixd = { path = "../cdk-phoenixd", version = "0.5.0", default-features = false }
+cdk-lnd = { path = "../cdk-lnd", version = "0.5.0", default-features = false }
+cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.5.0", default-features = false }
+cdk-strike = { path = "../cdk-strike", version = "0.5.0" }
+cdk-axum = { path = "../cdk-axum", version = "0.5.0", default-features = false }
 config = { version = "0.13.3", features = ["toml"] }
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }
 tokio = { version = "1", default-features = false }

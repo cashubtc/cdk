@@ -1,6 +1,6 @@
 [package]
 name = "cdk-lnd"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["CDK Developers"]
 license = "MIT"
@@ -11,7 +11,7 @@ description = "CDK ln backend for lnd"
 [dependencies]
 async-trait = "0.1"
 anyhow = "1"
-cdk = { path = "../cdk", version= "0.4.0", default-features = false, features = ["mint"] }
+cdk = { path = "../cdk", version= "0.5.0", default-features = false, features = ["mint"] }
 fedimint-tonic-lnd = "0.2.0"
 futures = { version = "0.3.28", default-features = false }
 tokio = { version = "1", default-features = false }
