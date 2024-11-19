@@ -61,10 +61,11 @@ release m="":
   set -euo pipefail
 
   args=(
+    "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
-    "-p cdk-axum"
     "-p cdk-rexie"
+    "-p cdk-axum"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-strike"

@@ -20,7 +20,7 @@
 ### Removed
 
 -->
-#[Unreleased]
+#[0.5.0]
 ### Changed
 - cdk: Bump `bitcoin` to `0.32.2` ([prusnak]).
 - cdk: Bump `lightning-invoice` to `0.32.2` ([prusnak]).
@@ -52,6 +52,7 @@
 - cdk-mind: Add swagger docs ([ok300]).
 - cdk: NUT18 payment request support ([thesimplekid]).
 - cdk: Add `Wallet::get_proofs_with` ([ok300]).
+- cdk: Mint NUT-17 Websocket support ([crodas]).
 
 ### Removed
 - cdk: Remove `MintMeltSettings` since it is no longer used ([lollerfirst]).
@@ -200,4 +201,5 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [prusnak]: https://github.com/prusnak
 [mubarak23]: https://github.com/mubarak23
 [vnprc]: https://github.com/vnprc
+[crodas]: https://github.com/crodas
 
