@@ -1,27 +1,30 @@
 //! Specific Subscription for the cdk crate
-
-use std::ops::Deref;
 use std::str::FromStr;
-use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-
-mod on_subscription;
-
-pub use on_subscription::OnSubscription;
 use uuid::Uuid;
 
 use super::PublicKey;
-use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{
-    BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
-    MintQuoteState, PaymentMethod, ProofState,
+    CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
+use crate::pub_sub::{Index, Indexable, SubscriptionGlobalId};
+
+#[cfg(feature = "mint")]
+mod manager;
+#[cfg(feature = "mint")]
+mod on_subscription;
+#[cfg(feature = "mint")]
+pub use manager::PubSubManager;
+#[cfg(feature = "mint")]
+pub use on_subscription::OnSubscription;
+
 pub use crate::pub_sub::SubId;
-use crate::pub_sub::{self, Index, Indexable, SubscriptionGlobalId};
+pub mod ws;
 
 /// Subscription Parameter according to the standard
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash, Deserialize)]
 pub struct Params {
     /// Kind
     pub kind: Kind,
@@ -33,18 +36,10 @@ pub struct Params {
 }
 
 /// Check state Settings
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SupportedSettings {
     /// Supported methods
     pub supported: Vec<SupportedMethods>,
-}
-
-impl Default for SupportedSettings {
-    fn default() -> Self {
-        SupportedSettings {
-            supported: vec![SupportedMethods::default()],
-        }
-    }
 }
 
 /// Supported WS Methods
@@ -64,11 +59,7 @@ impl SupportedMethods {
         Self {
             method,
             unit,
-            commands: vec![
-                "bolt11_mint_quote".to_owned(),
-                "bolt11_melt_quote".to_owned(),
-                "proof_state".to_owned(),
-            ],
+            commands: Vec::new(),
         }
     }
 }
@@ -88,31 +79,32 @@ impl Default for SupportedMethods {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound = "T: Serialize + DeserializeOwned")]
 #[serde(untagged)]
 /// Subscription response
-pub enum NotificationPayload {
+pub enum NotificationPayload<T> {
     /// Proof State
     ProofState(ProofState),
     /// Melt Quote Bolt11 Response
-    MeltQuoteBolt11Response(MeltQuoteBolt11Response<Uuid>),
+    MeltQuoteBolt11Response(MeltQuoteBolt11Response<T>),
     /// Mint Quote Bolt11 Response
-    MintQuoteBolt11Response(MintQuoteBolt11Response<Uuid>),
+    MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
 }
 
-impl From<ProofState> for NotificationPayload {
-    fn from(proof_state: ProofState) -> NotificationPayload {
+impl<T> From<ProofState> for NotificationPayload<T> {
+    fn from(proof_state: ProofState) -> NotificationPayload<T> {
         NotificationPayload::ProofState(proof_state)
     }
 }
 
-impl From<MeltQuoteBolt11Response<Uuid>> for NotificationPayload {
-    fn from(melt_quote: MeltQuoteBolt11Response<Uuid>) -> NotificationPayload {
+impl<T> From<MeltQuoteBolt11Response<T>> for NotificationPayload<T> {
+    fn from(melt_quote: MeltQuoteBolt11Response<T>) -> NotificationPayload<T> {
         NotificationPayload::MeltQuoteBolt11Response(melt_quote)
     }
 }
 
-impl From<MintQuoteBolt11Response<Uuid>> for NotificationPayload {
-    fn from(mint_quote: MintQuoteBolt11Response<Uuid>) -> NotificationPayload {
+impl<T> From<MintQuoteBolt11Response<T>> for NotificationPayload<T> {
+    fn from(mint_quote: MintQuoteBolt11Response<T>) -> NotificationPayload<T> {
         NotificationPayload::MintQuoteBolt11Response(mint_quote)
     }
 }
@@ -128,7 +120,7 @@ pub enum Notification {
     MintQuoteBolt11(Uuid),
 }
 
-impl Indexable for NotificationPayload {
+impl Indexable for NotificationPayload<Uuid> {
     type Type = Notification;
 
     fn to_indexes(&self) -> Vec<Index<Self::Type>> {
@@ -146,10 +138,9 @@ impl Indexable for NotificationPayload {
     }
 }
 
+/// Kind
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-
-/// Kind
 pub enum Kind {
     /// Bolt 11 Melt Quote
     Bolt11MeltQuote,
@@ -165,8 +156,22 @@ impl AsRef<SubId> for Params {
     }
 }
 
-impl From<Params> for Vec<Index<Notification>> {
-    fn from(val: Params) -> Self {
+/// Parsing error
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Uuid Error: {0}")]
+    /// Uuid Error
+    Uuid(#[from] uuid::Error),
+
+    #[error("PublicKey Error: {0}")]
+    /// PublicKey Error
+    PublicKey(#[from] crate::nuts::nut01::Error),
+}
+
+impl TryFrom<Params> for Vec<Index<Notification>> {
+    type Error = Error;
+
+    fn try_from(val: Params) -> Result<Self, Self::Error> {
         let sub_id: SubscriptionGlobalId = Default::default();
         val.filters
             .into_iter()
@@ -183,213 +188,6 @@ impl From<Params> for Vec<Index<Notification>> {
 
                 Ok(Index::from((idx, val.id.clone(), sub_id)))
             })
-            .collect::<Result<_, anyhow::Error>>()
-            .unwrap()
-        // TODO don't unwrap, move to try from
-    }
-}
-
-/// Manager
-/// Publish–subscribe manager
-///
-/// Nut-17 implementation is system-wide and not only through the WebSocket, so
-/// it is possible for another part of the system to subscribe to events.
-pub struct PubSubManager(pub_sub::Manager<NotificationPayload, Notification, OnSubscription>);
-
-#[allow(clippy::default_constructed_unit_structs)]
-impl Default for PubSubManager {
-    fn default() -> Self {
-        PubSubManager(OnSubscription::default().into())
-    }
-}
-
-impl From<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>> for PubSubManager {
-    fn from(val: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>) -> Self {
-        PubSubManager(OnSubscription(Some(val)).into())
-    }
-}
-
-impl Deref for PubSubManager {
-    type Target = pub_sub::Manager<NotificationPayload, Notification, OnSubscription>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl PubSubManager {
-    /// Helper function to emit a ProofState status
-    pub fn proof_state<E: Into<ProofState>>(&self, event: E) {
-        self.broadcast(event.into().into());
-    }
-
-    /// Helper function to emit a MintQuoteBolt11Response status
-    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response<Uuid>>>(
-        &self,
-        quote: E,
-        new_state: MintQuoteState,
-    ) {
-        let mut event = quote.into();
-        event.state = new_state;
-
-        self.broadcast(event.into());
-    }
-
-    /// Helper function to emit a MeltQuoteBolt11Response status
-    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response<Uuid>>>(
-        &self,
-        quote: E,
-        payment_preimage: Option<String>,
-        change: Option<Vec<BlindSignature>>,
-        new_state: MeltQuoteState,
-    ) {
-        let mut quote = quote.into();
-        quote.state = new_state;
-        quote.paid = Some(new_state == MeltQuoteState::Paid);
-        quote.payment_preimage = payment_preimage;
-        quote.change = change;
-        self.broadcast(quote.into());
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::time::Duration;
-
-    use tokio::time::sleep;
-
-    use super::*;
-    use crate::nuts::{PublicKey, State};
-
-    #[tokio::test]
-    async fn active_and_drop() {
-        let manager = PubSubManager::default();
-        let params = Params {
-            kind: Kind::ProofState,
-            filters: vec![PublicKey::from_hex(
-                "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
-            )
-            .unwrap()
-            .to_string()],
-            id: "uno".into(),
-        };
-
-        // Although the same param is used, two subscriptions are created, that
-        // is because each index is unique, thanks to `Unique`, it is the
-        // responsibility of the implementor to make sure that SubId are unique
-        // either globally or per client
-        let subscriptions = vec![
-            manager.subscribe(params.clone()).await,
-            manager.subscribe(params).await,
-        ];
-        assert_eq!(2, manager.active_subscriptions());
-        drop(subscriptions);
-
-        sleep(Duration::from_millis(10)).await;
-
-        assert_eq!(0, manager.active_subscriptions());
-    }
-
-    #[tokio::test]
-    async fn broadcast() {
-        let manager = PubSubManager::default();
-        let mut subscriptions = [
-            manager
-                .subscribe(Params {
-                    kind: Kind::ProofState,
-                    filters: vec![
-                        "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
-                            .to_string(),
-                    ],
-                    id: "uno".into(),
-                })
-                .await,
-            manager
-                .subscribe(Params {
-                    kind: Kind::ProofState,
-                    filters: vec![
-                        "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
-                            .to_string(),
-                    ],
-                    id: "dos".into(),
-                })
-                .await,
-        ];
-
-        let event = ProofState {
-            y: PublicKey::from_hex(
-                "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
-            )
-            .expect("valid pk"),
-            state: State::Pending,
-            witness: None,
-        };
-
-        manager.broadcast(event.into());
-
-        sleep(Duration::from_millis(10)).await;
-
-        let (sub1, _) = subscriptions[0].try_recv().expect("valid message");
-        assert_eq!("uno", *sub1);
-
-        let (sub1, _) = subscriptions[1].try_recv().expect("valid message");
-        assert_eq!("dos", *sub1);
-
-        assert!(subscriptions[0].try_recv().is_err());
-        assert!(subscriptions[1].try_recv().is_err());
-    }
-
-    #[test]
-    fn parsing_request() {
-        let json = r#"{"kind":"proof_state","filters":["x"],"subId":"uno"}"#;
-        let params: Params = serde_json::from_str(json).expect("valid json");
-        assert_eq!(params.kind, Kind::ProofState);
-        assert_eq!(params.filters, vec!["x"]);
-        assert_eq!(*params.id, "uno");
-    }
-
-    #[tokio::test]
-    async fn json_test() {
-        let manager = PubSubManager::default();
-        let mut subscription = manager
-            .subscribe::<Params>(
-                serde_json::from_str(r#"{"kind":"proof_state","filters":["02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"],"subId":"uno"}"#)
-                    .expect("valid json"),
-            )
-            .await;
-
-        manager.broadcast(
-            ProofState {
-                y: PublicKey::from_hex(
-                    "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
-                )
-                .expect("valid pk"),
-                state: State::Pending,
-                witness: None,
-            }
-            .into(),
-        );
-
-        // no one is listening for this event
-        manager.broadcast(
-            ProofState {
-                y: PublicKey::from_hex(
-                    "020000000000000000000000000000000000000000000000000000000000000001",
-                )
-                .expect("valid pk"),
-                state: State::Pending,
-                witness: None,
-            }
-            .into(),
-        );
-
-        sleep(Duration::from_millis(10)).await;
-        let (sub1, msg) = subscription.try_recv().expect("valid message");
-        assert_eq!("uno", *sub1);
-        assert_eq!(
-            r#"{"Y":"02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104","state":"PENDING","witness":null}"#,
-            serde_json::to_string(&msg).expect("valid json")
-        );
-        assert!(subscription.try_recv().is_err());
+            .collect::<Result<_, _>>()
     }
 }

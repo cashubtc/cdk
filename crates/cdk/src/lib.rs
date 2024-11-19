@@ -35,7 +35,7 @@ pub use lightning_invoice::{self, Bolt11Invoice};
 pub use mint::Mint;
 #[cfg(feature = "wallet")]
 #[doc(hidden)]
-pub use wallet::Wallet;
+pub use wallet::{Wallet, WalletSubscription};
 
 #[doc(hidden)]
 pub use self::amount::Amount;

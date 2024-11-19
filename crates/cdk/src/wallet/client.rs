@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use async_trait::async_trait;
 use reqwest::Client;
 use tracing::instrument;
+#[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 
 use super::Error;

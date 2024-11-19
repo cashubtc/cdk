@@ -115,6 +115,23 @@ pub struct MeltQuoteBolt11Response<Q> {
     pub change: Option<Vec<BlindSignature>>,
 }
 
+impl<Q: ToString> MeltQuoteBolt11Response<Q> {
+    /// Convert a `MeltQuoteBolt11Response` with type Q (generic/unknown) to a
+    /// `MeltQuoteBolt11Response` with `String`
+    pub fn to_string_id(self) -> MeltQuoteBolt11Response<String> {
+        MeltQuoteBolt11Response {
+            quote: self.quote.to_string(),
+            amount: self.amount,
+            fee_reserve: self.fee_reserve,
+            paid: self.paid,
+            state: self.state,
+            expiry: self.expiry,
+            payment_preimage: self.payment_preimage,
+            change: self.change,
+        }
+    }
+}
+
 #[cfg(feature = "mint")]
 impl From<MeltQuoteBolt11Response<Uuid>> for MeltQuoteBolt11Response<String> {
     fn from(value: MeltQuoteBolt11Response<Uuid>) -> Self {

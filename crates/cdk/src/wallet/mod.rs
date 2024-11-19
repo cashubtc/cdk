@@ -7,7 +7,11 @@ use std::sync::Arc;
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
 use client::MintConnector;
+use getrandom::getrandom;
+pub use multi_mint_wallet::MultiMintWallet;
+use subscription::{ActiveSubscription, SubscriptionManager};
 use tracing::instrument;
+pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::amount::SplitTarget;
 use crate::cdk_database::{self, WalletDatabase};
@@ -16,6 +20,7 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
+use crate::nuts::nut17::{Kind, Params};
 use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
     RestoreRequest, SpendingConditions, State,
@@ -32,12 +37,10 @@ pub mod multi_mint_wallet;
 mod proofs;
 mod receive;
 mod send;
+pub mod subscription;
 mod swap;
 pub mod types;
 pub mod util;
-
-pub use multi_mint_wallet::MultiMintWallet;
-pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -58,6 +61,54 @@ pub struct Wallet {
     pub target_proof_count: usize,
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
+    subscription: SubscriptionManager,
+}
+
+const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/// Wallet Subscription filter
+#[derive(Debug, Clone)]
+pub enum WalletSubscription {
+    /// Proof subscription
+    ProofState(Vec<String>),
+    /// Mint quote subscription
+    Bolt11MintQuoteState(Vec<String>),
+    /// Melt quote subscription
+    Bolt11MeltQuoteState(Vec<String>),
+}
+
+impl From<WalletSubscription> for Params {
+    fn from(val: WalletSubscription) -> Self {
+        let mut buffer = vec![0u8; 10];
+
+        getrandom(&mut buffer).expect("Failed to generate random bytes");
+
+        let id = buffer
+            .iter()
+            .map(|&byte| {
+                let index = byte as usize % ALPHANUMERIC.len(); // 62 alphanumeric characters (A-Z, a-z, 0-9)
+                ALPHANUMERIC[index] as char
+            })
+            .collect::<String>();
+
+        match val {
+            WalletSubscription::ProofState(filters) => Params {
+                filters,
+                kind: Kind::ProofState,
+                id: id.into(),
+            },
+            WalletSubscription::Bolt11MintQuoteState(filters) => Params {
+                filters,
+                kind: Kind::Bolt11MintQuote,
+                id: id.into(),
+            },
+            WalletSubscription::Bolt11MeltQuoteState(filters) => Params {
+                filters,
+                kind: Kind::Bolt11MeltQuote,
+                id: id.into(),
+            },
+        }
+    }
 }
 
 impl Wallet {
@@ -88,10 +139,13 @@ impl Wallet {
         let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
         let mint_url = MintUrl::from_str(mint_url)?;
 
+        let http_client = Arc::new(HttpClient::new(mint_url.clone()));
+
         Ok(Self {
             mint_url: mint_url.clone(),
             unit,
-            client: Arc::new(HttpClient::new(mint_url)),
+            client: http_client.clone(),
+            subscription: SubscriptionManager::new(http_client),
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
@@ -99,8 +153,16 @@ impl Wallet {
     }
 
     /// Change HTTP client
-    pub fn set_client(&mut self, client: Arc<dyn MintConnector + Send + Sync>) {
-        self.client = client;
+    pub fn set_client<C: MintConnector + 'static + Send + Sync>(&mut self, client: C) {
+        self.client = Arc::new(client);
+        self.subscription = SubscriptionManager::new(self.client.clone());
+    }
+
+    /// Subscribe to events
+    pub async fn subscribe<T: Into<Params>>(&self, query: T) -> ActiveSubscription {
+        self.subscription
+            .subscribe(self.mint_url.clone(), query.into())
+            .await
     }
 
     /// Fee required for proof set

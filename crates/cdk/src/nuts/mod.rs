@@ -18,7 +18,6 @@ pub mod nut12;
 pub mod nut13;
 pub mod nut14;
 pub mod nut15;
-#[cfg(feature = "mint")]
 pub mod nut17;
 pub mod nut18;
 pub mod nut19;
@@ -51,5 +50,6 @@ pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 #[cfg(feature = "mint")]
-pub use nut17::{NotificationPayload, PubSubManager};
+pub use nut17::PubSubManager;
+pub use nut17::{NotificationPayload, SupportedSettings as Nut17SupportedSettings};
 pub use nut18::{PaymentRequest, PaymentRequestPayload, Transport};

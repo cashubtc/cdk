@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{bail, Result};
 use axum::Router;
@@ -12,17 +11,19 @@ use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::mint_url::MintUrl;
+use cdk::nuts::nut17::Params;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MintBolt11Request, MintInfo, MintQuoteBolt11Request, MintQuoteState,
-    Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
+    NotificationPayload, Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
 use cdk::types::{LnKey, QuoteTTL};
 use cdk::wallet::client::{HttpClient, MintConnector};
+use cdk::wallet::subscription::SubscriptionManager;
+use cdk::wallet::WalletSubscription;
 use cdk::{Mint, Wallet};
 use cdk_fake_wallet::FakeWallet;
 use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
 use tokio::sync::Notify;
-use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
 pub mod init_fake_wallet;
@@ -129,15 +130,18 @@ pub async fn wallet_mint(
 ) -> Result<()> {
     let quote = wallet.mint_quote(amount, description).await?;
 
-    loop {
-        let status = wallet.mint_quote_state(&quote.id).await?;
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+            .id
+            .clone()]))
+        .await;
 
-        if status.state == MintQuoteState::Paid {
-            break;
+    while let Some(msg) = subscription.recv().await {
+        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+            if response.state == MintQuoteState::Paid {
+                break;
+            }
         }
-        println!("{:?}", status);
-
-        sleep(Duration::from_secs(2)).await;
     }
 
     let receive_amount = wallet.mint(&quote.id, split_target, None).await?;
@@ -169,17 +173,25 @@ pub async fn mint_proofs(
 
     println!("Please pay: {}", mint_quote.request);
 
-    loop {
-        let status = wallet_client
-            .get_mint_quote_status(&mint_quote.quote)
-            .await?;
+    let subscription_client = SubscriptionManager::new(Arc::new(wallet_client.clone()));
 
-        if status.state == MintQuoteState::Paid {
-            break;
+    let mut subscription = subscription_client
+        .subscribe(
+            mint_url.parse()?,
+            Params {
+                filters: vec![mint_quote.quote.clone()],
+                kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
+                id: "sub".into(),
+            },
+        )
+        .await;
+
+    while let Some(msg) = subscription.recv().await {
+        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+            if response.state == MintQuoteState::Paid {
+                break;
+            }
         }
-        println!("{:?}", status.state);
-
-        sleep(Duration::from_secs(2)).await;
     }
 
     let premint_secrets = PreMintSecrets::random(keyset_id, amount, &SplitTarget::default())?;

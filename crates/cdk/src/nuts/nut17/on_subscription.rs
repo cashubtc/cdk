@@ -22,7 +22,7 @@ pub struct OnSubscription(
 
 #[async_trait::async_trait]
 impl OnNewSubscription for OnSubscription {
-    type Event = NotificationPayload;
+    type Event = NotificationPayload<Uuid>;
     type Index = Notification;
 
     async fn on_new_subscription(

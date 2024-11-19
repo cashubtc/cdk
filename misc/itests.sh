@@ -83,6 +83,9 @@ done
 # Run cargo test
 cargo test -p cdk-integration-tests --test regtest
 
+# Run cargo test with the http_subscription feature
+cargo test -p cdk-integration-tests --test regtest --features http_subscription
+
 # Capture the exit status of cargo test
 test_status=$?
 

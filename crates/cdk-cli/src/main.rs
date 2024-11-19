@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
         )?;
         if let Some(proxy_url) = args.proxy.as_ref() {
             let http_client = HttpClient::with_proxy(mint_url, proxy_url.clone(), None, true)?;
-            wallet.set_client(Arc::from(http_client));
+            wallet.set_client(http_client);
         }
 
         wallets.push(wallet);

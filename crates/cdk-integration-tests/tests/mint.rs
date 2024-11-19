@@ -230,12 +230,13 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let mut listener = mint
         .pubsub_manager
-        .subscribe(Params {
+        .try_subscribe(Params {
             kind: cdk::nuts::nut17::Kind::ProofState,
             filters: public_keys_to_listen.clone(),
             id: "test".into(),
         })
-        .await;
+        .await
+        .expect("valid subscription");
 
     match mint.process_swap_request(swap_request).await {
         Ok(_) => bail!("Proofs spent without sig"),
