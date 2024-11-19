@@ -21,6 +21,4 @@ tokio-util = { version = "0.7.11", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
-# strike-rs = "0.3.0"
-# strike-rs = { path = "../../../../strike-rs" }
-strike-rs = { git = "https://github.com/thesimplekid/strike-rs.git", rev = "c6167ce" }
+strike-rs = "0.4.0"
