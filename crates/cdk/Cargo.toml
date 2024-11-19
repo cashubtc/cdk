@@ -6,7 +6,7 @@ authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0" # MSRV
+rust-version = "1.63.0"                                                            # MSRV
 license = "MIT"
 
 
@@ -17,12 +17,18 @@ mint = ["dep:futures"]
 swagger = ["mint", "dep:utoipa"]
 wallet = ["dep:reqwest"]
 bench = []
+http_subscription = []
 
 
 [dependencies]
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
-bitcoin = { version= "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
+bitcoin = { version = "0.32.2", features = [
+    "base64",
+    "serde",
+    "rand",
+    "rand-std",
+] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
@@ -37,9 +43,14 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 serde_with = "3"
-tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+tracing = { version = "0.1", default-features = false, features = [
+    "attributes",
+    "log",
+] }
 thiserror = "1"
-futures = { version = "0.3.28", default-features = false, optional = true, features = ["alloc"] }
+futures = { version = "0.3.28", default-features = false, optional = true, features = [
+    "alloc",
+] }
 url = "2.3"
 utoipa = { version = "4", optional = true }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -54,6 +65,11 @@ tokio = { version = "1.21", features = [
     "time",
     "macros",
     "sync",
+] }
+getrandom = { version = "0.2" }
+tokio-tungstenite = { version = "0.19.0", features = [
+    "rustls",
+    "rustls-tls-native-roots",
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

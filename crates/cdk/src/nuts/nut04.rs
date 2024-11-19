@@ -96,6 +96,18 @@ pub struct MintQuoteBolt11Response<Q> {
     pub expiry: Option<u64>,
 }
 
+impl<Q: ToString> MintQuoteBolt11Response<Q> {
+    /// Convert the MintQuote with a quote type Q to a String
+    pub fn to_string_id(&self) -> MintQuoteBolt11Response<String> {
+        MintQuoteBolt11Response {
+            quote: self.quote.to_string(),
+            request: self.request.clone(),
+            state: self.state,
+            expiry: self.expiry,
+        }
+    }
+}
+
 #[cfg(feature = "mint")]
 impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
     fn from(value: MintQuoteBolt11Response<Uuid>) -> Self {

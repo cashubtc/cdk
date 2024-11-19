@@ -12,7 +12,7 @@ use cdk::nuts::{
     PreMintSecrets, State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::Wallet;
+use cdk::wallet::{Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
     get_mint_url, get_mint_ws_url, init_cln_client, init_lnd_client,
 };
@@ -20,14 +20,14 @@ use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::InvoiceStatus;
 use serde_json::json;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
     timeout_to_wait: Duration,
-) -> (String, NotificationPayload) {
+) -> (String, NotificationPayload<String>) {
     let msg = timeout(timeout_to_wait, reader.next())
         .await
         .expect("timeout")
@@ -361,16 +361,18 @@ async fn test_cached_mint() -> Result<()> {
     let quote = wallet.mint_quote(mint_amount, None).await?;
     lnd_client.pay_invoice(quote.request).await?;
 
-    loop {
-        let status = wallet.mint_quote_state(&quote.id).await.unwrap();
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+            .id
+            .clone()]))
+        .await;
 
-        println!("Quote status: {}", status.state);
-
-        if status.state == MintQuoteState::Paid {
-            break;
+    while let Some(msg) = subscription.recv().await {
+        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+            if response.state == MintQuoteState::Paid {
+                break;
+            }
         }
-
-        sleep(Duration::from_secs(5)).await;
     }
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;

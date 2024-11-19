@@ -157,16 +157,14 @@ where
         Self::broadcast_impl(&self.indexes, event).await;
     }
 
-    /// Subscribe to a specific event
-    pub async fn subscribe<P: AsRef<SubId> + Into<Vec<Index<I>>>>(
+    /// Specific of the subscription, this is the abstraction between `subscribe` and `try_subscribe`
+    #[inline(always)]
+    async fn subscribe_inner(
         &self,
-        params: P,
+        sub_id: SubId,
+        indexes: Vec<Index<I>>,
     ) -> ActiveSubscription<T, I> {
         let (sender, receiver) = mpsc::channel(10);
-        let sub_id: SubId = params.as_ref().clone();
-
-        let indexes: Vec<Index<I>> = params.into();
-
         if let Some(on_new_subscription) = self.on_new_subscription.as_ref() {
             match on_new_subscription
                 .on_new_subscription(&indexes.iter().map(|x| x.deref()).collect::<Vec<_>>())
@@ -202,6 +200,25 @@ where
             indexes,
             drop: self.unsubscription_sender.clone(),
         }
+    }
+
+    /// Try to subscribe to a specific event
+    pub async fn try_subscribe<P: AsRef<SubId> + TryInto<Vec<Index<I>>>>(
+        &self,
+        params: P,
+    ) -> Result<ActiveSubscription<T, I>, P::Error> {
+        Ok(self
+            .subscribe_inner(params.as_ref().clone(), params.try_into()?)
+            .await)
+    }
+
+    /// Subscribe to a specific event
+    pub async fn subscribe<P: AsRef<SubId> + Into<Vec<Index<I>>>>(
+        &self,
+        params: P,
+    ) -> ActiveSubscription<T, I> {
+        self.subscribe_inner(params.as_ref().clone(), params.into())
+            .await
     }
 
     /// Return number of active subscriptions

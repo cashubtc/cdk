@@ -1,3 +1,4 @@
+use cdk::nuts::nut17::ws::WsErrorBody;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,4 +17,18 @@ pub enum WsError {
     InternalError,
     /// Custom error
     ServerError(i32, String),
+}
+
+impl From<WsError> for WsErrorBody {
+    fn from(val: WsError) -> Self {
+        let (id, message) = match val {
+            WsError::ParseError => (-32700, "Parse error".to_string()),
+            WsError::InvalidRequest => (-32600, "Invalid Request".to_string()),
+            WsError::MethodNotFound => (-32601, "Method not found".to_string()),
+            WsError::InvalidParams => (-32602, "Invalid params".to_string()),
+            WsError::InternalError => (-32603, "Internal error".to_string()),
+            WsError::ServerError(code, message) => (code, message),
+        };
+        WsErrorBody { code: id, message }
+    }
 }

@@ -1,18 +1,17 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, PreMintSecrets, State,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, NotificationPayload,
+    PreMintSecrets, State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::Wallet;
+use cdk::wallet::{Wallet, WalletSubscription};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;
-use tokio::time::sleep;
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
 
@@ -379,12 +378,19 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
 // Keep polling the state of the mint quote id until it's paid
 async fn wait_for_mint_to_be_paid(wallet: &Wallet, mint_quote_id: &str) -> Result<()> {
-    loop {
-        let status = wallet.mint_quote_state(mint_quote_id).await?;
-        if status.state == MintQuoteState::Paid {
-            return Ok(());
-        }
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![
+            mint_quote_id.to_owned(),
+        ]))
+        .await;
 
-        sleep(Duration::from_millis(5)).await;
+    while let Some(msg) = subscription.recv().await {
+        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+            if response.state == MintQuoteState::Paid {
+                break;
+            }
+        }
     }
+
+    Ok(())
 }

@@ -1,15 +1,13 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::types::SendKind;
-use cdk::wallet::Wallet;
+use cdk::wallet::{Wallet, WalletSubscription};
 use cdk::Amount;
 use rand::Rng;
-use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -26,16 +24,18 @@ async fn main() -> Result<(), Error> {
 
     println!("Quote: {:#?}", quote);
 
-    loop {
-        let status = wallet.mint_quote_state(&quote.id).await.unwrap();
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+            .id
+            .clone()]))
+        .await;
 
-        println!("Quote status: {}", status.state);
-
-        if status.state == MintQuoteState::Paid {
-            break;
+    while let Some(msg) = subscription.recv().await {
+        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+            if response.state == MintQuoteState::Paid {
+                break;
+            }
         }
-
-        sleep(Duration::from_secs(5)).await;
     }
 
     let receive_amount = wallet

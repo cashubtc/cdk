@@ -1,50 +1,33 @@
 use std::collections::HashMap;
 
 use axum::extract::ws::{Message, WebSocket};
+use cdk::nuts::nut17::ws::{
+    NotificationInner, WsErrorBody, WsMessageOrResponse, WsMethodRequest, WsRequest,
+};
 use cdk::nuts::nut17::{NotificationPayload, SubId};
 use futures::StreamExt;
-use handler::{WsHandle, WsNotification};
-use serde::{Deserialize, Serialize};
-use subscribe::Notification;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::MintState;
 
 mod error;
-mod handler;
 mod subscribe;
 mod unsubscribe;
 
-/// JSON RPC version
-pub const JSON_RPC_VERSION: &str = "2.0";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsRequest {
-    jsonrpc: String,
-    #[serde(flatten)]
-    method: WsMethod,
-    id: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "method", content = "params")]
-pub enum WsMethod {
-    Subscribe(subscribe::Method),
-    Unsubscribe(unsubscribe::Method),
-}
-
-impl WsMethod {
-    pub async fn process(
-        self,
-        req_id: usize,
-        context: &mut WsContext,
-    ) -> Result<serde_json::Value, serde_json::Error> {
-        match self {
-            WsMethod::Subscribe(sub) => sub.process(req_id, context),
-            WsMethod::Unsubscribe(unsub) => unsub.process(req_id, context),
-        }
-        .await
+async fn process(
+    context: &mut WsContext,
+    body: WsRequest,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let response = match body.method {
+        WsMethodRequest::Subscribe(sub) => subscribe::handle(context, sub).await,
+        WsMethodRequest::Unsubscribe(unsub) => unsubscribe::handle(context, unsub).await,
     }
+    .map_err(WsErrorBody::from);
+
+    let response: WsMessageOrResponse = (body.id, response).into();
+
+    serde_json::to_value(response)
 }
 
 pub use error::WsError;
@@ -52,7 +35,7 @@ pub use error::WsError;
 pub struct WsContext {
     state: MintState,
     subscriptions: HashMap<SubId, tokio::task::JoinHandle<()>>,
-    publisher: mpsc::Sender<(SubId, NotificationPayload)>,
+    publisher: mpsc::Sender<(SubId, NotificationPayload<Uuid>)>,
 }
 
 /// Main function for websocket connections
@@ -78,7 +61,10 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     // unsubscribed from the subscription manager, just ignore it.
                     continue;
                 }
-                let notification: WsNotification<Notification> = (sub_id, payload).into();
+                let notification: WsMessageOrResponse= NotificationInner {
+                    sub_id,
+                    payload,
+                }.into();
                 let message = match serde_json::to_string(&notification) {
                     Ok(message) => message,
                     Err(err) => {
@@ -101,7 +87,7 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     }
                 };
 
-                match request.method.process(request.id, &mut context).await {
+                match process(&mut context, request).await {
                     Ok(result) => {
                         if let Err(err) = socket
                             .send(Message::Text(result.to_string()))

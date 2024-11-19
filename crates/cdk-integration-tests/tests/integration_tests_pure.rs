@@ -197,7 +197,7 @@ mod integration_tests_pure {
         let localstore = WalletMemoryDatabase::default();
         let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None)?;
 
-        wallet.set_client(Arc::from(connector));
+        wallet.set_client(connector);
 
         Ok(Arc::new(wallet))
     }
