@@ -1,6 +1,6 @@
 [package]
 name = "cdk-integration-tests"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
@@ -18,8 +18,8 @@ axum = "0.6.20"
 rand = "0.8.5"
 bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
-cdk = { path = "../cdk", version = "0.4.0", features = ["mint", "wallet"] }
-cdk-cln = { path = "../cdk-cln", version = "0.4.0" }
+cdk = { path = "../cdk", features = ["mint", "wallet"] }
+cdk-cln = { path = "../cdk-cln" }
 cdk-axum = { path = "../cdk-axum" }
 cdk-sqlite = { path = "../cdk-sqlite" }
 cdk-redb = { path = "../cdk-redb" }
