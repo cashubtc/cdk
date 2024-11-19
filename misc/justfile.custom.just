@@ -11,7 +11,6 @@ check-wasm *ARGS="--target wasm32-unknown-unknown":
     "-p cdk --no-default-features"
     "-p cdk --no-default-features --features wallet"
     "-p cdk --no-default-features --features mint"
-    "-p cdk-js"
   )
 
   for arg in "${buildargs[@]}"; do

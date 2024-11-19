@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "bindings/cdk-js",
     "crates/*",
 ]
 resolver = "2"
