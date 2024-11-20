@@ -380,13 +380,17 @@ pub enum CurrencyUnit {
 impl CurrencyUnit {
     /// Constructor for `CurrencyUnit::Custom`
     pub fn new_custom(name: String, index: u32) -> Result<Self, String> {
-        if (0..=3).contains(&index) {
-            Err(format!(
+        match index {
+            0..=3 => Err(format!(
                 "Index {} is reserved and cannot be used for custom currency units.",
                 index
-            ))
-        } else {
-            Ok(Self::Custom(name, index))
+            )),
+            i if i > i32::MAX as u32 => Err(format!(
+                "Index {} exceeds maximum allowed value of {}.",
+                index,
+                i32::MAX
+            )),
+            _ => Ok(Self::Custom(name, index)),
         }
     }
 }
@@ -423,7 +427,7 @@ impl FromStr for CurrencyUnit {
                     return Err(Error::UnsupportedUnit);
                 }
                 let index = parts[1].parse().map_err(|_| Error::UnsupportedUnit)?;
-                Ok(Self::Custom(c.to_string(), index))
+                Ok(Self::new_custom(c.to_string(), index).map_err(|_| Error::UnsupportedUnit)?)
             }
         }
     }
@@ -790,25 +794,43 @@ mod tests {
 
     #[test]
     fn test_currency_unit_from_str() {
-        // Standard currencies
-        assert_eq!(CurrencyUnit::from_str("SAT").unwrap(), CurrencyUnit::Sat);
-        assert_eq!(CurrencyUnit::from_str("sat").unwrap(), CurrencyUnit::Sat);
-        assert_eq!(CurrencyUnit::from_str("MSAT").unwrap(), CurrencyUnit::Msat);
-        assert_eq!(CurrencyUnit::from_str("msat").unwrap(), CurrencyUnit::Msat);
-        assert_eq!(CurrencyUnit::from_str("USD").unwrap(), CurrencyUnit::Usd);
-        assert_eq!(CurrencyUnit::from_str("usd").unwrap(), CurrencyUnit::Usd);
-        assert_eq!(CurrencyUnit::from_str("EUR").unwrap(), CurrencyUnit::Eur);
-        assert_eq!(CurrencyUnit::from_str("eur").unwrap(), CurrencyUnit::Eur);
+        // valid cases
+        let standard_cases = [
+            ("SAT", CurrencyUnit::Sat),
+            ("MSAT", CurrencyUnit::Msat),
+            ("USD", CurrencyUnit::Usd),
+            ("EUR", CurrencyUnit::Eur),
+            ("GBP:1001", CurrencyUnit::Custom("GBP".to_string(), 1001)),
+        ];
 
-        // Custom currency
-        assert_eq!(
-            CurrencyUnit::from_str("GBP:1001").unwrap(),
-            CurrencyUnit::Custom("GBP".to_string(), 1001)
-        );
+        for (input, expected) in standard_cases {
+            assert_eq!(CurrencyUnit::from_str(input).unwrap(), expected);
+            assert_eq!(
+                CurrencyUnit::from_str(&input.to_lowercase()).unwrap(),
+                expected
+            );
+        }
 
-        assert!(CurrencyUnit::from_str("GBP").is_err());
-        assert!(CurrencyUnit::from_str("GBP:").is_err());
-        assert!(CurrencyUnit::from_str("GBP:abc").is_err());
+        // invalid cases
+        let invalid_cases = [
+            "GBP",
+            "GBP:",
+            "GBP:abc",
+            "",
+            // one more than max index
+            "GBP:2147483648",
+        ];
+
+        for invalid in invalid_cases {
+            match CurrencyUnit::from_str(invalid) {
+                Err(Error::UnsupportedUnit) => {}
+                other => panic!("Expected UnsupportedUnit error, got {:?}", other),
+            }
+            match CurrencyUnit::from_str(&invalid.to_lowercase()) {
+                Err(Error::UnsupportedUnit) => {}
+                other => panic!("Expected UnsupportedUnit error, got {:?}", other),
+            }
+        }
     }
 
     #[test]
@@ -839,7 +861,7 @@ mod tests {
 
     #[test]
     fn test_custom_currency_invalid_indexes() {
-        let invalid_indexes = [0, 1, 2, 3];
+        let invalid_indexes = [0, 1, 2, 3, 2147483648];
         for &index in &invalid_indexes {
             let result = CurrencyUnit::new_custom("InvalidCurrency".to_string(), index);
             assert!(result.is_err(), "Index {} should not be allowed", index);

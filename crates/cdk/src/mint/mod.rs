@@ -610,7 +610,7 @@ mod tests {
     use crate::types::LnKey;
 
     #[test]
-    fn mint_mod_generate_keyset_from_seed() {
+    fn test_generate_keyset_from_seed() {
         let seed = "test_seed".as_bytes();
         let keyset = MintKeySet::generate_from_seed(
             &Secp256k1::new(),
@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn mint_mod_generate_keyset_from_xpriv() {
+    fn test_generate_keyset_from_xpriv() {
         let seed = "test_seed".as_bytes();
         let network = Network::Bitcoin;
         let xpriv = Xpriv::new_master(network, seed).expect("Failed to create xpriv");
@@ -696,11 +696,14 @@ mod tests {
     }
 
     #[test]
-    fn mint_mod_derivation_path_from_unit() {
-        // Test valid cases
+    fn test_derivation_path_from_unit() {
         let test_cases = vec![
+            // min value for a hardened derivation path index
             (CurrencyUnit::Sat, 0, "0'/0'/0'"),
+            // max value for a hardened derivation path index
+            (CurrencyUnit::Msat, i32::MAX as u32, "0'/1'/2147483647'"),
             (CurrencyUnit::Usd, 21, "0'/2'/21'"),
+            (CurrencyUnit::Eur, 1337, "0'/3'/1337'"),
             (
                 CurrencyUnit::Custom("DOGE".to_string(), 69),
                 420,
