@@ -176,11 +176,15 @@ where
     Ok(())
 }
 
-pub async fn fund_ln(
+pub async fn fund_ln<C1, C2>(
     bitcoin_client: &BitcoinClient,
-    cln_client: &ClnClient,
-    lnd_client: &LndClient,
-) -> Result<()> {
+    cln_client: &C1,
+    lnd_client: &C2,
+) -> Result<()>
+where
+    C1: LightningClient,
+    C2: LightningClient,
+{
     let lnd_address = lnd_client.get_new_onchain_address().await?;
 
     bitcoin_client.send_to_address(&lnd_address, 2_000_000)?;
@@ -197,16 +201,20 @@ pub async fn fund_ln(
     Ok(())
 }
 
-pub async fn open_channel(
+pub async fn open_channel<C1, C2>(
     bitcoin_client: &BitcoinClient,
-    cln_client: &ClnClient,
-    lnd_client: &LndClient,
-) -> Result<()> {
-    let cln_info = cln_client.get_info().await?;
+    cln_client: &C1,
+    lnd_client: &C2,
+) -> Result<()>
+where
+    C1: LightningClient,
+    C2: LightningClient,
+{
+    let cln_info = cln_client.get_connect_info().await?;
 
-    let cln_pubkey = cln_info.id;
-    let cln_address = "127.0.0.1";
-    let cln_port = 19846;
+    let cln_pubkey = cln_info.pubkey;
+    let cln_address = cln_info.address;
+    let cln_port = cln_info.port;
 
     lnd_client
         .connect_peer(cln_pubkey.to_string(), cln_address.to_string(), cln_port)
