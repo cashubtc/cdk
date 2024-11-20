@@ -8,6 +8,7 @@ use cdk_integration_tests::init_regtest::{
 };
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
+use ln_regtest_rs::ln_client::LightningClient;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -41,10 +42,14 @@ async fn main() -> Result<()> {
 
     let cln_client = init_cln_client().await?;
 
+    cln_client.wait_chain_sync().await.unwrap();
+
     let mut lnd = init_lnd().await;
     lnd.start_lnd().unwrap();
 
     let lnd_client = init_lnd_client().await.unwrap();
+
+    lnd_client.wait_chain_sync().await.unwrap();
 
     fund_ln(&bitcoin_client, &cln_client, &lnd_client)
         .await
