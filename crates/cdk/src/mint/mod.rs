@@ -590,10 +590,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
 }
 
 fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
-    let unit_index = match unit.derivation_index() {
-        Some(index) => index,
-        None => return None,
-    };
+    let unit_index = unit.derivation_index();
 
     Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
@@ -696,6 +693,25 @@ mod tests {
             .collect();
 
         assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
+    }
+
+    #[test]
+    fn mint_mod_derivation_path_from_unit() {
+        // Test valid cases
+        let test_cases = vec![
+            (CurrencyUnit::Sat, 0, "0'/0'/0'"),
+            (CurrencyUnit::Usd, 21, "0'/2'/21'"),
+            (
+                CurrencyUnit::Custom("DOGE".to_string(), 69),
+                420,
+                "0'/69'/420'",
+            ),
+        ];
+
+        for (unit, index, expected) in test_cases {
+            let path = derivation_path_from_unit(unit, index).unwrap();
+            assert_eq!(path.to_string(), expected);
+        }
     }
 
     use cdk_database::mint_memory::MintMemoryDatabase;

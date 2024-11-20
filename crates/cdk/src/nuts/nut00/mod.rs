@@ -377,16 +377,30 @@ pub enum CurrencyUnit {
     Custom(String, u32),
 }
 
+impl CurrencyUnit {
+    /// Constructor for `CurrencyUnit::Custom`
+    pub fn new_custom(name: String, index: u32) -> Result<Self, String> {
+        if (0..=3).contains(&index) {
+            Err(format!(
+                "Index {} is reserved and cannot be used for custom currency units.",
+                index
+            ))
+        } else {
+            Ok(Self::Custom(name, index))
+        }
+    }
+}
+
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
-    pub fn derivation_index(&self) -> Option<u32> {
+    pub fn derivation_index(&self) -> u32 {
         match self {
-            Self::Sat => Some(0),
-            Self::Msat => Some(1),
-            Self::Usd => Some(2),
-            Self::Eur => Some(3),
-            Self::Custom(_, index) => Some(*index),
+            Self::Sat => 0,
+            Self::Msat => 1,
+            Self::Usd => 2,
+            Self::Eur => 3,
+            Self::Custom(_, index) => *index,
         }
     }
 }
@@ -775,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn test_currency_unit_parsing() {
+    fn test_currency_unit_from_str() {
         // Standard currencies
         assert_eq!(CurrencyUnit::from_str("SAT").unwrap(), CurrencyUnit::Sat);
         assert_eq!(CurrencyUnit::from_str("sat").unwrap(), CurrencyUnit::Sat);
@@ -810,5 +824,31 @@ mod tests {
             CurrencyUnit::Custom("GBP".to_string(), 1001).to_string(),
             "gbp:1001"
         );
+    }
+
+    #[test]
+    fn test_custom_currency_valid_index() {
+        let valid_index = 5;
+        let result = CurrencyUnit::new_custom("MyCurrency".to_string(), valid_index);
+        assert!(result.is_ok());
+        if let Ok(CurrencyUnit::Custom(name, index)) = result {
+            assert_eq!(name, "MyCurrency");
+            assert_eq!(index, valid_index);
+        }
+    }
+
+    #[test]
+    fn test_custom_currency_invalid_indexes() {
+        let invalid_indexes = [0, 1, 2, 3];
+        for &index in &invalid_indexes {
+            let result = CurrencyUnit::new_custom("InvalidCurrency".to_string(), index);
+            assert!(result.is_err(), "Index {} should not be allowed", index);
+            if let Err(err) = result {
+                assert!(
+                    err.contains(&index.to_string()),
+                    "Error message should mention the invalid index"
+                );
+            }
+        }
     }
 }
