@@ -165,6 +165,8 @@ pub struct Bolt11Settings {
     pub unit: CurrencyUnit,
     /// Invoice Description supported
     pub invoice_description: bool,
+    /// Paying amountless invoices supported
+    pub amountless: bool,
 }
 
 impl TryFrom<Bolt11Settings> for Value {
