@@ -37,6 +37,9 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnitUnsupported)?;
 
+        if !settings.amountless.unwrap_or_default() {
+            return Err(Error::AmountLessNotAllowed);
+        }
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
@@ -59,6 +62,7 @@ impl Mint {
             request,
             unit,
             options: _,
+            ..
         } = melt_request;
 
         let amount = match melt_request.options {
@@ -93,6 +97,7 @@ impl Mint {
 
             Error::UnitUnsupported
         })?;
+
 
         let quote = MeltQuote::new(
             request.to_string(),
