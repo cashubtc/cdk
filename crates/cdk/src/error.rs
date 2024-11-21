@@ -45,6 +45,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Amountless Invoice Not supported
+    #[error("Amount Less Invoice is not allowed")]
+    AmountLessNotAllowed,
 
     // Mint Errors
     /// Minting is disabled

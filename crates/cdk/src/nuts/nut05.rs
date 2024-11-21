@@ -39,6 +39,8 @@ pub struct MeltQuoteBolt11Request {
     pub request: Bolt11Invoice,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
+    /// amount for paying amountless bolt11 invoice
+    pub amount: Option<Amount>,
     /// Payment Options
     pub options: Option<Mpp>,
 }
@@ -315,6 +317,8 @@ pub struct MeltMethodSettings {
     /// Max Amount
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
+    /// Amountless
+    pub amountless: Option<bool>,
 }
 
 impl Settings {
@@ -339,6 +343,9 @@ impl Settings {
     }
 }
 
+/// meting with an amount_less invoice
+//  pub amount_less: Option<Amount>,
+
 /// Melt Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut05::Settings))]
@@ -356,6 +363,7 @@ impl Default for Settings {
             unit: CurrencyUnit::Sat,
             min_amount: Some(Amount::from(1)),
             max_amount: Some(Amount::from(1000000)),
+            amountless: Some(false),
         };
 
         Settings {
