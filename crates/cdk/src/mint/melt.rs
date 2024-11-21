@@ -122,7 +122,7 @@ impl Mint {
         // check amountless (amount in meltbolt11reqiest) is equal to payment_quote.amount
         self.check_amount_less_invoice(
             amount_less_amount,
-            payment_quote.amount.clone(),
+            payment_quote.amount,
             unit.clone(),
             PaymentMethod::Bolt11,
         )?;
