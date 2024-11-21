@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
-use cashu::{MeltOptions, Mpp};
+use cashu::ProofsMethods;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
-    PreMintSecrets,
+    CurrencyUnit, MeltOptions, MeltQuoteState, MintBolt11Request, MintQuoteState, Mpp,
+    NotificationPayload, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
@@ -291,5 +291,46 @@ async fn test_cached_mint() -> Result<()> {
     let response1 = http_client.post_mint(request).await?;
 
     assert!(response == response1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_regtest_melt_amountless() -> Result<()> {
+    let lnd_client = init_lnd_client().await;
+
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_amount = Amount::from(100);
+
+    let mint_quote = wallet.mint_quote(mint_amount, None).await?;
+
+    assert_eq!(mint_quote.amount, mint_amount);
+
+    lnd_client.pay_invoice(mint_quote.request).await?;
+
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+
+    let amount = proofs.total_amount()?;
+
+    assert!(mint_amount == amount);
+
+    let invoice = lnd_client.create_invoice(None).await?;
+
+    let options = MeltOptions::new_amountless(5_000);
+
+    let melt_quote = wallet.melt_quote(invoice.clone(), Some(options)).await?;
+
+    let melt = wallet.melt(&melt_quote.id).await.unwrap();
+
+    assert!(melt.amount == 5.into());
+
     Ok(())
 }

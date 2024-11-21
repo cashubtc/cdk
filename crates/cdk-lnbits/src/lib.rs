@@ -69,6 +69,7 @@ impl LNbits {
                 mpp: false,
                 unit: CurrencyUnit::Sat,
                 invoice_description: true,
+                amountless: false,
             },
         })
     }

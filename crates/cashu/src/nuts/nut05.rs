@@ -58,6 +58,11 @@ pub enum MeltOptions {
         /// MPP
         mpp: Mpp,
     },
+    /// Amountless options
+    Amountless {
+        /// Amountless
+        amountless: Amountless,
+    },
 }
 
 impl MeltOptions {
@@ -73,12 +78,33 @@ impl MeltOptions {
         }
     }
 
+    /// Create new [`Options::Amountless`]
+    pub fn new_amountless<A>(amount_msat: A) -> Self
+    where
+        A: Into<Amount>,
+    {
+        Self::Amountless {
+            amountless: Amountless {
+                amount_msat: amount_msat.into(),
+            },
+        }
+    }
+
     /// Payment amount
     pub fn amount_msat(&self) -> Amount {
         match self {
             Self::Mpp { mpp } => mpp.amount,
+            Self::Amountless { amountless } => amountless.amount_msat,
         }
     }
+}
+
+/// Amountless payment
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct Amountless {
+    /// Amount to pay in msat
+    pub amount_msat: Amount,
 }
 
 impl MeltQuoteBolt11Request {
@@ -100,6 +126,15 @@ impl MeltQuoteBolt11Request {
                 .ok_or(Error::InvalidAmountRequest)?
                 .into()),
             Some(MeltOptions::Mpp { mpp }) => Ok(mpp.amount),
+            Some(MeltOptions::Amountless { amountless }) => {
+                let amount = amountless.amount_msat;
+                if let Some(amount_msat) = request.amount_milli_satoshis() {
+                    if amount != amount_msat.into() {
+                        return Err(Error::InvalidAmountRequest);
+                    }
+                }
+                Ok(amount)
+            }
         }
     }
 }
@@ -392,6 +427,9 @@ pub struct MeltMethodSettings {
     /// Max Amount
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
+    /// Amountless
+    #[serde(default)]
+    pub amountless: bool,
 }
 
 impl Settings {
