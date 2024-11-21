@@ -4,15 +4,17 @@ use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
 use super::MeltQuote;
+use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut05::Options;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Mpp,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     PreMintSecrets, Proofs, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
-use crate::{Amount, Error, Wallet};
+use crate::{Error, Wallet};
 
 impl Wallet {
     /// Melt Quote
@@ -43,21 +45,24 @@ impl Wallet {
     pub async fn melt_quote(
         &self,
         request: String,
-        mpp: Option<Amount>,
+        options: Option<Options>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
-        let request_amount = invoice
-            .amount_milli_satoshis()
-            .ok_or(Error::InvoiceAmountUndefined)?;
+        let mut options = options;
 
-        let amount = match self.unit {
-            CurrencyUnit::Sat => Amount::from(request_amount / 1000),
-            CurrencyUnit::Msat => Amount::from(request_amount),
-            _ => return Err(Error::UnitUnsupported),
+        let request_amount = match invoice.amount_milli_satoshis() {
+            Some(invoice_amount) => {
+                options = None;
+                invoice_amount
+            }
+            None => options
+                .ok_or(Error::InvoiceAmountUndefined)?
+                .amount_msat()
+                .into(),
         };
 
-        let options = mpp.map(|amount| Mpp { amount });
+        let amount = to_unit(request_amount, &CurrencyUnit::Msat, &self.unit).unwrap();
 
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,
@@ -65,9 +70,14 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await?;
+        let quote_res = self.client.post_melt_quote(quote_request).await.unwrap();
 
         if quote_res.amount != amount {
+            tracing::warn!(
+                "Mint returned incorrect quote amount. Expected {}, got {}",
+                amount,
+                quote_res.amount
+            );
             return Err(Error::IncorrectQuoteAmount);
         }
 

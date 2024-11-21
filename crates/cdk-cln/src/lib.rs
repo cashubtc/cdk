@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk::amount::{to_unit, Amount};
+use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
@@ -196,16 +196,9 @@ impl MintLightning for Cln {
         &self,
         melt_quote_request: &MeltQuoteBolt11Request,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let invoice_amount_msat = melt_quote_request
-            .request
-            .amount_milli_satoshis()
-            .ok_or(Error::UnknownInvoiceAmount)?;
+        let amount = melt_quote_request.amount_msat()?;
 
-        let amount = to_unit(
-            invoice_amount_msat,
-            &CurrencyUnit::Msat,
-            &melt_quote_request.unit,
-        )?;
+        let amount = amount / MSAT_IN_SAT.into();
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -248,11 +241,15 @@ impl MintLightning for Cln {
             }
         }
 
+        let amount_msat = melt_quote
+            .msat_to_pay
+            .map(|a| CLN_Amount::from_msat(a.into()));
+
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client
             .call(Request::Pay(PayRequest {
                 bolt11: melt_quote.request.to_string(),
-                amount_msat: None,
+                amount_msat,
                 label: None,
                 riskfactor: None,
                 maxfeepercent: None,
@@ -264,9 +261,7 @@ impl MintLightning for Cln {
                 maxfee: max_fee
                     .map(|a| {
                         let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
-                        Ok::<cln_rpc::primitives::Amount, Self::Err>(CLN_Amount::from_msat(
-                            msat.into(),
-                        ))
+                        Ok::<CLN_Amount, Self::Err>(CLN_Amount::from_msat(msat.into()))
                     })
                     .transpose()?,
                 description: None,
@@ -289,6 +284,7 @@ impl MintLightning for Cln {
                     PayStatus::PENDING => MeltQuoteState::Pending,
                     PayStatus::FAILED => MeltQuoteState::Failed,
                 };
+
                 PayInvoiceResponse {
                     payment_preimage: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_lookup_id: pay_response.payment_hash.to_string(),
@@ -300,6 +296,10 @@ impl MintLightning for Cln {
                     )?,
                     unit: melt_quote.unit,
                 }
+            }
+            Err(err) => {
+                tracing::error!("Could not pay invoice: {}", err);
+                return Err(Error::ClnRpc(err).into());
             }
             _ => {
                 tracing::error!(

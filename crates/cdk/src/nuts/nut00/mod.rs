@@ -47,7 +47,6 @@ impl ProofsMethods for Proofs {
         self.iter()
             .map(|p| p.y())
             .collect::<Result<Vec<PublicKey>, _>>()
-            .map_err(Into::into)
     }
 }
 
