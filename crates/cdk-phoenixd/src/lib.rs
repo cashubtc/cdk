@@ -79,6 +79,7 @@ impl MintLightning for Phoenixd {
             mpp: false,
             unit: CurrencyUnit::Sat,
             invoice_description: true,
+            amountless: true,
         }
     }
     fn is_wait_invoice_active(&self) -> bool {
