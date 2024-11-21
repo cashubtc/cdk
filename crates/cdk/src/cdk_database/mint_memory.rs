@@ -371,8 +371,6 @@ impl MintDatabase for MintMemoryDatabase {
         if let Some(quote_id) = quote_id {
             let mut current_quote_signatures = self.quote_signatures.write().await;
             current_quote_signatures.insert(quote_id.clone(), blind_signatures.to_vec());
-            let t = current_quote_signatures.get(&quote_id);
-            println!("after insert: {:?}", t);
         }
 
         Ok(())

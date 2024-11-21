@@ -24,7 +24,7 @@ impl Mint {
         let nut18 = &self
             .mint_info
             .nuts
-            .nut18
+            .nut20
             .as_ref()
             .ok_or(Error::UnsupportedUnit)?;
 
@@ -33,7 +33,7 @@ impl Mint {
         }
 
         let ln = self.bolt12_backends.get(&unit).ok_or_else(|| {
-            tracing::info!("Bolt11 mint request for unsupported unit");
+            tracing::info!("Bolt12 mint request for unsupported unit");
 
             Error::UnitUnsupported
         })?;

@@ -194,12 +194,14 @@ impl MintBuilder {
                 description: true,
             };
 
-            let mut nut18_settings = self.mint_info.nuts.nut18.unwrap_or_default();
+            let mut nut20_settings = self.mint_info.nuts.nut20.unwrap_or_default();
 
-            nut18_settings.methods.push(mint_method_settings);
-            nut18_settings.disabled = false;
+            tracing::warn!("{:?}", nut20_settings);
 
-            self.mint_info.nuts.nut18 = Some(nut18_settings);
+            nut20_settings.methods.push(mint_method_settings);
+            nut20_settings.disabled = false;
+
+            self.mint_info.nuts.nut20 = Some(nut20_settings);
         }
 
         // If the backend supports melting we add it to info signalling
@@ -211,11 +213,11 @@ impl MintBuilder {
                 max_amount: Some(limits.melt_max),
             };
 
-            let mut nut19_settings = self.mint_info.nuts.nut19.unwrap_or_default();
-            nut19_settings.methods.push(melt_method_settings);
-            nut19_settings.disabled = false;
+            let mut nut21_settings = self.mint_info.nuts.nut21.unwrap_or_default();
+            nut21_settings.methods.push(melt_method_settings);
+            nut21_settings.disabled = false;
 
-            self.mint_info.nuts.nut19 = Some(nut19_settings);
+            self.mint_info.nuts.nut21 = Some(nut21_settings);
         }
 
         ln.insert(unit.clone(), ln_backend);
@@ -258,8 +260,7 @@ impl MintBuilder {
                 .clone()
                 .ok_or(anyhow!("Localstore not set"))?,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
-            //     TODO: bolt12
-            HashMap::new(),
+            self.bolt12_backends.clone().unwrap_or(HashMap::new()),
             self.supported_units.clone(),
             HashMap::new(),
         )

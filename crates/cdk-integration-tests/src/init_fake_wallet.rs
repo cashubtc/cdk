@@ -45,7 +45,7 @@ where
 
     ln_backends.insert(CurrencyUnit::Sat, Arc::new(fake_wallet));
 
-    let mint = create_mint(database, ln_backends.clone()).await?;
+    let mint = create_mint(database, ln_backends.clone(), HashMap::new()).await?;
     let cache_ttl = 3600;
     let cache_tti = 3600;
     let mint_arc = Arc::new(mint);

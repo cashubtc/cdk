@@ -33,7 +33,7 @@ uuid = { version = "1", features = ["v4"] }
 serde = "1"
 serde_json = "1"
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
-ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "aabd1971a45" }
+ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "3a542821f" }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = [
     "attributes",

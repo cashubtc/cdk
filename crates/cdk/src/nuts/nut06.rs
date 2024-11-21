@@ -238,14 +238,14 @@ pub struct Nuts {
     /// NUT17 Settings
     #[cfg(feature = "mint")]
     pub nut17: Option<super::nut17::SupportedSettings>,
-    /// NUT04 Settings
-    #[serde(rename = "18")]
+    /// NUT20 Settings
+    #[serde(rename = "20")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nut18: Option<nut04::Settings>,
-    /// NUT05 Settings
-    #[serde(rename = "19")]
+    pub nut20: Option<nut04::Settings>,
+    /// NUT21 Settings
+    #[serde(rename = "21")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nut19: Option<nut05::Settings>,
+    pub nut21: Option<nut05::Settings>,
 }
 
 impl Nuts {
@@ -337,17 +337,17 @@ impl Nuts {
     }
 
     /// Nut18 settings
-    pub fn nut18(self, nut04_settings: nut04::Settings) -> Self {
+    pub fn nut20(self, nut04_settings: nut04::Settings) -> Self {
         Self {
-            nut18: Some(nut04_settings),
+            nut20: Some(nut04_settings),
             ..self
         }
     }
 
-    /// Nut19 settings
-    pub fn nut19(self, nut05_settings: nut05::Settings) -> Self {
+    /// Nut21 settings
+    pub fn nut21(self, nut05_settings: nut05::Settings) -> Self {
         Self {
-            nut19: Some(nut05_settings),
+            nut21: Some(nut05_settings),
             ..self
         }
     }

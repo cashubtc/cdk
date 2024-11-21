@@ -7,16 +7,14 @@ use anyhow::Result;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
+use cdk::cdk_lightning::bolt12::MintBolt12Lightning;
 use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{FeeReserve, Mint};
-use cdk::nuts::{CurrencyUnit, MintInfo};
-use cdk::types::QuoteTTL;
+use cdk::mint::{FeeReserve, Mint, MintBuilder, MintMeltLimits};
+use cdk::nuts::CurrencyUnit;
 use cdk_cln::Cln as CdkCln;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
-use ln_regtest_rs::ln_client::ClnClient;
-use ln_regtest_rs::ln_client::LightningClient;
-use ln_regtest_rs::ln_client::LndClient;
+use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
@@ -136,40 +134,40 @@ pub async fn create_mint<D>(
         CurrencyUnit,
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     >,
+    bolt12_ln_backends: HashMap<
+        CurrencyUnit,
+        Arc<dyn MintBolt12Lightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
+    >,
 ) -> Result<Mint>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
 {
-    let nuts = cdk::nuts::Nuts::new()
-        .nut07(true)
-        .nut08(true)
-        .nut09(true)
-        .nut10(true)
-        .nut11(true)
-        .nut12(true)
-        .nut14(true);
-
-    let mint_info = MintInfo::new().nuts(nuts);
-
     let mnemonic = Mnemonic::generate(12)?;
 
-    let mut supported_units: HashMap<CurrencyUnit, (u64, u8)> = HashMap::new();
-    supported_units.insert(CurrencyUnit::Sat, (0, 32));
+    let mut mint_builder = MintBuilder::new()
+        .with_localstore(Arc::new(database))
+        .with_seed(mnemonic.to_seed_normalized("").to_vec())
+        .with_quote_ttl(10000, 10000)
+        .with_mint_url(get_mint_url());
 
-    let quote_ttl = QuoteTTL::new(10000, 10000);
+    let mint_melt_limits = MintMeltLimits {
+        mint_min: 1.into(),
+        mint_max: 10_000.into(),
+        melt_min: 1.into(),
+        melt_max: 10_000.into(),
+    };
 
-    let mint = Mint::new(
-        &get_mint_url(),
-        &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        Arc::new(database),
-        ln_backends,
-        HashMap::new(),
-        supported_units,
-        HashMap::new(),
-    )
-    .await?;
+    for (unit, ln_backend) in ln_backends {
+        println!("11 {}", unit);
+        mint_builder = mint_builder.add_ln_backend(unit, mint_melt_limits, ln_backend);
+    }
+
+    for (unit, ln_backend) in bolt12_ln_backends {
+        println!("12 {}", unit);
+        mint_builder = mint_builder.add_bolt12_ln_backend(unit, mint_melt_limits, ln_backend);
+    }
+
+    let mint = mint_builder.build().await?;
 
     Ok(mint)
 }
@@ -187,9 +185,18 @@ where
         Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
     > = HashMap::new();
 
-    ln_backends.insert(CurrencyUnit::Sat, Arc::new(cln_backend));
+    let cln_arc = Arc::new(cln_backend);
 
-    let mint = create_mint(database, ln_backends.clone()).await?;
+    ln_backends.insert(CurrencyUnit::Sat, cln_arc.clone());
+
+    let mut bolt12_ln_backends: HashMap<
+        CurrencyUnit,
+        Arc<dyn MintBolt12Lightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
+    > = HashMap::new();
+
+    bolt12_ln_backends.insert(CurrencyUnit::Sat, cln_arc.clone());
+
+    let mint = create_mint(database, ln_backends.clone(), bolt12_ln_backends.clone()).await?;
     let cache_time_to_live = 3600;
     let cache_time_to_idle = 3600;
     let mint_arc = Arc::new(mint);
@@ -198,7 +205,7 @@ where
         Arc::clone(&mint_arc),
         cache_time_to_live,
         cache_time_to_idle,
-        false,
+        true,
     )
     .await
     .unwrap();
@@ -214,6 +221,13 @@ where
     tokio::spawn({
         let shutdown = Arc::clone(&shutdown);
         async move { mint.wait_for_paid_invoices(shutdown).await }
+    });
+
+    let mint = Arc::clone(&mint_arc);
+
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        async move { mint.wait_for_paid_offers(shutdown).await }
     });
 
     println!("Staring Axum server");

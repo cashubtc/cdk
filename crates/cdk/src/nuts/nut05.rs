@@ -347,15 +347,8 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        let bolt11_mint = MeltMethodSettings {
-            method: PaymentMethod::Bolt11,
-            unit: CurrencyUnit::Sat,
-            min_amount: Some(Amount::from(1)),
-            max_amount: Some(Amount::from(1000000)),
-        };
-
         Settings {
-            methods: vec![bolt11_mint],
+            methods: vec![],
             disabled: false,
         }
     }

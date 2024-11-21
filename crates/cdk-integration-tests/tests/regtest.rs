@@ -7,6 +7,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::nuts::SecretKey;
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
     PreMintSecrets, State,
@@ -395,5 +396,31 @@ async fn test_cached_mint() -> Result<()> {
         .await?;
 
     assert!(response == response1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_bolt12_mint() -> Result<()> {
+    let cln_one_dir = get_cln_dir("two");
+    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+
+    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
+
+    let wallet = Wallet::new(
+        &get_mint_url(),
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &seed,
+        None,
+    )?;
+
+    let secret_key = SecretKey::generate();
+
+    let q = wallet
+        .mint_bolt12_quote(None, None, false, None, secret_key.public_key())
+        .await?;
+
+    // TODO: Need to update ln-regtest-rs to pay offer and complete this test
+
     Ok(())
 }
