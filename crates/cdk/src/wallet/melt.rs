@@ -63,6 +63,7 @@ impl Wallet {
             request: Bolt11Invoice::from_str(&request)?,
             unit: self.unit.clone(),
             options,
+            amount: Some(amount),
         };
 
         let quote_res = self

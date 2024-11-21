@@ -148,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
                 CurrencyUnit::Sat,
                 PaymentMethod::Bolt11,
                 mint_melt_limits,
+                Some(false),
                 cln.clone(),
             );
         }
@@ -167,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
                     unit,
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    Some(false),
                     Arc::new(strike),
                 );
             }
@@ -181,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
                 CurrencyUnit::Sat,
                 PaymentMethod::Bolt11,
                 mint_melt_limits,
+                Some(false),
                 Arc::new(lnbits),
             );
         }
@@ -194,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
                 CurrencyUnit::Sat,
                 PaymentMethod::Bolt11,
                 mint_melt_limits,
+                Some(false),
                 Arc::new(phd),
             );
         }
@@ -207,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
                 CurrencyUnit::Sat,
                 PaymentMethod::Bolt11,
                 mint_melt_limits,
+                Some(false),
                 Arc::new(lnd),
             );
         }
@@ -224,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
                     unit.clone(),
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    Some(false),
                     fake.clone(),
                 );
             }

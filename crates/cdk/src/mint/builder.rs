@@ -108,12 +108,14 @@ impl MintBuilder {
         unit: CurrencyUnit,
         method: PaymentMethod,
         limits: MintMeltLimits,
+        support_amount_less: Option<bool>,
         ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     ) -> Self {
         let ln_key = LnKey {
             unit: unit.clone(),
             method,
         };
+        let support_amount_less = support_amount_less.unwrap_or(false);
 
         let mut ln = self.ln.unwrap_or_default();
 
@@ -150,6 +152,7 @@ impl MintBuilder {
                     unit,
                     min_amount: Some(limits.melt_min),
                     max_amount: Some(limits.melt_max),
+                    amount_less: support_amount_less,
                 };
                 self.mint_info.nuts.nut05.methods.push(melt_method_settings);
                 self.mint_info.nuts.nut05.disabled = false;

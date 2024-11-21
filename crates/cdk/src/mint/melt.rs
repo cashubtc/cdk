@@ -48,6 +48,27 @@ impl Mint {
         }
     }
 
+    fn check_amount_less_invoice(
+        &self,
+        unit: CurrencyUnit,
+        method: PaymentMethod,
+    ) -> Result<(), Error> {
+        let nut05 = &self.mint_info.nuts.nut05;
+
+        if nut05.disabled {
+            return Err(Error::MeltingDisabled);
+        }
+        let settings = nut05
+            .get_settings(&unit, &method)
+            .ok_or(Error::UnitUnsupported)?;
+        let amount_less = settings.amount_less;
+
+        if amount_less == true {
+            return Ok(());
+        }
+        return Err(Error::AmountLessNotAllowed);
+    }
+
     /// Get melt bolt11 quote
     #[instrument(skip_all)]
     pub async fn get_melt_bolt11_quote(
@@ -58,6 +79,7 @@ impl Mint {
             request,
             unit,
             options: _,
+            amount,
         } = melt_request;
 
         let amount = match melt_request.options {
@@ -74,6 +96,7 @@ impl Mint {
 
         self.check_melt_request_acceptable(amount, unit.clone(), PaymentMethod::Bolt11)?;
 
+        self.check_amount_less_invoice(unit.clone(), PaymentMethod::Bolt11)?;
         let ln = self
             .ln
             .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt11))
@@ -93,6 +116,7 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
+        // check amountless (amount in meltbolt11reqiest) is equal to payment_quote.amount
         let quote = MeltQuote::new(
             request.to_string(),
             unit.clone(),
