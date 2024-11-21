@@ -103,6 +103,7 @@ impl Lnd {
                 mpp: true,
                 unit: CurrencyUnit::Msat,
                 invoice_description: true,
+                amountless: true,
             },
         })
     }
