@@ -15,7 +15,8 @@ cleanup() {
     
     # Kill processes
     lncli --lnddir="$cdk_itests/lnd" --network=regtest stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/" stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/one/" stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/two/" stop
     bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
 
     # Remove the temporary directory
