@@ -30,6 +30,10 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
 
 
+## Development 
+
+For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
+
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
 ### Mandatory
