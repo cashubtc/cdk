@@ -11,6 +11,7 @@ mod on_subscription;
 pub use on_subscription::OnSubscription;
 use uuid::Uuid;
 
+use super::PublicKey;
 use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
@@ -18,8 +19,6 @@ use crate::nuts::{
 };
 pub use crate::pub_sub::SubId;
 use crate::pub_sub::{self, Index, Indexable, SubscriptionGlobalId};
-
-use super::PublicKey;
 
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Deserialize)]
