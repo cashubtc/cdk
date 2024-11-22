@@ -766,7 +766,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .bind(proof.c.to_bytes().to_vec())
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
             .bind("UNSPENT")
-            .bind(quote_id.clone())
+            .bind(quote_id)
             .execute(&mut transaction)
             .await
             .map_err(Error::from)
@@ -1012,7 +1012,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(u64::from(signature.amount) as i64)
             .bind(signature.keyset_id.to_string())
             .bind(signature.c.to_bytes().to_vec())
-            .bind(quote_id.clone())
+            .bind(quote_id)
             .bind(signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()))
             .execute(&mut transaction)

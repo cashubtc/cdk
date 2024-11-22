@@ -358,7 +358,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     let client = HttpClient::new();
 
     let melt_request = MeltBolt11Request {
-        quote: melt_quote.id.clone(),
+        quote: melt_quote.id,
         inputs: proofs.clone(),
         outputs: Some(premint_secrets.blinded_messages()),
     };

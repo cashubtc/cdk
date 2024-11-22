@@ -46,10 +46,10 @@ impl WalletMemoryDatabase {
             mint_keysets: Arc::new(RwLock::new(HashMap::new())),
             keysets: Arc::new(RwLock::new(HashMap::new())),
             mint_quotes: Arc::new(RwLock::new(
-                mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+                mint_quotes.into_iter().map(|q| (q.id, q)).collect(),
             )),
             melt_quotes: Arc::new(RwLock::new(
-                melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+                melt_quotes.into_iter().map(|q| (q.id, q)).collect(),
             )),
             mint_keys: Arc::new(RwLock::new(
                 mint_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
@@ -185,10 +185,7 @@ impl WalletDatabase for WalletMemoryDatabase {
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
-        self.mint_quotes
-            .write()
-            .await
-            .insert(quote.id.clone(), quote);
+        self.mint_quotes.write().await.insert(quote.id, quote);
         Ok(())
     }
 
@@ -208,10 +205,7 @@ impl WalletDatabase for WalletMemoryDatabase {
     }
 
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Error> {
-        self.melt_quotes
-            .write()
-            .await
-            .insert(quote.id.clone(), quote);
+        self.melt_quotes.write().await.insert(quote.id, quote);
         Ok(())
     }
 

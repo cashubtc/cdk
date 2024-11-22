@@ -252,10 +252,7 @@ impl Mint {
         }
 
         self.localstore
-            .add_proofs(
-                melt_request.inputs.clone(),
-                Some(melt_request.quote.clone()),
-            )
+            .add_proofs(melt_request.inputs.clone(), Some(melt_request.quote))
             .await?;
         self.check_ys_spendable(&ys, State::Pending).await?;
 
@@ -677,7 +674,7 @@ impl Mint {
                             .map(|o| o.blinded_secret)
                             .collect::<Vec<PublicKey>>(),
                         &change_sigs,
-                        Some(quote.id.clone()),
+                        Some(quote.id),
                     )
                     .await?;
 

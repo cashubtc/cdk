@@ -79,7 +79,7 @@ impl Wallet {
 
         let quote = MintQuote {
             mint_url,
-            id: quote_res.quote.clone(),
+            id: quote_res.quote,
             amount,
             unit: unit.clone(),
             request: quote_res.request,

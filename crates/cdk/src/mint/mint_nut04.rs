@@ -325,7 +325,7 @@ impl Mint {
                     .map(|p| p.blinded_secret)
                     .collect::<Vec<PublicKey>>(),
                 &blind_signatures,
-                Some(mint_request.quote.clone()),
+                Some(mint_request.quote),
             )
             .await?;
 

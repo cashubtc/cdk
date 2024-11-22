@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::{Notification, NotificationPayload};
 use crate::cdk_database::{self, MintDatabase};
-use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState};
+use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};
 use crate::pub_sub::OnNewSubscription;
 
 #[derive(Default)]
@@ -34,18 +34,18 @@ impl OnNewSubscription for OnSubscription {
         };
 
         let mut to_return = vec![];
-        let mut public_keys = Vec::new();
+        let mut public_keys: Vec<PublicKey> = Vec::new();
         let mut melt_queries = Vec::new();
         let mut mint_queries = Vec::new();
 
         for idx in request.iter() {
             match idx {
-                Notification::ProofState(id) => public_keys.push(id.clone()),
-                Notification::MeltQuoteBolt11(id) => {
-                    melt_queries.push(datastore.get_melt_quote(id))
+                Notification::ProofState(pk) => public_keys.push(*pk),
+                Notification::MeltQuoteBolt11(uuid) => {
+                    melt_queries.push(datastore.get_melt_quote(uuid))
                 }
-                Notification::MintQuoteBolt11(id) => {
-                    mint_queries.push(datastore.get_mint_quote(id))
+                Notification::MintQuoteBolt11(uuid) => {
+                    mint_queries.push(datastore.get_mint_quote(uuid))
                 }
             }
         }
@@ -77,7 +77,7 @@ impl OnNewSubscription for OnSubscription {
 
         to_return.extend(
             datastore
-                .get_proofs_states(&public_keys)
+                .get_proofs_states(public_keys.as_slice())
                 .await
                 .map_err(|e| e.to_string())?
                 .into_iter()

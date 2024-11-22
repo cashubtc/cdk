@@ -65,7 +65,7 @@ impl MintMemoryDatabase {
 
         let melt_requests = melt_request
             .into_iter()
-            .map(|(request, ln_key)| (request.quote.clone(), (request, ln_key)))
+            .map(|(request, ln_key)| (request.quote, (request, ln_key)))
             .collect();
 
         Ok(Self {
@@ -74,10 +74,10 @@ impl MintMemoryDatabase {
                 keysets.into_iter().map(|k| (k.id, k)).collect(),
             )),
             mint_quotes: Arc::new(RwLock::new(
-                mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+                mint_quotes.into_iter().map(|q| (q.id, q)).collect(),
             )),
             melt_quotes: Arc::new(RwLock::new(
-                melt_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
+                melt_quotes.into_iter().map(|q| (q.id, q)).collect(),
             )),
             proofs: Arc::new(RwLock::new(proofs)),
             proof_state: Arc::new(Mutex::new(proof_states)),
@@ -120,10 +120,7 @@ impl MintDatabase for MintMemoryDatabase {
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
-        self.mint_quotes
-            .write()
-            .await
-            .insert(quote.id.clone(), quote);
+        self.mint_quotes.write().await.insert(quote.id, quote);
         Ok(())
     }
 
@@ -194,10 +191,7 @@ impl MintDatabase for MintMemoryDatabase {
     }
 
     async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
-        self.melt_quotes
-            .write()
-            .await
-            .insert(quote.id.clone(), quote);
+        self.melt_quotes.write().await.insert(quote.id, quote);
         Ok(())
     }
 
@@ -242,7 +236,7 @@ impl MintDatabase for MintMemoryDatabase {
         ln_key: LnKey,
     ) -> Result<(), Self::Err> {
         let mut melt_requests = self.melt_requests.write().await;
-        melt_requests.insert(melt_request.quote.clone(), (melt_request, ln_key));
+        melt_requests.insert(melt_request.quote, (melt_request, ln_key));
         Ok(())
     }
 
@@ -371,7 +365,7 @@ impl MintDatabase for MintMemoryDatabase {
 
         if let Some(quote_id) = quote_id {
             let mut current_quote_signatures = self.quote_signatures.write().await;
-            current_quote_signatures.insert(quote_id.clone(), blind_signatures.to_vec());
+            current_quote_signatures.insert(quote_id, blind_signatures.to_vec());
             let t = current_quote_signatures.get(&quote_id);
             println!("after insert: {:?}", t);
         }
