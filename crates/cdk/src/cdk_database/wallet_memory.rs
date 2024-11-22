@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use super::WalletDatabase;
 use crate::cdk_database::Error;
@@ -23,8 +24,8 @@ pub struct WalletMemoryDatabase {
     mints: Arc<RwLock<HashMap<MintUrl, Option<MintInfo>>>>,
     mint_keysets: Arc<RwLock<HashMap<MintUrl, HashSet<Id>>>>,
     keysets: Arc<RwLock<HashMap<Id, KeySetInfo>>>,
-    mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
-    melt_quotes: Arc<RwLock<HashMap<String, wallet::MeltQuote>>>,
+    mint_quotes: Arc<RwLock<HashMap<Uuid, MintQuote>>>,
+    melt_quotes: Arc<RwLock<HashMap<Uuid, wallet::MeltQuote>>>,
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
@@ -191,7 +192,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
+    async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Error> {
         Ok(self.mint_quotes.read().await.get(quote_id).cloned())
     }
 
@@ -200,7 +201,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(quotes.values().cloned().collect())
     }
 
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
         self.mint_quotes.write().await.remove(quote_id);
 
         Ok(())
@@ -214,11 +215,11 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error> {
+    async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<wallet::MeltQuote>, Error> {
         Ok(self.melt_quotes.read().await.get(quote_id).cloned())
     }
 
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+    async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
         self.melt_quotes.write().await.remove(quote_id);
 
         Ok(())

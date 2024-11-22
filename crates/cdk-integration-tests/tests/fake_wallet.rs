@@ -13,6 +13,7 @@ use cdk::wallet::Wallet;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;
 use tokio::time::sleep;
+use uuid::Uuid;
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
 
@@ -378,7 +379,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 }
 
 // Keep polling the state of the mint quote id until it's paid
-async fn wait_for_mint_to_be_paid(wallet: &Wallet, mint_quote_id: &str) -> Result<()> {
+async fn wait_for_mint_to_be_paid(wallet: &Wallet, mint_quote_id: &Uuid) -> Result<()> {
     loop {
         let status = wallet.mint_quote_state(mint_quote_id).await?;
         if status.state == MintQuoteState::Paid {

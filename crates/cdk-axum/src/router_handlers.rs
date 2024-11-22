@@ -13,6 +13,7 @@ use cdk::nuts::{
 use cdk::util::unix_time;
 use cdk::Error;
 use paste::paste;
+use uuid::Uuid;
 
 use crate::ws::main_websocket;
 use crate::MintState;
@@ -164,7 +165,7 @@ pub async fn post_mint_bolt11_quote(
 /// Get mint quote state.
 pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
-    Path(quote_id): Path<String>,
+    Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MintQuoteBolt11Response>, Response> {
     let quote = state
         .mint
@@ -254,7 +255,7 @@ pub async fn post_melt_bolt11_quote(
 /// Get melt quote state.
 pub async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
-    Path(quote_id): Path<String>,
+    Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MeltQuoteBolt11Response>, Response> {
     let quote = state
         .mint

@@ -8,6 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
@@ -90,7 +91,7 @@ impl FromStr for QuoteState {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteBolt11Response {
     /// Quote Id
-    pub quote: String,
+    pub quote: Uuid,
     /// The amount that needs to be provided
     pub amount: Amount,
     /// The fee reserve that is required
@@ -115,7 +116,7 @@ pub struct MeltQuoteBolt11Response {
 impl From<&MeltQuote> for MeltQuoteBolt11Response {
     fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response {
         MeltQuoteBolt11Response {
-            quote: melt_quote.id.clone(),
+            quote: melt_quote.id,
             payment_preimage: None,
             change: None,
             state: melt_quote.state,
@@ -136,7 +137,7 @@ impl<'de> Deserialize<'de> for MeltQuoteBolt11Response {
     {
         let value = Value::deserialize(deserializer)?;
 
-        let quote: String = serde_json::from_value(
+        let quote: Uuid = serde_json::from_value(
             value
                 .get("quote")
                 .ok_or(serde::de::Error::missing_field("quote"))?
@@ -233,7 +234,7 @@ impl From<mint::MeltQuote> for MeltQuoteBolt11Response {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltBolt11Request {
     /// Quote ID
-    pub quote: String,
+    pub quote: Uuid,
     /// Proofs
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<Proof>))]
     pub inputs: Proofs,

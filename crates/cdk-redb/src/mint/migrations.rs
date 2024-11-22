@@ -10,6 +10,7 @@ use cdk::Amount;
 use lightning_invoice::Bolt11Invoice;
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{Error, PROOFS_STATE_TABLE, PROOFS_TABLE, QUOTE_SIGNATURES_TABLE};
 
@@ -39,7 +40,7 @@ pub fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct V1MintQuote {
-    pub id: String,
+    pub id: Uuid,
     pub mint_url: MintUrl,
     pub amount: Amount,
     pub unit: CurrencyUnit,

@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use super::MintQuoteState;
@@ -83,7 +84,7 @@ impl FromStr for QuoteState {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteBolt11Response {
     /// Quote Id
-    pub quote: String,
+    pub quote: Uuid,
     /// Payment request to fulfil
     pub request: String,
     /// Quote State
@@ -110,7 +111,7 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
 pub struct MintBolt11Request {
     /// Quote id
     #[cfg_attr(feature = "swagger", schema(max_length = 1_000))]
-    pub quote: String,
+    pub quote: Uuid,
     /// Outputs
     #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,

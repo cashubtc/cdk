@@ -4,6 +4,7 @@ use std::str::FromStr;
 use anyhow::bail;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::{
     CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
@@ -117,7 +118,10 @@ impl Mint {
 
     /// Check melt quote status
     #[instrument(skip(self))]
-    pub async fn check_melt_quote(&self, quote_id: &str) -> Result<MeltQuoteBolt11Response, Error> {
+    pub async fn check_melt_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<MeltQuoteBolt11Response, Error> {
         let quote = self
             .localstore
             .get_melt_quote(quote_id)
@@ -159,7 +163,7 @@ impl Mint {
 
     /// Remove melt quote
     #[instrument(skip(self))]
-    pub async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+    pub async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
         self.localstore.remove_melt_quote(quote_id).await?;
 
         Ok(())

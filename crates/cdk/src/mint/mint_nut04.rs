@@ -1,4 +1,5 @@
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::{
     nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
@@ -126,7 +127,10 @@ impl Mint {
 
     /// Check mint quote
     #[instrument(skip(self))]
-    pub async fn check_mint_quote(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
+    pub async fn check_mint_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<MintQuoteBolt11Response, Error> {
         let quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -187,7 +191,7 @@ impl Mint {
 
     /// Remove mint quote
     #[instrument(skip_all)]
-    pub async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+    pub async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
         self.localstore.remove_mint_quote(quote_id).await?;
 
         Ok(())

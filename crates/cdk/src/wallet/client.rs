@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use tracing::instrument;
 use url::Url;
+use uuid::Uuid;
 
 use super::Error;
 use crate::error::ErrorResponse;
@@ -140,9 +141,9 @@ impl HttpClientMethods for HttpClient {
     async fn get_mint_quote_status(
         &self,
         mint_url: MintUrl,
-        quote_id: &str,
+        quote_id: &Uuid,
     ) -> Result<MintQuoteBolt11Response, Error> {
-        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
+        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11", &quote_id.to_string()])?;
 
         let res = self.inner.get(url).send().await?.text().await?;
 
@@ -196,9 +197,9 @@ impl HttpClientMethods for HttpClient {
     async fn get_melt_quote_status(
         &self,
         mint_url: MintUrl,
-        quote_id: &str,
+        quote_id: &Uuid,
     ) -> Result<MeltQuoteBolt11Response, Error> {
-        let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
+        let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11", &quote_id.to_string()])?;
 
         let res = self.inner.get(url).send().await?.text().await?;
 
@@ -325,7 +326,7 @@ pub trait HttpClientMethods: Debug {
     async fn get_mint_quote_status(
         &self,
         mint_url: MintUrl,
-        quote_id: &str,
+        quote_id: &Uuid,
     ) -> Result<MintQuoteBolt11Response, Error>;
 
     /// Mint Tokens [NUT-04]
@@ -346,7 +347,7 @@ pub trait HttpClientMethods: Debug {
     async fn get_melt_quote_status(
         &self,
         mint_url: MintUrl,
-        quote_id: &str,
+        quote_id: &Uuid,
     ) -> Result<MeltQuoteBolt11Response, Error>;
 
     /// Melt [NUT-05]

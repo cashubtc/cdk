@@ -18,6 +18,7 @@ use cdk::wallet::MintQuote;
 use cdk::{cdk_database, wallet};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
@@ -33,9 +34,9 @@ const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &[u8]> =
 // <Keyset_id, KeysetInfo>
 const KEYSETS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("keysets");
 // <Quote_id, quote>
-const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
+const MINT_QUOTES_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("mint_quotes");
 // <Quote_id, quote>
-const MELT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("melt_quotes");
+const MELT_QUOTES_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("melt_quotes");
 const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_keys");
 // <Y, Proof Info>
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
@@ -425,7 +426,7 @@ impl WalletDatabase for WalletRedbDatabase {
                 .map_err(Error::from)?;
             table
                 .insert(
-                    quote.id.as_str(),
+                    quote.id.as_bytes(),
                     serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
                 )
                 .map_err(Error::from)?;
@@ -437,13 +438,13 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
+        if let Some(mint_info) = table.get(quote_id.as_bytes()).map_err(Error::from)? {
             return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
         }
 
@@ -466,14 +467,14 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
-            table.remove(quote_id).map_err(Error::from)?;
+            table.remove(quote_id.as_bytes()).map_err(Error::from)?;
         }
 
         write_txn.commit().map_err(Error::from)?;
@@ -491,7 +492,7 @@ impl WalletDatabase for WalletRedbDatabase {
                 .map_err(Error::from)?;
             table
                 .insert(
-                    quote.id.as_str(),
+                    quote.id.as_bytes(),
                     serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
                 )
                 .map_err(Error::from)?;
@@ -503,13 +504,16 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
             .map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
+        if let Some(mint_info) = table.get(quote_id.as_bytes()).map_err(Error::from)? {
             return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
         }
 
@@ -517,14 +521,14 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
-            table.remove(quote_id).map_err(Error::from)?;
+            table.remove(quote_id.as_bytes()).map_err(Error::from)?;
         }
 
         write_txn.commit().map_err(Error::from)?;

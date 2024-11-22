@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::MeltQuote;
 use crate::dhke::construct_proofs;
@@ -94,7 +95,7 @@ impl Wallet {
     #[instrument(skip(self, quote_id))]
     pub async fn melt_quote_status(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
     ) -> Result<MeltQuoteBolt11Response, Error> {
         let response = self
             .client
@@ -118,7 +119,7 @@ impl Wallet {
 
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
-    pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
+    pub async fn melt_proofs(&self, quote_id: &Uuid, proofs: Proofs) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
@@ -155,7 +156,7 @@ impl Wallet {
         )?;
 
         let request = MeltBolt11Request {
-            quote: quote_id.to_string(),
+            quote: *quote_id,
             inputs: proofs.clone(),
             outputs: Some(premint_secrets.blinded_messages()),
         };
@@ -277,7 +278,7 @@ impl Wallet {
     ///  Ok(())
     /// }
     #[instrument(skip(self))]
-    pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
+    pub async fn melt(&self, quote_id: &Uuid) -> Result<Melted, Error> {
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {

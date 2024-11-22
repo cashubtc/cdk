@@ -20,6 +20,7 @@ use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
 use tracing::instrument;
+use uuid::Uuid;
 
 pub mod error;
 
@@ -361,7 +362,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
     }
 
     #[instrument(skip(self))]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -405,7 +406,7 @@ FROM mint_quote
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
 DELETE FROM mint_quote
@@ -444,7 +445,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
     }
 
     #[instrument(skip(self))]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -468,7 +472,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self))]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
 DELETE FROM melt_quote
@@ -816,7 +820,7 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
 }
 
 fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
-    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_id: Uuid = row.try_get("id").map_err(Error::from)?;
     let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
@@ -838,7 +842,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
 }
 
 fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<wallet::MeltQuote, Error> {
-    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_id: Uuid = row.try_get("id").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;

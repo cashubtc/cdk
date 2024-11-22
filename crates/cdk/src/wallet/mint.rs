@@ -1,4 +1,5 @@
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::MintQuote;
 use crate::amount::SplitTarget;
@@ -93,7 +94,10 @@ impl Wallet {
 
     /// Check mint quote status
     #[instrument(skip(self, quote_id))]
-    pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
+    pub async fn mint_quote_state(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<MintQuoteBolt11Response, Error> {
         let response = self
             .client
             .get_mint_quote_status(self.mint_url.clone(), quote_id)
@@ -168,7 +172,7 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn mint(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Amount, Error> {
@@ -220,7 +224,7 @@ impl Wallet {
         };
 
         let request = MintBolt11Request {
-            quote: quote_id.to_string(),
+            quote: *quote_id,
             outputs: premint_secrets.blinded_messages(),
         };
 
