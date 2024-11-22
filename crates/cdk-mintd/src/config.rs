@@ -108,6 +108,18 @@ pub struct FakeWallet {
     pub max_delay_time: u64,
 }
 
+impl Default for FakeWallet {
+    fn default() -> Self {
+        Self {
+            supported_units: vec![CurrencyUnit::Sat],
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+            min_delay_time: 1,
+            max_delay_time: 3,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseEngine {
