@@ -108,18 +108,6 @@ pub struct FakeWallet {
     pub max_delay_time: u64,
 }
 
-impl Default for FakeWallet {
-    fn default() -> Self {
-        Self {
-            supported_units: vec![CurrencyUnit::Sat],
-            fee_percent: 0.02,
-            reserve_fee_min: 2.into(),
-            min_delay_time: 1,
-            max_delay_time: 3,
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseEngine {
@@ -206,12 +194,32 @@ impl Settings {
         let settings: Settings = config.try_deserialize()?;
 
         match settings.ln.ln_backend {
-            LnBackend::Cln => assert!(settings.cln.is_some()),
-            LnBackend::Strike => assert!(settings.strike.is_some()),
-            LnBackend::LNbits => assert!(settings.lnbits.is_some()),
-            LnBackend::Phoenixd => assert!(settings.phoenixd.is_some()),
-            LnBackend::Lnd => assert!(settings.lnd.is_some()),
-            LnBackend::FakeWallet => (),
+            LnBackend::Cln => assert!(
+                settings.cln.is_some(),
+                "CLN backend requires a valid config."
+            ),
+            LnBackend::Strike => assert!(
+                settings.strike.is_some(),
+                "Strike backend requires a valid config."
+            ),
+            LnBackend::LNbits => assert!(
+                settings.lnbits.is_some(),
+                "LNbits backend requires a valid config"
+            ),
+            LnBackend::Phoenixd => assert!(
+                settings.phoenixd.is_some(),
+                "Phoenixd backend requires a valid config"
+            ),
+            LnBackend::Lnd => {
+                assert!(
+                    settings.lnd.is_some(),
+                    "LND backend requires a valid config."
+                )
+            }
+            LnBackend::FakeWallet => assert!(
+                settings.fake_wallet.is_some(),
+                "FakeWallet backend requires a valid config."
+            ),
         }
 
         Ok(settings)
