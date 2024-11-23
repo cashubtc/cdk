@@ -55,3 +55,10 @@ ln_backend = "cln"
 # address = ""
 # macaroon_file = ""
 # cert_file = ""
+
+# [fake_wallet]
+# supported_units = ["sat"]
+# fee_percent = 0.02
+# reserve_fee_min = 1
+# min_delay_time = 1
+# max_delay_time = 3
