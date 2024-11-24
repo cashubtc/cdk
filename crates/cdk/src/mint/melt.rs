@@ -64,7 +64,11 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnitUnsupported)?;
 
-        if settings.amount_less && amount != request_amount {
+        if settings
+            .amountless
+            .expect("expect a value for amountless invoice")
+            && amount != request_amount
+        {
             return Err(Error::AmountLessNotAllowed);
         }
         Ok(())
@@ -119,7 +123,7 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
-        // check amountless (amount in meltbolt11reqiest) is equal to payment_quote.amount
+        // check amountless (amount in meltbolt11request) is equal to payment_quote.amount
         self.check_amount_less_invoice(
             amount_less_amount,
             payment_quote.amount,
