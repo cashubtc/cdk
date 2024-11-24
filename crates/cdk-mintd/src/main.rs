@@ -229,7 +229,7 @@ async fn main() -> anyhow::Result<()> {
                     unit.clone(),
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
-                    Some(false),
+                    Some(true),
                     fake.clone(),
                 );
             }
