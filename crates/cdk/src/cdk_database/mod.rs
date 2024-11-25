@@ -7,6 +7,7 @@ use std::fmt::Debug;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use async_trait::async_trait;
 use thiserror::Error;
+#[cfg(feature = "mint")]
 use uuid::Uuid;
 
 #[cfg(feature = "mint")]
