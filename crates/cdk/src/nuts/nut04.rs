@@ -124,7 +124,7 @@ pub struct MintBolt11Request {
     pub outputs: Vec<BlindedMessage>,
     /// Signature
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub witness: Option<String>,
+    pub signature: Option<String>,
 }
 
 impl MintBolt11Request {

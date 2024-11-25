@@ -283,7 +283,7 @@ impl Mint {
         // If the there is a public key provoided in mint quote request
         // verify the signature is provided for the mint request
         if let Some(pubkey) = mint_quote.pubkey {
-            mint_request.verify_witness(pubkey)?;
+            mint_request.verify_signature(pubkey)?;
         }
 
         let blinded_messages: Vec<PublicKey> = mint_request

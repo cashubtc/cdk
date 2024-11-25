@@ -188,7 +188,7 @@ pub async fn mint_proofs(
     let request = MintBolt11Request {
         quote: mint_quote.quote,
         outputs: premint_secrets.blinded_messages(),
-        witness: None,
+        signature: None,
     };
 
     let mint_response = wallet_client.post_mint(mint_url.parse()?, request).await?;

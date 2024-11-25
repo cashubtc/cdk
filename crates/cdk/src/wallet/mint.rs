@@ -229,7 +229,7 @@ impl Wallet {
         let mut request = MintBolt11Request {
             quote: quote_id.to_string(),
             outputs: premint_secrets.blinded_messages(),
-            witness: None,
+            signature: None,
         };
 
         if let Some(pubkey) = quote_info.pubkey {

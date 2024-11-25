@@ -91,14 +91,14 @@ impl JsMintBolt11Request {
     pub fn new(
         quote: String,
         outputs: JsValue,
-        witness: Option<String>,
+        signature: Option<String>,
     ) -> Result<JsMintBolt11Request> {
         let outputs = serde_wasm_bindgen::from_value(outputs).map_err(into_err)?;
         Ok(JsMintBolt11Request {
             inner: MintBolt11Request {
                 quote,
                 outputs,
-                witness,
+                signature,
             },
         })
     }

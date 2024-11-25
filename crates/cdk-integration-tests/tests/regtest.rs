@@ -381,7 +381,7 @@ async fn test_cached_mint() -> Result<()> {
     let request = MintBolt11Request {
         quote: quote.id,
         outputs: premint_secrets.blinded_messages(),
-        witness: None,
+        signature: None,
     };
 
     let response = http_client

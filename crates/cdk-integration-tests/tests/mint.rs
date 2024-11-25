@@ -91,7 +91,7 @@ async fn mint_proofs(
     let mint_request = MintBolt11Request {
         quote: quote.id,
         outputs: premint.blinded_messages(),
-        witness: None,
+        signature: None,
     };
 
     let after_mint = mint.process_mint_request(mint_request).await?;
