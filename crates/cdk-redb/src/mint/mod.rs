@@ -17,7 +17,7 @@ use cdk::nuts::{
 };
 use cdk::types::LnKey;
 use cdk::{cdk_database, mint};
-use migrations::migrate_01_to_02;
+use migrations::{migrate_01_to_02, migrate_04_to_05};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use uuid::Uuid;
 
@@ -29,23 +29,23 @@ mod migrations;
 
 const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("active_keysets");
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");
-const MINT_QUOTES_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("mint_quotes");
-const MELT_QUOTES_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("melt_quotes");
+const MINT_QUOTES_TABLE: TableDefinition<[u8; 16], &str> = TableDefinition::new("mint_quotes");
+const MELT_QUOTES_TABLE: TableDefinition<[u8; 16], &str> = TableDefinition::new("melt_quotes");
 const PROOFS_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("proofs");
 const PROOFS_STATE_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("proofs_state");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 // Key is hex blinded_message B_ value is blinded_signature
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
-const QUOTE_PROOFS_TABLE: MultimapTableDefinition<&[u8; 16], [u8; 33]> =
+const QUOTE_PROOFS_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
     MultimapTableDefinition::new("quote_proofs");
-const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<&[u8; 16], [u8; 33]> =
+const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
     MultimapTableDefinition::new("quote_signatures");
 
-const MELT_REQUESTS: TableDefinition<&[u8; 16], (&str, &str)> =
+const MELT_REQUESTS: TableDefinition<[u8; 16], (&str, &str)> =
     TableDefinition::new("melt_requests");
 
-const DATABASE_VERSION: u32 = 4;
+const DATABASE_VERSION: u32 = 5;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
@@ -93,6 +93,10 @@ impl MintRedbDatabase {
 
                             if current_file_version == 3 {
                                 current_file_version = migrate_03_to_04(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 4 {
+                                current_file_version = migrate_04_to_05(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
