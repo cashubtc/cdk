@@ -45,6 +45,8 @@ mod swagger_imports {
 
 #[cfg(feature = "swagger")]
 use swagger_imports::*;
+#[cfg(feature = "swagger")]
+use uuid::Uuid;
 
 /// CDK Mint State
 #[derive(Clone)]
@@ -75,16 +77,16 @@ pub struct MintState {
         KeySet,
         KeySetInfo,
         KeySetVersion,
-        MeltBolt11Request,
+        MeltBolt11Request<Uuid>,
         MeltQuoteBolt11Request,
-        MeltQuoteBolt11Response,
+        MeltQuoteBolt11Response<Uuid>,
         MeltQuoteState,
         MeltMethodSettings,
-        MintBolt11Request,
+        MintBolt11Request<Uuid>,
         MintBolt11Response,
         MintInfo,
         MintQuoteBolt11Request,
-        MintQuoteBolt11Response,
+        MintQuoteBolt11Response<Uuid>,
         MintQuoteState,
         MintMethodSettings,
         MintVersion,

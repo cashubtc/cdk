@@ -11,7 +11,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::instrument;
-use uuid::Uuid;
 
 use super::types::SendKind;
 use super::Error;
@@ -214,7 +213,7 @@ impl MultiMintWallet {
     pub async fn mint(
         &self,
         wallet_key: &WalletKey,
-        quote_id: &Uuid,
+        quote_id: &str,
         conditions: Option<SpendingConditions>,
     ) -> Result<Amount, Error> {
         let wallet = self

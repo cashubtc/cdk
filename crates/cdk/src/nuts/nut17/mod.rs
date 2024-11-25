@@ -74,9 +74,9 @@ pub enum NotificationPayload {
     /// Proof State
     ProofState(ProofState),
     /// Melt Quote Bolt11 Response
-    MeltQuoteBolt11Response(MeltQuoteBolt11Response),
+    MeltQuoteBolt11Response(MeltQuoteBolt11Response<Uuid>),
     /// Mint Quote Bolt11 Response
-    MintQuoteBolt11Response(MintQuoteBolt11Response),
+    MintQuoteBolt11Response(MintQuoteBolt11Response<Uuid>),
 }
 
 impl From<ProofState> for NotificationPayload {
@@ -85,14 +85,14 @@ impl From<ProofState> for NotificationPayload {
     }
 }
 
-impl From<MeltQuoteBolt11Response> for NotificationPayload {
-    fn from(melt_quote: MeltQuoteBolt11Response) -> NotificationPayload {
+impl From<MeltQuoteBolt11Response<Uuid>> for NotificationPayload {
+    fn from(melt_quote: MeltQuoteBolt11Response<Uuid>) -> NotificationPayload {
         NotificationPayload::MeltQuoteBolt11Response(melt_quote)
     }
 }
 
-impl From<MintQuoteBolt11Response> for NotificationPayload {
-    fn from(mint_quote: MintQuoteBolt11Response) -> NotificationPayload {
+impl From<MintQuoteBolt11Response<Uuid>> for NotificationPayload {
+    fn from(mint_quote: MintQuoteBolt11Response<Uuid>) -> NotificationPayload {
         NotificationPayload::MintQuoteBolt11Response(mint_quote)
     }
 }
@@ -204,7 +204,7 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MintQuoteBolt11Response status
-    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response>>(
+    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response<Uuid>>>(
         &self,
         quote: E,
         new_state: MintQuoteState,
@@ -216,7 +216,7 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MeltQuoteBolt11Response status
-    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response>>(
+    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response<Uuid>>>(
         &self,
         quote: E,
         payment_preimage: Option<String>,

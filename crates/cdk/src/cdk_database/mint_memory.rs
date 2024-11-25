@@ -20,6 +20,7 @@ use crate::types::LnKey;
 
 /// Mint Memory Database
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::type_complexity)]
 pub struct MintMemoryDatabase {
     active_keysets: Arc<RwLock<HashMap<CurrencyUnit, Id>>>,
     keysets: Arc<RwLock<HashMap<Id, MintKeySetInfo>>>,
@@ -30,7 +31,7 @@ pub struct MintMemoryDatabase {
     quote_proofs: Arc<Mutex<HashMap<Uuid, Vec<PublicKey>>>>,
     blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
     quote_signatures: Arc<RwLock<HashMap<Uuid, Vec<BlindSignature>>>>,
-    melt_requests: Arc<RwLock<HashMap<Uuid, (MeltBolt11Request, LnKey)>>>,
+    melt_requests: Arc<RwLock<HashMap<Uuid, (MeltBolt11Request<Uuid>, LnKey)>>>,
 }
 
 impl MintMemoryDatabase {
@@ -46,7 +47,7 @@ impl MintMemoryDatabase {
         quote_proofs: HashMap<Uuid, Vec<PublicKey>>,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
         quote_signatures: HashMap<Uuid, Vec<BlindSignature>>,
-        melt_request: Vec<(MeltBolt11Request, LnKey)>,
+        melt_request: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
     ) -> Result<Self, Error> {
         let mut proofs = HashMap::new();
         let mut proof_states = HashMap::new();
@@ -232,7 +233,7 @@ impl MintDatabase for MintMemoryDatabase {
 
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request,
+        melt_request: MeltBolt11Request<Uuid>,
         ln_key: LnKey,
     ) -> Result<(), Self::Err> {
         let mut melt_requests = self.melt_requests.write().await;
@@ -243,7 +244,7 @@ impl MintDatabase for MintMemoryDatabase {
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
         let melt_requests = self.melt_requests.read().await;
 
         let melt_request = melt_requests.get(quote_id);

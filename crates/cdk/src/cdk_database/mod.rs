@@ -109,19 +109,18 @@ pub trait WalletDatabase: Debug {
     /// Add mint quote to storage
     async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Self::Err>;
     /// Get mint quote from storage
-    async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<WalletMintQuote>, Self::Err>;
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Self::Err>;
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
     /// Remove mint quote from storage
-    async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
     /// Add melt quote to storage
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err>;
     /// Get melt quote from storage
-    async fn get_melt_quote(&self, quote_id: &Uuid)
-        -> Result<Option<wallet::MeltQuote>, Self::Err>;
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err>;
     /// Remove melt quote from storage
-    async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
     /// Add [`Keys`] to storage
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err>;
@@ -229,14 +228,14 @@ pub trait MintDatabase {
     /// Add melt request
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request,
+        melt_request: MeltBolt11Request<Uuid>,
         ln_key: LnKey,
     ) -> Result<(), Self::Err>;
     /// Get melt request
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err>;
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err>;
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;

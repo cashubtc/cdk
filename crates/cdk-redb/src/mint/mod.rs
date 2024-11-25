@@ -742,7 +742,7 @@ impl MintDatabase for MintRedbDatabase {
     /// Add melt request
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request,
+        melt_request: MeltBolt11Request<Uuid>,
         ln_key: LnKey,
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
@@ -764,7 +764,7 @@ impl MintDatabase for MintRedbDatabase {
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
 

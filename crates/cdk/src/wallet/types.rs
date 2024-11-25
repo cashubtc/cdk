@@ -1,7 +1,6 @@
 //! Wallet Types
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
@@ -11,7 +10,7 @@ use crate::Amount;
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {
     /// Quote id
-    pub id: Uuid,
+    pub id: String,
     /// Mint Url
     pub mint_url: MintUrl,
     /// Amount of quote
@@ -30,7 +29,7 @@ pub struct MintQuote {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id
-    pub id: Uuid,
+    pub id: String,
     /// Quote unit
     pub unit: CurrencyUnit,
     /// Quote amount

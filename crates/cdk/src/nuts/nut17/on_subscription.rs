@@ -3,6 +3,8 @@
 //! This module contains the code that is triggered when a new subscription is created.
 use std::sync::Arc;
 
+use uuid::Uuid;
+
 use super::{Notification, NotificationPayload};
 use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};
@@ -57,7 +59,7 @@ impl OnNewSubscription for OnSubscription {
                     quotes
                         .into_iter()
                         .filter_map(|quote| quote.map(|x| x.into()))
-                        .map(|x: MeltQuoteBolt11Response| x.into())
+                        .map(|x: MeltQuoteBolt11Response<Uuid>| x.into())
                         .collect::<Vec<_>>()
                 })
                 .map_err(|e| e.to_string())?,
@@ -69,7 +71,7 @@ impl OnNewSubscription for OnSubscription {
                     quotes
                         .into_iter()
                         .filter_map(|quote| quote.map(|x| x.into()))
-                        .map(|x: MintQuoteBolt11Response| x.into())
+                        .map(|x: MintQuoteBolt11Response<Uuid>| x.into())
                         .collect::<Vec<_>>()
                 })
                 .map_err(|e| e.to_string())?,
