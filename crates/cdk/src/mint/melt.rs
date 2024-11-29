@@ -36,6 +36,9 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnitUnsupported)?;
 
+        if !settings.amountless.unwrap_or_default() {
+            return Err(Error::AmountLessNotAllowed);
+        }
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
@@ -48,32 +51,6 @@ impl Mint {
         }
     }
 
-    fn check_amount_less_invoice(
-        &self,
-        amount: Amount,
-        request_amount: Amount,
-        unit: CurrencyUnit,
-        method: PaymentMethod,
-    ) -> Result<(), Error> {
-        let nut05 = &self.mint_info.nuts.nut05;
-
-        if nut05.disabled {
-            return Err(Error::MeltingDisabled);
-        }
-        let settings = nut05
-            .get_settings(&unit, &method)
-            .ok_or(Error::UnitUnsupported)?;
-
-        if settings
-            .amountless
-            .expect("expect a value for amountless invoice")
-            && amount != request_amount
-        {
-            return Err(Error::AmountLessNotAllowed);
-        }
-        Ok(())
-    }
-
     /// Get melt bolt11 quote
     #[instrument(skip_all)]
     pub async fn get_melt_bolt11_quote(
@@ -84,11 +61,8 @@ impl Mint {
             request,
             unit,
             options: _,
-            amount,
+            ..
         } = melt_request;
-
-        let amount_less_amount = amount.unwrap_or_default();
-        // let amount_less_amount = amount.unwrap_or_else(|| Amount::new(0));
 
         let amount = match melt_request.options {
             Some(mpp_amount) => mpp_amount.amount,
@@ -123,13 +97,6 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
-        // check amountless (amount in meltbolt11request) is equal to payment_quote.amount
-        self.check_amount_less_invoice(
-            amount_less_amount,
-            payment_quote.amount,
-            unit.clone(),
-            PaymentMethod::Bolt11,
-        )?;
 
         let quote = MeltQuote::new(
             request.to_string(),

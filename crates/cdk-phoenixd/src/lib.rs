@@ -166,8 +166,15 @@ impl MintLightning for Phoenixd {
             .amount_milli_satoshis()
             .ok_or(Error::UnknownInvoiceAmount)?;
 
-        let amount = to_unit(
+        let mut amount = to_unit(
             invoice_amount_msat,
+            &CurrencyUnit::Msat,
+            &melt_quote_request.unit,
+        )?;
+
+        if melt_quote_request.amount {
+            amount = to_unit(
+            melt_quote_request.amount,
             &CurrencyUnit::Msat,
             &melt_quote_request.unit,
         )?;

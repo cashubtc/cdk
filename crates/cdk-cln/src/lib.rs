@@ -201,12 +201,20 @@ impl MintLightning for Cln {
             .amount_milli_satoshis()
             .ok_or(Error::UnknownInvoiceAmount)?;
 
-        let amount = to_unit(
+        let mut amount = to_unit(
             invoice_amount_msat,
             &CurrencyUnit::Msat,
             &melt_quote_request.unit,
         )?;
 
+        if melt_quote_request.amount {
+            amount = to_unit(
+            melt_quote_request.amount,
+            &CurrencyUnit::Msat,
+            &melt_quote_request.unit,
+        )?;
+
+        }
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
 

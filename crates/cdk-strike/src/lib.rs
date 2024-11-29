@@ -167,9 +167,15 @@ impl MintLightning for Strike {
 
         let fee = from_strike_amount(quote.lightning_network_fee, &melt_quote_request.unit)?;
 
+        let mut amount =  from_strike_amount(quote.amount, &melt_quote_request.unit)?.into()?;
+
+        if melt_quote_request.amount {
+            amount =  from_strike_amount(melt_quote_request.amount, &melt_quote_request.unit)?.into()
+        }
+
         Ok(PaymentQuoteResponse {
             request_lookup_id: quote.payment_quote_id,
-            amount: from_strike_amount(quote.amount, &melt_quote_request.unit)?.into(),
+            amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })
