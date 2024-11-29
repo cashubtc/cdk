@@ -21,3 +21,22 @@ fn expand_path(path: &str) -> Option<PathBuf> {
         Some(PathBuf::from(path))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::env::current_dir;
+
+    use super::*;
+
+    #[test]
+    fn example_is_parsed() {
+        let config = config::Settings::new(Some(format!(
+            "{}/example.config.toml",
+            current_dir().expect("cwd").to_string_lossy()
+        )));
+        let cache = config.info.http_cache;
+
+        assert_eq!(cache.ttl, Some(60));
+        assert_eq!(cache.tti, Some(60));
+    }
+}
