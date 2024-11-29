@@ -11,7 +11,6 @@ use cdk::nuts::{
     SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
-use cdk::Error;
 use paste::paste;
 use uuid::Uuid;
 
@@ -31,19 +30,20 @@ macro_rules! post_cache_wrapper {
 
                 let json_extracted_payload = payload.deref();
                 let State(mint_state) = state.clone();
-                let cache_key = serde_json::to_string(&json_extracted_payload).map_err(|err| {
-                    into_response(Error::from(err))
-                })?;
+                let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+                    Some(key) => key,
+                    None => {
+                        // Could not calculate key, just return the handler result
+                        return $handler(state, payload).await;
+                    }
+                };
 
-                if let Some(cached_response) = mint_state.cache.get(&cache_key) {
-                    return Ok(Json(serde_json::from_str(&cached_response)
-                        .expect("Shouldn't panic: response is json-deserializable.")));
+                if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
+                    return Ok(Json(cached_response));
                 }
 
                 let response = $handler(state, payload).await?;
-                mint_state.cache.insert(cache_key, serde_json::to_string(response.deref())
-                    .expect("Shouldn't panic: response is json-serializable.")
-                ).await;
+                mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
             }
         }
