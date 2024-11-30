@@ -26,7 +26,9 @@ macro_rules! post_cache_wrapper {
                 state: State<MintState>,
                 payload: Json<$request_type>
             ) -> Result<Json<$response_type>, Response> {
-                let Json(json_extracted_payload) = payload.clone();
+                use std::ops::Deref;
+
+                let json_extracted_payload = payload.deref();
                 let State(mint_state) = state.clone();
                 let cache_key = serde_json::to_string(&json_extracted_payload).map_err(|err| {
                     into_response(Error::from(err))
@@ -37,11 +39,11 @@ macro_rules! post_cache_wrapper {
                         .expect("Shouldn't panic: response is json-deserializable.")));
                 }
 
-                let Json(response) = $handler(state, payload).await?;
-                mint_state.cache.insert(cache_key, serde_json::to_string(&response)
+                let response = $handler(state, payload).await?;
+                mint_state.cache.insert(cache_key, serde_json::to_string(response.deref())
                     .expect("Shouldn't panic: response is json-serializable.")
                 ).await;
-                Ok(Json(response))
+                Ok(response)
             }
         }
     };
