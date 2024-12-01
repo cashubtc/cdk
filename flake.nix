@@ -82,6 +82,17 @@
         WASMInputs = with pkgs; [
         ];
 
+        mintdPackage = pkgs.rustPlatform.buildRustPackage {
+          pname = "cdk-mintd";
+          version = "0.4.0";
+          src = ./crate/cdk-mintd/.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = { };
+          };
+        };
+
         nativeBuildInputs = with pkgs; [
           #Add additional build inputs here
         ] ++ lib.optionals isDarwin [
@@ -121,6 +132,11 @@
                 commitizen.enable = true; # conventional commits
               };
             };
+        };
+
+        packages = {
+          cdk-mintd = mintdPackage;
+          default = mintdPackage;
         };
 
         devShells =
