@@ -32,7 +32,8 @@ pub struct Params {
 /// Check state Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SupportedSettings {
-    supported: Vec<SupportedMethods>,
+    /// Supported methods
+    pub supported: Vec<SupportedMethods>,
 }
 
 impl Default for SupportedSettings {
@@ -43,11 +44,30 @@ impl Default for SupportedSettings {
     }
 }
 
+/// Supported WS Methods
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct SupportedMethods {
-    method: PaymentMethod,
-    unit: CurrencyUnit,
-    commands: Vec<String>,
+pub struct SupportedMethods {
+    /// Payment Method
+    pub method: PaymentMethod,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Command
+    pub commands: Vec<String>,
+}
+
+impl SupportedMethods {
+    /// Create [`SupportedMethods`]
+    pub fn new(method: PaymentMethod, unit: CurrencyUnit) -> Self {
+        Self {
+            method,
+            unit,
+            commands: vec![
+                "bolt11_mint_quote".to_owned(),
+                "bolt11_melt_quote".to_owned(),
+                "proof_state".to_owned(),
+            ],
+        }
+    }
 }
 
 impl Default for SupportedMethods {

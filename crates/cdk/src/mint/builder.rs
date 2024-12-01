@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 
+use super::nut17::SupportedMethods;
+use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database::{self, MintDatabase};
 use crate::cdk_lightning::{self, MintLightning};
@@ -34,7 +36,20 @@ pub struct MintBuilder {
 impl MintBuilder {
     /// New mint builder
     pub fn new() -> MintBuilder {
-        MintBuilder::default()
+        let mut builder = MintBuilder::default();
+
+        let nuts = Nuts::new()
+            .nut07(true)
+            .nut08(true)
+            .nut09(true)
+            .nut10(true)
+            .nut11(true)
+            .nut12(true)
+            .nut14(true);
+
+        builder.mint_info.nuts = nuts;
+
+        builder
     }
 
     /// Set localstore
@@ -180,6 +195,19 @@ impl MintBuilder {
     /// Set pubkey
     pub fn with_pubkey(mut self, pubkey: crate::nuts::PublicKey) -> Self {
         self.mint_info.pubkey = Some(pubkey);
+
+        self
+    }
+
+    /// Support websockets
+    pub fn add_supported_websockets(mut self, supported_method: SupportedMethods) -> Self {
+        let mut supported_settings = self.mint_info.nuts.nut17.supported.clone();
+
+        if !supported_settings.contains(&supported_method) {
+            supported_settings.push(supported_method);
+
+            self.mint_info.nuts = self.mint_info.nuts.nut17(supported_settings);
+        }
 
         self
     }

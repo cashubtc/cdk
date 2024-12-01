@@ -15,6 +15,7 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
 use cdk::types::LnKey;
 use cdk_mintd::cli::CLIArgs;
@@ -150,6 +151,10 @@ async fn main() -> anyhow::Result<()> {
                 mint_melt_limits,
                 cln.clone(),
             );
+
+            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+
+            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
         LnBackend::Strike => {
             let strike_settings = settings.clone().strike.expect("Checked on config load");
@@ -164,11 +169,14 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
 
                 mint_builder = mint_builder.add_ln_backend(
-                    unit,
+                    unit.clone(),
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
                     Arc::new(strike),
                 );
+                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+
+                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
         LnBackend::LNbits => {
@@ -183,6 +191,9 @@ async fn main() -> anyhow::Result<()> {
                 mint_melt_limits,
                 Arc::new(lnbits),
             );
+            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+
+            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
         LnBackend::Phoenixd => {
             let phd_settings = settings.clone().phoenixd.expect("Checked at config load");
@@ -196,6 +207,10 @@ async fn main() -> anyhow::Result<()> {
                 mint_melt_limits,
                 Arc::new(phd),
             );
+
+            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+
+            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
@@ -209,6 +224,10 @@ async fn main() -> anyhow::Result<()> {
                 mint_melt_limits,
                 Arc::new(lnd),
             );
+
+            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+
+            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
         LnBackend::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
@@ -226,6 +245,10 @@ async fn main() -> anyhow::Result<()> {
                     mint_melt_limits,
                     fake.clone(),
                 );
+
+                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+
+                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
     };
