@@ -20,6 +20,14 @@
 ### Removed
 
 -->
+
+#[Unreleased]
+
+### Fixed
+cdk-sqlite: keyset counter was overwritten when keyset was fetched from mint ([thesimplekid]).
+cdk-cli: on `mint` use `unit` from cli args ([thesimplekid]).
+cdk-cli: on `restore` create `wallet` if it does not exist ([thesimplekid]).
+
 #[0.5.0]
 ### Changed
 - cdk: Bump `bitcoin` to `0.32.2` ([prusnak]).
