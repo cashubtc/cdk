@@ -8,8 +8,7 @@ resolver = "2"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0" # MSRV
-version = "0.3.0"
+version = "0.5.0"
 
 [workspace.metadata]
 authors = ["CDK Developers"]
@@ -24,3 +23,6 @@ keywords = ["bitcoin", "e-cash", "cashu"]
 inherits = "dev"
 incremental = false
 lto = "off"
+
+[workspace.metadata.crane]
+name = "cdk-workspace"

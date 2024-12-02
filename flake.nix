@@ -2,7 +2,7 @@
   description = "CDK Flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -11,12 +11,23 @@
       };
     };
 
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.rust-analyzer-src.follows = "";
+    };
+
     flake-utils.url = "github:numtide/flake-utils";
+
+    crane = {
+      url = "github:ipetkov/crane";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
 
     pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, crane, fenix, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -33,6 +44,7 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
+
 
 
         # Toolchains
@@ -82,16 +94,76 @@
         WASMInputs = with pkgs; [
         ];
 
-        mintdPackage = pkgs.rustPlatform.buildRustPackage {
-          pname = "cdk-mintd";
-          version = "0.4.0";
-          src = ./crate/cdk-mintd/.;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = { };
-          };
+
+        craneLib = crane.mkLib pkgs;
+        src = craneLib.cleanCargoSource ./.;
+
+        # Common arguments can be set here to avoid repeating them later
+        commonArgs = {
+          inherit src;
+          strictDeps = true;
+
+          buildInputs = [
+            # Add additional build inputs here
+            pkgs.protobuf
+            pkgs.pkg-config
+          ] ++ lib.optionals pkgs.stdenv.isDarwin [
+            # Additional darwin specific inputs can be set here
+            pkgs.libiconv
+          ];
+
+          # Additional environment variables can be set directly
+          # MY_CUSTOM_VAR = "some value";
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
         };
+
+
+        craneLibLLvmTools = craneLib.overrideToolchain
+          (fenix.packages.${system}.complete.withComponents [
+            "cargo"
+            "llvm-tools"
+            "rustc"
+          ]);
+
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        individualCrateArgs = commonArgs // {
+          inherit cargoArtifacts;
+          inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;
+          # NB: we disable tests since we'll run them all via cargo-nextest
+          doCheck = false;
+        };
+
+        fileSetForCrate = crate: lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            (craneLib.fileset.commonCargoSources ./crates/cdk)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-axum)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-cln)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-lnd)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-fake-wallet)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-lnbits)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-strike)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-phoenixd)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-redb)
+            (craneLib.fileset.commonCargoSources ./crates/cdk-sqlite)
+            ./crates/cdk-sqlite/src/mint/migrations
+            ./crates/cdk-sqlite/src/wallet/migrations
+            (craneLib.fileset.commonCargoSources crate)
+          ];
+        };
+
+        cdk-mintd = craneLib.buildPackage (individualCrateArgs // {
+          pname = "cdk-mintd";
+          name = "cdk-mintd-${individualCrateArgs.version}";
+          cargoExtraArgs = "-p cdk-mintd";
+          src = fileSetForCrate ./crates/cdk-mintd;
+        });
+
 
         nativeBuildInputs = with pkgs; [
           #Add additional build inputs here
@@ -134,9 +206,20 @@
             };
         };
 
+
         packages = {
-          cdk-mintd = mintdPackage;
-          default = mintdPackage;
+          inherit cdk-mintd;
+          default = cdk-mintd;
+        } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+          my-workspace-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs // {
+            inherit cargoArtifacts;
+          });
+        };
+
+        apps = {
+          cdk-mintd = flake-utils.lib.mkApp {
+            drv = cdk-mintd;
+          };
         };
 
         devShells =
