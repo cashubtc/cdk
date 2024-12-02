@@ -8,7 +8,9 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, Proof, State};
 use cdk::Amount;
 use lightning_invoice::Bolt11Invoice;
-use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+use redb::{
+    Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -93,54 +95,68 @@ pub fn migrate_04_to_05(db: Arc<Database>) -> Result<u32, Error> {
     // Quote proofs
     {
         const QUOTE_PROOFS_TABLE_NAME: &str = "quote_proofs";
-        const OLD_TABLE: TableDefinition<&str, [u8; 33]> =
-            TableDefinition::new(QUOTE_PROOFS_TABLE_NAME);
-        const NEW_TABLE: TableDefinition<[u8; 16], [u8; 33]> =
-            TableDefinition::new(QUOTE_PROOFS_TABLE_NAME);
+        const OLD_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_PROOFS_TABLE_NAME);
+        const NEW_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_PROOFS_TABLE_NAME);
 
-        let old_table = write_txn.open_table(OLD_TABLE)?;
+        let old_table = write_txn.open_multimap_table(OLD_TABLE)?;
 
         let mut tmp_hashmap = HashMap::new();
 
         for (k, v) in old_table.iter().map_err(Error::from)?.flatten() {
             let quote_id = Uuid::try_parse(k.value()).unwrap();
-            tmp_hashmap.insert(quote_id, v.value());
+            let ys: Vec<[u8; 33]> = v.into_iter().flatten().map(|v| v.value()).collect();
+            tmp_hashmap.insert(quote_id, ys);
         }
 
-        write_txn.delete_table(old_table).map_err(Error::from)?;
-        let mut new_table = write_txn.open_table(NEW_TABLE)?;
+        write_txn
+            .delete_multimap_table(old_table)
+            .map_err(Error::from)?;
+        let mut new_table = write_txn.open_multimap_table(NEW_TABLE)?;
 
-        for (k, v) in tmp_hashmap.into_iter() {
-            new_table.insert(k.as_bytes(), v).map_err(Error::from)?;
+        for (quote_id, blind_messages) in tmp_hashmap.into_iter() {
+            for blind_message in blind_messages {
+                new_table
+                    .insert(quote_id.as_bytes(), blind_message)
+                    .map_err(Error::from)?;
+            }
         }
     }
     // Quote signatures
     {
-        const QUOTE_SIGNATURES_TABLE_NAME: &str = "quote_proofs";
-        const OLD_TABLE: TableDefinition<&str, [u8; 33]> =
-            TableDefinition::new(QUOTE_SIGNATURES_TABLE_NAME);
-        const NEW_TABLE: TableDefinition<[u8; 16], [u8; 33]> =
-            TableDefinition::new(QUOTE_SIGNATURES_TABLE_NAME);
+        const QUOTE_SIGNATURES_TABLE_NAME: &str = "quote_signatures";
+        const OLD_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_SIGNATURES_TABLE_NAME);
+        const NEW_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_SIGNATURES_TABLE_NAME);
 
-        let old_table = write_txn.open_table(OLD_TABLE)?;
+        let old_table = write_txn.open_multimap_table(OLD_TABLE)?;
 
         let mut tmp_hashmap = HashMap::new();
 
         for (k, v) in old_table.iter().map_err(Error::from)?.flatten() {
             let quote_id = Uuid::try_parse(k.value()).unwrap();
-            tmp_hashmap.insert(quote_id, v.value());
+            let ys: Vec<[u8; 33]> = v.into_iter().flatten().map(|v| v.value()).collect();
+            tmp_hashmap.insert(quote_id, ys);
         }
 
-        write_txn.delete_table(old_table).map_err(Error::from)?;
-        let mut new_table = write_txn.open_table(NEW_TABLE)?;
+        write_txn
+            .delete_multimap_table(old_table)
+            .map_err(Error::from)?;
+        let mut new_table = write_txn.open_multimap_table(NEW_TABLE)?;
 
-        for (k, v) in tmp_hashmap.into_iter() {
-            new_table.insert(k.as_bytes(), v).map_err(Error::from)?;
+        for (quote_id, signatures) in tmp_hashmap.into_iter() {
+            for signature in signatures {
+                new_table
+                    .insert(quote_id.as_bytes(), signature)
+                    .map_err(Error::from)?;
+            }
         }
     }
     // Melt requests
     {
-        const MELT_REQUESTS_TABLE_NAME: &str = "quote_proofs";
+        const MELT_REQUESTS_TABLE_NAME: &str = "melt_requests";
         const OLD_TABLE: TableDefinition<&str, (&str, &str)> =
             TableDefinition::new(MELT_REQUESTS_TABLE_NAME);
         const NEW_TABLE: TableDefinition<[u8; 16], (&str, &str)> =
