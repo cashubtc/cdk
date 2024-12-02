@@ -260,10 +260,15 @@ FROM mint
         for keyset in keysets {
             sqlx::query(
                 r#"
-INSERT OR REPLACE INTO keyset
-(mint_url, id, unit, active, input_fee_ppk)
-VALUES (?, ?, ?, ?, ?);
-        "#,
+    INSERT INTO keyset
+    (mint_url, id, unit, active, input_fee_ppk)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        unit = excluded.unit,
+        active = excluded.active,
+        input_fee_ppk = excluded.input_fee_ppk;
+    "#,
             )
             .bind(mint_url.to_string())
             .bind(keyset.id.to_string())
@@ -675,18 +680,22 @@ FROM proof;
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
         sqlx::query(
             r#"
 UPDATE keyset
-SET counter = counter + ?
-WHERE id IS ?;
+SET counter=counter+?
+WHERE id=?;
         "#,
         )
-        .bind(count)
+        .bind(count as i64)
         .bind(keyset_id.to_string())
-        .execute(&self.pool)
+        .execute(&mut transaction)
         .await
         .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(())
     }

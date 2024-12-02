@@ -256,6 +256,12 @@ impl Wallet {
         self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         if spending_conditions.is_none() {
+            tracing::debug!(
+                "Incrementing keyset {} counter by {}",
+                active_keyset_id,
+                proofs.len()
+            );
+
             // Update counter for keyset
             self.localstore
                 .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
