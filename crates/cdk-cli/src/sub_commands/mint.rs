@@ -39,7 +39,7 @@ pub async fn mint(
     let description: Option<String> = sub_command_args.description.clone();
 
     let wallet = match multi_mint_wallet
-        .get_wallet(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
+        .get_wallet(&WalletKey::new(mint_url.clone(), unit.clone()))
         .await
     {
         Some(wallet) => wallet.clone(),
