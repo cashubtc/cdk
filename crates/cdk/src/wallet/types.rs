@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
+use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PublicKey};
 use crate::Amount;
 
 /// Mint Quote Info
@@ -23,6 +23,8 @@ pub struct MintQuote {
     pub state: MintQuoteState,
     /// Expiration time of quote
     pub expiry: u64,
+    /// Publickey [NUT-19]
+    pub pubkey: Option<PublicKey>,
 }
 
 /// Melt Quote Info

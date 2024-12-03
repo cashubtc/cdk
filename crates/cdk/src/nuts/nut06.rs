@@ -242,6 +242,10 @@ pub struct Nuts {
     #[serde(rename = "17")]
     #[cfg(feature = "mint")]
     pub nut17: super::nut17::SupportedSettings,
+    /// NUT14 Settings
+    #[serde(default)]
+    #[serde(rename = "20")]
+    pub nut20: SupportedSettings,
 }
 
 impl Nuts {
@@ -337,6 +341,14 @@ impl Nuts {
     pub fn nut17(self, supported: Vec<SupportedMethods>) -> Self {
         Self {
             nut17: super::nut17::SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut20 settings
+    pub fn nut20(self, supported: bool) -> Self {
+        Self {
+            nut20: SupportedSettings { supported },
             ..self
         }
     }
