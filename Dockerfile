@@ -1,5 +1,5 @@
-# Use the official Ubuntu 24.04 image as the base image
-FROM ubuntu:24.04
+# Build Stage with a minimal image
+FROM debian:bullseye-slim AS builder
 
 # Set the working directory
 WORKDIR /usr/src/app
