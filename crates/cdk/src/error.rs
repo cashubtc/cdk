@@ -245,9 +245,9 @@ pub enum Error {
     /// NUT18 Error
     #[error(transparent)]
     NUT18(#[from] crate::nuts::nut18::Error),
-    /// NUT19 Error
+    /// NUT20 Error
     #[error(transparent)]
-    NUT19(#[from] crate::nuts::nut19::Error),
+    NUT20(#[from] crate::nuts::nut20::Error),
     /// Database Error
     #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]
@@ -382,7 +382,7 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
-            Error::NUT19(err) => ErrorResponse {
+            Error::NUT20(err) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 error: Some(err.to_string()),
                 detail: None,
