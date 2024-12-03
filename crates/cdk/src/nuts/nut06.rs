@@ -5,6 +5,8 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
+#[cfg(feature = "mint")]
+use super::nut17::SupportedMethods;
 use super::{nut04, nut05, nut15, MppMethodSettings};
 
 /// Mint Version
@@ -326,6 +328,15 @@ impl Nuts {
             nut15: nut15::Settings {
                 methods: mpp_settings,
             },
+            ..self
+        }
+    }
+
+    /// Nut17 settings
+    #[cfg(feature = "mint")]
+    pub fn nut17(self, supported: Vec<SupportedMethods>) -> Self {
+        Self {
+            nut17: super::nut17::SupportedSettings { supported },
             ..self
         }
     }

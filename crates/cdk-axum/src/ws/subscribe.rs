@@ -54,12 +54,7 @@ impl WsHandle for Method {
             return Err(WsError::InvalidParams);
         }
 
-        let mut subscription = context
-            .state
-            .mint
-            .pubsub_manager
-            .subscribe(self.0.clone())
-            .await;
+        let mut subscription = context.state.mint.pubsub_manager.subscribe(self.0).await;
         let publisher = context.publisher.clone();
         context.subscriptions.insert(
             sub_id.clone(),
