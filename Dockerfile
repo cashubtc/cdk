@@ -4,8 +4,10 @@ FROM nixos/nix:latest AS builder
 # Set the working directory
 WORKDIR /usr/src/app
 
-# Copy the source code and flake.nix into the container
-COPY . /usr/src/app
+# Copy workspace files and crates directory into the container
+COPY flake.nix ./flake.nix
+COPY Cargo.toml ./Cargo.toml
+COPY crates ./crates
 
 # Start the Nix daemon and develop the environment
 RUN nix-channel --update && \
