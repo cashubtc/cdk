@@ -23,6 +23,9 @@
 
 #[Unreleased]
 
+### Added
+cdk: `NUT19` Settings in `NUT06` info ([thesimplekid]).
+
 ### Fixed
 cdk-sqlite: keyset counter was overwritten when keyset was fetched from mint ([thesimplekid]).
 cdk-cli: on `mint` use `unit` from cli args ([thesimplekid]).
