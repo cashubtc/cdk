@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 
 use super::nut17::SupportedMethods;
+use super::nut19::{self, CachedEndpoint};
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database::{self, MintDatabase};
@@ -208,6 +209,18 @@ impl MintBuilder {
 
             self.mint_info.nuts = self.mint_info.nuts.nut17(supported_settings);
         }
+
+        self
+    }
+
+    /// Add support for NUT19
+    pub fn add_cache(mut self, ttl: Option<u64>, cached_endpoints: Vec<CachedEndpoint>) -> Self {
+        let nut19_settings = nut19::Settings {
+            ttl,
+            cached_endpoints,
+        };
+
+        self.mint_info.nuts.nut19 = nut19_settings;
 
         self
     }
