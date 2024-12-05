@@ -35,6 +35,22 @@ pub enum LnBackend {
     Lnd,
 }
 
+impl std::str::FromStr for LnBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "cln" => Ok(LnBackend::Cln),
+            "strike" => Ok(LnBackend::Strike),
+            "lnbits" => Ok(LnBackend::LNbits),
+            "fakewallet" => Ok(LnBackend::FakeWallet),
+            "phoenixd" => Ok(LnBackend::Phoenixd),
+            "lnd" => Ok(LnBackend::Lnd),
+            _ => Err(format!("Unknown Lightning backend: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
@@ -126,6 +142,18 @@ pub enum DatabaseEngine {
     #[default]
     Sqlite,
     Redb,
+}
+
+impl std::str::FromStr for DatabaseEngine {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "sqlite" => Ok(DatabaseEngine::Sqlite),
+            "redb" => Ok(DatabaseEngine::Redb),
+            _ => Err(format!("Unknown database engine: {}", s)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
