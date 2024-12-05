@@ -13,6 +13,7 @@ use cdk::nuts::{
 use cdk::util::unix_time;
 use cdk::Error;
 use paste::paste;
+use uuid::Uuid;
 
 use crate::ws::main_websocket;
 use crate::MintState;
@@ -50,8 +51,16 @@ macro_rules! post_cache_wrapper {
 }
 
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
-post_cache_wrapper!(post_mint_bolt11, MintBolt11Request, MintBolt11Response);
-post_cache_wrapper!(post_melt_bolt11, MeltBolt11Request, MeltQuoteBolt11Response);
+post_cache_wrapper!(
+    post_mint_bolt11,
+    MintBolt11Request<Uuid>,
+    MintBolt11Response
+);
+post_cache_wrapper!(
+    post_melt_bolt11,
+    MeltBolt11Request<Uuid>,
+    MeltQuoteBolt11Response<Uuid>
+);
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -137,7 +146,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 pub async fn post_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
-) -> Result<Json<MintQuoteBolt11Response>, Response> {
+) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
         .get_mint_bolt11_quote(payload)
@@ -164,8 +173,8 @@ pub async fn post_mint_bolt11_quote(
 /// Get mint quote state.
 pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
-    Path(quote_id): Path<String>,
-) -> Result<Json<MintQuoteBolt11Response>, Response> {
+    Path(quote_id): Path<Uuid>,
+) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
         .check_mint_quote(&quote_id)
@@ -199,7 +208,7 @@ pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) ->
 ))]
 pub async fn post_mint_bolt11(
     State(state): State<MintState>,
-    Json(payload): Json<MintBolt11Request>,
+    Json(payload): Json<MintBolt11Request<Uuid>>,
 ) -> Result<Json<MintBolt11Response>, Response> {
     let res = state
         .mint
@@ -227,7 +236,7 @@ pub async fn post_mint_bolt11(
 pub async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
-) -> Result<Json<MeltQuoteBolt11Response>, Response> {
+) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
         .get_melt_bolt11_quote(&payload)
@@ -254,8 +263,8 @@ pub async fn post_melt_bolt11_quote(
 /// Get melt quote state.
 pub async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
-    Path(quote_id): Path<String>,
-) -> Result<Json<MeltQuoteBolt11Response>, Response> {
+    Path(quote_id): Path<Uuid>,
+) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
         .check_melt_quote(&quote_id)
@@ -283,8 +292,8 @@ pub async fn get_check_melt_bolt11_quote(
 /// Requests tokens to be destroyed and sent out via Lightning.
 pub async fn post_melt_bolt11(
     State(state): State<MintState>,
-    Json(payload): Json<MeltBolt11Request>,
-) -> Result<Json<MeltQuoteBolt11Response>, Response> {
+    Json(payload): Json<MeltBolt11Request<Uuid>>,
+) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
     let res = state
         .mint
         .melt_bolt11(&payload)

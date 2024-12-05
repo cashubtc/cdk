@@ -1,4 +1,5 @@
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::{
     nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
@@ -59,7 +60,7 @@ impl Mint {
     pub async fn get_mint_bolt11_quote(
         &self,
         mint_quote_request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response, Error> {
+    ) -> Result<MintQuoteBolt11Response<Uuid>, Error> {
         let MintQuoteBolt11Request {
             amount,
             unit,
@@ -116,7 +117,7 @@ impl Mint {
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
-        let quote: MintQuoteBolt11Response = quote.into();
+        let quote: MintQuoteBolt11Response<Uuid> = quote.into();
 
         self.pubsub_manager
             .broadcast(NotificationPayload::MintQuoteBolt11Response(quote.clone()));
@@ -126,7 +127,10 @@ impl Mint {
 
     /// Check mint quote
     #[instrument(skip(self))]
-    pub async fn check_mint_quote(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
+    pub async fn check_mint_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<MintQuoteBolt11Response<Uuid>, Error> {
         let quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -187,7 +191,7 @@ impl Mint {
 
     /// Remove mint quote
     #[instrument(skip_all)]
-    pub async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+    pub async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
         self.localstore.remove_mint_quote(quote_id).await?;
 
         Ok(())
@@ -250,7 +254,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_mint_request(
         &self,
-        mint_request: nut04::MintBolt11Request,
+        mint_request: nut04::MintBolt11Request<Uuid>,
     ) -> Result<nut04::MintBolt11Response, Error> {
         let mint_quote =
             if let Some(mint_quote) = self.localstore.get_mint_quote(&mint_request.quote).await? {
@@ -321,7 +325,7 @@ impl Mint {
                     .map(|p| p.blinded_secret)
                     .collect::<Vec<PublicKey>>(),
                 &blind_signatures,
-                Some(mint_request.quote.clone()),
+                Some(mint_request.quote),
             )
             .await?;
 

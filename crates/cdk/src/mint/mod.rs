@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinSet;
 use tracing::instrument;
+use uuid::Uuid;
 
 use crate::cdk_database::{self, MintDatabase};
 use crate::cdk_lightning::{self, MintLightning};
@@ -380,7 +381,7 @@ impl Mint {
     pub async fn handle_internal_melt_mint(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request,
+        melt_request: &MeltBolt11Request<Uuid>,
     ) -> Result<Option<Amount>, Error> {
         let mint_quote = match self
             .localstore
@@ -608,6 +609,7 @@ mod tests {
 
     use bitcoin::Network;
     use secp256k1::Secp256k1;
+    use uuid::Uuid;
 
     use super::*;
     use crate::types::LnKey;
@@ -709,13 +711,13 @@ mod tests {
         pending_proofs: Proofs,
         spent_proofs: Proofs,
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
-        quote_proofs: HashMap<String, Vec<PublicKey>>,
-        quote_signatures: HashMap<String, Vec<BlindSignature>>,
+        quote_proofs: HashMap<Uuid, Vec<PublicKey>>,
+        quote_signatures: HashMap<Uuid, Vec<BlindSignature>>,
         mint_url: &'a str,
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-        melt_requests: Vec<(MeltBolt11Request, LnKey)>,
+        melt_requests: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
         quote_ttl: QuoteTTL,
     }
 

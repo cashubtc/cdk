@@ -78,7 +78,7 @@ impl Wallet {
 
         let quote = MintQuote {
             mint_url,
-            id: quote_res.quote.clone(),
+            id: quote_res.quote,
             amount,
             unit: unit.clone(),
             request: quote_res.request,
@@ -93,7 +93,10 @@ impl Wallet {
 
     /// Check mint quote status
     #[instrument(skip(self, quote_id))]
-    pub async fn mint_quote_state(&self, quote_id: &str) -> Result<MintQuoteBolt11Response, Error> {
+    pub async fn mint_quote_state(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let response = self
             .client
             .get_mint_quote_status(self.mint_url.clone(), quote_id)

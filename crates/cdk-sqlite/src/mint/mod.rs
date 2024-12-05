@@ -23,6 +23,8 @@ use error::Error;
 use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::Row;
+use uuid::fmt::Hyphenated;
+use uuid::Uuid;
 
 pub mod error;
 
@@ -236,7 +238,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         }
     }
 
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
             r#"
@@ -245,7 +247,7 @@ FROM mint_quote
 WHERE id=?;
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .fetch_one(&mut transaction)
         .await;
 
@@ -345,7 +347,7 @@ WHERE request_lookup_id=?;
 
     async fn update_mint_quote_state(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
         state: MintQuoteState,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
@@ -357,7 +359,7 @@ FROM mint_quote
 WHERE id=?;
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .fetch_one(&mut transaction)
         .await;
         let quote = match rec {
@@ -378,7 +380,7 @@ WHERE id=?;
         "#,
         )
         .bind(state.to_string())
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .execute(&mut transaction)
         .await;
 
@@ -430,7 +432,7 @@ FROM mint_quote
         }
     }
 
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let res = sqlx::query(
@@ -439,7 +441,7 @@ DELETE FROM mint_quote
 WHERE id=?
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .execute(&mut transaction)
         .await;
 
@@ -497,7 +499,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             }
         }
     }
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<mint::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
             r#"
@@ -506,7 +508,7 @@ FROM melt_quote
 WHERE id=?;
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .fetch_one(&mut transaction)
         .await;
 
@@ -564,7 +566,7 @@ FROM melt_quote
 
     async fn update_melt_quote_state(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
         state: MeltQuoteState,
     ) -> Result<MeltQuoteState, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
@@ -576,7 +578,7 @@ FROM melt_quote
 WHERE id=?;
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .fetch_one(&mut transaction)
         .await;
 
@@ -598,7 +600,7 @@ WHERE id=?;
         "#,
         )
         .bind(state.to_string())
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .execute(&mut transaction)
         .await;
 
@@ -619,7 +621,7 @@ WHERE id=?;
         Ok(quote.state)
     }
 
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let res = sqlx::query(
             r#"
@@ -627,7 +629,7 @@ DELETE FROM melt_quote
 WHERE id=?
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .execute(&mut transaction)
         .await;
 
@@ -748,7 +750,7 @@ FROM keyset;
         }
     }
 
-    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<String>) -> Result<(), Self::Err> {
+    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for proof in proofs {
             if let Err(err) = sqlx::query(
@@ -765,7 +767,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .bind(proof.c.to_bytes().to_vec())
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
             .bind("UNSPENT")
-            .bind(quote_id.clone())
+            .bind(quote_id.map(|q| q.hyphenated()))
             .execute(&mut transaction)
             .await
             .map_err(Error::from)
@@ -812,7 +814,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         Ok(ys.iter().map(|y| proofs.remove(y)).collect())
     }
 
-    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err> {
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(
@@ -822,7 +824,7 @@ FROM proof
 WHERE quote_id=?;
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .fetch_all(&mut transaction)
         .await;
 
@@ -996,7 +998,7 @@ WHERE keyset_id=?;
         &self,
         blinded_messages: &[PublicKey],
         blinded_signatures: &[BlindSignature],
-        quote_id: Option<String>,
+        quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
@@ -1011,7 +1013,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(u64::from(signature.amount) as i64)
             .bind(signature.keyset_id.to_string())
             .bind(signature.c.to_bytes().to_vec())
-            .bind(quote_id.clone())
+            .bind(quote_id.map(|q| q.hyphenated()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()))
             .execute(&mut transaction)
@@ -1111,7 +1113,7 @@ WHERE keyset_id=?;
 
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request,
+        melt_request: MeltBolt11Request<Uuid>,
         ln_key: LnKey,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
@@ -1149,8 +1151,8 @@ VALUES (?, ?, ?, ?, ?);
 
     async fn get_melt_request(
         &self,
-        quote_id: &str,
-    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err> {
+        quote_id: &Uuid,
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(
@@ -1160,7 +1162,7 @@ FROM melt_request
 WHERE id=?;
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .fetch_one(&mut transaction)
         .await;
 
@@ -1192,7 +1194,7 @@ WHERE id=?;
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -1203,7 +1205,7 @@ FROM blind_signature
 WHERE quote_id=?;
         "#,
         )
-        .bind(quote_id)
+        .bind(quote_id.as_hyphenated())
         .fetch_all(&mut transaction)
         .await;
 
@@ -1254,7 +1256,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
 }
 
 fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
-    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
     let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
@@ -1273,7 +1275,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     };
 
     Ok(MintQuote {
-        id: row_id,
+        id: row_id.into_uuid(),
         mint_url: MintUrl::from_str(&row_mint_url)?,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
@@ -1285,7 +1287,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
 }
 
 fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
-    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
@@ -1299,7 +1301,7 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
     let request_lookup_id = row_request_lookup.unwrap_or(row_request.clone());
 
     Ok(mint::MeltQuote {
-        id: row_id,
+        id: row_id.into_uuid(),
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
@@ -1375,15 +1377,15 @@ fn sqlite_row_to_blind_signature(row: SqliteRow) -> Result<BlindSignature, Error
     })
 }
 
-fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request, LnKey), Error> {
-    let quote_id: String = row.try_get("id").map_err(Error::from)?;
+fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request<Uuid>, LnKey), Error> {
+    let quote_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
     let row_inputs: String = row.try_get("inputs").map_err(Error::from)?;
     let row_outputs: Option<String> = row.try_get("outputs").map_err(Error::from)?;
     let row_method: String = row.try_get("method").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
 
     let melt_request = MeltBolt11Request {
-        quote: quote_id,
+        quote: quote_id.into_uuid(),
         inputs: serde_json::from_str(&row_inputs)?,
         outputs: row_outputs.and_then(|o| serde_json::from_str(&o).ok()),
     };
