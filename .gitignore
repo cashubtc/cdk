@@ -1,5 +1,4 @@
 **/target
-/Cargo.lock
 .direnv
 .vscode/
 .idea/
@@ -7,3 +6,4 @@
 *.sqlite*
 config.toml
 .pre-commit-config.yaml
+result
