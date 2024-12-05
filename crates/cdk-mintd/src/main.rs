@@ -65,7 +65,11 @@ async fn main() -> anyhow::Result<()> {
 
     let mut mint_builder = MintBuilder::new();
 
-    let settings = config::Settings::new(&Some(config_file_arg));
+    let mut settings = config::Settings::new(&Some(config_file_arg));
+
+    // This check for any settings defined in ENV VARs
+    // ENV VARS will take **priority** over those in the config
+    let settings = settings.from_env()?;
 
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
         match settings.database.engine {
