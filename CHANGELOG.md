@@ -23,6 +23,9 @@
 
 #[Unreleased]
 
+### Changed
+cdk: Enforce `quote_id` to uuid type in mint ([tdelabro]).
+
 ### Added
 cdk: `NUT19` Settings in `NUT06` info ([thesimplekid]).
 
@@ -213,4 +216,5 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [mubarak23]: https://github.com/mubarak23
 [vnprc]: https://github.com/vnprc
 [crodas]: https://github.com/crodas
+[tdelabro]: https://github.com/tdelabro
 
