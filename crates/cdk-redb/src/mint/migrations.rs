@@ -8,12 +8,15 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, Proof, State};
 use cdk::Amount;
 use lightning_invoice::Bolt11Invoice;
-use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+use redb::{
+    Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
+};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{Error, PROOFS_STATE_TABLE, PROOFS_TABLE, QUOTE_SIGNATURES_TABLE};
 
-const MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
+const ID_STR_MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
 const PENDING_PROOFS_TABLE: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("pending_proofs");
 const SPENT_PROOFS_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("spent_proofs");
@@ -36,10 +39,158 @@ pub fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
     Ok(4)
 }
 
+pub fn migrate_04_to_05(db: Arc<Database>) -> Result<u32, Error> {
+    let write_txn = db.begin_write()?;
+
+    // Mint quotes
+    {
+        const MINT_QUOTE_TABLE_NAME: &str = "mint_quotes";
+        const OLD_TABLE: TableDefinition<&str, &str> = TableDefinition::new(MINT_QUOTE_TABLE_NAME);
+        const NEW_TABLE: TableDefinition<[u8; 16], &str> =
+            TableDefinition::new(MINT_QUOTE_TABLE_NAME);
+
+        let old_table = write_txn.open_table(OLD_TABLE)?;
+
+        let mut tmp_hashmap = HashMap::new();
+
+        for (k, v) in old_table.iter().map_err(Error::from)?.flatten() {
+            let quote_id = Uuid::try_parse(k.value()).unwrap();
+            tmp_hashmap.insert(quote_id, v.value().to_string());
+        }
+
+        write_txn.delete_table(old_table).map_err(Error::from)?;
+        let mut new_table = write_txn.open_table(NEW_TABLE)?;
+
+        for (k, v) in tmp_hashmap.into_iter() {
+            new_table
+                .insert(k.as_bytes(), v.as_str())
+                .map_err(Error::from)?;
+        }
+    }
+    // Melt quotes
+    {
+        const MELT_QUOTE_TABLE_NAME: &str = "melt_quotes";
+        const OLD_TABLE: TableDefinition<&str, &str> = TableDefinition::new(MELT_QUOTE_TABLE_NAME);
+        const NEW_TABLE: TableDefinition<[u8; 16], &str> =
+            TableDefinition::new(MELT_QUOTE_TABLE_NAME);
+
+        let old_table = write_txn.open_table(OLD_TABLE)?;
+
+        let mut tmp_hashmap = HashMap::new();
+
+        for (k, v) in old_table.iter().map_err(Error::from)?.flatten() {
+            let quote_id = Uuid::try_parse(k.value()).unwrap();
+            tmp_hashmap.insert(quote_id, v.value().to_string());
+        }
+
+        write_txn.delete_table(old_table).map_err(Error::from)?;
+        let mut new_table = write_txn.open_table(NEW_TABLE)?;
+
+        for (k, v) in tmp_hashmap.into_iter() {
+            new_table
+                .insert(k.as_bytes(), v.as_str())
+                .map_err(Error::from)?;
+        }
+    }
+    // Quote proofs
+    {
+        const QUOTE_PROOFS_TABLE_NAME: &str = "quote_proofs";
+        const OLD_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_PROOFS_TABLE_NAME);
+        const NEW_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_PROOFS_TABLE_NAME);
+
+        let old_table = write_txn.open_multimap_table(OLD_TABLE)?;
+
+        let mut tmp_hashmap = HashMap::new();
+
+        for (k, v) in old_table.iter().map_err(Error::from)?.flatten() {
+            let quote_id = Uuid::try_parse(k.value()).unwrap();
+            let ys: Vec<[u8; 33]> = v.into_iter().flatten().map(|v| v.value()).collect();
+            tmp_hashmap.insert(quote_id, ys);
+        }
+
+        write_txn
+            .delete_multimap_table(old_table)
+            .map_err(Error::from)?;
+        let mut new_table = write_txn.open_multimap_table(NEW_TABLE)?;
+
+        for (quote_id, blind_messages) in tmp_hashmap.into_iter() {
+            for blind_message in blind_messages {
+                new_table
+                    .insert(quote_id.as_bytes(), blind_message)
+                    .map_err(Error::from)?;
+            }
+        }
+    }
+    // Quote signatures
+    {
+        const QUOTE_SIGNATURES_TABLE_NAME: &str = "quote_signatures";
+        const OLD_TABLE: MultimapTableDefinition<&str, [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_SIGNATURES_TABLE_NAME);
+        const NEW_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
+            MultimapTableDefinition::new(QUOTE_SIGNATURES_TABLE_NAME);
+
+        let old_table = write_txn.open_multimap_table(OLD_TABLE)?;
+
+        let mut tmp_hashmap = HashMap::new();
+
+        for (k, v) in old_table.iter().map_err(Error::from)?.flatten() {
+            let quote_id = Uuid::try_parse(k.value()).unwrap();
+            let ys: Vec<[u8; 33]> = v.into_iter().flatten().map(|v| v.value()).collect();
+            tmp_hashmap.insert(quote_id, ys);
+        }
+
+        write_txn
+            .delete_multimap_table(old_table)
+            .map_err(Error::from)?;
+        let mut new_table = write_txn.open_multimap_table(NEW_TABLE)?;
+
+        for (quote_id, signatures) in tmp_hashmap.into_iter() {
+            for signature in signatures {
+                new_table
+                    .insert(quote_id.as_bytes(), signature)
+                    .map_err(Error::from)?;
+            }
+        }
+    }
+    // Melt requests
+    {
+        const MELT_REQUESTS_TABLE_NAME: &str = "melt_requests";
+        const OLD_TABLE: TableDefinition<&str, (&str, &str)> =
+            TableDefinition::new(MELT_REQUESTS_TABLE_NAME);
+        const NEW_TABLE: TableDefinition<[u8; 16], (&str, &str)> =
+            TableDefinition::new(MELT_REQUESTS_TABLE_NAME);
+
+        let old_table = write_txn.open_table(OLD_TABLE)?;
+
+        let mut tmp_hashmap = HashMap::new();
+
+        for (k, v) in old_table.iter().map_err(Error::from)?.flatten() {
+            let quote_id = Uuid::try_parse(k.value()).unwrap();
+            let value = v.value();
+            tmp_hashmap.insert(quote_id, (value.0.to_string(), value.1.to_string()));
+        }
+
+        write_txn.delete_table(old_table).map_err(Error::from)?;
+        let mut new_table = write_txn.open_table(NEW_TABLE)?;
+
+        for (k, v) in tmp_hashmap.into_iter() {
+            new_table
+                .insert(k.as_bytes(), (v.0.as_str(), v.1.as_str()))
+                .map_err(Error::from)?;
+        }
+    }
+
+    write_txn.commit().map_err(Error::from)?;
+
+    Ok(5)
+}
+
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct V1MintQuote {
-    pub id: String,
+    pub id: Uuid,
     pub mint_url: MintUrl,
     pub amount: Amount,
     pub unit: CurrencyUnit,
@@ -66,7 +217,7 @@ impl From<V1MintQuote> for MintQuote {
 fn migrate_mint_quotes_01_to_02(db: Arc<Database>) -> Result<(), Error> {
     let read_txn = db.begin_read().map_err(Error::from)?;
     let table = read_txn
-        .open_table(MINT_QUOTES_TABLE)
+        .open_table(ID_STR_MINT_QUOTES_TABLE)
         .map_err(Error::from)?;
 
     let mint_quotes: HashMap<String, Option<V1MintQuote>>;
@@ -94,7 +245,7 @@ fn migrate_mint_quotes_01_to_02(db: Arc<Database>) -> Result<(), Error> {
 
         {
             let mut table = write_txn
-                .open_table(MINT_QUOTES_TABLE)
+                .open_table(ID_STR_MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
             for (quote_id, quote) in migrated_mint_quotes {
                 match quote {

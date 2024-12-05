@@ -1,6 +1,7 @@
 //! Specific Subscription for the cdk crate
 
 use std::ops::Deref;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,9 @@ use serde::{Deserialize, Serialize};
 mod on_subscription;
 
 pub use on_subscription::OnSubscription;
+use uuid::Uuid;
 
+use super::PublicKey;
 use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
@@ -91,9 +94,9 @@ pub enum NotificationPayload {
     /// Proof State
     ProofState(ProofState),
     /// Melt Quote Bolt11 Response
-    MeltQuoteBolt11Response(MeltQuoteBolt11Response),
+    MeltQuoteBolt11Response(MeltQuoteBolt11Response<Uuid>),
     /// Mint Quote Bolt11 Response
-    MintQuoteBolt11Response(MintQuoteBolt11Response),
+    MintQuoteBolt11Response(MintQuoteBolt11Response<Uuid>),
 }
 
 impl From<ProofState> for NotificationPayload {
@@ -102,37 +105,42 @@ impl From<ProofState> for NotificationPayload {
     }
 }
 
-impl From<MeltQuoteBolt11Response> for NotificationPayload {
-    fn from(melt_quote: MeltQuoteBolt11Response) -> NotificationPayload {
+impl From<MeltQuoteBolt11Response<Uuid>> for NotificationPayload {
+    fn from(melt_quote: MeltQuoteBolt11Response<Uuid>) -> NotificationPayload {
         NotificationPayload::MeltQuoteBolt11Response(melt_quote)
     }
 }
 
-impl From<MintQuoteBolt11Response> for NotificationPayload {
-    fn from(mint_quote: MintQuoteBolt11Response) -> NotificationPayload {
+impl From<MintQuoteBolt11Response<Uuid>> for NotificationPayload {
+    fn from(mint_quote: MintQuoteBolt11Response<Uuid>) -> NotificationPayload {
         NotificationPayload::MintQuoteBolt11Response(mint_quote)
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// A parsed notification
+pub enum Notification {
+    /// ProofState id is a Pubkey
+    ProofState(PublicKey),
+    /// MeltQuote id is an Uuid
+    MeltQuoteBolt11(Uuid),
+    /// MintQuote id is an Uuid
+    MintQuoteBolt11(Uuid),
+}
+
 impl Indexable for NotificationPayload {
-    type Type = (String, Kind);
+    type Type = Notification;
 
     fn to_indexes(&self) -> Vec<Index<Self::Type>> {
         match self {
             NotificationPayload::ProofState(proof_state) => {
-                vec![Index::from((proof_state.y.to_hex(), Kind::ProofState))]
+                vec![Index::from(Notification::ProofState(proof_state.y))]
             }
             NotificationPayload::MeltQuoteBolt11Response(melt_quote) => {
-                vec![Index::from((
-                    melt_quote.quote.clone(),
-                    Kind::Bolt11MeltQuote,
-                ))]
+                vec![Index::from(Notification::MeltQuoteBolt11(melt_quote.quote))]
             }
             NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
-                vec![Index::from((
-                    mint_quote.quote.clone(),
-                    Kind::Bolt11MintQuote,
-                ))]
+                vec![Index::from(Notification::MintQuoteBolt11(mint_quote.quote))]
             }
         }
     }
@@ -157,13 +165,27 @@ impl AsRef<SubId> for Params {
     }
 }
 
-impl From<Params> for Vec<Index<(String, Kind)>> {
+impl From<Params> for Vec<Index<Notification>> {
     fn from(val: Params) -> Self {
         let sub_id: SubscriptionGlobalId = Default::default();
         val.filters
-            .iter()
-            .map(|filter| Index::from(((filter.clone(), val.kind), val.id.clone(), sub_id)))
-            .collect()
+            .into_iter()
+            .map(|filter| {
+                let idx = match val.kind {
+                    Kind::Bolt11MeltQuote => {
+                        Notification::MeltQuoteBolt11(Uuid::from_str(&filter)?)
+                    }
+                    Kind::Bolt11MintQuote => {
+                        Notification::MintQuoteBolt11(Uuid::from_str(&filter)?)
+                    }
+                    Kind::ProofState => Notification::ProofState(PublicKey::from_str(&filter)?),
+                };
+
+                Ok(Index::from((idx, val.id.clone(), sub_id)))
+            })
+            .collect::<Result<_, anyhow::Error>>()
+            .unwrap()
+        // TODO don't unwrap, move to try from
     }
 }
 
@@ -172,7 +194,7 @@ impl From<Params> for Vec<Index<(String, Kind)>> {
 ///
 /// Nut-17 implementation is system-wide and not only through the WebSocket, so
 /// it is possible for another part of the system to subscribe to events.
-pub struct PubSubManager(pub_sub::Manager<NotificationPayload, (String, Kind), OnSubscription>);
+pub struct PubSubManager(pub_sub::Manager<NotificationPayload, Notification, OnSubscription>);
 
 #[allow(clippy::default_constructed_unit_structs)]
 impl Default for PubSubManager {
@@ -188,7 +210,7 @@ impl From<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>> for Pu
 }
 
 impl Deref for PubSubManager {
-    type Target = pub_sub::Manager<NotificationPayload, (String, Kind), OnSubscription>;
+    type Target = pub_sub::Manager<NotificationPayload, Notification, OnSubscription>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -202,7 +224,7 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MintQuoteBolt11Response status
-    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response>>(
+    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response<Uuid>>>(
         &self,
         quote: E,
         new_state: MintQuoteState,
@@ -214,7 +236,7 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MeltQuoteBolt11Response status
-    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response>>(
+    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response<Uuid>>>(
         &self,
         quote: E,
         payment_preimage: Option<String>,
@@ -244,7 +266,11 @@ mod test {
         let manager = PubSubManager::default();
         let params = Params {
             kind: Kind::ProofState,
-            filters: vec!["x".to_string()],
+            filters: vec![PublicKey::from_hex(
+                "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
+            )
+            .unwrap()
+            .to_string()],
             id: "uno".into(),
         };
 

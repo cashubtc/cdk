@@ -5,9 +5,12 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+#[cfg(feature = "mint")]
+use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
@@ -88,9 +91,10 @@ impl FromStr for QuoteState {
 /// Melt quote response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct MeltQuoteBolt11Response {
+#[serde(bound = "Q: Serialize")]
+pub struct MeltQuoteBolt11Response<Q> {
     /// Quote Id
-    pub quote: String,
+    pub quote: Q,
     /// The amount that needs to be provided
     pub amount: Amount,
     /// The fee reserve that is required
@@ -112,10 +116,10 @@ pub struct MeltQuoteBolt11Response {
 }
 
 #[cfg(feature = "mint")]
-impl From<&MeltQuote> for MeltQuoteBolt11Response {
-    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response {
+impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         MeltQuoteBolt11Response {
-            quote: melt_quote.id.clone(),
+            quote: melt_quote.id,
             payment_preimage: None,
             change: None,
             state: melt_quote.state,
@@ -129,14 +133,14 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response {
 
 // A custom deserializer is needed until all mints
 // update some will return without the required state.
-impl<'de> Deserialize<'de> for MeltQuoteBolt11Response {
+impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
 
-        let quote: String = serde_json::from_value(
+        let quote: Q = serde_json::from_value(
             value
                 .get("quote")
                 .ok_or(serde::de::Error::missing_field("quote"))?
@@ -212,8 +216,8 @@ impl<'de> Deserialize<'de> for MeltQuoteBolt11Response {
 }
 
 #[cfg(feature = "mint")]
-impl From<mint::MeltQuote> for MeltQuoteBolt11Response {
-    fn from(melt_quote: mint::MeltQuote) -> MeltQuoteBolt11Response {
+impl From<mint::MeltQuote> for MeltQuoteBolt11Response<Uuid> {
+    fn from(melt_quote: mint::MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         let paid = melt_quote.state == QuoteState::Paid;
         MeltQuoteBolt11Response {
             quote: melt_quote.id,
@@ -231,9 +235,10 @@ impl From<mint::MeltQuote> for MeltQuoteBolt11Response {
 /// Melt Bolt11 Request [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct MeltBolt11Request {
+#[serde(bound = "Q: Serialize + DeserializeOwned")]
+pub struct MeltBolt11Request<Q> {
     /// Quote ID
-    pub quote: String,
+    pub quote: Q,
     /// Proofs
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<Proof>))]
     pub inputs: Proofs,
@@ -242,7 +247,7 @@ pub struct MeltBolt11Request {
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
-impl MeltBolt11Request {
+impl<Q: Serialize + DeserializeOwned> MeltBolt11Request<Q> {
     /// Total [`Amount`] of [`Proofs`]
     pub fn proofs_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))

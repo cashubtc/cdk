@@ -7,6 +7,8 @@ use std::fmt::Debug;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 use async_trait::async_trait;
 use thiserror::Error;
+#[cfg(feature = "mint")]
+use uuid::Uuid;
 
 #[cfg(feature = "mint")]
 use crate::mint;
@@ -187,11 +189,11 @@ pub trait MintDatabase {
     /// Add [`MintMintQuote`]
     async fn add_mint_quote(&self, quote: MintMintQuote) -> Result<(), Self::Err>;
     /// Get [`MintMintQuote`]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintMintQuote>, Self::Err>;
+    async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Update state of [`MintMintQuote`]
     async fn update_mint_quote_state(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
         state: MintQuoteState,
     ) -> Result<MintQuoteState, Self::Err>;
     /// Get all [`MintMintQuote`]s
@@ -207,34 +209,34 @@ pub trait MintDatabase {
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
     /// Remove [`MintMintQuote`]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
+    async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
 
     /// Add [`mint::MeltQuote`]
     async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
     /// Get [`mint::MeltQuote`]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<mint::MeltQuote>, Self::Err>;
+    async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Update [`mint::MeltQuote`] state
     async fn update_melt_quote_state(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
         state: MeltQuoteState,
     ) -> Result<MeltQuoteState, Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// Remove [`mint::MeltQuote`]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
+    async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
 
     /// Add melt request
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request,
+        melt_request: MeltBolt11Request<Uuid>,
         ln_key: LnKey,
     ) -> Result<(), Self::Err>;
     /// Get melt request
     async fn get_melt_request(
         &self,
-        quote_id: &str,
-    ) -> Result<Option<(MeltBolt11Request, LnKey)>, Self::Err>;
+        quote_id: &Uuid,
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err>;
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
@@ -244,11 +246,11 @@ pub trait MintDatabase {
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     /// Add spent [`Proofs`]
-    async fn add_proofs(&self, proof: Proofs, quote_id: Option<String>) -> Result<(), Self::Err>;
+    async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get ys by quote id
-    async fn get_proof_ys_by_quote_id(&self, quote_id: &str) -> Result<Vec<PublicKey>, Self::Err>;
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get [`Proofs`] state
@@ -268,7 +270,7 @@ pub trait MintDatabase {
         &self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
-        quote_id: Option<String>,
+        quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err>;
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
@@ -283,6 +285,6 @@ pub trait MintDatabase {
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
-        quote_id: &str,
+        quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
 }

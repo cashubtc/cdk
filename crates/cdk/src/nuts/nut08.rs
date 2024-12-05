@@ -5,7 +5,7 @@
 use super::nut05::{MeltBolt11Request, MeltQuoteBolt11Response};
 use crate::Amount;
 
-impl MeltBolt11Request {
+impl<Q> MeltBolt11Request<Q> {
     /// Total output [`Amount`]
     pub fn output_amount(&self) -> Option<Amount> {
         self.outputs
@@ -14,7 +14,7 @@ impl MeltBolt11Request {
     }
 }
 
-impl MeltQuoteBolt11Response {
+impl<Q> MeltQuoteBolt11Response<Q> {
     /// Total change [`Amount`]
     pub fn change_amount(&self) -> Option<Amount> {
         self.change

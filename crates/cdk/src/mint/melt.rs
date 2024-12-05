@@ -4,6 +4,7 @@ use std::str::FromStr;
 use anyhow::bail;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
+use uuid::Uuid;
 
 use super::{
     CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
@@ -53,7 +54,7 @@ impl Mint {
     pub async fn get_melt_bolt11_quote(
         &self,
         melt_request: &MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         let MeltQuoteBolt11Request {
             request,
             unit,
@@ -117,7 +118,10 @@ impl Mint {
 
     /// Check melt quote status
     #[instrument(skip(self))]
-    pub async fn check_melt_quote(&self, quote_id: &str) -> Result<MeltQuoteBolt11Response, Error> {
+    pub async fn check_melt_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         let quote = self
             .localstore
             .get_melt_quote(quote_id)
@@ -159,7 +163,7 @@ impl Mint {
 
     /// Remove melt quote
     #[instrument(skip(self))]
-    pub async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+    pub async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
         self.localstore.remove_melt_quote(quote_id).await?;
 
         Ok(())
@@ -170,7 +174,7 @@ impl Mint {
     pub async fn check_melt_expected_ln_fees(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request,
+        melt_request: &MeltBolt11Request<Uuid>,
     ) -> Result<Option<Amount>, Error> {
         let invoice = Bolt11Invoice::from_str(&melt_quote.request)?;
 
@@ -226,7 +230,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn verify_melt_request(
         &self,
-        melt_request: &MeltBolt11Request,
+        melt_request: &MeltBolt11Request<Uuid>,
     ) -> Result<MeltQuote, Error> {
         let state = self
             .localstore
@@ -248,10 +252,7 @@ impl Mint {
         }
 
         self.localstore
-            .add_proofs(
-                melt_request.inputs.clone(),
-                Some(melt_request.quote.clone()),
-            )
+            .add_proofs(melt_request.inputs.clone(), Some(melt_request.quote))
             .await?;
         self.check_ys_spendable(&ys, State::Pending).await?;
 
@@ -345,7 +346,10 @@ impl Mint {
     /// made The [`Proofs`] should be returned to an unspent state and the
     /// quote should be unpaid
     #[instrument(skip_all)]
-    pub async fn process_unpaid_melt(&self, melt_request: &MeltBolt11Request) -> Result<(), Error> {
+    pub async fn process_unpaid_melt(
+        &self,
+        melt_request: &MeltBolt11Request<Uuid>,
+    ) -> Result<(), Error> {
         let input_ys = melt_request.inputs.ys()?;
 
         self.localstore
@@ -373,8 +377,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn melt_bolt11(
         &self,
-        melt_request: &MeltBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
+        melt_request: &MeltBolt11Request<Uuid>,
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
@@ -584,10 +588,10 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_melt_request(
         &self,
-        melt_request: &MeltBolt11Request,
+        melt_request: &MeltBolt11Request<Uuid>,
         payment_preimage: Option<String>,
         total_spent: Amount,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         tracing::debug!("Processing melt quote: {}", melt_request.quote);
 
         let quote = self
@@ -673,7 +677,7 @@ impl Mint {
                             .map(|o| o.blinded_secret)
                             .collect::<Vec<PublicKey>>(),
                         &change_sigs,
-                        Some(quote.id.clone()),
+                        Some(quote.id),
                     )
                     .await?;
 

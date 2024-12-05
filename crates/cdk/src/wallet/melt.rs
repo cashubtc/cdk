@@ -95,7 +95,7 @@ impl Wallet {
     pub async fn melt_quote_status(
         &self,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self
             .client
             .get_melt_quote_status(self.mint_url.clone(), quote_id)

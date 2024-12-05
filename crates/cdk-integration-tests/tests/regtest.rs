@@ -120,7 +120,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         _ => panic!("Wrong payload"),
     };
     assert_eq!(payload.amount + payload.fee_reserve, 100.into());
-    assert_eq!(payload.quote, melt.id);
+    assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Unpaid);
 
     // get current state
@@ -131,7 +131,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         _ => panic!("Wrong payload"),
     };
     assert_eq!(payload.amount + payload.fee_reserve, 100.into());
-    assert_eq!(payload.quote, melt.id);
+    assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Paid);
 
     Ok(())

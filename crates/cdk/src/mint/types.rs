@@ -12,7 +12,7 @@ use crate::Amount;
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {
     /// Quote id
-    pub id: String,
+    pub id: Uuid,
     /// Mint Url
     pub mint_url: MintUrl,
     /// Amount of quote
@@ -43,7 +43,7 @@ impl MintQuote {
 
         Self {
             mint_url,
-            id: id.to_string(),
+            id,
             amount,
             unit,
             request,
@@ -58,7 +58,7 @@ impl MintQuote {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id
-    pub id: String,
+    pub id: Uuid,
     /// Quote unit
     pub unit: CurrencyUnit,
     /// Quote amount
@@ -90,7 +90,7 @@ impl MeltQuote {
         let id = Uuid::new_v4();
 
         Self {
-            id: id.to_string(),
+            id,
             amount,
             unit,
             request,

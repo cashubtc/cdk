@@ -120,7 +120,7 @@ impl HttpClientMethods for HttpClient {
         &self,
         mint_url: MintUrl,
         request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response, Error> {
+    ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11"])?;
 
         let res = self
@@ -132,7 +132,7 @@ impl HttpClientMethods for HttpClient {
             .text()
             .await?;
 
-        convert_http_response!(MintQuoteBolt11Response, res)
+        convert_http_response!(MintQuoteBolt11Response<String>, res)
     }
 
     /// Mint Quote status
@@ -141,12 +141,12 @@ impl HttpClientMethods for HttpClient {
         &self,
         mint_url: MintUrl,
         quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response, Error> {
+    ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
         let res = self.inner.get(url).send().await?.text().await?;
 
-        convert_http_response!(MintQuoteBolt11Response, res)
+        convert_http_response!(MintQuoteBolt11Response<String>, res)
     }
 
     /// Mint Tokens [NUT-04]
@@ -154,7 +154,7 @@ impl HttpClientMethods for HttpClient {
     async fn post_mint(
         &self,
         mint_url: MintUrl,
-        request: MintBolt11Request,
+        request: MintBolt11Request<String>,
     ) -> Result<MintBolt11Response, Error> {
         let url = mint_url.join_paths(&["v1", "mint", "bolt11"])?;
 
@@ -176,7 +176,7 @@ impl HttpClientMethods for HttpClient {
         &self,
         mint_url: MintUrl,
         request: MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11"])?;
 
         let res = self
@@ -188,7 +188,7 @@ impl HttpClientMethods for HttpClient {
             .text()
             .await?;
 
-        convert_http_response!(MeltQuoteBolt11Response, res)
+        convert_http_response!(MeltQuoteBolt11Response<String>, res)
     }
 
     /// Melt Quote Status
@@ -197,12 +197,12 @@ impl HttpClientMethods for HttpClient {
         &self,
         mint_url: MintUrl,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
         let res = self.inner.get(url).send().await?.text().await?;
 
-        convert_http_response!(MeltQuoteBolt11Response, res)
+        convert_http_response!(MeltQuoteBolt11Response<String>, res)
     }
 
     /// Melt [NUT-05]
@@ -211,8 +211,8 @@ impl HttpClientMethods for HttpClient {
     async fn post_melt(
         &self,
         mint_url: MintUrl,
-        request: MeltBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response, Error> {
+        request: MeltBolt11Request<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = mint_url.join_paths(&["v1", "melt", "bolt11"])?;
 
         let res = self
@@ -224,7 +224,7 @@ impl HttpClientMethods for HttpClient {
             .text()
             .await?;
 
-        convert_http_response!(MeltQuoteBolt11Response, res)
+        convert_http_response!(MeltQuoteBolt11Response<String>, res)
     }
 
     /// Swap Token [NUT-03]
@@ -319,20 +319,20 @@ pub trait HttpClientMethods: Debug {
         &self,
         mint_url: MintUrl,
         request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response, Error>;
+    ) -> Result<MintQuoteBolt11Response<String>, Error>;
 
     /// Mint Quote status
     async fn get_mint_quote_status(
         &self,
         mint_url: MintUrl,
         quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response, Error>;
+    ) -> Result<MintQuoteBolt11Response<String>, Error>;
 
     /// Mint Tokens [NUT-04]
     async fn post_mint(
         &self,
         mint_url: MintUrl,
-        request: MintBolt11Request,
+        request: MintBolt11Request<String>,
     ) -> Result<MintBolt11Response, Error>;
 
     /// Melt Quote [NUT-05]
@@ -340,22 +340,22 @@ pub trait HttpClientMethods: Debug {
         &self,
         mint_url: MintUrl,
         request: MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response, Error>;
+    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
 
     /// Melt Quote Status
     async fn get_melt_quote_status(
         &self,
         mint_url: MintUrl,
         quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response, Error>;
+    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
 
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     async fn post_melt(
         &self,
         mint_url: MintUrl,
-        request: MeltBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response, Error>;
+        request: MeltBolt11Request<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
 
     /// Split Token [NUT-06]
     async fn post_swap(

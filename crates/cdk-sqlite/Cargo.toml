@@ -19,7 +19,7 @@ wallet = ["cdk/wallet"]
 async-trait = "0.1"
 cdk = { path = "../cdk", version = "0.5.0", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false }
-sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
+sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid"] }
 thiserror = "1"
 tokio = { version = "1", features = [
     "time",
@@ -29,3 +29,4 @@ tokio = { version = "1", features = [
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 serde_json = "1"
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+uuid = { version = "1", features = ["v4", "serde"] }

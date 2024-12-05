@@ -5,8 +5,11 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(feature = "mint")]
+use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use super::MintQuoteState;
@@ -81,9 +84,10 @@ impl FromStr for QuoteState {
 /// Mint quote response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct MintQuoteBolt11Response {
+#[serde(bound = "Q: Serialize + DeserializeOwned")]
+pub struct MintQuoteBolt11Response<Q> {
     /// Quote Id
-    pub quote: String,
+    pub quote: Q,
     /// Payment request to fulfil
     pub request: String,
     /// Quote State
@@ -93,8 +97,8 @@ pub struct MintQuoteBolt11Response {
 }
 
 #[cfg(feature = "mint")]
-impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
-    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response {
+impl From<crate::mint::MintQuote> for MintQuoteBolt11Response<Uuid> {
+    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<Uuid> {
         MintQuoteBolt11Response {
             quote: mint_quote.id,
             request: mint_quote.request,
@@ -107,16 +111,17 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response {
 /// Mint request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct MintBolt11Request {
+#[serde(bound = "Q: Serialize + DeserializeOwned")]
+pub struct MintBolt11Request<Q> {
     /// Quote id
     #[cfg_attr(feature = "swagger", schema(max_length = 1_000))]
-    pub quote: String,
+    pub quote: Q,
     /// Outputs
     #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
 }
 
-impl MintBolt11Request {
+impl<Q> MintBolt11Request<Q> {
     /// Total [`Amount`] of outputs
     pub fn total_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(
