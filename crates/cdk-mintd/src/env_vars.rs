@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use cdk::nuts::CurrencyUnit;
 
 use crate::config::{
@@ -10,72 +10,64 @@ use crate::config::{
     Phoenixd, Settings, Strike,
 };
 
-pub const DATABASE_ENV_VAR: &str = "CDK-MINTD-DATABASE";
-pub const ENV_URL: &str = "CDK-MINTD-URL";
-pub const ENV_LISTEN_HOST: &str = "CDK-MINTD-LISTEN-HOST";
-pub const ENV_LISTEN_PORT: &str = "CDK-MINTD-LISTEN-PORT";
-pub const ENV_MNEMONIC: &str = "CDK-MINTD-MNEMONIC";
-pub const ENV_SECONDS_QUOTE_VALID: &str = "CDK-MINTD-SECONDS-QUOTE-VALID";
-pub const ENV_CACHE_SECONDS: &str = "CDK-MINTD-CACHE-SECONDS";
-pub const ENV_EXTEND_CACHE_SECONDS: &str = "CDK-MINTD-EXTEND-CACHE-SECONDS";
-pub const ENV_INPUT_FEE_PPK: &str = "CDK-MINTD-INPUT-FEE-PPK";
-pub const ENV_ENABLE_SWAGGER: &str = "CDK-MINTD-ENABLE-SWAGGER";
-
+pub const DATABASE_ENV_VAR: &str = "CDK_MINTD_DATABASE";
+pub const ENV_URL: &str = "CDK_MINTD_URL";
+pub const ENV_LISTEN_HOST: &str = "CDK_MINTD_LISTEN_HOST";
+pub const ENV_LISTEN_PORT: &str = "CDK_MINTD_LISTEN_PORT";
+pub const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
+pub const ENV_SECONDS_QUOTE_VALID: &str = "CDK_MINTD_SECONDS_QUOTE_VALID";
+pub const ENV_CACHE_SECONDS: &str = "CDK_MINTD_CACHE_SECONDS";
+pub const ENV_EXTEND_CACHE_SECONDS: &str = "CDK_MINTD_EXTEND_CACHE_SECONDS";
+pub const ENV_INPUT_FEE_PPK: &str = "CDK_MINTD_INPUT_FEE_PPK";
+pub const ENV_ENABLE_SWAGGER: &str = "CDK_MINTD_ENABLE_SWAGGER";
 // MintInfo
-pub const ENV_MINT_NAME: &str = "CDK-MINTD-MINT-NAME";
-pub const ENV_MINT_PUBKEY: &str = "CDK-MINTD-MINT-PUBKEY";
-pub const ENV_MINT_DESCRIPTION: &str = "CDK-MINTD-MINT-DESCRIPTION";
-pub const ENV_MINT_DESCRIPTION_LONG: &str = "CDK-MINTD-MINT-DESCRIPTION-LONG";
-pub const ENV_MINT_ICON_URL: &str = "CDK-MINTD-MINT-ICON-URL";
-pub const ENV_MINT_MOTD: &str = "CDK-MINTD-MINT-MOTD";
-pub const ENV_MINT_CONTACT_NOSTR: &str = "CDK-MINTD-MINT-CONTACT-NOSTR";
-pub const ENV_MINT_CONTACT_EMAIL: &str = "CDK-MINTD-MINT-CONTACT-EMAIL";
-
+pub const ENV_MINT_NAME: &str = "CDK_MINTD_MINT_NAME";
+pub const ENV_MINT_PUBKEY: &str = "CDK_MINTD_MINT_PUBKEY";
+pub const ENV_MINT_DESCRIPTION: &str = "CDK_MINTD_MINT_DESCRIPTION";
+pub const ENV_MINT_DESCRIPTION_LONG: &str = "CDK_MINTD_MINT_DESCRIPTION_LONG";
+pub const ENV_MINT_ICON_URL: &str = "CDK_MINTD_MINT_ICON_URL";
+pub const ENV_MINT_MOTD: &str = "CDK_MINTD_MINT_MOTD";
+pub const ENV_MINT_CONTACT_NOSTR: &str = "CDK_MINTD_MINT_CONTACT_NOSTR";
+pub const ENV_MINT_CONTACT_EMAIL: &str = "CDK_MINTD_MINT_CONTACT_EMAIL";
 // LN
-pub const ENV_LN_BACKEND: &str = "CDK-MINTD-LN-BACKEND";
-pub const ENV_LN_INVOICE_DESCRIPTION: &str = "CDK-MINTD-LN-INVOICE-DESCRIPTION";
-pub const ENV_LN_MIN_MINT: &str = "CDK-MINTD-LN-MIN-MINT";
-pub const ENV_LN_MAX_MINT: &str = "CDK-MINTD-LN-MAX-MINT";
-pub const ENV_LN_MIN_MELT: &str = "CDK-MINTD-LN-MIN-MELT";
-pub const ENV_LN_MAX_MELT: &str = "CDK-MINTD-LN-MAX-MELT";
-
+pub const ENV_LN_BACKEND: &str = "CDK_MINTD_LN_BACKEND";
+pub const ENV_LN_INVOICE_DESCRIPTION: &str = "CDK_MINTD_LN_INVOICE_DESCRIPTION";
+pub const ENV_LN_MIN_MINT: &str = "CDK_MINTD_LN_MIN_MINT";
+pub const ENV_LN_MAX_MINT: &str = "CDK_MINTD_LN_MAX_MINT";
+pub const ENV_LN_MIN_MELT: &str = "CDK_MINTD_LN_MIN_MELT";
+pub const ENV_LN_MAX_MELT: &str = "CDK_MINTD_LN_MAX_MELT";
 // CLN
-pub const ENV_CLN_RPC_PATH: &str = "CDK-MINTD-CLN-RPC-PATH";
-pub const ENV_CLN_BOLT12: &str = "CDK-MINTD-CLN-BOLT12";
-pub const ENV_CLN_FEE_PERCENT: &str = "CDK-MINTD-CLN-FEE-PERCENT";
-pub const ENV_CLN_RESERVE_FEE_MIN: &str = "CDK-MINTD-CLN-RESERVE-FEE-MIN";
-
+pub const ENV_CLN_RPC_PATH: &str = "CDK_MINTD_CLN_RPC_PATH";
+pub const ENV_CLN_BOLT12: &str = "CDK_MINTD_CLN_BOLT12";
+pub const ENV_CLN_FEE_PERCENT: &str = "CDK_MINTD_CLN_FEE_PERCENT";
+pub const ENV_CLN_RESERVE_FEE_MIN: &str = "CDK_MINTD_CLN_RESERVE_FEE_MIN";
 // Strike
-pub const ENV_STRIKE_API_KEY: &str = "CDK-MINTD-STRIKE-API-KEY";
-pub const ENV_STRIKE_SUPPORTED_UNITS: &str = "CDK-MINTD-STRIKE-SUPPORTED-UNITS";
-
+pub const ENV_STRIKE_API_KEY: &str = "CDK_MINTD_STRIKE_API_KEY";
+pub const ENV_STRIKE_SUPPORTED_UNITS: &str = "CDK_MINTD_STRIKE_SUPPORTED_UNITS";
 // LND environment variables
-pub const ENV_LND_ADDRESS: &str = "CDK-MINTD-LND-ADDRESS";
-pub const ENV_LND_CERT_FILE: &str = "CDK-MINTD-LND-CERT-FILE";
-pub const ENV_LND_MACAROON_FILE: &str = "CDK-MINTD-LND-MACAROON-FILE";
-pub const ENV_LND_FEE_PERCENT: &str = "CDK-MINTD-LND-FEE-PERCENT";
-pub const ENV_LND_RESERVE_FEE_MIN: &str = "CDK-MINTD-LND-RESERVE-FEE-MIN";
-
+pub const ENV_LND_ADDRESS: &str = "CDK_MINTD_LND_ADDRESS";
+pub const ENV_LND_CERT_FILE: &str = "CDK_MINTD_LND_CERT_FILE";
+pub const ENV_LND_MACAROON_FILE: &str = "CDK_MINTD_LND_MACAROON_FILE";
+pub const ENV_LND_FEE_PERCENT: &str = "CDK_MINTD_LND_FEE_PERCENT";
+pub const ENV_LND_RESERVE_FEE_MIN: &str = "CDK_MINTD_LND_RESERVE_FEE_MIN";
 // Phoenixd environment variables
-pub const ENV_PHOENIXD_API_PASSWORD: &str = "CDK-MINTD-PHOENIXD-API-PASSWORD";
-pub const ENV_PHOENIXD_API_URL: &str = "CDK-MINTD-PHOENIXD-API-URL";
-pub const ENV_PHOENIXD_BOLT12: &str = "CDK-MINTD-PHOENIXD-BOLT12";
-pub const ENV_PHOENIXD_FEE_PERCENT: &str = "CDK-MINTD-PHOENIXD-FEE-PERCENT";
-pub const ENV_PHOENIXD_RESERVE_FEE_MIN: &str = "CDK-MINTD-PHOENIXD-RESERVE-FEE-MIN";
-
+pub const ENV_PHOENIXD_API_PASSWORD: &str = "CDK_MINTD_PHOENIXD_API_PASSWORD";
+pub const ENV_PHOENIXD_API_URL: &str = "CDK_MINTD_PHOENIXD_API_URL";
+pub const ENV_PHOENIXD_BOLT12: &str = "CDK_MINTD_PHOENIXD_BOLT12";
+pub const ENV_PHOENIXD_FEE_PERCENT: &str = "CDK_MINTD_PHOENIXD_FEE_PERCENT";
+pub const ENV_PHOENIXD_RESERVE_FEE_MIN: &str = "CDK_MINTD_PHOENIXD_RESERVE_FEE_MIN";
 // LNBits
-pub const ENV_LNBITS_ADMIN_API_KEY: &str = "CDK-MINTD-LNBITS-ADMIN-API-KEY";
-pub const ENV_LNBITS_INVOICE_API_KEY: &str = "CDK-MINTD-LNBITS-INVOICE-API-KEY";
-pub const ENV_LNBITS_API: &str = "CDK-MINTD-LNBITS-API";
-pub const ENV_LNBITS_FEE_PERCENT: &str = "CDK-MINTD-LNBITS-FEE-PERCENT";
-pub const ENV_LNBITS_RESERVE_FEE_MIN: &str = "CDK-MINTD-LNBITS-RESERVE-FEE-MIN";
-
+pub const ENV_LNBITS_ADMIN_API_KEY: &str = "CDK_MINTD_LNBITS_ADMIN_API_KEY";
+pub const ENV_LNBITS_INVOICE_API_KEY: &str = "CDK_MINTD_LNBITS_INVOICE_API_KEY";
+pub const ENV_LNBITS_API: &str = "CDK_MINTD_LNBITS_API";
+pub const ENV_LNBITS_FEE_PERCENT: &str = "CDK_MINTD_LNBITS_FEE_PERCENT";
+pub const ENV_LNBITS_RESERVE_FEE_MIN: &str = "CDK_MINTD_LNBITS_RESERVE_FEE_MIN";
 // Fake Wallet
-pub const ENV_FAKE_WALLET_SUPPORTED_UNITS: &str = "CDK-MINTD-FAKE-WALLET-SUPPORTED-UNITS";
-pub const ENV_FAKE_WALLET_FEE_PERCENT: &str = "CDK-MINTD-FAKE-WALLET-FEE-PERCENT";
-pub const ENV_FAKE_WALLET_RESERVE_FEE_MIN: &str = "CDK-MINTD-FAKE-WALLET-RESERVE-FEE-MIN";
-pub const ENV_FAKE_WALLET_MIN_DELAY: &str = "CDK-MINTD-FAKE-WALLET-MIN-DELAY";
-pub const ENV_FAKE_WALLET_MAX_DELAY: &str = "CDK-MINTD-FAKE-WALLET-MAX-DELAY";
+pub const ENV_FAKE_WALLET_SUPPORTED_UNITS: &str = "CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS";
+pub const ENV_FAKE_WALLET_FEE_PERCENT: &str = "CDK_MINTD_FAKE_WALLET_FEE_PERCENT";
+pub const ENV_FAKE_WALLET_RESERVE_FEE_MIN: &str = "CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN";
+pub const ENV_FAKE_WALLET_MIN_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MIN_DELAY";
+pub const ENV_FAKE_WALLET_MAX_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MAX_DELAY";
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -86,6 +78,7 @@ impl Settings {
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
+        self.ln = self.ln.clone().from_env();
 
         match self.ln.ln_backend {
             LnBackend::Cln => {
@@ -106,6 +99,7 @@ impl Settings {
             LnBackend::Lnd => {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
             }
+            LnBackend::None => bail!("Ln backend must be set"),
         }
 
         Ok(self.clone())
