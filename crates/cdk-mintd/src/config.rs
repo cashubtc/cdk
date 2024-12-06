@@ -27,6 +27,7 @@ pub struct Info {
 #[serde(rename_all = "lowercase")]
 pub enum LnBackend {
     #[default]
+    None,
     Cln,
     Strike,
     LNbits,
@@ -120,7 +121,9 @@ pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+    #[serde(default = "default_min_delay_time")]
     pub min_delay_time: u64,
+    #[serde(default = "default_max_delay_time")]
     pub max_delay_time: u64,
 }
 
@@ -134,6 +137,15 @@ impl Default for FakeWallet {
             max_delay_time: 3,
         }
     }
+}
+
+// Helper functions to provide default values
+fn default_min_delay_time() -> u64 {
+    1
+}
+
+fn default_max_delay_time() -> u64 {
+    3
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -234,6 +246,7 @@ impl Settings {
         let settings: Settings = config.try_deserialize()?;
 
         match settings.ln.ln_backend {
+            LnBackend::None => panic!("Ln backend must be set"),
             LnBackend::Cln => assert!(
                 settings.cln.is_some(),
                 "CLN backend requires a valid config."

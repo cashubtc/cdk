@@ -1,0 +1,16 @@
+services:
+  mintd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mint
+    ports:
+      - "8085:8085"
+    environment:
+      - CDK_MINTD_URL=https://example.com
+      - CDK_MINTD_LN_BACKEND=fakewallet
+      - CDK_MINTD_LISTEN_HOST=0.0.0.0
+      - CDK_MINTD_LISTEN_PORT=8085
+      - CDK_MINTD_MNEMONIC=
+      - CDK_MINTD_DATABASE=redb
+    command: ["cdk-mintd"]

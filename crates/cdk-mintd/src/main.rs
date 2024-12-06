@@ -63,9 +63,16 @@ async fn main() -> anyhow::Result<()> {
         None => work_dir.join("config.toml"),
     };
 
+    tracing::info!("Using work dir: {}", work_dir.display());
+
     let mut mint_builder = MintBuilder::new();
 
-    let mut settings = config::Settings::new(&Some(config_file_arg));
+    let mut settings = if config_file_arg.exists() {
+        config::Settings::new(&Some(config_file_arg))
+    } else {
+        tracing::info!("Config file does not exist. Attempting to read env vars");
+        config::Settings::default()
+    };
 
     // This check for any settings defined in ENV VARs
     // ENV VARS will take **priority** over those in the config
@@ -132,6 +139,8 @@ async fn main() -> anyhow::Result<()> {
         melt_min: settings.ln.min_melt,
         melt_max: settings.ln.max_melt,
     };
+
+    println!("{:?}", settings);
 
     match settings.ln.ln_backend {
         LnBackend::Cln => {
@@ -256,6 +265,7 @@ async fn main() -> anyhow::Result<()> {
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
+        LnBackend::None => bail!("Ln backend must be set"),
     };
 
     if let Some(long_description) = &settings.mint_info.description_long {
@@ -383,6 +393,9 @@ async fn main() -> anyhow::Result<()> {
 
 fn work_dir() -> Result<PathBuf> {
     let home_dir = home::home_dir().ok_or(anyhow!("Unknown home dir"))?;
+    let dir = home_dir.join(".cdk-mintd");
 
-    Ok(home_dir.join(".cdk-mintd"))
+    std::fs::create_dir_all(&dir)?;
+
+    Ok(dir)
 }
