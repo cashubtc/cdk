@@ -80,6 +80,7 @@ impl MintLightning for Lnd {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
+            amountless: false,
         }
     }
 
