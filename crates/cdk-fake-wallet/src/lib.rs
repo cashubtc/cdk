@@ -104,6 +104,7 @@ impl MintLightning for FakeWallet {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
+            amountless: false,
         }
     }
 

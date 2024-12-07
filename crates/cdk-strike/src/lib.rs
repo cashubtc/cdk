@@ -70,6 +70,7 @@ impl MintLightning for Strike {
             mpp: false,
             unit: self.unit.clone(),
             invoice_description: true,
+            amountless: false,
         }
     }
 
