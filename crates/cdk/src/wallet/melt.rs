@@ -44,12 +44,21 @@ impl Wallet {
         &self,
         request: String,
         mpp: Option<Amount>,
+        amount: Option<Amount>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
-        let request_amount = invoice
-            .amount_milli_satoshis()
-            .ok_or(Error::InvoiceAmountUndefined)?;
+        let request_amount = match invoice.amount_milli_satoshis() {
+            Some(invoice_amount) => {
+                if let Some(amount) = amount {
+                    if amount != invoice_amount.into() {
+                        return Err(Error::AmountLessNotAllowed);
+                    }
+                }
+                invoice_amount
+            }
+            None => amount.ok_or(Error::InvoiceAmountUndefined)?.into(),
+        };
 
         let amount = match self.unit {
             CurrencyUnit::Sat => Amount::from(request_amount / 1000),

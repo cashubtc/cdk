@@ -37,9 +37,6 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnitUnsupported)?;
 
-        if !settings.amountless.unwrap_or_default() {
-            return Err(Error::AmountLessNotAllowed);
-        }
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
@@ -65,17 +62,7 @@ impl Mint {
             ..
         } = melt_request;
 
-        let amount = match melt_request.options {
-            Some(mpp_amount) => mpp_amount.amount,
-            None => {
-                let amount_msat = request
-                    .amount_milli_satoshis()
-                    .ok_or(Error::InvoiceAmountUndefined)?;
-
-                to_unit(amount_msat, &CurrencyUnit::Msat, unit)
-                    .map_err(|_err| Error::UnsupportedUnit)?
-            }
-        };
+        let amount = melt_request.amount()?;
 
         self.check_melt_request_acceptable(amount, unit.clone(), PaymentMethod::Bolt11)?;
 
@@ -97,7 +84,6 @@ impl Mint {
 
             Error::UnitUnsupported
         })?;
-
 
         let quote = MeltQuote::new(
             request.to_string(),
