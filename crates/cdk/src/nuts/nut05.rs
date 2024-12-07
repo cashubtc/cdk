@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
+use crate::amount::to_unit;
 #[cfg(feature = "mint")]
 use crate::mint::{self, MeltQuote};
 use crate::nuts::MeltQuoteState;
@@ -28,6 +29,12 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Invalid Amount
+    #[error("Invalid Request")]
+    InvalidAmountRequest,
+    /// Unsupported unit
+    #[error("Unsupported unit")]
+    UnsupportedUnit,
 }
 
 /// Melt quote request [NUT-05]
@@ -43,6 +50,43 @@ pub struct MeltQuoteBolt11Request {
     pub amount: Option<Amount>,
     /// Payment Options
     pub options: Option<Mpp>,
+}
+
+impl MeltQuoteBolt11Request {
+    /// Amount from [`MeltQuoteBolt11Request`]
+    ///
+    /// Amount can either be defined in the bolt11 invoice,
+    /// in the request for an amountless bolt11 or in MPP option.
+    pub fn amount(&self) -> Result<Amount, Error> {
+        let MeltQuoteBolt11Request {
+            request,
+            unit,
+            options: _,
+            ..
+        } = self;
+
+        match (self.options, self.amount) {
+            (Some(mpp_amount), None) => Ok(mpp_amount.amount),
+            (None, Some(amount)) => {
+                if let Some(amount_msat) = request.amount_milli_satoshis() {
+                    if amount != amount_msat.into() {
+                        return Err(Error::InvalidAmountRequest);
+                    }
+                }
+                Ok(amount)
+            }
+            (None, None) => {
+                let amount_msat = request
+                    .amount_milli_satoshis()
+                    .ok_or(Error::InvalidAmountRequest)?;
+
+                Ok(to_unit(amount_msat, &CurrencyUnit::Msat, unit)
+                    .map_err(|_err| Error::UnsupportedUnit)?)
+            }
+            // If the wallet sends a request with both mpp and an amount we should error
+            (Some(_), Some(_)) => todo!(),
+        }
+    }
 }
 
 /// Possible states of a quote
@@ -272,7 +316,8 @@ pub struct MeltMethodSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
     /// Amountless
-    pub amountless: Option<bool>,
+    #[serde(default)]
+    pub amountless: bool,
 }
 
 impl Settings {
@@ -317,7 +362,7 @@ impl Default for Settings {
             unit: CurrencyUnit::Sat,
             min_amount: Some(Amount::from(1)),
             max_amount: Some(Amount::from(1000000)),
-            amountless: Some(false),
+            amountless: false,
         };
 
         Settings {

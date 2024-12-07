@@ -168,7 +168,7 @@ impl MintBuilder {
                     unit,
                     min_amount: Some(limits.melt_min),
                     max_amount: Some(limits.melt_max),
-                    amountless: Some(support_amountless),
+                    amountless: support_amountless,
                 };
                 self.mint_info.nuts.nut05.methods.push(melt_method_settings);
                 self.mint_info.nuts.nut05.disabled = false;

@@ -85,7 +85,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     let invoice = lnd_client.create_invoice(50).await?;
 
-    let melt = wallet.melt_quote(invoice, None).await?;
+    let melt = wallet.melt_quote(invoice, None, None).await?;
 
     write
         .send(Message::Text(serde_json::to_string(&json!({
@@ -247,11 +247,11 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     let invoice = lnd_client.create_invoice(10).await?;
 
-    let melt_quote = wallet.melt_quote(invoice.clone(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.clone(), None, None).await?;
 
     let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    let melt_two = wallet.melt_quote(invoice, None).await?;
+    let melt_two = wallet.melt_quote(invoice, None, None).await?;
 
     let melt_two = wallet.melt(&melt_two.id).await;
 
@@ -309,7 +309,9 @@ async fn test_internal_payment() -> Result<()> {
 
     let mint_quote = wallet_2.mint_quote(10.into(), None).await?;
 
-    let melt = wallet.melt_quote(mint_quote.request.clone(), None).await?;
+    let melt = wallet
+        .melt_quote(mint_quote.request.clone(), None, None)
+        .await?;
 
     assert_eq!(melt.amount, 10.into());
 

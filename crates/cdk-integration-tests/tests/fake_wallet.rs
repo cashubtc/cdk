@@ -44,7 +44,7 @@ async fn test_fake_tokens_pending() -> Result<()> {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     let melt = wallet.melt(&melt_quote.id).await;
 
@@ -84,7 +84,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -99,7 +99,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -147,7 +147,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -192,7 +192,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -207,7 +207,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -252,7 +252,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -267,7 +267,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -313,7 +313,7 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -348,7 +348,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let proofs = wallet.get_unspent_proofs().await?;
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None, None).await?;
 
     let keyset = wallet.get_active_mint_keyset().await?;
 
