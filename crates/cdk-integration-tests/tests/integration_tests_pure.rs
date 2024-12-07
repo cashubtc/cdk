@@ -3,6 +3,7 @@ mod integration_tests_pure {
     use std::assert_eq;
     use std::collections::HashMap;
     use std::fmt::{Debug, Formatter};
+    use std::str::FromStr;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -22,6 +23,7 @@ mod integration_tests_pure {
     use cdk_integration_tests::create_backends_fake_wallet;
     use rand::random;
     use tokio::sync::Notify;
+    use uuid::Uuid;
 
     struct DirectMintConnection {
         mint: Arc<Mint>,
@@ -37,6 +39,10 @@ mod integration_tests_pure {
         }
     }
 
+    /// Implements the generic [MintConnector] (i.e. use the interface that expects to communicate
+    /// to a generic mint, where we don't know that quote ID's are [Uuid]s) for [DirectMintConnection],
+    /// where we know we're dealing with a mint that uses [Uuid]s for quotes.
+    /// Convert the requests and responses between the [String] and [Uuid] variants as necessary.
     #[async_trait]
     impl MintConnector for DirectMintConnection {
         async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
@@ -57,40 +63,59 @@ mod integration_tests_pure {
         async fn post_mint_quote(
             &self,
             request: MintQuoteBolt11Request,
-        ) -> Result<MintQuoteBolt11Response, Error> {
-            self.mint.get_mint_bolt11_quote(request).await
+        ) -> Result<MintQuoteBolt11Response<String>, Error> {
+            self.mint
+                .get_mint_bolt11_quote(request)
+                .await
+                .map(Into::into)
         }
 
         async fn get_mint_quote_status(
             &self,
             quote_id: &str,
-        ) -> Result<MintQuoteBolt11Response, Error> {
-            self.mint.check_mint_quote(quote_id).await
+        ) -> Result<MintQuoteBolt11Response<String>, Error> {
+            let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
+            self.mint
+                .check_mint_quote(&quote_id_uuid)
+                .await
+                .map(Into::into)
         }
 
-        async fn post_mint(&self, request: MintBolt11Request) -> Result<MintBolt11Response, Error> {
-            self.mint.process_mint_request(request).await
+        async fn post_mint(
+            &self,
+            request: MintBolt11Request<String>,
+        ) -> Result<MintBolt11Response, Error> {
+            let request_uuid = request.try_into().unwrap();
+            self.mint.process_mint_request(request_uuid).await
         }
 
         async fn post_melt_quote(
             &self,
             request: MeltQuoteBolt11Request,
-        ) -> Result<MeltQuoteBolt11Response, Error> {
-            self.mint.get_melt_bolt11_quote(&request).await
+        ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+            self.mint
+                .get_melt_bolt11_quote(&request)
+                .await
+                .map(Into::into)
         }
 
         async fn get_melt_quote_status(
             &self,
             quote_id: &str,
-        ) -> Result<MeltQuoteBolt11Response, Error> {
-            self.mint.check_melt_quote(quote_id).await
+        ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+            let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
+            self.mint
+                .check_melt_quote(&quote_id_uuid)
+                .await
+                .map(Into::into)
         }
 
         async fn post_melt(
             &self,
-            request: MeltBolt11Request,
-        ) -> Result<MeltQuoteBolt11Response, Error> {
-            self.mint.melt_bolt11(&request).await
+            request: MeltBolt11Request<String>,
+        ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+            let request_uuid = request.try_into().unwrap();
+            self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
         }
 
         async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
