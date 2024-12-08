@@ -30,7 +30,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 futures = { version = "0.3.28", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 bip39 = "2.0"
-tower-http = { version = "0.4.4", features = ["cors"] }
+tower-http = { version = "0.4.4", features = ["cors", "compression-full"] }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 home = "0.5.5"
 url = "2.3"
