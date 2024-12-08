@@ -144,16 +144,17 @@ async fn main() -> Result<()> {
 
     let mints = localstore.get_mints().await?;
 
-    for (mint, _) in mints {
+    for (mint_url, _) in mints {
         let mut wallet = Wallet::new(
-            &mint.to_string(),
+            &mint_url.to_string(),
             cdk::nuts::CurrencyUnit::Sat,
             localstore.clone(),
             &mnemonic.to_seed_normalized(""),
             None,
         )?;
         if let Some(proxy_url) = args.proxy.as_ref() {
-            wallet.set_client(HttpClient::with_proxy(proxy_url.clone(), None, true)?);
+            let http_client = HttpClient::with_proxy(mint_url, proxy_url.clone(), None, true)?;
+            wallet.set_client(Arc::from(http_client));
         }
 
         wallets.push(wallet);

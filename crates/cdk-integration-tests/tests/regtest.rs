@@ -11,7 +11,7 @@ use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
     PreMintSecrets, State,
 };
-use cdk::wallet::client::{HttpClient, HttpClientMethods};
+use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::Wallet;
 use cdk_integration_tests::init_regtest::{
     get_mint_url, get_mint_ws_url, init_cln_client, init_lnd_client,
@@ -374,7 +374,7 @@ async fn test_cached_mint() -> Result<()> {
     }
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let http_client = HttpClient::new();
+    let http_client = HttpClient::new(get_mint_url().as_str().parse()?);
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
 
@@ -383,12 +383,8 @@ async fn test_cached_mint() -> Result<()> {
         outputs: premint_secrets.blinded_messages(),
     };
 
-    let response = http_client
-        .post_mint(get_mint_url().as_str().parse()?, request.clone())
-        .await?;
-    let response1 = http_client
-        .post_mint(get_mint_url().as_str().parse()?, request)
-        .await?;
+    let response = http_client.post_mint(request.clone()).await?;
+    let response1 = http_client.post_mint(request).await?;
 
     assert!(response == response1);
     Ok(())

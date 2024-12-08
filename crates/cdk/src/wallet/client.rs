@@ -33,19 +33,15 @@ macro_rules! convert_http_response {
 #[derive(Debug, Clone)]
 pub struct HttpClient {
     inner: Client,
-}
-
-impl Default for HttpClient {
-    fn default() -> Self {
-        Self::new()
-    }
+    mint_url: MintUrl,
 }
 
 impl HttpClient {
     /// Create new [`HttpClient`]
-    pub fn new() -> Self {
+    pub fn new(mint_url: MintUrl) -> Self {
         Self {
             inner: Client::new(),
+            mint_url,
         }
     }
 
@@ -54,6 +50,7 @@ impl HttpClient {
     /// Specifying `None` for `host_matcher` will use the proxy for all
     /// requests.
     pub fn with_proxy(
+        mint_url: MintUrl,
         proxy: Url,
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
@@ -76,26 +73,31 @@ impl HttpClient {
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
             .build()?;
 
-        Ok(Self { inner: client })
+        Ok(Self {
+            inner: client,
+            mint_url,
+        })
     }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl HttpClientMethods for HttpClient {
+impl MintConnector for HttpClient {
     /// Get Active Mint Keys [NUT-01]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn get_mint_keys(&self, mint_url: MintUrl) -> Result<Vec<KeySet>, Error> {
-        let url = mint_url.join_paths(&["v1", "keys"])?;
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
+        let url = self.mint_url.join_paths(&["v1", "keys"])?;
         let keys = self.inner.get(url).send().await?.text().await?;
 
         Ok(convert_http_response!(KeysResponse, keys)?.keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn get_mint_keyset(&self, mint_url: MintUrl, keyset_id: Id) -> Result<KeySet, Error> {
-        let url = mint_url.join_paths(&["v1", "keys", &keyset_id.to_string()])?;
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
         let keys = self.inner.get(url).send().await?.text().await?;
 
         convert_http_response!(KeysResponse, keys)?
@@ -106,22 +108,23 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Get Keysets [NUT-02]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<KeysetResponse, Error> {
-        let url = mint_url.join_paths(&["v1", "keysets"])?;
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "keysets"])?;
         let res = self.inner.get(url).send().await?.text().await?;
 
         convert_http_response!(KeysetResponse, res)
     }
 
     /// Mint Quote [NUT-04]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn post_mint_quote(
         &self,
-        mint_url: MintUrl,
         request: MintQuoteBolt11Request,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11"])?;
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "bolt11"])?;
 
         let res = self
             .inner
@@ -136,13 +139,14 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Mint Quote status
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_quote_status(
         &self,
-        mint_url: MintUrl,
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        let url = mint_url.join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
         let res = self.inner.get(url).send().await?.text().await?;
 
@@ -150,13 +154,12 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Mint Tokens [NUT-04]
-    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_mint(
         &self,
-        mint_url: MintUrl,
         request: MintBolt11Request<String>,
     ) -> Result<MintBolt11Response, Error> {
-        let url = mint_url.join_paths(&["v1", "mint", "bolt11"])?;
+        let url = self.mint_url.join_paths(&["v1", "mint", "bolt11"])?;
 
         let res = self
             .inner
@@ -171,13 +174,14 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Melt Quote [NUT-05]
-    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_melt_quote(
         &self,
-        mint_url: MintUrl,
         request: MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11"])?;
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "bolt11"])?;
 
         let res = self
             .inner
@@ -192,13 +196,14 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Melt Quote Status
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_melt_quote_status(
         &self,
-        mint_url: MintUrl,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let url = mint_url.join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
         let res = self.inner.get(url).send().await?.text().await?;
 
@@ -207,13 +212,12 @@ impl HttpClientMethods for HttpClient {
 
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
-    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_melt(
         &self,
-        mint_url: MintUrl,
         request: MeltBolt11Request<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let url = mint_url.join_paths(&["v1", "melt", "bolt11"])?;
+        let url = self.mint_url.join_paths(&["v1", "melt", "bolt11"])?;
 
         let res = self
             .inner
@@ -228,13 +232,9 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Swap Token [NUT-03]
-    #[instrument(skip(self, swap_request), fields(mint_url = %mint_url))]
-    async fn post_swap(
-        &self,
-        mint_url: MintUrl,
-        swap_request: SwapRequest,
-    ) -> Result<SwapResponse, Error> {
-        let url = mint_url.join_paths(&["v1", "swap"])?;
+    #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
+    async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "swap"])?;
 
         let res = self
             .inner
@@ -249,9 +249,9 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Get Mint Info [NUT-06]
-    #[instrument(skip(self), fields(mint_url = %mint_url))]
-    async fn get_mint_info(&self, mint_url: MintUrl) -> Result<MintInfo, Error> {
-        let url = mint_url.join_paths(&["v1", "info"])?;
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+        let url = self.mint_url.join_paths(&["v1", "info"])?;
 
         let res = self.inner.get(url).send().await?.text().await?;
 
@@ -259,13 +259,12 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Spendable check [NUT-07]
-    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_check_state(
         &self,
-        mint_url: MintUrl,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        let url = mint_url.join_paths(&["v1", "checkstate"])?;
+        let url = self.mint_url.join_paths(&["v1", "checkstate"])?;
 
         let res = self
             .inner
@@ -280,13 +279,9 @@ impl HttpClientMethods for HttpClient {
     }
 
     /// Restore request [NUT-13]
-    #[instrument(skip(self, request), fields(mint_url = %mint_url))]
-    async fn post_restore(
-        &self,
-        mint_url: MintUrl,
-        request: RestoreRequest,
-    ) -> Result<RestoreResponse, Error> {
-        let url = mint_url.join_paths(&["v1", "restore"])?;
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "restore"])?;
 
         let res = self
             .inner
@@ -301,83 +296,56 @@ impl HttpClientMethods for HttpClient {
     }
 }
 
-/// Http Client Methods
+/// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait HttpClientMethods: Debug {
+pub trait MintConnector: Debug {
     /// Get Active Mint Keys [NUT-01]
-    async fn get_mint_keys(&self, mint_url: MintUrl) -> Result<Vec<KeySet>, Error>;
-
+    async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;
     /// Get Keyset Keys [NUT-01]
-    async fn get_mint_keyset(&self, mint_url: MintUrl, keyset_id: Id) -> Result<KeySet, Error>;
-
+    async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error>;
     /// Get Keysets [NUT-02]
-    async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<KeysetResponse, Error>;
-
+    async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error>;
     /// Mint Quote [NUT-04]
     async fn post_mint_quote(
         &self,
-        mint_url: MintUrl,
         request: MintQuoteBolt11Request,
     ) -> Result<MintQuoteBolt11Response<String>, Error>;
-
     /// Mint Quote status
     async fn get_mint_quote_status(
         &self,
-        mint_url: MintUrl,
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response<String>, Error>;
-
     /// Mint Tokens [NUT-04]
     async fn post_mint(
         &self,
-        mint_url: MintUrl,
         request: MintBolt11Request<String>,
     ) -> Result<MintBolt11Response, Error>;
-
     /// Melt Quote [NUT-05]
     async fn post_melt_quote(
         &self,
-        mint_url: MintUrl,
         request: MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
-
     /// Melt Quote Status
     async fn get_melt_quote_status(
         &self,
-        mint_url: MintUrl,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
-
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
     async fn post_melt(
         &self,
-        mint_url: MintUrl,
         request: MeltBolt11Request<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
-
     /// Split Token [NUT-06]
-    async fn post_swap(
-        &self,
-        mint_url: MintUrl,
-        request: SwapRequest,
-    ) -> Result<SwapResponse, Error>;
-
+    async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
     /// Get Mint Info [NUT-06]
-    async fn get_mint_info(&self, mint_url: MintUrl) -> Result<MintInfo, Error>;
-
+    async fn get_mint_info(&self) -> Result<MintInfo, Error>;
     /// Spendable check [NUT-07]
     async fn post_check_state(
         &self,
-        mint_url: MintUrl,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error>;
-
     /// Restore request [NUT-13]
-    async fn post_restore(
-        &self,
-        mint_url: MintUrl,
-        request: RestoreRequest,
-    ) -> Result<RestoreResponse, Error>;
+    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
 }

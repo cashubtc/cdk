@@ -65,10 +65,7 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self
-            .client
-            .post_melt_quote(self.mint_url.clone(), quote_request)
-            .await?;
+        let quote_res = self.client.post_melt_quote(quote_request).await?;
 
         if quote_res.amount != amount {
             return Err(Error::IncorrectQuoteAmount);
@@ -96,10 +93,7 @@ impl Wallet {
         &self,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let response = self
-            .client
-            .get_melt_quote_status(self.mint_url.clone(), quote_id)
-            .await?;
+        let response = self.client.get_melt_quote_status(quote_id).await?;
 
         match self.localstore.get_melt_quote(quote_id).await? {
             Some(quote) => {
@@ -160,7 +154,7 @@ impl Wallet {
             outputs: Some(premint_secrets.blinded_messages()),
         };
 
-        let melt_response = self.client.post_melt(self.mint_url.clone(), request).await;
+        let melt_response = self.client.post_melt(request).await;
 
         let melt_response = match melt_response {
             Ok(melt_response) => melt_response,

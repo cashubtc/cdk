@@ -8,7 +8,7 @@ use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, PreMintSecrets, State,
 };
-use cdk::wallet::client::{HttpClient, HttpClientMethods};
+use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::Wallet;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::attempt_to_swap_pending;
@@ -354,7 +354,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let premint_secrets = PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default())?;
 
-    let client = HttpClient::new();
+    let client = HttpClient::new(MINT_URL.parse()?);
 
     let melt_request = MeltBolt11Request {
         quote: melt_quote.id.clone(),
@@ -362,7 +362,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         outputs: Some(premint_secrets.blinded_messages()),
     };
 
-    let melt_response = client.post_melt(MINT_URL.parse()?, melt_request).await?;
+    let melt_response = client.post_melt(melt_request).await?;
 
     assert!(melt_response.change.is_some());
 

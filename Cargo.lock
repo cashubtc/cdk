@@ -780,6 +780,7 @@ name = "cdk-integration-tests"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bip39",
  "cdk",

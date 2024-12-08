@@ -116,6 +116,22 @@ pub struct MeltQuoteBolt11Response<Q> {
 }
 
 #[cfg(feature = "mint")]
+impl From<MeltQuoteBolt11Response<Uuid>> for MeltQuoteBolt11Response<String> {
+    fn from(value: MeltQuoteBolt11Response<Uuid>) -> Self {
+        Self {
+            quote: value.quote.to_string(),
+            amount: value.amount,
+            fee_reserve: value.fee_reserve,
+            paid: value.paid,
+            state: value.state,
+            expiry: value.expiry,
+            payment_preimage: value.payment_preimage,
+            change: value.change,
+        }
+    }
+}
+
+#[cfg(feature = "mint")]
 impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
     fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         MeltQuoteBolt11Response {
@@ -245,6 +261,19 @@ pub struct MeltBolt11Request<Q> {
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
     pub outputs: Option<Vec<BlindedMessage>>,
+}
+
+#[cfg(feature = "mint")]
+impl TryFrom<MeltBolt11Request<String>> for MeltBolt11Request<Uuid> {
+    type Error = uuid::Error;
+
+    fn try_from(value: MeltBolt11Request<String>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            quote: Uuid::from_str(&value.quote)?,
+            inputs: value.inputs,
+            outputs: value.outputs,
+        })
+    }
 }
 
 impl<Q: Serialize + DeserializeOwned> MeltBolt11Request<Q> {
