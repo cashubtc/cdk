@@ -31,7 +31,7 @@ type WsSubscriptionBody = (mpsc::Sender<NotificationPayload>, Params);
 /// Subscription manager
 ///
 /// This structure should be instantiated once per wallet at most. It is
-/// clonable since all its members are Arcs.
+/// cloneable since all its members are Arcs.
 ///
 /// The main goal is to provide a single interface to manage multiple
 /// subscriptions to many servers to subscribe to events. If supported, the
@@ -215,7 +215,6 @@ impl SubscriptionClient {
         ))]
         return Self::http_worker(
             http_client,
-            url,
             subscriptions,
             new_subscription_recv,
             on_drop_recv,
