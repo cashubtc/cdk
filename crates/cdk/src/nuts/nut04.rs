@@ -97,6 +97,18 @@ pub struct MintQuoteBolt11Response<Q> {
 }
 
 #[cfg(feature = "mint")]
+impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
+    fn from(value: MintQuoteBolt11Response<Uuid>) -> Self {
+        Self {
+            quote: value.quote.to_string(),
+            request: value.request,
+            state: value.state,
+            expiry: value.expiry,
+        }
+    }
+}
+
+#[cfg(feature = "mint")]
 impl From<crate::mint::MintQuote> for MintQuoteBolt11Response<Uuid> {
     fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<Uuid> {
         MintQuoteBolt11Response {
@@ -119,6 +131,18 @@ pub struct MintBolt11Request<Q> {
     /// Outputs
     #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
+}
+
+#[cfg(feature = "mint")]
+impl TryFrom<MintBolt11Request<String>> for MintBolt11Request<Uuid> {
+    type Error = uuid::Error;
+
+    fn try_from(value: MintBolt11Request<String>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            quote: Uuid::from_str(&value.quote)?,
+            outputs: value.outputs,
+        })
+    }
 }
 
 impl<Q> MintBolt11Request<Q> {

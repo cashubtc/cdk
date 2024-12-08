@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
-use client::HttpClientMethods;
+use client::MintConnector;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -57,7 +57,7 @@ pub struct Wallet {
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     xpriv: Xpriv,
-    client: Arc<dyn HttpClientMethods + Send + Sync>,
+    client: Arc<dyn MintConnector + Send + Sync>,
 }
 
 impl Wallet {
@@ -86,11 +86,12 @@ impl Wallet {
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {
         let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
+        let mint_url = MintUrl::from_str(mint_url)?;
 
         Ok(Self {
-            mint_url: MintUrl::from_str(mint_url)?,
+            mint_url: mint_url.clone(),
             unit,
-            client: Arc::new(HttpClient::new()),
+            client: Arc::new(HttpClient::new(mint_url)),
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
@@ -98,8 +99,8 @@ impl Wallet {
     }
 
     /// Change HTTP client
-    pub fn set_client<C: HttpClientMethods + 'static + Send + Sync>(&mut self, client: C) {
-        self.client = Arc::new(client);
+    pub fn set_client(&mut self, client: Arc<dyn MintConnector + Send + Sync>) {
+        self.client = client;
     }
 
     /// Fee required for proof set
@@ -160,10 +161,10 @@ impl Wallet {
         Ok(())
     }
 
-    /// Qeury mint for current mint information
+    /// Query mint for current mint information
     #[instrument(skip(self))]
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = match self.client.get_mint_info(self.mint_url.clone()).await {
+        let mint_info = match self.client.get_mint_info().await {
             Ok(mint_info) => Some(mint_info),
             Err(err) => {
                 tracing::warn!("Could not get mint info {}", err);
@@ -277,10 +278,7 @@ impl Wallet {
                     outputs: premint_secrets.blinded_messages(),
                 };
 
-                let response = self
-                    .client
-                    .post_restore(self.mint_url.clone(), restore_request)
-                    .await?;
+                let response = self.client.post_restore(restore_request).await?;
 
                 if response.signatures.is_empty() {
                     empty_batch += 1;
