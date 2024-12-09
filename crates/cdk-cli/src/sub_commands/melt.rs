@@ -3,7 +3,7 @@ use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
-use cdk::amount::Amount;
+use cdk::amount::{Amount, MSAT_IN_SAT};
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::multi_mint_wallet::{MultiMintWallet, WalletKey};
 use cdk::Bolt11Invoice;
@@ -56,7 +56,7 @@ pub async fn pay(
     let mut amount: Option<Amount> = None;
 
     if bolt11.amount_milli_satoshis().is_none() {
-        println!("Enter the amount you would like to pay.");
+        println!("Enter the amount you would like to pay in sats.");
         let mut user_input = String::new();
         let stdin = io::stdin();
         io::stdout().flush().unwrap();
@@ -65,16 +65,16 @@ pub async fn pay(
         let user_amount = user_input.trim_end().parse::<u64>()?;
 
         if user_amount
-            .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * 1000_u64))
+            .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT))
         {
             bail!("Not enough funds");
         }
 
-        amount = Some(user_amount.into());
+        amount = Some((user_amount * MSAT_IN_SAT).into());
     } else if bolt11
         .amount_milli_satoshis()
         .unwrap()
-        .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * 1000_u64))
+        .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT))
     {
         bail!("Not enough funds");
     }

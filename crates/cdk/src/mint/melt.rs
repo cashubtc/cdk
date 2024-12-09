@@ -85,7 +85,10 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
-        let msats_to_pay = request.amount_milli_satoshis().map(|_| amount);
+        let msats_to_pay = request
+            .amount_milli_satoshis()
+            .and_then(|_| None)
+            .or(Some(amount));
 
         let quote = MeltQuote::new(
             request.to_string(),
@@ -175,10 +178,15 @@ impl Mint {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
 
-        let invoice_amount_msats: Amount = invoice
-            .amount_milli_satoshis()
-            .ok_or(Error::InvoiceAmountUndefined)?
-            .into();
+        println!("{:?}", melt_quote);
+
+        let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
+            Some(amount) => amount.into(),
+            None => invoice
+                .amount_milli_satoshis()
+                .ok_or(Error::InvoiceAmountUndefined)?
+                .into(),
+        };
 
         let partial_amount = match invoice_amount_msats > quote_msats {
             true => {
