@@ -85,6 +85,8 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
+        let msats_to_pay = request.amount_milli_satoshis().map(|_| amount);
+
         let quote = MeltQuote::new(
             request.to_string(),
             unit.clone(),
@@ -92,6 +94,7 @@ impl Mint {
             payment_quote.fee,
             unix_time() + self.quote_ttl.melt_ttl,
             payment_quote.request_lookup_id.clone(),
+            msats_to_pay,
         );
 
         tracing::debug!(
