@@ -4,6 +4,7 @@ use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
 use super::MeltQuote;
+use crate::amount::MSAT_IN_SAT;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
@@ -34,7 +35,7 @@ impl Wallet {
     ///     let localstore = WalletMemoryDatabase::default();
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
-    ///     let quote = wallet.melt_quote(bolt11, None).await?;
+    ///     let quote = wallet.melt_quote(bolt11, None, None).await?;
     ///
     ///     Ok(())
     /// }
@@ -44,15 +45,24 @@ impl Wallet {
         &self,
         request: String,
         mpp: Option<Amount>,
+        msat_to_pay: Option<Amount>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
-        let request_amount = invoice
-            .amount_milli_satoshis()
-            .ok_or(Error::InvoiceAmountUndefined)?;
+        let request_amount = match invoice.amount_milli_satoshis() {
+            Some(invoice_amount) => {
+                if let Some(amount) = msat_to_pay {
+                    if amount != invoice_amount.into() {
+                        return Err(Error::AmountLessNotAllowed);
+                    }
+                }
+                invoice_amount
+            }
+            None => msat_to_pay.ok_or(Error::InvoiceAmountUndefined)?.into(),
+        };
 
         let amount = match self.unit {
-            CurrencyUnit::Sat => Amount::from(request_amount / 1000),
+            CurrencyUnit::Sat => Amount::from(request_amount / MSAT_IN_SAT),
             CurrencyUnit::Msat => Amount::from(request_amount),
             _ => return Err(Error::UnitUnsupported),
         };
@@ -63,6 +73,7 @@ impl Wallet {
             request: Bolt11Invoice::from_str(&request)?,
             unit: self.unit.clone(),
             options,
+            amount: Some(amount),
         };
 
         let quote_res = self.client.post_melt_quote(quote_request).await?;
@@ -263,7 +274,7 @@ impl Wallet {
     ///  let localstore = WalletMemoryDatabase::default();
     ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
-    ///  let quote = wallet.melt_quote(bolt11, None).await?;
+    ///  let quote = wallet.melt_quote(bolt11, None, None).await?;
     ///  let quote_id = quote.id;
     ///
     ///  let _ = wallet.melt(&quote_id).await?;

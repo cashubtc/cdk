@@ -70,6 +70,7 @@ impl MintLightning for Cln {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
+            amountless: true,
         }
     }
 
@@ -196,16 +197,7 @@ impl MintLightning for Cln {
         &self,
         melt_quote_request: &MeltQuoteBolt11Request,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let invoice_amount_msat = melt_quote_request
-            .request
-            .amount_milli_satoshis()
-            .ok_or(Error::UnknownInvoiceAmount)?;
-
-        let amount = to_unit(
-            invoice_amount_msat,
-            &CurrencyUnit::Msat,
-            &melt_quote_request.unit,
-        )?;
+        let amount = melt_quote_request.amount()?;
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -248,11 +240,15 @@ impl MintLightning for Cln {
             }
         }
 
+        let amount_msat = melt_quote
+            .msat_to_pay
+            .map(|a| CLN_Amount::from_msat(a.into()));
+
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client
             .call(Request::Pay(PayRequest {
                 bolt11: melt_quote.request.to_string(),
-                amount_msat: None,
+                amount_msat,
                 label: None,
                 riskfactor: None,
                 maxfeepercent: None,
@@ -264,9 +260,7 @@ impl MintLightning for Cln {
                 maxfee: max_fee
                     .map(|a| {
                         let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
-                        Ok::<cln_rpc::primitives::Amount, Self::Err>(CLN_Amount::from_msat(
-                            msat.into(),
-                        ))
+                        Ok::<CLN_Amount, Self::Err>(CLN_Amount::from_msat(msat.into()))
                     })
                     .transpose()?,
                 description: None,

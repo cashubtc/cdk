@@ -281,6 +281,7 @@ impl MultiMintWallet {
     pub async fn pay_invoice_for_wallet(
         &self,
         bolt11: &str,
+        amount_to_pay: Option<Amount>,
         wallet_key: &WalletKey,
         max_fee: Option<Amount>,
     ) -> Result<Melted, Error> {
@@ -289,7 +290,9 @@ impl MultiMintWallet {
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        let quote = wallet.melt_quote(bolt11.to_string(), None).await?;
+        let quote = wallet
+            .melt_quote(bolt11.to_string(), amount_to_pay, None)
+            .await?;
         if let Some(max_fee) = max_fee {
             if quote.fee_reserve > max_fee {
                 return Err(Error::MaxFeeExceeded);
