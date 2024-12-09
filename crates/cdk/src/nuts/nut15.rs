@@ -24,8 +24,6 @@ pub struct MppMethodSettings {
     pub method: PaymentMethod,
     /// Currency Unit e.g. sat
     pub unit: CurrencyUnit,
-    /// Multi part payment support
-    pub mpp: bool,
 }
 
 /// Mpp Settings
