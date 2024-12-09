@@ -62,7 +62,7 @@ pub async fn pay(
         io::stdout().flush().unwrap();
         stdin.read_line(&mut user_input)?;
 
-        let user_amount = user_input.parse::<u64>()?;
+        let user_amount = user_input.trim_end().parse::<u64>()?;
 
         if user_amount
             .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * 1000_u64))
@@ -71,14 +71,12 @@ pub async fn pay(
         }
 
         amount = Some(user_amount.into());
-    } else {
-        if bolt11
-            .amount_milli_satoshis()
-            .unwrap()
-            .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * 1000_u64))
-        {
-            bail!("Not enough funds");
-        }
+    } else if bolt11
+        .amount_milli_satoshis()
+        .unwrap()
+        .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * 1000_u64))
+    {
+        bail!("Not enough funds");
     }
 
     let quote = wallet.melt_quote(bolt11.to_string(), None, amount).await?;
