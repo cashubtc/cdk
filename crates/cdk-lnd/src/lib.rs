@@ -188,10 +188,20 @@ impl MintLightning for Lnd {
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
-        partial_amount: Option<Amount>,
+        _partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let payment_request = melt_quote.request;
+
+        let amount_msat: u64 = match melt_quote.msat_to_pay {
+            Some(amount_msat) => amount_msat.into(),
+            None => {
+                let bolt11 = Bolt11Invoice::from_str(&payment_request)?;
+                bolt11
+                    .amount_milli_satoshis()
+                    .ok_or(Error::UnknownInvoiceAmount)?
+            }
+        };
 
         let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
             payment_request,
@@ -200,13 +210,7 @@ impl MintLightning for Lnd {
 
                 FeeLimit { limit: Some(limit) }
             }),
-            amt_msat: partial_amount
-                .map(|a| {
-                    let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat).unwrap();
-
-                    u64::from(msat) as i64
-                })
-                .unwrap_or_default(),
+            amt_msat: amount_msat as i64,
             ..Default::default()
         };
 
