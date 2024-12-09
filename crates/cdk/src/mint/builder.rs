@@ -139,8 +139,8 @@ impl MintBuilder {
             let mpp_settings = MppMethodSettings {
                 method,
                 unit: unit.clone(),
-                mpp: true,
             };
+
             let mut mpp = self.mint_info.nuts.nut15.clone();
 
             mpp.methods.push(mpp_settings);
