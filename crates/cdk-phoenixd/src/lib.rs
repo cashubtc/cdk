@@ -79,7 +79,7 @@ impl MintLightning for Phoenixd {
             mpp: false,
             unit: CurrencyUnit::Sat,
             invoice_description: true,
-            amountless: false,
+            amountless: true,
         }
     }
     fn is_wait_invoice_active(&self) -> bool {
@@ -188,12 +188,16 @@ impl MintLightning for Phoenixd {
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
-        partial_amount: Option<Amount>,
+        _partial_amount: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
+        let msat_to_pay: Option<u64> = melt_quote
+            .msat_to_pay
+            .map(|a| <cdk::Amount as Into<u64>>::into(a) / MSAT_IN_SAT);
+
         let pay_response = self
             .phoenixd_api
-            .pay_bolt11_invoice(&melt_quote.request, partial_amount.map(|a| a.into()))
+            .pay_bolt11_invoice(&melt_quote.request, msat_to_pay)
             .await?;
 
         // The pay invoice response does not give the needed fee info so we have to check.

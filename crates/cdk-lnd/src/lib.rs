@@ -77,10 +77,10 @@ impl MintLightning for Lnd {
 
     fn get_settings(&self) -> Settings {
         Settings {
-            mpp: true,
+            mpp: false,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
-            amountless: false,
+            amountless: true,
         }
     }
 
