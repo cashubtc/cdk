@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use axum::Router;
-use cdk::amount::Amount;
+use cdk::amount::{Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
@@ -21,8 +21,8 @@ use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
 use strike_rs::{
-    Amount as StrikeAmount, Currency as StrikeCurrencyUnit, InvoiceRequest, InvoiceState,
-    PayInvoiceQuoteRequest, Strike as StrikeApi,
+    Amount as StrikeAmount, Currency as StrikeCurrencyUnit, FeePolicy, InvoiceRequest,
+    InvoiceState, PayInvoiceQuoteRequest, RequestAmount, Strike as StrikeApi,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -162,6 +162,11 @@ impl MintLightning for Strike {
         let payment_quote_request = PayInvoiceQuoteRequest {
             ln_invoice: melt_quote_request.request.to_string(),
             source_currency,
+            amount: melt_quote_request.amount.map(|a| RequestAmount {
+                amount: (<cdk::Amount as Into<u64>>::into(a) / MSAT_IN_SAT) as f32,
+                currency: StrikeCurrencyUnit::BTC,
+                fee_policy: FeePolicy::Inclusive,
+            }),
         };
 
         let quote = self.strike_api.payment_quote(payment_quote_request).await?;
