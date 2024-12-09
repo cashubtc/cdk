@@ -188,6 +188,8 @@ impl HttpClientMethods for HttpClient {
             .text()
             .await?;
 
+        println!("{}", res);
+
         convert_http_response!(MeltQuoteBolt11Response<String>, res)
     }
 

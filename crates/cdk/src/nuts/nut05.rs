@@ -65,6 +65,8 @@ impl MeltQuoteBolt11Request {
             ..
         } = self;
 
+        println!("{:?}", self);
+
         match (self.options, self.amount) {
             (Some(mpp_amount), None) => Ok(mpp_amount.amount),
             (None, Some(amount)) => {

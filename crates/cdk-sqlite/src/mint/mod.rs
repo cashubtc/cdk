@@ -467,8 +467,8 @@ WHERE id=?
         let res = sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -480,6 +480,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.expiry as i64)
         .bind(quote.payment_preimage)
         .bind(quote.request_lookup_id)
+        .bind(quote.msat_to_pay.map(|a| u64::from(a) as i64))
         .execute(&mut transaction)
         .await;
 
