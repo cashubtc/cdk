@@ -85,10 +85,7 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
-        let msats_to_pay = request
-            .amount_milli_satoshis()
-            .and_then(|_| None)
-            .or(Some(amount));
+        let msats_to_pay = request.amount_milli_satoshis().and(None).or(Some(amount));
 
         let quote = MeltQuote::new(
             request.to_string(),
@@ -181,7 +178,7 @@ impl Mint {
         println!("{:?}", melt_quote);
 
         let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
-            Some(amount) => amount.into(),
+            Some(amount) => amount,
             None => invoice
                 .amount_milli_satoshis()
                 .ok_or(Error::InvoiceAmountUndefined)?
