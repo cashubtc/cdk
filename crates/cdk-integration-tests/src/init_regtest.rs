@@ -15,9 +15,8 @@ use cdk_cln::Cln as CdkCln;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
 use ln_regtest_rs::cln::Clnd;
-use ln_regtest_rs::cln_client::ClnClient;
+use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
-use ln_regtest_rs::lnd_client::LndClient;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
@@ -28,8 +27,8 @@ const ZMQ_RAW_TX: &str = "tcp://127.0.0.1:28333";
 const BITCOIN_RPC_USER: &str = "testuser";
 const BITCOIN_RPC_PASS: &str = "testpass";
 const CLN_ADDR: &str = "127.0.0.1:19846";
-const LND_ADDR: &str = "0.0.0.0:18444";
-const LND_RPC_ADDR: &str = "https://127.0.0.1:10009";
+const LND_ADDR: &str = "0.0.0.0:18449";
+const LND_RPC_ADDR: &str = "localhost:10009";
 
 const BITCOIN_DIR: &str = "bitcoin";
 const CLN_DIR: &str = "cln";
@@ -116,6 +115,7 @@ pub async fn init_lnd() -> Lnd {
         get_bitcoin_dir(),
         get_lnd_dir(),
         LND_ADDR.parse().unwrap(),
+        LND_RPC_ADDR.to_string(),
         BITCOIN_RPC_USER.to_string(),
         BITCOIN_RPC_PASS.to_string(),
         ZMQ_RAW_BLOCK.to_string(),
@@ -127,7 +127,12 @@ pub async fn init_lnd_client() -> Result<LndClient> {
     let lnd_dir = get_lnd_dir();
     let cert_file = lnd_dir.join("tls.cert");
     let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
-    LndClient::new(LND_RPC_ADDR.parse().unwrap(), cert_file, macaroon_file).await
+    LndClient::new(
+        format!("https://{}", LND_RPC_ADDR).parse().unwrap(),
+        cert_file,
+        macaroon_file,
+    )
+    .await
 }
 
 pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
@@ -254,11 +259,11 @@ pub async fn fund_ln(
     cln_client: &ClnClient,
     lnd_client: &LndClient,
 ) -> Result<()> {
-    let lnd_address = lnd_client.get_new_address().await?;
+    let lnd_address = lnd_client.get_new_onchain_address().await?;
 
     bitcoin_client.send_to_address(&lnd_address, 2_000_000)?;
 
-    let cln_address = cln_client.get_new_address().await?;
+    let cln_address = cln_client.get_new_onchain_address().await?;
     bitcoin_client.send_to_address(&cln_address, 2_000_000)?;
 
     let mining_address = bitcoin_client.get_new_address()?;
@@ -282,7 +287,7 @@ pub async fn open_channel(
     let cln_port = 19846;
 
     lnd_client
-        .connect(cln_pubkey.to_string(), cln_address.to_string(), cln_port)
+        .connect_peer(cln_pubkey.to_string(), cln_address.to_string(), cln_port)
         .await
         .unwrap();
 
