@@ -26,6 +26,7 @@ use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
@@ -343,6 +344,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut mint_service = Router::new()
         .merge(v1_service)
+        .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive());
 
     #[cfg(feature = "swagger")]
