@@ -18,6 +18,7 @@ use cdk_integration_tests::init_regtest::{
 };
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
+use ln_regtest_rs::ln_client::LightningClient;
 use ln_regtest_rs::InvoiceStatus;
 use serde_json::json;
 use tokio::time::timeout;
@@ -83,7 +84,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     assert!(mint_amount == 100.into());
 
-    let invoice = lnd_client.create_invoice(50).await?;
+    let invoice = lnd_client.create_invoice(Some(50)).await?;
 
     let melt = wallet.melt_quote(invoice, None).await?;
 
@@ -245,7 +246,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     assert_eq!(mint_amount, 100.into());
 
-    let invoice = lnd_client.create_invoice(10).await?;
+    let invoice = lnd_client.create_invoice(Some(10)).await?;
 
     let melt_quote = wallet.melt_quote(invoice.clone(), None).await?;
 
@@ -323,7 +324,7 @@ async fn test_internal_payment() -> Result<()> {
     let cln_client = init_cln_client().await?;
     let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
     let check_paid = cln_client
-        .check_incoming_invoice(payment_hash.payment_hash().to_string())
+        .check_incoming_payment_status(&payment_hash.payment_hash().to_string())
         .await?;
 
     match check_paid {
