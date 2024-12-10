@@ -390,9 +390,6 @@ impl Settings {
     }
 }
 
-/// meting with an amount_less invoice
-//  pub amount_less: Option<Amount>,
-
 /// Melt Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut05::Settings))]
