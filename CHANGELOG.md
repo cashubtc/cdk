@@ -28,6 +28,7 @@ cdk: Enforce `quote_id` to uuid type in mint ([tdelabro]).
 
 ### Added
 cdk: `NUT19` Settings in `NUT06` info ([thesimplekid]).
+cdk: `NUT17` Websocket support for wallet ([crodas]).
 
 ### Fixed
 cdk-sqlite: keyset counter was overwritten when keyset was fetched from mint ([thesimplekid]).
