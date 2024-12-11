@@ -165,7 +165,9 @@ impl MintLightning for Lnd {
         &self,
         melt_quote_request: &MeltQuoteBolt11Request,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let amount = melt_quote_request.amount()?;
+        let amount = melt_quote_request.amount_msat()?;
+
+        let amount = amount / MSAT_IN_SAT.into();
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;

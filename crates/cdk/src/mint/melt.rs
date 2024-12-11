@@ -62,7 +62,9 @@ impl Mint {
             ..
         } = melt_request;
 
-        let amount = melt_request.amount()?;
+        let amount = melt_request.amount_msat()?;
+
+        let amount = to_unit(amount, &CurrencyUnit::Msat, unit)?;
 
         self.check_melt_request_acceptable(amount, unit.clone(), PaymentMethod::Bolt11)?;
 
@@ -88,7 +90,7 @@ impl Mint {
         let msats_to_pay = if request.amount_milli_satoshis().is_some() {
             None
         } else {
-            Some(amount)
+            Some(melt_request.amount_msat()?)
         };
 
         let quote = MeltQuote::new(
@@ -178,8 +180,6 @@ impl Mint {
 
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
-
-        println!("{:?}", melt_quote);
 
         let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
             Some(amount) => amount,
@@ -584,7 +584,6 @@ impl Mint {
 
         Ok(res)
     }
-
     /// Process melt request marking [`Proofs`] as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]

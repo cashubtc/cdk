@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk::amount::{to_unit, Amount};
+use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
@@ -197,7 +197,9 @@ impl MintLightning for Cln {
         &self,
         melt_quote_request: &MeltQuoteBolt11Request,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let amount = melt_quote_request.amount()?;
+        let amount = melt_quote_request.amount_msat()?;
+
+        let amount = amount / MSAT_IN_SAT.into();
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -283,6 +285,7 @@ impl MintLightning for Cln {
                     PayStatus::PENDING => MeltQuoteState::Pending,
                     PayStatus::FAILED => MeltQuoteState::Failed,
                 };
+
                 PayInvoiceResponse {
                     payment_preimage: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_lookup_id: pay_response.payment_hash.to_string(),

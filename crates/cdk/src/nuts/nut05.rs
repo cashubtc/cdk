@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
-use crate::amount::to_unit;
 #[cfg(feature = "mint")]
 use crate::mint::{self, MeltQuote};
 use crate::nuts::MeltQuoteState;
@@ -93,7 +92,7 @@ impl Options {
     }
 
     /// Payment amount
-    pub fn amount(&self) -> Amount {
+    pub fn amount_msat(&self) -> Amount {
         match self {
             Self::Mpp { mpp } => mpp.amount,
             Self::Amountless { amountless } => amountless.amount_msat,
@@ -114,23 +113,19 @@ impl MeltQuoteBolt11Request {
     ///
     /// Amount can either be defined in the bolt11 invoice,
     /// in the request for an amountless bolt11 or in MPP option.
-    pub fn amount(&self) -> Result<Amount, Error> {
+    pub fn amount_msat(&self) -> Result<Amount, Error> {
         let MeltQuoteBolt11Request {
             request,
-            unit,
+            unit: _,
             options,
             ..
         } = self;
 
         match options {
-            None => {
-                let amount_msat = request
-                    .amount_milli_satoshis()
-                    .ok_or(Error::InvalidAmountRequest)?;
-
-                Ok(to_unit(amount_msat, &CurrencyUnit::Msat, unit)
-                    .map_err(|_err| Error::UnsupportedUnit)?)
-            }
+            None => Ok(request
+                .amount_milli_satoshis()
+                .ok_or(Error::InvalidAmountRequest)?
+                .into()),
             Some(Options::Mpp { mpp }) => Ok(mpp.amount),
             Some(Options::Amountless { amountless }) => {
                 let amount = amountless.amount_msat;

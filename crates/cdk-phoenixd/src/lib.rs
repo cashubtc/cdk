@@ -162,7 +162,9 @@ impl MintLightning for Phoenixd {
             return Err(Error::UnsupportedUnit.into());
         }
 
-        let amount = melt_quote_request.amount()?;
+        let amount = melt_quote_request.amount_msat()?;
+
+        let amount = amount / MSAT_IN_SAT.into();
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;

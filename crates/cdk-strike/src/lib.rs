@@ -163,7 +163,7 @@ impl MintLightning for Strike {
             ln_invoice: melt_quote_request.request.to_string(),
             source_currency,
             amount: melt_quote_request.options.map(|a| RequestAmount {
-                amount: (<cdk::Amount as Into<u64>>::into(a.amount()) / MSAT_IN_SAT) as f32,
+                amount: (<cdk::Amount as Into<u64>>::into(a.amount_msat()) / MSAT_IN_SAT) as f32,
                 currency: StrikeCurrencyUnit::BTC,
                 fee_policy: FeePolicy::Inclusive,
             }),

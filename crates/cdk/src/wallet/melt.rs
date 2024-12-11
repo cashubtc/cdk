@@ -4,7 +4,7 @@ use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
 use super::MeltQuote;
-use crate::amount::MSAT_IN_SAT;
+use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut05::Options;
@@ -14,7 +14,7 @@ use crate::nuts::{
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
-use crate::{Amount, Error, Wallet};
+use crate::{Error, Wallet};
 
 impl Wallet {
     /// Melt Quote
@@ -63,15 +63,11 @@ impl Wallet {
             }
             None => options
                 .ok_or(Error::InvoiceAmountUndefined)?
-                .amount()
+                .amount_msat()
                 .into(),
         };
 
-        let amount = match self.unit {
-            CurrencyUnit::Sat => Amount::from(request_amount / MSAT_IN_SAT),
-            CurrencyUnit::Msat => Amount::from(request_amount),
-            _ => return Err(Error::UnitUnsupported),
-        };
+        let amount = to_unit(request_amount, &CurrencyUnit::Msat, &self.unit).unwrap();
 
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,
@@ -79,9 +75,14 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await?;
+        let quote_res = self.client.post_melt_quote(quote_request).await.unwrap();
 
         if quote_res.amount != amount {
+            tracing::warn!(
+                "Mint returned incorrect quote amount. Expected {}, got {}",
+                amount,
+                quote_res.amount
+            );
             return Err(Error::IncorrectQuoteAmount);
         }
 

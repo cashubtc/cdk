@@ -2417,7 +2417,6 @@ checksum = "4ee93343901ab17bd981295f2cf0026d4ad018c7c31ba84549a4ddbb47a45104"
 [[package]]
 name = "ln-regtest-rs"
 version = "0.1.0"
-source = "git+https://github.com/thesimplekid/ln-regtest-rs?rev=e0ac418675#e0ac418675e66aa12f7c44a545ea5a831e2e3f69"
 dependencies = [
  "anyhow",
  "async-trait",
