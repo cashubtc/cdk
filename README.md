@@ -62,7 +62,7 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [14][14] | Hashed Timelock Contracts (HTLCs) | :heavy_check_mark: |
 | [15][15] | Partial multi-path payments (MPP) | :heavy_check_mark: |
 | [16][16] | Animated QR codes | :x: |
-| [17][17] | WebSocket subscriptions  | :construction: |
+| [17][17] | WebSocket subscriptions  | :heavy_check_mark: |
 
 
 ## Bindings
