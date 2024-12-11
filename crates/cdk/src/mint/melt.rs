@@ -85,7 +85,11 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
-        let msats_to_pay = request.amount_milli_satoshis().and(None).or(Some(amount));
+        let msats_to_pay = if request.amount_milli_satoshis().is_some() {
+            None
+        } else {
+            Some(amount)
+        };
 
         let quote = MeltQuote::new(
             request.to_string(),

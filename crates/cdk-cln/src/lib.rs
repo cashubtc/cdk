@@ -295,6 +295,10 @@ impl MintLightning for Cln {
                     unit: melt_quote.unit,
                 }
             }
+            Err(err) => {
+                tracing::error!("Could not pay invoice: {}", err);
+                return Err(Error::ClnRpc(err).into());
+            }
             _ => {
                 tracing::error!(
                     "Error attempting to pay invoice: {}",
