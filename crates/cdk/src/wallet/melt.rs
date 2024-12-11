@@ -7,8 +7,9 @@ use super::MeltQuote;
 use crate::amount::MSAT_IN_SAT;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut05::Options;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Mpp,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     PreMintSecrets, Proofs, State,
 };
 use crate::types::{Melted, ProofInfo};
@@ -44,21 +45,26 @@ impl Wallet {
     pub async fn melt_quote(
         &self,
         request: String,
-        mpp: Option<Amount>,
-        msat_to_pay: Option<Amount>,
+        options: Option<Options>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
+        let mut options = options;
+
         let request_amount = match invoice.amount_milli_satoshis() {
             Some(invoice_amount) => {
-                if let Some(amount) = msat_to_pay {
-                    if amount != invoice_amount.into() {
+                if let Some(Options::Amountless { amountless }) = options {
+                    if amountless.amount_msat != invoice_amount.into() {
                         return Err(Error::AmountLessNotAllowed);
                     }
                 }
+                options = None;
                 invoice_amount
             }
-            None => msat_to_pay.ok_or(Error::InvoiceAmountUndefined)?.into(),
+            None => options
+                .ok_or(Error::InvoiceAmountUndefined)?
+                .amount()
+                .into(),
         };
 
         let amount = match self.unit {
@@ -67,13 +73,10 @@ impl Wallet {
             _ => return Err(Error::UnitUnsupported),
         };
 
-        let options = mpp.map(|amount| Mpp { amount });
-
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,
             unit: self.unit.clone(),
             options,
-            amount: Some(amount),
         };
 
         let quote_res = self.client.post_melt_quote(quote_request).await?;

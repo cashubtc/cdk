@@ -46,10 +46,67 @@ pub struct MeltQuoteBolt11Request {
     pub request: Bolt11Invoice,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
-    /// amount for paying amountless bolt11 invoice
-    pub amount: Option<Amount>,
     /// Payment Options
-    pub options: Option<Mpp>,
+    pub options: Option<Options>,
+}
+
+/// Melt Options
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub enum Options {
+    /// Mpp Options
+    Mpp {
+        /// MPP
+        mpp: Mpp,
+    },
+    /// Amountless options
+    Amountless {
+        /// Amountless
+        amountless: Amountless,
+    },
+}
+
+impl Options {
+    /// Create new [`Options::Mpp`]
+    pub fn new_mpp<A>(amount: A) -> Self
+    where
+        A: Into<Amount>,
+    {
+        Self::Mpp {
+            mpp: Mpp {
+                amount: amount.into(),
+            },
+        }
+    }
+
+    /// Create new [`Options::Amountless`]
+    pub fn new_amountless<A>(amount_msat: A) -> Self
+    where
+        A: Into<Amount>,
+    {
+        Self::Amountless {
+            amountless: Amountless {
+                amount_msat: amount_msat.into(),
+            },
+        }
+    }
+
+    /// Payment amount
+    pub fn amount(&self) -> Amount {
+        match self {
+            Self::Mpp { mpp } => mpp.amount,
+            Self::Amountless { amountless } => amountless.amount_msat,
+        }
+    }
+}
+
+/// Amountless payment
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct Amountless {
+    /// Amount to pay in msat
+    pub amount_msat: Amount,
 }
 
 impl MeltQuoteBolt11Request {
@@ -61,23 +118,12 @@ impl MeltQuoteBolt11Request {
         let MeltQuoteBolt11Request {
             request,
             unit,
-            options: _,
+            options,
             ..
         } = self;
 
-        println!("{:?}", self);
-
-        match (self.options, self.amount) {
-            (Some(mpp_amount), None) => Ok(mpp_amount.amount),
-            (None, Some(amount)) => {
-                if let Some(amount_msat) = request.amount_milli_satoshis() {
-                    if amount != amount_msat.into() {
-                        return Err(Error::InvalidAmountRequest);
-                    }
-                }
-                Ok(amount)
-            }
-            (None, None) => {
+        match options {
+            None => {
                 let amount_msat = request
                     .amount_milli_satoshis()
                     .ok_or(Error::InvalidAmountRequest)?;
@@ -85,8 +131,16 @@ impl MeltQuoteBolt11Request {
                 Ok(to_unit(amount_msat, &CurrencyUnit::Msat, unit)
                     .map_err(|_err| Error::UnsupportedUnit)?)
             }
-            // If the wallet sends a request with both mpp and an amount we should error
-            (Some(_), Some(_)) => todo!(),
+            Some(Options::Mpp { mpp }) => Ok(mpp.amount),
+            Some(Options::Amountless { amountless }) => {
+                let amount = amountless.amount_msat;
+                if let Some(amount_msat) = request.amount_milli_satoshis() {
+                    if amount != amount_msat.into() {
+                        return Err(Error::InvalidAmountRequest);
+                    }
+                }
+                Ok(amount)
+            }
         }
     }
 }
