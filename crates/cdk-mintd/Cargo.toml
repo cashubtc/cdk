@@ -37,6 +37,9 @@ url = "2.3"
 utoipa = { version = "4", optional = true }
 utoipa-swagger-ui = { version = "4", features = ["axum"], optional = true }
 rand = "0.8.5"
+chrono = "0.4.39"
+serde_json = "1.0.133"
+reqwest = "0.12.9"
 
 [features]
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]

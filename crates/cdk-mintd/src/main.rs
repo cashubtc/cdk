@@ -21,13 +21,15 @@ use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
 use cdk::types::LnKey;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
+use cdk_mintd::loggers::ElasticsearchLayer;
 use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{EnvFilter, Layer, Registry};
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
 
@@ -38,18 +40,6 @@ const DEFAULT_CACHE_TTI_SECS: u64 = 1800;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let default_filter = "debug";
-
-    let sqlx_filter = "sqlx=warn";
-    let hyper_filter = "hyper=warn";
-
-    let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
-    ));
-
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
-
     let args = CLIArgs::parse();
 
     let work_dir = match args.work_dir {
@@ -77,6 +67,32 @@ async fn main() -> anyhow::Result<()> {
     // This check for any settings defined in ENV VARs
     // ENV VARS will take **priority** over those in the config
     let settings = settings.from_env()?;
+
+    let default_filter = "debug";
+
+    let sqlx_filter = "sqlx=warn";
+    let hyper_filter = "hyper=warn";
+
+    let env_filter = EnvFilter::new(format!(
+        "{},{},{}",
+        default_filter, sqlx_filter, hyper_filter
+    ));
+
+    // Export logs to elastic search
+    let elasticsearch_layer = ElasticsearchLayer::new(
+        "http://elastic:password@localhost:9200",
+        "cdk-mintd-logs",
+        None,
+    );
+    let subscriber = Registry::default()
+        .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+        .with(elasticsearch_layer);
+
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
+
+    // Test log messages
+    tracing::info!(message = "This is an info log", user_id = 123);
+    tracing::error!("This is an error log");
 
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
         match settings.database.engine {
