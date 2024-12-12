@@ -6,6 +6,14 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+[info.http_cache]
+# memory or redis
+backend = "memory"
+ttl = 60
+tti = 60
+# `key_prefix` and `connection_string` required for redis
+# key_prefix = "mintd"
+# connection_string = "redis://localhost"
 
 
 [mint_info]
@@ -32,9 +40,12 @@ ln_backend = "cln"
 # fee_percent=0.04
 # reserve_fee_min=4
 
-# [cln]
-# Required if using cln backend path to rpc
-# cln_path = ""
+[cln]
+#Required if using cln backend path to rpc
+cln_path = ""
+rpc_path = ""
+fee_percent = 0.02
+reserve_fee_min = 1
 
 # [strike]
 # For the Webhook subscription, the url under [info] must be a valid, absolute, non-local, https url 

@@ -13,4 +13,21 @@ services:
       - CDK_MINTD_LISTEN_PORT=8085
       - CDK_MINTD_MNEMONIC=
       - CDK_MINTD_DATABASE=redb
+      - CDK_MINTD_CACHE_BACKEND=memory
+      # - CDK_MINTD_CACHE_REDIS_URL=redis://redis:6379 
+      # - CDK_MINTD_CACHE_REDIS_KEY_PREFIX=cdk-mintd
     command: ["cdk-mintd"]
+    # depends_on:
+    #   - redis
+
+#   redis:
+#     image: redis:7-alpine
+#     container_name: mint_redis
+#     ports:
+#       - "6379:6379"
+#     volumes:
+#       - redis_data:/data
+#     command: redis-server --save 60 1 --loglevel warning
+
+# volumes:
+#    redis_data:

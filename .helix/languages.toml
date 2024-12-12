@@ -1,2 +1,2 @@
 [language-server.rust-analyzer.config]
-cargo = { features = ["wallet", "mint", "swagger"] }
+cargo = { features = ["wallet", "mint", "swagger", "redis"] }
