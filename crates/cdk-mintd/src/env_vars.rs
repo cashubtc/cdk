@@ -151,6 +151,8 @@ impl Info {
             }
         }
 
+        self.http_cache = self.http_cache.from_env();
+
         self
     }
 }

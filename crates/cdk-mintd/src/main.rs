@@ -138,8 +138,6 @@ async fn main() -> anyhow::Result<()> {
         melt_max: settings.ln.max_melt,
     };
 
-    println!("{:?}", settings);
-
     match settings.ln.ln_backend {
         LnBackend::Cln => {
             let cln_settings = settings
