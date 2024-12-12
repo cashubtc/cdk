@@ -1,5 +1,7 @@
 use chrono::Utc;
+use elasticsearch::http::transport::Transport;
 use elasticsearch::{Elasticsearch, IndexParts};
+use elasticsearch::auth::Credentials;
 use serde::Serialize;
 use tokio::sync::mpsc::{self, Sender};
 use tracing::Event;
@@ -36,7 +38,8 @@ impl ElasticsearchLayer {
     pub fn new(elasticsearch_url: &str, index: &str) -> Self {
         let (sender, mut receiver) = mpsc::channel(BACKLOG);
         let client = Elasticsearch::new(
-            elasticsearch::http::transport::Transport::single_node(elasticsearch_url).unwrap(),
+            Transport::single_node(elasticsearch_url)
+                .unwrap(),
         );
         let index = index.to_string();
 

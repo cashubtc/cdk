@@ -28,7 +28,6 @@ mod builder;
 mod check_spendable;
 mod info;
 mod keysets;
-mod loggers;
 mod melt;
 mod mint_nut04;
 mod start_up_check;

@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod env_vars;
 pub mod setup;
+pub mod loggers;
 
 fn expand_path(path: &str) -> Option<PathBuf> {
     if path.starts_with('~') {
