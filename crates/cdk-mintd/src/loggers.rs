@@ -1,12 +1,12 @@
 use chrono::Utc;
 use reqwest::Client;
 use serde::Serialize;
+use std::fmt::Write;
 use tokio::sync::mpsc::{self, Sender};
-use tracing::Event;
 use tracing::field::{Field, Visit};
+use tracing::Event;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
-use std::fmt::Write;
 
 pub const BACKLOG: usize = 10_000;
 
@@ -49,9 +49,7 @@ impl ElasticsearchLayer {
         // Spawn an async task to process logs and send them to Elasticsearch.
         tokio::spawn(async move {
             while let Some(log) = receiver.recv().await {
-                let mut request = client
-                    .post(&base_url)
-                    .json(&log);
+                let mut request = client.post(&base_url).json(&log);
 
                 // Add the Authorization header if an API key is provided.
                 if let Some(ref key) = api_key_header {
@@ -62,10 +60,7 @@ impl ElasticsearchLayer {
 
                 match response {
                     Ok(res) if !res.status().is_success() => {
-                        eprintln!(
-                            "Failed to send log to Elasticsearch: HTTP {}",
-                            res.status()
-                        );
+                        eprintln!("Failed to send log to Elasticsearch: HTTP {}", res.status());
                     }
                     Ok(_) => {}
                     Err(e) => {
@@ -87,9 +82,11 @@ where
         let timestamp = Utc::now().to_rfc3339();
         let level = event.metadata().level().to_string();
         let target = event.metadata().target().to_string();
-        
+
         let mut message = String::new();
-        let mut visitor = Visitor { output: &mut message };
+        let mut visitor = Visitor {
+            output: &mut message,
+        };
         event.record(&mut visitor);
 
         let log = LogMessage {

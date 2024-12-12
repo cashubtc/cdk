@@ -79,7 +79,11 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Export logs to elastic search
-    let elasticsearch_layer = ElasticsearchLayer::new("http://elastic:password@localhost:9200", "cdk-mintd-logs", None);
+    let elasticsearch_layer = ElasticsearchLayer::new(
+        "http://elastic:password@localhost:9200",
+        "cdk-mintd-logs",
+        None,
+    );
     let subscriber = Registry::default()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
         .with(elasticsearch_layer);
@@ -89,7 +93,6 @@ async fn main() -> anyhow::Result<()> {
     // Test log messages
     tracing::info!(message = "This is an info log", user_id = 123);
     tracing::error!("This is an error log");
-
 
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
         match settings.database.engine {

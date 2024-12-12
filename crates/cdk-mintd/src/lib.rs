@@ -5,8 +5,8 @@ use std::path::PathBuf;
 pub mod cli;
 pub mod config;
 pub mod env_vars;
-pub mod setup;
 pub mod loggers;
+pub mod setup;
 
 fn expand_path(path: &str) -> Option<PathBuf> {
     if path.starts_with('~') {
