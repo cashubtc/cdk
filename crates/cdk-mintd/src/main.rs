@@ -79,16 +79,16 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Export logs to elastic search
-    let elasticsearch_layer = ElasticsearchLayer::new("http://localhost:9200", "cdk-mintd-logs");
+    let elasticsearch_layer = ElasticsearchLayer::new("http://elastic:password@localhost:9200", "cdk-mintd-logs", None);
     let subscriber = Registry::default()
-        .with(elasticsearch_layer)
-        .with(tracing_subscriber::fmt::layer().with_filter(env_filter));
+        .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+        .with(elasticsearch_layer);
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
 
     // Test log messages
     tracing::info!(message = "This is an info log", user_id = 123);
-    tracing::error!(message = "This is an error log");
+    tracing::error!("This is an error log");
 
 
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =

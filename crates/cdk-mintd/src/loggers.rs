@@ -1,7 +1,5 @@
 use chrono::Utc;
-use elasticsearch::http::transport::Transport;
-use elasticsearch::{Elasticsearch, IndexParts};
-use elasticsearch::auth::Credentials;
+use reqwest::Client;
 use serde::Serialize;
 use tokio::sync::mpsc::{self, Sender};
 use tracing::Event;
@@ -35,24 +33,44 @@ pub struct ElasticsearchLayer {
 }
 
 impl ElasticsearchLayer {
-    pub fn new(elasticsearch_url: &str, index: &str) -> Self {
+    /// Create a new ElasticsearchLayer.
+    ///
+    /// # Arguments
+    ///
+    /// - `elasticsearch_url`: The base URL of the Elasticsearch instance.
+    /// - `index`: The name of the index where logs will be sent.
+    /// - `api_key`: Optional API key for authentication.
+    pub fn new(elasticsearch_url: &str, index: &str, api_key: Option<&str>) -> Self {
         let (sender, mut receiver) = mpsc::channel(BACKLOG);
-        let client = Elasticsearch::new(
-            Transport::single_node(elasticsearch_url)
-                .unwrap(),
-        );
-        let index = index.to_string();
+        let client = Client::new();
+        let base_url = format!("{}/{}/_doc", elasticsearch_url.trim_end_matches('/'), index);
+        let api_key_header = api_key.map(|key| format!("ApiKey {}", key));
 
+        // Spawn an async task to process logs and send them to Elasticsearch.
         tokio::spawn(async move {
             while let Some(log) = receiver.recv().await {
-                let log_json = serde_json::to_value(log).unwrap();
-                if let Err(e) = client
-                    .index(IndexParts::Index(&index))
-                    .body(log_json)
-                    .send()
-                    .await
-                {
-                    eprintln!("Failed to send log to Elasticsearch: {:?}", e);
+                let mut request = client
+                    .post(&base_url)
+                    .json(&log);
+
+                // Add the Authorization header if an API key is provided.
+                if let Some(ref key) = api_key_header {
+                    request = request.header("Authorization", key);
+                }
+
+                let response = request.send().await;
+
+                match response {
+                    Ok(res) if !res.status().is_success() => {
+                        eprintln!(
+                            "Failed to send log to Elasticsearch: HTTP {}",
+                            res.status()
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Failed to send log to Elasticsearch: {:?}", e);
+                    }
                 }
             }
         });
@@ -70,7 +88,6 @@ where
         let level = event.metadata().level().to_string();
         let target = event.metadata().target().to_string();
         
-        // Manually process the event fields
         let mut message = String::new();
         let mut visitor = Visitor { output: &mut message };
         event.record(&mut visitor);
