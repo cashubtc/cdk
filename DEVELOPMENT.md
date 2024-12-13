@@ -132,7 +132,7 @@ just final-check
 - Open an issue on GitHub
 - Check existing issues for similar problems
 - Include relevant error messages and system information
-- Reach out in Discord [Invite link](https://discord.gg/tUxMKd5YjN)
+- Reach out in Matrix [Invite link](https://matrix.to/#/#dev:matrix.cashu.space)
 
 ## Contributing
 
