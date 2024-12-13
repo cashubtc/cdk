@@ -11,7 +11,7 @@ use crate::cache::{HttpCacheKey, HttpCacheStorage};
 pub struct HttpCacheRedis {
     cache_ttl: Duration,
     prefix: Option<Vec<u8>>,
-    client: Option<redis::Client>,
+    client: redis::Client,
 }
 
 /// Configuration for the Redis cache storage.
@@ -26,9 +26,12 @@ pub struct Config {
 
 impl HttpCacheRedis {
     /// Create a new Redis cache.
-    pub fn set_client(mut self, client: redis::Client) -> Self {
-        self.client = Some(client);
-        self
+    pub fn new(client: redis::Client) -> Self {
+        Self {
+            client,
+            prefix: None,
+            cache_ttl: Duration::from_secs(60),
+        }
     }
 
     /// Set a prefix for the cache keys.
@@ -43,22 +46,12 @@ impl HttpCacheRedis {
 
 #[async_trait::async_trait]
 impl HttpCacheStorage for HttpCacheRedis {
-    fn new(cache_ttl: Duration, _cache_tti: Duration) -> Self {
-        Self {
-            cache_ttl,
-            prefix: None,
-            client: None,
-        }
+    fn set_expiration_times(&mut self, cache_ttl: Duration, _cache_tti: Duration) {
+        self.cache_ttl = cache_ttl;
     }
 
     async fn get(&self, key: &HttpCacheKey) -> Option<Vec<u8>> {
-        let mut con = match self
-            .client
-            .as_ref()
-            .expect("A client must be set with set_client()")
-            .get_multiplexed_tokio_connection()
-            .await
-        {
+        let mut con = match self.client.get_multiplexed_tokio_connection().await {
             Ok(con) => con,
             Err(err) => {
                 tracing::error!("Failed to get redis connection: {:?}", err);
@@ -82,13 +75,7 @@ impl HttpCacheStorage for HttpCacheRedis {
         let mut db_key = self.prefix.clone().unwrap_or_default();
         db_key.extend(&*key);
 
-        let mut con = match self
-            .client
-            .as_ref()
-            .expect("A client must be set with set_client()")
-            .get_multiplexed_tokio_connection()
-            .await
-        {
+        let mut con = match self.client.get_multiplexed_tokio_connection().await {
             Ok(con) => con,
             Err(err) => {
                 tracing::error!("Failed to get redis connection: {:?}", err);

@@ -211,7 +211,10 @@ pub struct MintInfo {
 
 impl Settings {
     #[must_use]
-    pub fn new<P: Into<PathBuf>>(config_file_name: Option<P>) -> Self {
+    pub fn new<P>(config_file_name: Option<P>) -> Self
+    where
+        P: Into<PathBuf>,
+    {
         let default_settings = Self::default();
         // attempt to construct settings with file
         let from_file = Self::new_from_default(&default_settings, config_file_name);
@@ -224,10 +227,13 @@ impl Settings {
         }
     }
 
-    fn new_from_default<P: Into<PathBuf>>(
+    fn new_from_default<P>(
         default: &Settings,
         config_file_name: Option<P>,
-    ) -> Result<Self, ConfigError> {
+    ) -> Result<Self, ConfigError>
+    where
+        P: Into<PathBuf>,
+    {
         let mut default_config_file_name = home::home_dir()
             .ok_or(ConfigError::NotFound("Config Path".to_string()))?
             .join("cashu-rs-mint");

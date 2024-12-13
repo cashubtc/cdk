@@ -25,10 +25,8 @@ pub use self::config::Config;
 #[async_trait::async_trait]
 /// Cache storage for the HTTP cache.
 pub trait HttpCacheStorage {
-    /// Create a new cache storage instance
-    fn new(cache_ttl: Duration, cache_tti: Duration) -> Self
-    where
-        Self: Sized;
+    /// Sets the expiration times for the cache.
+    fn set_expiration_times(&mut self, cache_ttl: Duration, cache_tti: Duration);
 
     /// Get a value from the cache.
     async fn get(&self, key: &HttpCacheKey) -> Option<Vec<u8>>;
@@ -43,7 +41,8 @@ pub struct HttpCache {
     pub ttl: Duration,
     /// Time to idle for the cache.
     pub tti: Duration,
-    storage: Arc<dyn HttpCacheStorage + Send + Sync>,
+    /// Storage backend for the cache.
+    storage: Arc<Box<dyn HttpCacheStorage + Send + Sync>>,
 }
 
 impl Default for HttpCache {
@@ -94,12 +93,7 @@ impl From<config::Config> for HttpCache {
             config::Backend::Redis(redis_config) => {
                 let client = redis::Client::open(redis_config.connection_string)
                     .expect("Failed to create Redis client");
-                let storage = HttpCacheRedis::new(
-                    Duration::from_secs(config.ttl.unwrap_or(60)),
-                    Duration::from_secs(config.tti.unwrap_or(60)),
-                )
-                .set_client(client)
-                .set_prefix(
+                let storage = HttpCacheRedis::new(client).set_prefix(
                     redis_config
                         .key_prefix
                         .unwrap_or_default()
@@ -109,7 +103,7 @@ impl From<config::Config> for HttpCache {
                 Self::new(
                     Duration::from_secs(config.ttl.unwrap_or(DEFAULT_TTL_SECS)),
                     Duration::from_secs(config.tti.unwrap_or(DEFAULT_TTI_SECS)),
-                    Some(Arc::new(storage)),
+                    Some(Box::new(storage)),
                 )
             }
         }
@@ -121,12 +115,15 @@ impl HttpCache {
     pub fn new(
         ttl: Duration,
         tti: Duration,
-        storage: Option<Arc<dyn HttpCacheStorage + Send + Sync + 'static>>,
+        storage: Option<Box<dyn HttpCacheStorage + Send + Sync + 'static>>,
     ) -> Self {
+        let mut storage = storage.unwrap_or_else(|| Box::new(InMemoryHttpCache::default()));
+        storage.set_expiration_times(ttl, tti);
+
         Self {
             ttl,
             tti,
-            storage: storage.unwrap_or_else(|| Arc::new(InMemoryHttpCache::new(ttl, tti))),
+            storage: Arc::new(storage),
         }
     }
 
@@ -142,7 +139,10 @@ impl HttpCache {
     /// double hash to have a predictable key size, although it may open the
     /// window for CPU attacks with large payloads, but it is a trade-off.
     /// Perhaps upper layer have a protection against large payloads.
-    pub fn calculate_key<K: Serialize>(&self, key: &K) -> Option<HttpCacheKey> {
+    pub fn calculate_key<K>(&self, key: &K) -> Option<HttpCacheKey>
+    where
+        K: Serialize,
+    {
         let json_value = match serde_json::to_vec(key) {
             Ok(value) => value,
             Err(err) => {
@@ -162,16 +162,27 @@ impl HttpCache {
     }
 
     /// Get a value from the cache.
-    pub async fn get<V: DeserializeOwned>(self: &Arc<Self>, key: &HttpCacheKey) -> Option<V> {
-        self.storage
-            .get(key)
-            .await
-            .map(|value| serde_json::from_slice(&value).unwrap())
+    pub async fn get<V>(self: &Arc<Self>, key: &HttpCacheKey) -> Option<V>
+    where
+        V: DeserializeOwned,
+    {
+        self.storage.get(key).await.and_then(|value| {
+            serde_json::from_slice(&value)
+                .map_err(|e| {
+                    tracing::warn!("Failed to deserialize value: {:?}", e);
+                    e
+                })
+                .ok()
+        })
     }
 
     /// Set a value in the cache.
     pub async fn set<V: Serialize>(self: &Arc<Self>, key: HttpCacheKey, value: &V) {
-        let value = serde_json::to_vec(value).unwrap();
-        self.storage.set(key, value).await;
+        if let Ok(bytes) = serde_json::to_vec(value).map_err(|e| {
+            tracing::warn!("Failed to serialize value: {:?}", e);
+            e
+        }) {
+            self.storage.set(key, bytes).await;
+        }
     }
 }
