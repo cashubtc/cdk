@@ -239,11 +239,15 @@
               cargo update -p serde_with --precise 3.1.0
               cargo update -p regex --precise 1.9.6
               cargo update -p backtrace --precise 0.3.58
+              cargo update -p async-compression --precise 0.4.3
+              cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
+
               # For wasm32-unknown-unknown target
               cargo update -p bumpalo --precise 3.12.0
               cargo update -p moka --precise 0.11.1
               cargo update -p triomphe --precise 0.1.11
               cargo update -p url --precise 2.5.2
+
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
@@ -263,10 +267,13 @@
                 cargo update -p home --precise 0.5.5
                 cargo update -p tokio --precise 1.38.1
                 cargo update -p tokio-stream --precise 0.1.15
+                cargo update -p tokio-util --precise 0.7.11
                 cargo update -p serde_with --precise 3.1.0
                 cargo update -p reqwest --precise 0.12.4
                 cargo update -p url --precise 2.5.2
                 cargo update -p allocator-api2 --precise 0.2.18
+                cargo update -p async-compression --precise 0.4.3
+                cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
               '';
               buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
               inherit nativeBuildInputs;
