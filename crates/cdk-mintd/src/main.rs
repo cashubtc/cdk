@@ -9,7 +9,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use axum::Router;
+use axum::http::Request;
+use axum::middleware::Next;
+use axum::response::Response;
+use axum::{middleware, Router};
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
@@ -26,6 +29,7 @@ use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
@@ -343,6 +347,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut mint_service = Router::new()
         .merge(v1_service)
+        .layer(CompressionLayer::new())
+        .layer(middleware::from_fn(logging_middleware))
         .layer(CorsLayer::permissive());
 
     #[cfg(feature = "swagger")]
@@ -389,6 +395,29 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Logs infos about the request and the response
+async fn logging_middleware<B>(req: Request<B>, next: Next<B>) -> Response {
+    let start = std::time::Instant::now();
+    let path = req.uri().path().to_owned();
+    let method = req.method().clone();
+
+    let response = next.run(req).await;
+
+    let duration = start.elapsed();
+    let status = response.status();
+    let compression = response
+        .headers()
+        .get("content-encoding")
+        .map(|h| h.to_str().unwrap_or("none"))
+        .unwrap_or("none");
+
+    tracing::trace!(
+        "Request: {method} {path} | Status: {status} | Compression: {compression} | Duration: {duration:?}",
+    );
+
+    response
 }
 
 fn work_dir() -> Result<PathBuf> {
