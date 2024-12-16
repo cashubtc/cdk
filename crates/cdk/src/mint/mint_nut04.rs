@@ -17,7 +17,8 @@ impl Mint {
         amount: Amount,
         unit: &CurrencyUnit,
     ) -> Result<(), Error> {
-        let nut04 = &self.mint_info.nuts.nut04;
+        let mint_info = self.mint_info();
+        let nut04 = &mint_info.nuts.nut04;
 
         if nut04.disabled {
             return Err(Error::MintingDisabled);
@@ -99,7 +100,7 @@ impl Mint {
             })?;
 
         let quote = MintQuote::new(
-            self.mint_url.clone(),
+            self.config.mint_url(),
             create_invoice_response.request.to_string(),
             unit.clone(),
             amount,

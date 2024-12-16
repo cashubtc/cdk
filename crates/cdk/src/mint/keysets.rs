@@ -15,8 +15,13 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         self.ensure_keyset_loaded(keyset_id).await?;
-        let keysets = self.keysets.read().await;
-        let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?.clone();
+        let keyset = self
+            .config
+            .get_config()
+            .keysets
+            .get(keyset_id)
+            .ok_or(Error::UnknownKeySet)?
+            .clone();
         Ok(KeysResponse {
             keysets: vec![keyset.into()],
         })
@@ -34,9 +39,11 @@ impl Mint {
             self.ensure_keyset_loaded(id).await?;
         }
 
-        let keysets = self.keysets.read().await;
         Ok(KeysResponse {
-            keysets: keysets
+            keysets: self
+                .config
+                .get_config()
+                .keysets
                 .values()
                 .filter_map(|k| match active_keysets.contains(&k.id) {
                     true => Some(k.clone().into()),
@@ -75,7 +82,8 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
         self.ensure_keyset_loaded(id).await?;
-        let keysets = self.keysets.read().await;
+        let config = self.config.get_config();
+        let keysets = &config.keysets;
         let keyset = keysets.get(id).map(|k| k.clone().into());
         Ok(keyset)
     }
@@ -110,8 +118,9 @@ impl Mint {
         self.localstore.add_keyset_info(keyset_info).await?;
         self.localstore.set_active_keyset(unit, id).await?;
 
-        let mut keysets = self.keysets.write().await;
+        let mut keysets = self.config.get_config().keysets.clone();
         keysets.insert(id, keyset);
+        self.config.set_keysets(keysets);
 
         Ok(())
     }
@@ -119,20 +128,20 @@ impl Mint {
     /// Ensure Keyset is loaded in mint
     #[instrument(skip(self))]
     pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
-        let keysets = self.keysets.read().await;
-        if keysets.contains_key(id) {
+        if self.config.get_config().keysets.contains_key(id) {
             return Ok(());
         }
-        drop(keysets);
 
+        let mut keysets = self.config.get_config().keysets.clone();
         let keyset_info = self
             .localstore
             .get_keyset_info(id)
             .await?
             .ok_or(Error::UnknownKeySet)?;
         let id = keyset_info.id;
-        let mut keysets = self.keysets.write().await;
         keysets.insert(id, self.generate_keyset(keyset_info));
+        self.config.set_keysets(keysets);
+
         Ok(())
     }
 
