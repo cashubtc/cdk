@@ -51,24 +51,26 @@ impl HttpCacheStorage for HttpCacheRedis {
     }
 
     async fn get(&self, key: &HttpCacheKey) -> Option<Vec<u8>> {
-        let mut conn = match self.client.get_multiplexed_tokio_connection().await {
-            Ok(conn) => conn,
-            Err(err) => {
+        let mut conn = self
+            .client
+            .get_multiplexed_tokio_connection()
+            .await
+            .map_err(|err| {
                 tracing::error!("Failed to get redis connection: {:?}", err);
-                return None;
-            }
-        };
+                err
+            })
+            .ok()?;
 
         let mut db_key = self.prefix.clone().unwrap_or_default();
         db_key.extend(&**key);
 
-        match conn.get(db_key).await {
-            Ok(result) => result,
-            Err(err) => {
+        conn.get(db_key)
+            .await
+            .map_err(|err| {
                 tracing::error!("Failed to get value from redis: {:?}", err);
-                None
-            }
-        }
+                err
+            })
+            .ok()?
     }
 
     async fn set(&self, key: HttpCacheKey, value: Vec<u8>) {
@@ -85,6 +87,10 @@ impl HttpCacheStorage for HttpCacheRedis {
 
         let _: Result<(), _> = conn
             .set_ex(db_key, value, self.cache_ttl.as_secs() as usize)
-            .await;
+            .await
+            .map_err(|err| {
+                tracing::error!("Failed to set value in redis: {:?}", err);
+                err
+            });
     }
 }
