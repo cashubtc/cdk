@@ -35,7 +35,7 @@ impl Wallet {
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
     ///     let amount = Amount::from(100);
     ///
-    ///     let quote = wallet.mint_quote(amount, None, None).await?;
+    ///     let quote = wallet.mint_quote(amount, None).await?;
     ///     Ok(())
     /// }
     /// ```
@@ -159,12 +159,10 @@ impl Wallet {
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
-    ///     let quote = wallet.mint_quote(amount, None, None).await?;
+    ///     let quote = wallet.mint_quote(amount, None).await?;
     ///     let quote_id = quote.id;
     ///     // To be called after quote request is paid
-    ///     let amount_minted = wallet
-    ///         .mint(&quote_id, SplitTarget::default(), None, None)
-    ///         .await?;
+    ///     let amount_minted = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
     ///
     ///     Ok(())
     /// }
