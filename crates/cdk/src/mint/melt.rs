@@ -27,7 +27,8 @@ impl Mint {
         unit: CurrencyUnit,
         method: PaymentMethod,
     ) -> Result<(), Error> {
-        let nut05 = &self.mint_info.nuts.nut05;
+        let mint_info = self.mint_info();
+        let nut05 = mint_info.nuts.nut05;
 
         if nut05.disabled {
             return Err(Error::MeltingDisabled);
