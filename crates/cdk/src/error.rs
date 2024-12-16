@@ -45,6 +45,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Witness missing or invalid
+    #[error("Signature missing or invalid")]
+    SignatureMissingOrInvalid,
 
     // Mint Errors
     /// Minting is disabled
@@ -162,12 +165,6 @@ pub enum Error {
     /// Invoice Description not supported
     #[error("Invoice Description not supported")]
     InvoiceDescriptionUnsupported,
-    /// Secretkey to sign mint quote not provided
-    #[error("Secretkey to sign mint quote not provided")]
-    SecretKeyNotProvided,
-    /// Incorrect secret key provided
-    #[error("Incorrect secretkey provided")]
-    IncorrectSecretKey,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
@@ -416,6 +413,7 @@ impl From<ErrorResponse> for Error {
                 Self::AmountOutofLimitRange(Amount::default(), Amount::default(), Amount::default())
             }
             ErrorCode::TokenPending => Self::TokenPending,
+            ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
