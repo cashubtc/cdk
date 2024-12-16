@@ -210,6 +210,7 @@ impl From<V1MintQuote> for MintQuote {
             state: quote.state,
             expiry: quote.expiry,
             request_lookup_id: Bolt11Invoice::from_str(&quote.request).unwrap().to_string(),
+            pubkey: None,
         }
     }
 }

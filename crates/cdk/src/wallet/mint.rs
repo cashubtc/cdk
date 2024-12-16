@@ -6,7 +6,7 @@ use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     nut12, MintBolt11Request, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
-    SpendingConditions, State,
+    SecretKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -65,10 +65,13 @@ impl Wallet {
             }
         }
 
+        let secret_key = SecretKey::generate();
+
         let request = MintQuoteBolt11Request {
             amount,
             unit: unit.clone(),
             description,
+            pubkey: Some(secret_key.public_key()),
         };
 
         let quote_res = self.client.post_mint_quote(request).await?;
@@ -81,6 +84,7 @@ impl Wallet {
             request: quote_res.request,
             state: quote_res.state,
             expiry: quote_res.expiry.unwrap_or(0),
+            secret_key: Some(secret_key),
         };
 
         self.localstore.add_mint_quote(quote.clone()).await?;
@@ -121,6 +125,7 @@ impl Wallet {
             let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
 
             if mint_quote_response.state == MintQuoteState::Paid {
+                // TODO: Need to pass in keys here
                 let amount = self
                     .mint(&mint_quote.id, SplitTarget::default(), None)
                     .await?;
@@ -216,10 +221,15 @@ impl Wallet {
             )?,
         };
 
-        let request = MintBolt11Request {
+        let mut request = MintBolt11Request {
             quote: quote_id.to_string(),
             outputs: premint_secrets.blinded_messages(),
+            signature: None,
         };
+
+        if let Some(secret_key) = quote_info.secret_key {
+            request.sign(secret_key)?;
+        }
 
         let mint_res = self.client.post_mint(request).await?;
 

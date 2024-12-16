@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, NotificationPayload,
-    PreMintSecrets, State,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, MintQuoteState,
+    NotificationPayload, PreMintSecrets, SecretKey, State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::{Wallet, WalletSubscription};
@@ -374,6 +374,105 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     assert_eq!(melt_change, check);
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_with_witness() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+
+    let mint_amount = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+
+    assert!(mint_amount == 100.into());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_without_witness() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+
+    let premint_secrets =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
+
+    let request = MintBolt11Request {
+        quote: mint_quote.id,
+        outputs: premint_secrets.blinded_messages(),
+        signature: None,
+    };
+
+    let response = http_client.post_mint(request.clone()).await;
+
+    match response {
+        Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),
+        Err(err) => bail!("Wrong mint response for minting without witness: {}", err),
+        Ok(_) => bail!("Minting should not have succeed without a witness"),
+    }
+}
+
+// TODO: Rewrite this test to include witness wrong
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_with_wrong_witness() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+
+    let premint_secrets =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
+
+    let mut request = MintBolt11Request {
+        quote: mint_quote.id,
+        outputs: premint_secrets.blinded_messages(),
+        signature: None,
+    };
+
+    let secret_key = SecretKey::generate();
+
+    request.sign(secret_key)?;
+
+    let response = http_client.post_mint(request.clone()).await;
+
+    match response {
+        Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),
+        Err(err) => bail!("Wrong mint response for minting without witness: {}", err),
+        Ok(_) => bail!("Minting should not have succeed without a witness"),
+    }
 }
 
 // Keep polling the state of the mint quote id until it's paid
