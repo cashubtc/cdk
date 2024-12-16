@@ -128,7 +128,7 @@ pub async fn wallet_mint(
     split_target: SplitTarget,
     description: Option<String>,
 ) -> Result<()> {
-    let quote = wallet.mint_quote(amount, description, None).await?;
+    let quote = wallet.mint_quote(amount, description).await?;
 
     let mut subscription = wallet
         .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
@@ -144,7 +144,7 @@ pub async fn wallet_mint(
         }
     }
 
-    let receive_amount = wallet.mint(&quote.id, split_target, None, None).await?;
+    let receive_amount = wallet.mint(&quote.id, split_target, None).await?;
 
     println!("Minted: {}", receive_amount);
 

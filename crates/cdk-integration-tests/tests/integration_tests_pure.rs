@@ -206,7 +206,7 @@ mod integration_tests_pure {
     /// amount is minted.
     async fn receive(wallet: Arc<Wallet>, amount: u64) -> anyhow::Result<Amount> {
         let desired_amount = Amount::from(amount);
-        let quote = wallet.mint_quote(desired_amount, None, None).await?;
+        let quote = wallet.mint_quote(desired_amount, None).await?;
 
         loop {
             let status = wallet.mint_quote_state(&quote.id).await?;
@@ -216,7 +216,7 @@ mod integration_tests_pure {
         }
 
         wallet
-            .mint(&quote.id, SplitTarget::default(), None, None)
+            .mint(&quote.id, SplitTarget::default(), None)
             .await
             .map_err(Into::into)
     }

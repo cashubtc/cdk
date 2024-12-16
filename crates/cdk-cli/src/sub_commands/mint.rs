@@ -50,7 +50,7 @@ pub async fn mint(
     };
 
     let quote = wallet
-        .mint_quote(Amount::from(sub_command_args.amount), description, None)
+        .mint_quote(Amount::from(sub_command_args.amount), description)
         .await?;
 
     println!("Quote: {:#?}", quote);
@@ -71,9 +71,7 @@ pub async fn mint(
         }
     }
 
-    let receive_amount = wallet
-        .mint(&quote.id, SplitTarget::default(), None, None)
-        .await?;
+    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
 
     println!("Received {receive_amount} from mint {mint_url}");
 

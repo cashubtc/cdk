@@ -6,7 +6,7 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintQuoteState, NotificationPayload,
-    PreMintSecrets, SecretKey, State,
+    PreMintSecrets, State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::{Wallet, WalletSubscription};
@@ -26,12 +26,12 @@ async fn test_fake_tokens_pending() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let fake_description = FakeInvoiceDescription {
@@ -66,12 +66,12 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let fake_description = FakeInvoiceDescription {
@@ -129,12 +129,12 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let fake_description = FakeInvoiceDescription {
@@ -174,12 +174,12 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let fake_description = FakeInvoiceDescription {
@@ -234,12 +234,12 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let fake_description = FakeInvoiceDescription {
@@ -295,12 +295,12 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let fake_description = FakeInvoiceDescription {
@@ -333,12 +333,12 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None, None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     let fake_description = FakeInvoiceDescription::default();
@@ -385,15 +385,12 @@ async fn test_fake_mint_with_witness() -> Result<()> {
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
-    let secret = SecretKey::generate();
-    let mint_quote = wallet
-        .mint_quote(100.into(), None, Some(secret.public_key()))
-        .await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, Some(secret))
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
     assert!(mint_amount == 100.into());
@@ -401,6 +398,7 @@ async fn test_fake_mint_with_witness() -> Result<()> {
     Ok(())
 }
 
+// TODO: Rewrite this test to not include witness
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_without_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -411,15 +409,12 @@ async fn test_fake_mint_without_witness() -> Result<()> {
         None,
     )?;
 
-    let secret = SecretKey::generate();
-    let mint_quote = wallet
-        .mint_quote(100.into(), None, Some(secret.public_key()))
-        .await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, None)
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await;
 
     match mint_amount {
@@ -428,6 +423,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
     }
 }
 
+// TODO: Rewrite this test to include witness wrong
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_wrong_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -437,16 +433,13 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
-    let secret = SecretKey::generate();
-    let mint_quote = wallet
-        .mint_quote(100.into(), None, Some(secret.public_key()))
-        .await?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
-    let secret = SecretKey::generate();
 
     let mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None, Some(secret))
+        .mint(&mint_quote.id, SplitTarget::default(), None)
         .await;
 
     match mint_amount {
