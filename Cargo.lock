@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bip39",
@@ -805,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -937,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-phoenixd"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "cdk",
@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-rexie"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "cdk",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-strike"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",

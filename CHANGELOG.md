@@ -21,19 +21,25 @@
 
 -->
 
-#[Unreleased]
+#[0.6.0]
 
 ### Changed
 cdk: Enforce `quote_id` to uuid type in mint ([tdelabro]).
+cdk: Refactor wallet mint connector ([ok300]).
 
 ### Added
 cdk: `NUT19` Settings in `NUT06` info ([thesimplekid]).
 cdk: `NUT17` Websocket support for wallet ([crodas]).
+cdk-axum: Redis cache backend ([crodas]).
+cdk-mints: Get mint settings from env vars ([thesimplekid]).
+cdk-axum: HTTP compression support ([ok300]).
 
 ### Fixed
 cdk-sqlite: keyset counter was overwritten when keyset was fetched from mint ([thesimplekid]).
 cdk-cli: on `mint` use `unit` from cli args ([thesimplekid]).
 cdk-cli: on `restore` create `wallet` if it does not exist ([thesimplekid]).
+cdk: Signaling support for optional nuts ([thesimpekid]).
+cdk-phd: Check payment has valid uuis ([thesimplekid]).
 
 #[0.5.0]
 ### Changed
