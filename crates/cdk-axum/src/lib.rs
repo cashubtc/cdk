@@ -4,15 +4,15 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
+use cache::HttpCache;
 use cdk::mint::Mint;
-use moka::future::Cache;
 use router_handlers::*;
 
+pub mod cache;
 mod router_handlers;
 mod ws;
 
@@ -52,7 +52,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct MintState {
     mint: Arc<Mint>,
-    cache: Cache<String, String>,
+    cache: Arc<cache::HttpCache>,
 }
 
 #[cfg(feature = "swagger")]
@@ -131,15 +131,20 @@ pub struct MintState {
 /// OpenAPI spec for the mint's v1 APIs
 pub struct ApiDocV1;
 
-/// Create mint [`Router`] with required endpoints for cashu mint
-pub async fn create_mint_router(mint: Arc<Mint>, cache_ttl: u64, cache_tti: u64) -> Result<Router> {
+/// Create mint [`Router`] with required endpoints for cashu mint with the default cache
+pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
+    create_mint_router_with_custom_cache(mint, Default::default()).await
+}
+
+/// Create mint [`Router`] with required endpoints for cashu mint with a custom
+/// backend for cache
+pub async fn create_mint_router_with_custom_cache(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+) -> Result<Router> {
     let state = MintState {
         mint,
-        cache: Cache::builder()
-            .max_capacity(10_000)
-            .time_to_live(Duration::from_secs(cache_ttl))
-            .time_to_idle(Duration::from_secs(cache_tti))
-            .build(),
+        cache: Arc::new(cache),
     };
 
     let v1_router = Router::new()

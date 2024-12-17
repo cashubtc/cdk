@@ -127,22 +127,15 @@ impl Info {
             self.mnemonic = mnemonic;
         }
 
-        // Optional fields
-        if let Ok(seconds_str) = env::var(ENV_SECONDS_QUOTE_VALID) {
-            if let Ok(seconds) = seconds_str.parse() {
-                self.seconds_quote_is_valid_for = Some(seconds);
-            }
-        }
-
         if let Ok(cache_seconds_str) = env::var(ENV_CACHE_SECONDS) {
             if let Ok(seconds) = cache_seconds_str.parse() {
-                self.seconds_to_cache_requests_for = Some(seconds);
+                self.http_cache.ttl = Some(seconds);
             }
         }
 
         if let Ok(extend_cache_str) = env::var(ENV_EXTEND_CACHE_SECONDS) {
             if let Ok(seconds) = extend_cache_str.parse() {
-                self.seconds_to_extend_cache_by = Some(seconds);
+                self.http_cache.tti = Some(seconds);
             }
         }
 
@@ -157,6 +150,8 @@ impl Info {
                 self.enable_swagger_ui = Some(enable);
             }
         }
+
+        self.http_cache = self.http_cache.from_env();
 
         self
     }

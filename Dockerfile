@@ -10,7 +10,7 @@ COPY Cargo.toml ./Cargo.toml
 COPY crates ./crates
 
 # Start the Nix daemon and develop the environment
-RUN nix develop --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd
+RUN nix develop --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features redis
 
 # Create a runtime stage
 FROM debian:bookworm-slim

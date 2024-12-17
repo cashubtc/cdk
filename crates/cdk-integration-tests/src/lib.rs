@@ -86,17 +86,10 @@ pub async fn start_mint(
         HashMap::new(),
     )
     .await?;
-    let cache_time_to_live = 3600;
-    let cache_time_to_idle = 3600;
 
     let mint_arc = Arc::new(mint);
 
-    let v1_service = cdk_axum::create_mint_router(
-        Arc::clone(&mint_arc),
-        cache_time_to_live,
-        cache_time_to_idle,
-    )
-    .await?;
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc)).await?;
 
     let mint_service = Router::new()
         .merge(v1_service)

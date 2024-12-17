@@ -56,6 +56,10 @@ jobs:
             -p cdk --no-default-features --features "mint swagger",
             -p cdk-redb,
             -p cdk-sqlite,
+            -p cdk-axum --no-default-features,
+            -p cdk-axum --no-default-features --features swagger,
+            -p cdk-axum --no-default-features --features redis,
+            -p cdk-axum --no-default-features --features "redis swagger",
             -p cdk-axum,
             -p cdk-cln,
             -p cdk-lnd,
@@ -65,6 +69,9 @@ jobs:
             -p cdk-fake-wallet,
             --bin cdk-cli,
             --bin cdk-mintd,
+            --bin cdk-mintd --no-default-features --features swagger,
+            --bin cdk-mintd --no-default-features --features redis,
+            --bin cdk-mintd --no-default-features --features "redis swagger",
           ]
     steps:
       - name: checkout
@@ -152,6 +159,7 @@ jobs:
             -p cdk --no-default-features --features wallet,
             -p cdk --no-default-features --features mint,
             -p cdk-axum,
+            -p cdk-axum --no-default-features --features redis,
             -p cdk-strike,
             -p cdk-lnbits,
             -p cdk-phoenixd,
