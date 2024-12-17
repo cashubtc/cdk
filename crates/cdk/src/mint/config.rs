@@ -22,7 +22,7 @@ pub struct Config {
 /// Mint configuration
 ///
 /// This struct is used to configure the mint, and it is wrapped inside a ArcSwap, so it can be
-/// updated at runtime without locking the shared config nor without requiriming a mutable reference
+/// updated at runtime without locking the shared config nor without requiring a mutable reference
 /// to the config
 ///
 /// ArcSwap is used instead of a RwLock since the updates should be less frequent than the reads
