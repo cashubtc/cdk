@@ -17,7 +17,7 @@ impl Mint {
         self.ensure_keyset_loaded(keyset_id).await?;
         let keyset = self
             .config
-            .get_config()
+            .load()
             .keysets
             .get(keyset_id)
             .ok_or(Error::UnknownKeySet)?
@@ -42,7 +42,7 @@ impl Mint {
         Ok(KeysResponse {
             keysets: self
                 .config
-                .get_config()
+                .load()
                 .keysets
                 .values()
                 .filter_map(|k| match active_keysets.contains(&k.id) {
@@ -82,7 +82,7 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
         self.ensure_keyset_loaded(id).await?;
-        let config = self.config.get_config();
+        let config = self.config.load();
         let keysets = &config.keysets;
         let keyset = keysets.get(id).map(|k| k.clone().into());
         Ok(keyset)
@@ -118,7 +118,7 @@ impl Mint {
         self.localstore.add_keyset_info(keyset_info).await?;
         self.localstore.set_active_keyset(unit, id).await?;
 
-        let mut keysets = self.config.get_config().keysets.clone();
+        let mut keysets = self.config.load().keysets.clone();
         keysets.insert(id, keyset);
         self.config.set_keysets(keysets);
 
@@ -128,11 +128,11 @@ impl Mint {
     /// Ensure Keyset is loaded in mint
     #[instrument(skip(self))]
     pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
-        if self.config.get_config().keysets.contains_key(id) {
+        if self.config.load().keysets.contains_key(id) {
             return Ok(());
         }
 
-        let mut keysets = self.config.get_config().keysets.clone();
+        let mut keysets = self.config.load().keysets.clone();
         let keyset_info = self
             .localstore
             .get_keyset_info(id)
