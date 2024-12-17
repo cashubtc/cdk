@@ -1,6 +1,6 @@
 [package]
 name = "cdk-cln"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["CDK Developers"]
 license = "MIT"
@@ -12,7 +12,7 @@ description = "CDK ln backend for cln"
 [dependencies]
 async-trait = "0.1"
 bitcoin = { version = "0.32.2", default-features = false }
-cdk = { path = "../cdk", version = "0.5.0", default-features = false, features = ["mint"] }
+cdk = { path = "../cdk", version = "0.6.0", default-features = false, features = ["mint"] }
 cln-rpc = "0.2.0"
 futures = { version = "0.3.28", default-features = false }
 tokio = { version = "1", default-features = false }

@@ -1,6 +1,6 @@
 [package]
 name = "cdk-rexie"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Indexdb storage backend for CDK in the browser"
@@ -16,7 +16,7 @@ wallet = ["cdk/wallet"]
 
 [dependencies]
 rexie = "0.6.0"
-cdk = { path = "../cdk", version = "0.5.0", default-features = false }
+cdk = { path = "../cdk", version = "0.6.0", default-features = false }
 async-trait = "0.1.74"
 tokio = { version = "1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
