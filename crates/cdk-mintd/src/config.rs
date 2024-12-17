@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
+use cdk_axum::cache;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +12,9 @@ pub struct Info {
     pub listen_host: String,
     pub listen_port: u16,
     pub mnemonic: String,
-    pub seconds_quote_is_valid_for: Option<u64>,
-    pub seconds_to_cache_requests_for: Option<u64>,
-    pub seconds_to_extend_cache_by: Option<u64>,
     pub input_fee_ppk: Option<u64>,
+
+    pub http_cache: cache::Config,
 
     /// When this is set to true, the mint exposes a Swagger UI for it's API at
     /// `[listen_host]:[listen_port]/swagger-ui`
@@ -93,6 +93,7 @@ pub struct LNbits {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
+    #[serde(default)]
     pub bolt12: bool,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
@@ -210,7 +211,10 @@ pub struct MintInfo {
 
 impl Settings {
     #[must_use]
-    pub fn new(config_file_name: &Option<PathBuf>) -> Self {
+    pub fn new<P>(config_file_name: Option<P>) -> Self
+    where
+        P: Into<PathBuf>,
+    {
         let default_settings = Self::default();
         // attempt to construct settings with file
         let from_file = Self::new_from_default(&default_settings, config_file_name);
@@ -223,17 +227,20 @@ impl Settings {
         }
     }
 
-    fn new_from_default(
+    fn new_from_default<P>(
         default: &Settings,
-        config_file_name: &Option<PathBuf>,
-    ) -> Result<Self, ConfigError> {
+        config_file_name: Option<P>,
+    ) -> Result<Self, ConfigError>
+    where
+        P: Into<PathBuf>,
+    {
         let mut default_config_file_name = home::home_dir()
             .ok_or(ConfigError::NotFound("Config Path".to_string()))?
             .join("cashu-rs-mint");
 
         default_config_file_name.push("config.toml");
         let config: String = match config_file_name {
-            Some(value) => value.clone().to_string_lossy().to_string(),
+            Some(value) => value.into().to_string_lossy().to_string(),
             None => default_config_file_name.to_string_lossy().to_string(),
         };
         let builder = Config::builder();

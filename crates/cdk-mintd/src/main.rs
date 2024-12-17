@@ -22,6 +22,7 @@ use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
 use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
 use cdk::types::LnKey;
+use cdk_axum::cache::HttpCache;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::setup::LnBackendSetup;
@@ -36,9 +37,6 @@ use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
-const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;
-const DEFAULT_CACHE_TTL_SECS: u64 = 1800;
-const DEFAULT_CACHE_TTI_SECS: u64 = 1800;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -72,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     let mut mint_builder = MintBuilder::new();
 
     let mut settings = if config_file_arg.exists() {
-        config::Settings::new(&Some(config_file_arg))
+        config::Settings::new(Some(config_file_arg))
     } else {
         tracing::info!("Config file does not exist. Attempting to read env vars");
         config::Settings::default()
@@ -302,18 +300,15 @@ async fn main() -> anyhow::Result<()> {
         .with_quote_ttl(10000, 10000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    let cache_ttl = settings
-        .info
-        .seconds_to_cache_requests_for
-        .unwrap_or(DEFAULT_CACHE_TTL_SECS);
-
     let cached_endpoints = vec![
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt11),
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MeltBolt11),
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::Swap),
     ];
 
-    mint_builder = mint_builder.add_cache(Some(cache_ttl), cached_endpoints);
+    let cache: HttpCache = settings.info.http_cache.into();
+
+    mint_builder = mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints);
 
     let mint = mint_builder.build().await?;
 
@@ -332,16 +327,9 @@ async fn main() -> anyhow::Result<()> {
 
     let listen_addr = settings.info.listen_host;
     let listen_port = settings.info.listen_port;
-    let _quote_ttl = settings
-        .info
-        .seconds_quote_is_valid_for
-        .unwrap_or(DEFAULT_QUOTE_TTL_SECS);
-    let cache_tti = settings
-        .info
-        .seconds_to_extend_cache_by
-        .unwrap_or(DEFAULT_CACHE_TTI_SECS);
 
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
+    let v1_service =
+        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)
