@@ -75,6 +75,10 @@ pub struct MeltQuote {
     pub payment_preimage: Option<String>,
     /// Value used by ln backend to look up state of request
     pub request_lookup_id: String,
+    /// Msat to pay
+    ///
+    /// Used for an amountless invoice
+    pub msat_to_pay: Option<Amount>,
 }
 
 impl MeltQuote {
@@ -86,6 +90,7 @@ impl MeltQuote {
         fee_reserve: Amount,
         expiry: u64,
         request_lookup_id: String,
+        msat_to_pay: Option<Amount>,
     ) -> Self {
         let id = Uuid::new_v4();
 
@@ -99,6 +104,7 @@ impl MeltQuote {
             expiry,
             payment_preimage: None,
             request_lookup_id,
+            msat_to_pay,
         }
     }
 }
