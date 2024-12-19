@@ -123,6 +123,7 @@ impl Token {
         v3_token.to_string()
     }
 
+    /// Serialize the token to raw binary
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>, Error> {
         let token = match self {
             Self::TokenV3(token) => token.to_raw_bytes(),
@@ -279,7 +280,7 @@ impl TokenV3 {
         mint_urls
     }
 
-    /// Get the Raw Binary Token
+    /// Serialize the token to raw binary
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>, Error> {
         let mut prefix = b"crawA".to_vec();
         let mut data = Vec::new();
@@ -392,7 +393,7 @@ impl TokenV4 {
         &self.unit
     }
 
-    /// Get the Raw Binary Token
+    /// Serialize the token to raw binary
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>, Error> {
         let mut prefix = b"crawB".to_vec();
         let mut data = Vec::new();
@@ -523,7 +524,8 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::{mint_url::MintUrl, util::hex};
+    use crate::mint_url::MintUrl;
+    use crate::util::hex;
 
     #[test]
     fn test_token_padding() {
