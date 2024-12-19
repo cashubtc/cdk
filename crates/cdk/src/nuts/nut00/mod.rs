@@ -75,9 +75,12 @@ pub enum Error {
     /// Base64 error
     #[error(transparent)]
     Base64Error(#[from] bitcoin::base64::DecodeError),
-    /// Ciborium error
+    /// Ciborium deserialization error
     #[error(transparent)]
     CiboriumError(#[from] ciborium::de::Error<std::io::Error>),
+    /// Ciborium serialization error
+    #[error(transparent)]
+    CiboriumSerError(#[from] ciborium::ser::Error<std::io::Error>),
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
