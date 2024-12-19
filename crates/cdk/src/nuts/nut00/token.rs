@@ -125,11 +125,10 @@ impl Token {
 
     /// Serialize the token to raw binary
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>, Error> {
-        let token = match self {
-            Self::TokenV3(token) => token.to_raw_bytes(),
+        match self {
+            Self::TokenV3(_) => Err(Error::UnsupportedToken),
             Self::TokenV4(token) => token.to_raw_bytes(),
-        };
-        token
+        }
     }
 }
 
@@ -175,10 +174,6 @@ impl TryFrom<&Vec<u8>> for Token {
             "crawB" => {
                 let token: TokenV4 = ciborium::from_reader(&bytes[5..])?;
                 Ok(Token::TokenV4(token))
-            }
-            "crawA" => {
-                let token: TokenV3 = ciborium::from_reader(&bytes[5..])?;
-                Ok(Token::TokenV3(token))
             }
             _ => {
                 return Err(Error::UnsupportedToken);
@@ -279,15 +274,6 @@ impl TokenV3 {
 
         mint_urls
     }
-
-    /// Serialize the token to raw binary
-    pub fn to_raw_bytes(&self) -> Result<Vec<u8>, Error> {
-        let mut prefix = b"crawA".to_vec();
-        let mut data = Vec::new();
-        ciborium::into_writer(self, &mut data).map_err(|e| Error::CiboriumSerError(e))?;
-        prefix.extend(data.into_iter());
-        Ok(prefix)
-    }
 }
 
 impl FromStr for TokenV3 {
@@ -302,25 +288,6 @@ impl FromStr for TokenV3 {
         let decoded_str = String::from_utf8(decoded)?;
         let token: TokenV3 = serde_json::from_str(&decoded_str)?;
         Ok(token)
-    }
-}
-
-impl TryFrom<&Vec<u8>> for TokenV3 {
-    type Error = Error;
-
-    fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
-        if bytes.len() < 5 {
-            return Err(Error::UnsupportedToken);
-        }
-
-        let prefix = String::from_utf8(bytes[..5].to_vec())?;
-
-        if prefix.as_str() == "crawA" {
-            let token: TokenV3 = ciborium::from_reader(&bytes[5..])?;
-            Ok(token)
-        } else {
-            Err(Error::UnsupportedToken)
-        }
     }
 }
 
@@ -397,8 +364,8 @@ impl TokenV4 {
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>, Error> {
         let mut prefix = b"crawB".to_vec();
         let mut data = Vec::new();
-        ciborium::into_writer(self, &mut data).map_err(|e| Error::CiboriumSerError(e))?;
-        prefix.extend(data.into_iter());
+        ciborium::into_writer(self, &mut data).map_err(Error::CiboriumSerError)?;
+        prefix.extend(data);
         Ok(prefix)
     }
 }
@@ -648,15 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn test_token_v3_raw_roundtrip() {
-        let token_raw = hex::decode("6372617741a365746f6b656e81a2646d696e747768747470733a2f2f383333332e73706163653a333333386670726f6f667382a466616d6f756e740262696470303039613166323933323533653431656673656372657478403430373931356263323132626536316137376533653664326165623463373237393830626461353163643036613661666332396532383631373638613738333761437842303262633930393739393764383161666232636337333436623565343334356139333436626432613530366562373935383539386137326630636638353136336561a466616d6f756e74086269647030303961316632393332353365343165667365637265747840666531353130393331346536316437373536623066386565306632336136323461636161336634653034326636313433336337323863373035376239333162656143784230323965386535303530623839306137643663303936386462313662633164356435666130343065613164653238346636656336396436313239396636373130353964756e697463736174646d656d6f6a5468616e6b20796f752e").expect("");
-        let token = TokenV3::try_from(&token_raw).expect("Token deserialization error");
-        let token_raw_ = token.to_raw_bytes().expect("Token serialization error");
-        let token_ = TokenV3::try_from(&token_raw_).expect("Token deserialization error");
-        assert!(token_ == token)
-    }
-
-    #[test]
     fn test_token_v4_raw_roundtrip() {
         let token_raw = hex::decode("6372617742a4617481a261694800ad268c4d1f5826617081a3616101617378403961366462623834376264323332626137366462306466313937323136623239643362386363313435353363643237383237666331636339343266656462346561635821038618543ffb6b8695df4ad4babcde92a34a96bdcd97dcee0d7ccf98d4721267926164695468616e6b20796f75616d75687474703a2f2f6c6f63616c686f73743a33333338617563736174").unwrap();
         let token = TokenV4::try_from(&token_raw).expect("Token deserialization error");
@@ -673,11 +631,5 @@ mod tests {
         let tokenv4_bytes = tokenv4.to_raw_bytes().expect("Serialization error");
         let tokenv4_bytes_ = tokenv4_.to_raw_bytes().expect("Serialization error");
         assert!(tokenv4_bytes_ == tokenv4_bytes);
-        let tokenv3_raw = hex::decode("6372617741a365746f6b656e81a2646d696e747768747470733a2f2f383333332e73706163653a333333386670726f6f667382a466616d6f756e740262696470303039613166323933323533653431656673656372657478403430373931356263323132626536316137376533653664326165623463373237393830626461353163643036613661666332396532383631373638613738333761437842303262633930393739393764383161666232636337333436623565343334356139333436626432613530366562373935383539386137326630636638353136336561a466616d6f756e74086269647030303961316632393332353365343165667365637265747840666531353130393331346536316437373536623066386565306632336136323461636161336634653034326636313433336337323863373035376239333162656143784230323965386535303530623839306137643663303936386462313662633164356435666130343065613164653238346636656336396436313239396636373130353964756e697463736174646d656d6f6a5468616e6b20796f752e").expect("");
-        let tokenv3 = Token::try_from(&tokenv3_raw).expect("Token deserialization error");
-        let tokenv3_ = TokenV3::try_from(&tokenv3_raw).expect("Token deserialization error");
-        let tokenv3_bytes = tokenv3.to_raw_bytes().expect("Serialization error");
-        let tokenv3_bytes_ = tokenv3_.to_raw_bytes().expect("Serialization error");
-        assert!(tokenv3_bytes == tokenv3_bytes_)
     }
 }
