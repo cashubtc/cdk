@@ -67,6 +67,7 @@ jobs:
             -p cdk-strike,
             -p cdk-lnbits,
             -p cdk-fake-wallet,
+            -p cdk-integration-tests,
             --bin cdk-cli,
             --bin cdk-mintd,
             --bin cdk-mintd --no-default-features --features swagger,
@@ -113,8 +114,6 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v6
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
           
@@ -142,8 +141,6 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v6
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
 
