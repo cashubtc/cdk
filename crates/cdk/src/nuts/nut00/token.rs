@@ -175,9 +175,7 @@ impl TryFrom<&Vec<u8>> for Token {
                 let token: TokenV4 = ciborium::from_reader(&bytes[5..])?;
                 Ok(Token::TokenV4(token))
             }
-            _ => {
-                Err(Error::UnsupportedToken)
-            }
+            _ => Err(Error::UnsupportedToken),
         }
     }
 }

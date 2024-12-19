@@ -253,6 +253,7 @@ impl Wallet {
             amount_split_target,
             p2pk_signing_keys,
             preimages,
-        ).await
+        )
+        .await
     }
 }
