@@ -21,6 +21,20 @@
 
 -->
 
+#[Unrelased]
+
+### Changed
+
+### Added
+* `Token::to_raw_bytes` serializes generic token to raw bytes ([lollerfirst]).
+* `Token::try_from` for `Vec<u8>` constructs a generic token from raw bytes ([lollerfirst]).
+* `TokenV4::to_raw_bytes()` serializes a TokenV4 to raw bytes following the spec ([lollerfirst]).
+* `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
+
+### Fixed
+
+### Removed
+
 #[0.6.0]
 
 ### Changed
