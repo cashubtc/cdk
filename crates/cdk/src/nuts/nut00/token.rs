@@ -176,7 +176,7 @@ impl TryFrom<&Vec<u8>> for Token {
                 Ok(Token::TokenV4(token))
             }
             _ => {
-                return Err(Error::UnsupportedToken);
+                Err(Error::UnsupportedToken)
             }
         }
     }
