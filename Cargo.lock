@@ -744,6 +744,7 @@ dependencies = [
  "instant",
  "lightning-invoice",
  "once_cell",
+ "paste",
  "rand",
  "regex",
  "reqwest",

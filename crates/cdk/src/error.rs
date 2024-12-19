@@ -46,6 +46,14 @@ pub enum Error {
     #[error("Amount Overflow")]
     AmountOverflow,
 
+    /// Internal Error - Send error
+    #[error("Internal send error: {0}")]
+    SendError(String),
+
+    /// Internal Error - Recv error
+    #[error("Internal receive error: {0}")]
+    RecvError(String),
+
     // Mint Errors
     /// Minting is disabled
     #[error("Minting is disabled")]
