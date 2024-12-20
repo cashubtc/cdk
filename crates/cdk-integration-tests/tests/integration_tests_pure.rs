@@ -10,6 +10,7 @@ mod integration_tests_pure {
     use cdk::amount::SplitTarget;
     use cdk::cdk_database::mint_memory::MintMemoryDatabase;
     use cdk::cdk_database::WalletMemoryDatabase;
+    use cdk::mint::MemorySignatory;
     use cdk::nuts::{
         CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
         MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
@@ -161,17 +162,19 @@ mod integration_tests_pure {
         let quote_ttl = QuoteTTL::new(10000, 10000);
 
         let mint_url = "http://aaa";
-
+        let db = Arc::new(MintMemoryDatabase::default());
         let seed = random::<[u8; 32]>();
+        let signatory = MemorySignatory::new(db.clone(), &seed, supported_units, HashMap::new())
+            .await
+            .expect("valid signatory");
+
         let mint: Mint = Mint::new(
             mint_url,
-            &seed,
             mint_info,
             quote_ttl,
-            Arc::new(MintMemoryDatabase::default()),
+            db,
             create_backends_fake_wallet(),
-            supported_units,
-            HashMap::new(),
+            Arc::new(signatory.into()),
         )
         .await?;
 
