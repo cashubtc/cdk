@@ -7,7 +7,7 @@ use anyhow::anyhow;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
-use super::Nuts;
+use super::{Nuts, SignatoryManager};
 use crate::amount::Amount;
 use crate::cdk_database::{self, MintDatabase};
 use crate::cdk_lightning::{self, MintLightning};
@@ -31,6 +31,7 @@ pub struct MintBuilder {
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
     quote_ttl: Option<QuoteTTL>,
+    signatory: Option<SignatoryManager>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
 }
 
@@ -51,6 +52,12 @@ impl MintBuilder {
         builder.mint_info.nuts = nuts;
 
         builder
+    }
+
+    /// Set signatory
+    pub fn with_signatory(mut self, signatory: SignatoryManager) -> MintBuilder {
+        self.signatory = Some(signatory);
+        self
     }
 
     /// Set localstore
@@ -226,18 +233,16 @@ impl MintBuilder {
     }
 
     /// Build mint
-    pub async fn build(&self) -> anyhow::Result<Mint> {
+    pub async fn build(self) -> anyhow::Result<Mint> {
         Ok(Mint::new(
             self.mint_url.as_ref().ok_or(anyhow!("Mint url not set"))?,
-            self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
             self.mint_info.clone(),
             self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,
             self.localstore
                 .clone()
                 .ok_or(anyhow!("Localstore not set"))?,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
-            self.supported_units.clone(),
-            HashMap::new(),
+            Arc::new(self.signatory.ok_or(anyhow!("Signatory not set"))?),
         )
         .await?)
     }

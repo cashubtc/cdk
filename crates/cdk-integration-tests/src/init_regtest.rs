@@ -8,7 +8,7 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{FeeReserve, Mint};
+use cdk::mint::{FeeReserve, MemorySignatory, Mint};
 use cdk::nuts::{CurrencyUnit, MintInfo};
 use cdk::types::{LnKey, QuoteTTL};
 use cdk_cln::Cln as CdkCln;
@@ -173,16 +173,23 @@ where
     supported_units.insert(CurrencyUnit::Sat, (0, 32));
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
+    let db = Arc::new(database);
+    let signatory = MemorySignatory::new(
+        db.clone(),
+        &mnemonic.to_seed_normalized(""),
+        supported_units,
+        HashMap::new(),
+    )
+    .await
+    .expect("valid signatory");
 
     let mint = Mint::new(
         &get_mint_url(),
-        &mnemonic.to_seed_normalized(""),
         mint_info,
         quote_ttl,
-        Arc::new(database),
+        db,
         ln_backends,
-        supported_units,
-        HashMap::new(),
+        Arc::new(signatory.into()),
     )
     .await?;
 
