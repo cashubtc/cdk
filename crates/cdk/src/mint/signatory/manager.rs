@@ -52,7 +52,9 @@ macro_rules! signatory_manager {
                                 Request::$variant((( $($input),* ), response)) => {
                                     tokio::spawn(async move {
                                         let output = signatory.[<$variant:lower>]($($input),*).await;
-                                        response.send(output).unwrap();
+                                        if let Err(err) = response.send(output) {
+                                            tracing::error!("Error sending response: {:?}", err);
+                                        }
                                     });
                                 }
                             )*
