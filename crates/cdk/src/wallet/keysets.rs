@@ -1,6 +1,6 @@
 use tracing::instrument;
 
-use crate::nuts::{Id, KeySetInfo, Keys};
+use crate::nuts::{Id, KeySetInfo, Keys, Method, ProtectedEndpoint, RoutePath};
 use crate::{Error, Wallet};
 
 impl Wallet {
@@ -13,7 +13,10 @@ impl Wallet {
         let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
             keys
         } else {
-            let keys = self.client.get_mint_keyset(keyset_id).await?;
+            let request_auth = self
+                .get_auth_for_request(&ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11))
+                .await?;
+            let keys = self.client.get_mint_keyset(keyset_id, request_auth).await?;
 
             keys.verify_id()?;
 
@@ -30,7 +33,8 @@ impl Wallet {
     /// Queries mint for all keysets
     #[instrument(skip(self))]
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        let keysets = self.client.get_mint_keysets().await?;
+        // REVIEW: Should these be authed
+        let keysets = self.client.get_mint_keysets(None).await?;
 
         self.localstore
             .add_mint_keysets(self.mint_url.clone(), keysets.keysets.clone())
@@ -45,7 +49,8 @@ impl Wallet {
     /// keysets
     #[instrument(skip(self))]
     pub async fn get_active_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        let keysets = self.client.get_mint_keysets().await?;
+        // REVIEW: Should these be authed
+        let keysets = self.client.get_mint_keysets(None).await?;
         let keysets = keysets.keysets;
 
         self.localstore

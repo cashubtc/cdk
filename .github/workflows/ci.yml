@@ -123,8 +123,6 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v6
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
           
@@ -153,9 +151,11 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
+        run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
+      - name: Test Mint tests
+        run: nix develop -i -L .#stable --command cargo test -p cdk-integration-tests --test mint
 
   msrv-build:
     name: "MSRV build"

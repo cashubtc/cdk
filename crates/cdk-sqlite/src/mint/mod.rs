@@ -25,7 +25,10 @@ use sqlx::Row;
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
+mod auth;
 pub mod error;
+
+pub use auth::MintSqliteAuthDatabase;
 
 /// Mint SQLite Database
 #[derive(Debug, Clone)]

@@ -8,13 +8,14 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use super::{
-    CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    Mint, PaymentMethod, PublicKey, State,
+    AuthToken, CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, Mint, PaymentMethod, PublicKey, State,
 };
 use crate::amount::to_unit;
 use crate::cdk_lightning::{MintLightning, PayInvoiceResponse};
 use crate::mint::SigFlag;
 use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
+use crate::nuts::nutxx::{Method, ProtectedEndpoint, RoutePath};
 use crate::nuts::{Id, MeltQuoteState};
 use crate::types::LnKey;
 use crate::util::unix_time;
@@ -54,8 +55,15 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn get_melt_bolt11_quote(
         &self,
+        auth_token: Option<AuthToken>,
         melt_request: &MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
+        )
+        .await?;
+
         let MeltQuoteBolt11Request {
             request,
             unit,
@@ -119,8 +127,15 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn check_melt_quote(
         &self,
+        auth_token: Option<AuthToken>,
         quote_id: &Uuid,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MeltBolt11),
+        )
+        .await?;
+
         let quote = self
             .localstore
             .get_melt_quote(quote_id)
@@ -379,8 +394,15 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn melt_bolt11(
         &self,
+        auth_token: Option<AuthToken>,
         melt_request: &MeltBolt11Request<Uuid>,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+        )
+        .await?;
+
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,

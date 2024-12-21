@@ -17,6 +17,7 @@ wallet = []
 
 [dependencies]
 async-trait = "0.1"
+cashu = { path = "../cashu", version = "0.6.0" }
 cdk-common = { path = "../cdk-common", version = "0.6.0" }
 redb = "2.1.0"
 thiserror = "1"

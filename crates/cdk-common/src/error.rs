@@ -51,6 +51,24 @@ pub enum Error {
     /// Amountless Invoice Not supported
     #[error("Amount Less Invoice is not allowed")]
     AmountLessNotAllowed,
+    /// Auth Required
+    #[error("Auth Required")]
+    AuthRequired,
+    /// Auth settings undefined
+    #[error("Auth settings undefinded")]
+    AuthSettingsUndefinded,
+    /// Mint time outside of tolerance
+    #[error("Mint time outside of tolerance")]
+    MintTimeExceedsTolerance,
+    /// Insufficient blind auth tokens
+    #[error("Insufficient blind auth tokens, must reauth")]
+    InsufficientBlindAuthTokens,
+    /// Auth localstore undefined
+    #[error("Auth localstore undefinded")]
+    AuthLocalstoreUndefinded,
+    /// Wallet cat not set
+    #[error("Wallet cat not set")]
+    CatNotSet,
 
     // Mint Errors
     /// Minting is disabled
@@ -113,6 +131,9 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
+    /// Oidc config not set
+    #[error("Oidc client not set")]
+    OidcNotSet,
 
     // Wallet Errors
     /// P2PK spending conditions not met
@@ -200,7 +221,7 @@ pub enum Error {
     /// Http transport error
     #[error("Http transport error: {0}")]
     HttpError(String),
-
+    #[cfg(feature = "wallet")]
     // Crate error conversions
     /// Cashu Url Error
     #[error(transparent)]
@@ -248,6 +269,12 @@ pub enum Error {
     /// NUT20 Error
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
+    /// NUTXX Error
+    #[error(transparent)]
+    NUTXX(#[from] crate::nuts::nutxx::Error),
+    /// NUTXX1 Error
+    #[error(transparent)]
+    NUTXX1(#[from] crate::nuts::nutxx1::Error),
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::database::Error),

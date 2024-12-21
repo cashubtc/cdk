@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use cdk::amount::{Amount, SplitTarget};
+use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
@@ -11,9 +12,8 @@ use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MintBolt11Request, MintQuoteBolt11Request, MintQuoteState,
     NotificationPayload, PreMintSecrets, Proofs, State,
 };
-use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::subscription::SubscriptionManager;
-use cdk::wallet::WalletSubscription;
+use cdk::wallet::{HttpClient, MintConnector, WalletSubscription};
 use cdk::Wallet;
 
 pub mod init_fake_wallet;
@@ -71,11 +71,22 @@ pub async fn mint_proofs(
         pubkey: None,
     };
 
-    let mint_quote = wallet_client.post_mint_quote(request).await?;
+    let mint_quote = wallet_client.post_mint_quote(request, None).await?;
 
     println!("Please pay: {}", mint_quote.request);
 
     let subscription_client = SubscriptionManager::new(Arc::new(wallet_client.clone()));
+
+    // Dumby wallet to pass to subscribe.
+    let wallet_db = WalletMemoryDatabase::default();
+    let wallet = Wallet::new(
+        mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(wallet_db),
+        &[0, 0],
+        None,
+        None,
+    )?;
 
     let mut subscription = subscription_client
         .subscribe(
@@ -85,6 +96,7 @@ pub async fn mint_proofs(
                 kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
                 id: "sub".into(),
             },
+            Arc::new(wallet),
         )
         .await;
 
@@ -104,7 +116,7 @@ pub async fn mint_proofs(
         signature: None,
     };
 
-    let mint_response = wallet_client.post_mint(request).await?;
+    let mint_response = wallet_client.post_mint(request, None).await?;
 
     let pre_swap_proofs = construct_proofs(
         mint_response.signatures,
