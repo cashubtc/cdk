@@ -14,7 +14,6 @@ pub mod lightning;
 pub mod pub_sub;
 pub mod subscription;
 pub mod ws;
-
 // re-exporting external crates
 pub use bitcoin;
 pub use cashu::amount::{self, Amount};
@@ -25,3 +24,4 @@ pub use cashu::nuts::{self, *};
 #[cfg(feature = "wallet")]
 pub use cashu::wallet;
 pub use cashu::{dhke, mint_url, secret, util, SECP256K1};
+pub use error::Error;

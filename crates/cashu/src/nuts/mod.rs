@@ -23,6 +23,8 @@ pub mod nut17;
 pub mod nut18;
 pub mod nut19;
 pub mod nut20;
+pub mod nut21;
+pub mod nut22;
 
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Proofs, ProofsMethods,
@@ -55,3 +57,5 @@ pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 pub use nut17::NotificationPayload;
 pub use nut18::{PaymentRequest, PaymentRequestPayload, Transport};
+pub use nut21::{Method, ProtectedEndpoint, RoutePath};
+pub use nut22::{AuthProof, AuthRequired, AuthToken, BlindAuthToken, MintAuthRequest};

@@ -13,7 +13,8 @@ use super::http::http_main;
 use super::WsSubscriptionBody;
 use crate::mint_url::MintUrl;
 use crate::pub_sub::SubId;
-use crate::wallet::client::MintConnector;
+use crate::wallet::MintConnector;
+use crate::Wallet;
 
 const MAX_ATTEMPT_FALLBACK_HTTP: usize = 10;
 
@@ -23,6 +24,7 @@ async fn fallback_to_http<S: IntoIterator<Item = SubId>>(
     subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
     new_subscription_recv: mpsc::Receiver<SubId>,
     on_drop: mpsc::Receiver<SubId>,
+    wallet: Arc<Wallet>,
 ) {
     http_main(
         initial_state,
@@ -30,6 +32,7 @@ async fn fallback_to_http<S: IntoIterator<Item = SubId>>(
         subscriptions,
         new_subscription_recv,
         on_drop,
+        wallet,
     )
     .await
 }
@@ -41,6 +44,7 @@ pub async fn ws_main(
     subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
     mut new_subscription_recv: mpsc::Receiver<SubId>,
     mut on_drop: mpsc::Receiver<SubId>,
+    wallet: Arc<Wallet>,
 ) {
     let url = mint_url
         .join_paths(&["v1", "ws"])
@@ -76,6 +80,7 @@ pub async fn ws_main(
                         subscriptions,
                         new_subscription_recv,
                         on_drop,
+                        wallet,
                     )
                     .await;
                 }
@@ -175,6 +180,7 @@ pub async fn ws_main(
                                     subscriptions,
                                     new_subscription_recv,
                                     on_drop,
+                                    wallet
                                 ).await;
                             }
                         }
