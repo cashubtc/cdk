@@ -1,7 +1,8 @@
 use tracing::instrument;
 
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
-use super::{Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
+use super::nut21::{Method, ProtectedEndpoint, RoutePath};
+use super::{AuthToken, Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
 use crate::nuts::nut00::ProofsMethods;
 use crate::Error;
 
@@ -10,8 +11,15 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_swap_request(
         &self,
+        auth_token: Option<AuthToken>,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
+        )
+        .await?;
+
         let input_ys = swap_request.inputs.ys()?;
 
         if let Err(err) = self

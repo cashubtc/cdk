@@ -4,9 +4,12 @@ use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods
 
 use super::{Error, Mint};
 
+/// Verification result
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
+    /// Value in request
     pub amount: Amount,
+    /// Unit of request
     pub unit: CurrencyUnit,
 }
 

@@ -15,6 +15,7 @@ use paste::paste;
 use tracing::instrument;
 use uuid::Uuid;
 
+use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
@@ -24,26 +25,24 @@ macro_rules! post_cache_wrapper {
             /// Cache wrapper function for $handler:
             /// Wrap $handler into a function that caches responses using the request as key
             pub async fn [<cache_ $handler>](
+                auth: AuthHeader,
                 state: State<MintState>,
                 payload: Json<$request_type>
             ) -> Result<Json<$response_type>, Response> {
                 use std::ops::Deref;
-
                 let json_extracted_payload = payload.deref();
                 let State(mint_state) = state.clone();
                 let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
                     Some(key) => key,
                     None => {
                         // Could not calculate key, just return the handler result
-                        return $handler(state, payload).await;
+                        return $handler(auth, state, payload).await;
                     }
                 };
-
                 if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
                     return Ok(Json(cached_response));
                 }
-
-                let response = $handler(state, payload).await?;
+                let response = $handler(auth, state, payload).await?;
                 mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
             }
@@ -145,12 +144,13 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 ///
 /// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
 pub async fn post_mint_bolt11_quote(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
-        .get_mint_bolt11_quote(payload)
+        .get_mint_bolt11_quote(auth.into(), payload)
         .await
         .map_err(into_response)?;
 
@@ -173,12 +173,13 @@ pub async fn post_mint_bolt11_quote(
 ///
 /// Get mint quote state.
 pub async fn get_check_mint_bolt11_quote(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
-        .check_mint_quote(&quote_id)
+        .check_mint_quote(auth.into(), &quote_id)
         .await
         .map_err(|err| {
             tracing::error!("Could not check mint quote {}: {}", quote_id, err);
@@ -208,12 +209,13 @@ pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) ->
     )
 ))]
 pub async fn post_mint_bolt11(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,
 ) -> Result<Json<MintBolt11Response>, Response> {
     let res = state
         .mint
-        .process_mint_request(payload)
+        .process_mint_request(auth.into(), payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process mint: {}", err);
@@ -236,12 +238,13 @@ pub async fn post_mint_bolt11(
 #[instrument(skip_all)]
 /// Request a quote for melting tokens
 pub async fn post_melt_bolt11_quote(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
-        .get_melt_bolt11_quote(&payload)
+        .get_melt_bolt11_quote(auth.into(), &payload)
         .await
         .map_err(into_response)?;
 
@@ -265,12 +268,13 @@ pub async fn post_melt_bolt11_quote(
 /// Get melt quote state.
 #[instrument(skip_all)]
 pub async fn get_check_melt_bolt11_quote(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
     let quote = state
         .mint
-        .check_melt_quote(&quote_id)
+        .check_melt_quote(auth.into(), &quote_id)
         .await
         .map_err(|err| {
             tracing::error!("Could not check melt quote: {}", err);
@@ -295,12 +299,13 @@ pub async fn get_check_melt_bolt11_quote(
 /// Requests tokens to be destroyed and sent out via Lightning.
 #[instrument(skip_all)]
 pub async fn post_melt_bolt11(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
     let res = state
         .mint
-        .melt_bolt11(&payload)
+        .melt_bolt11(auth.into(), &payload)
         .await
         .map_err(into_response)?;
 
@@ -321,13 +326,18 @@ pub async fn post_melt_bolt11(
 ///
 /// Check whether a secret has been spent already or not.
 pub async fn post_check(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
-    let state = state.mint.check_state(&payload).await.map_err(|err| {
-        tracing::error!("Could not check state of proofs");
-        into_response(err)
-    })?;
+    let state = state
+        .mint
+        .check_state(auth.into(), &payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not check state of proofs");
+            into_response(err)
+        })?;
 
     Ok(Json(state))
 }
@@ -372,17 +382,19 @@ pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintIn
 ///
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
 pub async fn post_swap(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
     let swap_response = state
         .mint
-        .process_swap_request(payload)
+        .process_swap_request(auth.into(), payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process swap request: {}", err);
             into_response(err)
         })?;
+
     Ok(Json(swap_response))
 }
 
@@ -398,13 +410,18 @@ pub async fn post_swap(
 ))]
 /// Restores blind signature for a set of outputs.
 pub async fn post_restore(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
-    let restore_response = state.mint.restore(payload).await.map_err(|err| {
-        tracing::error!("Could not process restore: {}", err);
-        into_response(err)
-    })?;
+    let restore_response = state
+        .mint
+        .restore(auth.into(), payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process restore: {}", err);
+            into_response(err)
+        })?;
 
     Ok(Json(restore_response))
 }

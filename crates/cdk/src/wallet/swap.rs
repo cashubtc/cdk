@@ -4,7 +4,8 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    nut10, PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, State, SwapRequest,
+    nut10, Method, PreMintSecrets, PreSwap, Proofs, ProtectedEndpoint, PublicKey, RoutePath,
+    SpendingConditions, State, SwapRequest,
 };
 use crate::types::ProofInfo;
 use crate::{Amount, Error, Wallet};
@@ -33,7 +34,14 @@ impl Wallet {
             )
             .await?;
 
-        let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11))
+            .await?;
+
+        let swap_response = self
+            .client
+            .post_swap(pre_swap.swap_request, auth_token)
+            .await?;
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
 
