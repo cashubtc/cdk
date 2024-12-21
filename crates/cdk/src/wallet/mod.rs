@@ -5,15 +5,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
-use bitcoin::Network;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::Params;
-use client::MintConnector;
 use getrandom::getrandom;
-pub use multi_mint_wallet::MultiMintWallet;
 use subscription::{ActiveSubscription, SubscriptionManager};
+#[cfg(feature = "auth")]
+use tokio::sync::RwLock;
 use tracing::instrument;
-pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
@@ -27,13 +25,19 @@ use crate::nuts::{
     RestoreRequest, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
-use crate::{Amount, HttpClient};
+use crate::util::unix_time;
+use crate::Amount;
+#[cfg(feature = "auth")]
+use crate::OidcClient;
 
+#[cfg(feature = "auth")]
+mod auth;
 mod balance;
-pub mod client;
+mod builder;
 mod keysets;
 mod melt;
 mod mint;
+mod mint_connector;
 pub mod multi_mint_wallet;
 mod proofs;
 mod receive;
@@ -42,8 +46,14 @@ pub mod subscription;
 mod swap;
 pub mod util;
 
+#[cfg(feature = "auth")]
+pub use auth::AuthWallet;
+pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+pub use mint_connector::{HttpClient, MintConnector};
+pub use multi_mint_wallet::MultiMintWallet;
 pub use send::{PreparedSend, SendMemo, SendOptions};
+pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -62,6 +72,8 @@ pub struct Wallet {
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
+    #[cfg(feature = "auth")]
+    auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
@@ -115,14 +127,16 @@ impl From<WalletSubscription> for Params {
 }
 
 impl Wallet {
-    /// Create new [`Wallet`]
+    /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust
     /// use std::sync::Arc;
+    /// use bitcoin::Network;
+    /// use bitcoin::bip32::Xpriv;
     ///
     /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
-    /// use cdk::wallet::Wallet;
+    /// use cdk::wallet::{Wallet, WalletBuilder};
     /// use rand::Rng;
     ///
     /// async fn test() -> anyhow::Result<()> {
@@ -131,7 +145,12 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = memory::empty().await?;
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = WalletBuilder::new()
+    ///        .mint_url(mint_url.parse().unwrap())
+    ///        .unit(unit)
+    ///        .localstore(Arc::new(localstore))
+    ///        .seed(&seed)
+    ///        .build();
     ///     Ok(())
     /// }
     /// ```
@@ -142,32 +161,21 @@ impl Wallet {
         seed: &[u8],
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {
-        let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
         let mint_url = MintUrl::from_str(mint_url)?;
 
-        let http_client = Arc::new(HttpClient::new(mint_url.clone()));
-
-        Ok(Self {
-            mint_url: mint_url.clone(),
-            unit,
-            client: http_client.clone(),
-            subscription: SubscriptionManager::new(http_client),
-            localstore,
-            xpriv,
-            target_proof_count: target_proof_count.unwrap_or(3),
-        })
-    }
-
-    /// Change HTTP client
-    pub fn set_client<C: MintConnector + 'static + Send + Sync>(&mut self, client: C) {
-        self.client = Arc::new(client);
-        self.subscription = SubscriptionManager::new(self.client.clone());
+        WalletBuilder::new()
+            .mint_url(mint_url)
+            .unit(unit)
+            .localstore(localstore)
+            .seed(seed)
+            .target_proof_count(target_proof_count.unwrap_or(3))
+            .build()
     }
 
     /// Subscribe to events
     pub async fn subscribe<T: Into<Params>>(&self, query: T) -> ActiveSubscription {
         self.subscription
-            .subscribe(self.mint_url.clone(), query.into())
+            .subscribe(self.mint_url.clone(), query.into(), Arc::new(self.clone()))
             .await
     }
 
@@ -232,21 +240,68 @@ impl Wallet {
     /// Query mint for current mint information
     #[instrument(skip(self))]
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = match self.client.get_mint_info().await {
-            Ok(mint_info) => Some(mint_info),
+        match self.client.get_mint_info().await {
+            Ok(mint_info) => {
+                // If mint provides time make sure it is accurate
+                if let Some(mint_unix_time) = mint_info.time {
+                    let current_unix_time = unix_time();
+                    if current_unix_time.abs_diff(mint_unix_time) > 30 {
+                        tracing::warn!(
+                            "Mint time does match wallet time. Mint: {}, Wallet: {}",
+                            mint_unix_time,
+                            current_unix_time
+                        );
+                        return Err(Error::MintTimeExceedsTolerance);
+                    }
+                }
+
+                // Create or update auth wallet
+                #[cfg(feature = "auth")]
+                {
+                    let mut auth_wallet = self.auth_wallet.write().await;
+                    match &*auth_wallet {
+                        Some(auth_wallet) => {
+                            let mut protected_endpoints =
+                                auth_wallet.protected_endpoints.write().await;
+                            *protected_endpoints = mint_info.protected_endpoints();
+
+                            if let Some(oidc_client) =
+                                mint_info.openid_discovery().map(OidcClient::new)
+                            {
+                                auth_wallet.set_oidc_client(Some(oidc_client)).await;
+                            }
+                        }
+                        None => {
+                            tracing::info!("Mint has auth enabled creating auth wallet");
+
+                            let oidc_client = mint_info.openid_discovery().map(OidcClient::new);
+                            let new_auth_wallet = AuthWallet::new(
+                                self.mint_url.clone(),
+                                None,
+                                self.localstore.clone(),
+                                mint_info.protected_endpoints(),
+                                oidc_client,
+                            );
+                            *auth_wallet = Some(new_auth_wallet.clone());
+
+                            self.client.set_auth_wallet(Some(new_auth_wallet)).await;
+                        }
+                    }
+                }
+
+                self.localstore
+                    .add_mint(self.mint_url.clone(), Some(mint_info.clone()))
+                    .await?;
+
+                tracing::trace!("Mint info updated for {}", self.mint_url);
+
+                Ok(Some(mint_info))
+            }
             Err(err) => {
                 tracing::warn!("Could not get mint info {}", err);
-                None
+                Ok(None)
             }
-        };
-
-        self.localstore
-            .add_mint(self.mint_url.clone(), mint_info.clone())
-            .await?;
-
-        tracing::trace!("Mint info updated for {}", self.mint_url);
-
-        Ok(mint_info)
+        }
     }
 
     /// Get amounts needed to refill proof state

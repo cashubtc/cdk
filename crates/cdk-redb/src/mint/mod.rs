@@ -24,7 +24,12 @@ use super::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::mint::migrations::{migrate_02_to_03, migrate_03_to_04};
 
+#[cfg(feature = "auth")]
+mod auth;
 mod migrations;
+
+#[cfg(feature = "auth")]
+pub use auth::MintRedbAuthDatabase;
 
 const ACTIVE_KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("active_keysets");
 const KEYSETS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("keysets");
@@ -133,8 +138,8 @@ impl MintRedbDatabase {
                 None => {
                     let write_txn = db.begin_write()?;
                     {
-                        let mut table = write_txn.open_table(CONFIG_TABLE)?;
                         // Open all tables to init a new db
+                        let mut table = write_txn.open_table(CONFIG_TABLE)?;
                         let _ = write_txn.open_table(ACTIVE_KEYSETS_TABLE)?;
                         let _ = write_txn.open_table(KEYSETS_TABLE)?;
                         let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;

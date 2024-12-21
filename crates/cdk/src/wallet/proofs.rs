@@ -100,6 +100,7 @@ impl Wallet {
             .client
             .post_check_state(CheckStateRequest { ys: proofs.ys()? })
             .await?;
+
         let spent_ys: Vec<_> = spendable
             .states
             .iter()

@@ -10,3 +10,5 @@ config.toml
 result
 Cargo.lock
 .aider*
+**/postgres_data/
+**/.env

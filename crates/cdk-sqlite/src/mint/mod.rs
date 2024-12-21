@@ -26,8 +26,13 @@ use uuid::Uuid;
 
 use crate::common::create_sqlite_pool;
 
+#[cfg(feature = "auth")]
+mod auth;
 pub mod error;
 pub mod memory;
+
+#[cfg(feature = "auth")]
+pub use auth::MintSqliteAuthDatabase;
 
 /// Mint SQLite Database
 #[derive(Debug, Clone)]
@@ -1565,7 +1570,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
     let row_valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
     let row_derivation_path: String = row.try_get("derivation_path").map_err(Error::from)?;
     let row_max_order: u8 = row.try_get("max_order").map_err(Error::from)?;
-    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
+    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").ok();
     let row_derivation_path_index: Option<i64> =
         row.try_get("derivation_path_index").map_err(Error::from)?;
 
