@@ -49,9 +49,11 @@ async fn new_mint(fee: u64) -> Mint {
     Mint::new(
         &mnemonic.to_seed_normalized(""),
         Arc::new(localstore),
+        None,
         HashMap::new(),
         supported_units,
         HashMap::new(),
+        None,
     )
     .await
     .unwrap()

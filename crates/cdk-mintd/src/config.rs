@@ -202,6 +202,20 @@ pub struct Database {
     pub engine: DatabaseEngine,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Auth {
+    pub openid_discovery: String,
+    pub openid_client_id: String,
+    pub mint_max_bat: u64,
+    pub enabled_mint: bool,
+    pub enabled_melt: bool,
+    pub enabled_swap: bool,
+    pub enabled_check_mint_quote: bool,
+    pub enabled_check_melt_quote: bool,
+    pub enabled_restore: bool,
+    pub enabled_check_proof_state: bool,
+}
+
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
@@ -220,6 +234,7 @@ pub struct Settings {
     pub database: Database,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
+    pub auth: Option<Auth>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
