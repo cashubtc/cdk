@@ -6,12 +6,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+#[cfg(feature = "auth")]
+use auth::create_auth_router;
 use axum::routing::{get, post};
 use axum::Router;
 use cache::HttpCache;
 use cdk::mint::Mint;
 use router_handlers::*;
 
+mod auth;
 pub mod cache;
 mod router_handlers;
 mod ws;
@@ -165,7 +168,15 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mint_router = Router::new().nest("/v1", v1_router).with_state(state);
+    let mint_router = Router::new().nest("/v1", v1_router);
+
+    #[cfg(feature = "auth")]
+    let mint_router = {
+        let auth_router = create_auth_router(state.clone());
+        mint_router.nest("/v1", auth_router)
+    };
+
+    let mint_router = mint_router.with_state(state);
 
     Ok(mint_router)
 }

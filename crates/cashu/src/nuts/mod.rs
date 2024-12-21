@@ -24,6 +24,14 @@ pub mod nut18;
 pub mod nut19;
 pub mod nut20;
 
+#[cfg(feature = "auth")]
+mod auth;
+
+#[cfg(feature = "auth")]
+pub use auth::{
+    nut21, nut22, AuthProof, AuthRequired, AuthToken, BlindAuthSettings, BlindAuthToken,
+    ClearAuthSettings, Method, MintAuthRequest, ProtectedEndpoint, RoutePath,
+};
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Proofs, ProofsMethods,
     Token, TokenV3, TokenV4, Witness,
