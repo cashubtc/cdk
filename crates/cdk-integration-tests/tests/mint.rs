@@ -54,6 +54,7 @@ async fn new_mint(fee: u64) -> Mint {
         HashMap::new(),
         supported_units,
         HashMap::new(),
+        HashMap::new(),
     )
     .await
     .unwrap()
@@ -94,7 +95,7 @@ async fn mint_proofs(
         signature: None,
     };
 
-    let after_mint = mint.process_mint_request(mint_request).await?;
+    let after_mint = mint.process_mint_request(None, mint_request).await?;
 
     let proofs = construct_proofs(
         after_mint.signatures,
@@ -119,7 +120,7 @@ async fn test_mint_double_spend() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), preswap.blinded_messages());
 
-    let swap = mint.process_swap_request(swap_request).await;
+    let swap = mint.process_swap_request(None, swap_request).await;
 
     assert!(swap.is_ok());
 
@@ -127,7 +128,7 @@ async fn test_mint_double_spend() -> Result<()> {
 
     let swap_two_request = SwapRequest::new(proofs, preswap_two.blinded_messages());
 
-    match mint.process_swap_request(swap_two_request).await {
+    match mint.process_swap_request(None, swap_two_request).await {
         Ok(_) => bail!("Proofs double spent"),
         Err(err) => match err {
             cdk::Error::TokenAlreadySpent => (),
@@ -163,7 +164,7 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Swap occurred with overflow"),
         Err(err) => match err {
             cdk::Error::NUT03(cdk::nuts::nut03::Error::Amount(_)) => (),
@@ -201,7 +202,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let keys = mint.pubkeys().await?.keysets.first().cloned().unwrap().keys;
 
-    let post_swap = mint.process_swap_request(swap_request).await?;
+    let post_swap = mint.process_swap_request(None, swap_request).await?;
 
     let mut proofs = construct_proofs(
         post_swap.signatures,
@@ -240,7 +241,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
         .await
         .expect("valid subscription");
 
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Proofs spent without sig"),
         Err(err) => match err {
             cdk::Error::NUT11(cdk::nuts::nut11::Error::SignaturesNotProvided) => (),
@@ -257,7 +258,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
-    let attempt_swap = mint.process_swap_request(swap_request).await;
+    let attempt_swap = mint.process_swap_request(None, swap_request).await;
 
     assert!(attempt_swap.is_ok());
 
@@ -305,7 +306,7 @@ async fn test_swap_unbalanced() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), preswap.blinded_messages());
 
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Swap was allowed unbalanced"),
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
@@ -317,7 +318,7 @@ async fn test_swap_unbalanced() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), preswap.blinded_messages());
 
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Swap was allowed unbalanced"),
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
@@ -345,7 +346,7 @@ async fn test_swap_overpay_underpay_fee() -> Result<()> {
     let swap_request = SwapRequest::new(proofs.clone(), preswap.blinded_messages());
 
     // Attempt to swap overpaying fee
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Swap was allowed unbalanced"),
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
@@ -361,7 +362,7 @@ async fn test_swap_overpay_underpay_fee() -> Result<()> {
     let swap_request = SwapRequest::new(proofs.clone(), preswap.blinded_messages());
 
     // Attempt to swap underpaying fee
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Swap was allowed unbalanced"),
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
@@ -391,7 +392,7 @@ async fn test_mint_enforce_fee() -> Result<()> {
     let swap_request = SwapRequest::new(five_proofs.clone(), preswap.blinded_messages());
 
     // Attempt to swap underpaying fee
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Swap was allowed unbalanced"),
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
@@ -406,7 +407,7 @@ async fn test_mint_enforce_fee() -> Result<()> {
 
     let swap_request = SwapRequest::new(five_proofs.clone(), preswap.blinded_messages());
 
-    let _ = mint.process_swap_request(swap_request).await?;
+    let _ = mint.process_swap_request(None, swap_request).await?;
 
     let thousnad_proofs: Vec<_> = proofs.drain(..1001).collect();
 
@@ -415,7 +416,7 @@ async fn test_mint_enforce_fee() -> Result<()> {
     let swap_request = SwapRequest::new(thousnad_proofs.clone(), preswap.blinded_messages());
 
     // Attempt to swap underpaying fee
-    match mint.process_swap_request(swap_request).await {
+    match mint.process_swap_request(None, swap_request).await {
         Ok(_) => bail!("Swap was allowed unbalanced"),
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
@@ -430,7 +431,7 @@ async fn test_mint_enforce_fee() -> Result<()> {
 
     let swap_request = SwapRequest::new(thousnad_proofs.clone(), preswap.blinded_messages());
 
-    let _ = mint.process_swap_request(swap_request).await?;
+    let _ = mint.process_swap_request(None, swap_request).await?;
 
     Ok(())
 }

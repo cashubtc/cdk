@@ -84,6 +84,7 @@ pub async fn start_mint(
         ln_backends.clone(),
         supported_units,
         HashMap::new(),
+        HashMap::new(),
     )
     .await?;
 

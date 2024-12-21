@@ -183,6 +183,7 @@ where
         ln_backends,
         supported_units,
         HashMap::new(),
+        HashMap::new(),
     )
     .await?;
 

@@ -1,2 +1,8 @@
 [language-server.rust-analyzer.config]
 cargo = { features = ["wallet", "mint", "swagger", "redis"] }
+inlayHints.bindingModeHints.enable = true
+inlayHints.closingBraceHints.enable = true
+inlayHints.chainingHints.enable = true
+inlayHints.parameterHints.enable = true
+inlayHints.typeHints.enable = true
+command = "rust-analyzer"

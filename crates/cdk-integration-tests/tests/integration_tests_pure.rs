@@ -65,7 +65,7 @@ mod integration_tests_pure {
             request: MintQuoteBolt11Request,
         ) -> Result<MintQuoteBolt11Response<String>, Error> {
             self.mint
-                .get_mint_bolt11_quote(request)
+                .get_mint_bolt11_quote(None, request)
                 .await
                 .map(Into::into)
         }
@@ -76,7 +76,7 @@ mod integration_tests_pure {
         ) -> Result<MintQuoteBolt11Response<String>, Error> {
             let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
             self.mint
-                .check_mint_quote(&quote_id_uuid)
+                .check_mint_quote(None, &quote_id_uuid)
                 .await
                 .map(Into::into)
         }
@@ -86,7 +86,7 @@ mod integration_tests_pure {
             request: MintBolt11Request<String>,
         ) -> Result<MintBolt11Response, Error> {
             let request_uuid = request.try_into().unwrap();
-            self.mint.process_mint_request(request_uuid).await
+            self.mint.process_mint_request(None, request_uuid).await
         }
 
         async fn post_melt_quote(
@@ -94,7 +94,7 @@ mod integration_tests_pure {
             request: MeltQuoteBolt11Request,
         ) -> Result<MeltQuoteBolt11Response<String>, Error> {
             self.mint
-                .get_melt_bolt11_quote(&request)
+                .get_melt_bolt11_quote(None, &request)
                 .await
                 .map(Into::into)
         }
@@ -105,7 +105,7 @@ mod integration_tests_pure {
         ) -> Result<MeltQuoteBolt11Response<String>, Error> {
             let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
             self.mint
-                .check_melt_quote(&quote_id_uuid)
+                .check_melt_quote(None, &quote_id_uuid)
                 .await
                 .map(Into::into)
         }
@@ -115,11 +115,14 @@ mod integration_tests_pure {
             request: MeltBolt11Request<String>,
         ) -> Result<MeltQuoteBolt11Response<String>, Error> {
             let request_uuid = request.try_into().unwrap();
-            self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
+            self.mint
+                .melt_bolt11(None, &request_uuid)
+                .await
+                .map(Into::into)
         }
 
         async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
-            self.mint.process_swap_request(swap_request).await
+            self.mint.process_swap_request(None, swap_request).await
         }
 
         async fn get_mint_info(&self) -> Result<MintInfo, Error> {
@@ -171,6 +174,7 @@ mod integration_tests_pure {
             Arc::new(MintMemoryDatabase::default()),
             create_backends_fake_wallet(),
             supported_units,
+            HashMap::new(),
             HashMap::new(),
         )
         .await?;

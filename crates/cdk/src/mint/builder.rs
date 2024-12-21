@@ -239,6 +239,7 @@ impl MintBuilder {
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
             self.supported_units.clone(),
             HashMap::new(),
+            HashMap::new(),
         )
         .await?)
     }

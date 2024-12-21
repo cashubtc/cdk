@@ -8,6 +8,7 @@ use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use config::SwappableConfig;
 use futures::StreamExt;
+use nutxx::ProtectedEndpoint;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
@@ -25,13 +26,14 @@ use crate::types::{LnKey, QuoteTTL};
 use crate::util::unix_time;
 use crate::Amount;
 
+mod auth;
 mod builder;
 mod check_spendable;
 pub mod config;
 mod info;
+mod issue;
 mod keysets;
 mod melt;
-mod mint_nut04;
 mod start_up_check;
 mod swap;
 pub mod types;
@@ -50,6 +52,8 @@ pub struct Mint {
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
+    /// Protected methods
+    pub protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: Xpriv,
 }
@@ -67,6 +71,7 @@ impl Mint {
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
@@ -192,6 +197,7 @@ impl Mint {
             xpriv,
             localstore,
             ln,
+            protected_endpoints,
         })
     }
 
@@ -746,6 +752,7 @@ mod tests {
             localstore,
             HashMap::new(),
             config.supported_units,
+            HashMap::new(),
             HashMap::new(),
         )
         .await
