@@ -18,11 +18,10 @@ use cdk::nuts::{
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
-use cdk::wallet::client::MintConnector;
-use cdk::wallet::Wallet;
+use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -30,11 +29,15 @@ use crate::wait_for_mint_to_be_paid;
 
 pub struct DirectMintConnection {
     pub mint: Arc<Mint>,
+    auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
 
 impl DirectMintConnection {
     pub fn new(mint: Arc<Mint>) -> Self {
-        Self { mint }
+        Self {
+            mint,
+            auth_wallet: Arc::new(RwLock::new(None)),
+        }
     }
 }
 
@@ -141,6 +144,18 @@ impl MintConnector for DirectMintConnection {
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         self.mint.restore(request).await
     }
+
+    /// Get the auth wallet for the client
+    async fn get_auth_wallet(&self) -> Option<AuthWallet> {
+        self.auth_wallet.read().await.clone()
+    }
+
+    /// Set auth wallet on client
+    async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
+        let mut auth_wallet = self.auth_wallet.write().await;
+
+        *auth_wallet = wallet;
+    }
 }
 
 pub fn setup_tracing() {
@@ -232,9 +247,14 @@ async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let unit = CurrencyUnit::Sat;
     let localstore = cdk_sqlite::wallet::memory::empty().await?;
-    let mut wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
 
-    wallet.set_client(connector);
+    let wallet = WalletBuilder::new()
+        .mint_url(mint_url.parse().unwrap())
+        .unit(unit)
+        .localstore(Arc::new(localstore))
+        .seed(&seed)
+        .client(connector)
+        .build()?;
 
     Ok(wallet)
 }
