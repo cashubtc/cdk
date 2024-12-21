@@ -33,7 +33,7 @@ pub async fn restore(
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None)?;
+            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None, None)?;
 
             multi_mint_wallet.add_wallet(wallet.clone()).await;
             wallet

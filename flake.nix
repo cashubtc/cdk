@@ -84,6 +84,7 @@
           clightning
           bitcoind
           sqlx-cli
+          typos-lsp
 
           fenix.packages.${system}.rust-analyzer
 

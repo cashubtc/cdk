@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
-use client::MintConnector;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
 use subscription::{ActiveSubscription, SubscriptionManager};
@@ -22,17 +21,18 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::{Kind, Params};
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
-    RestoreRequest, SpendingConditions, State,
+    nut10, AuthRequired, CurrencyUnit, Id, Keys, Method, MintInfo, MintQuoteState, PreMintSecrets,
+    Proof, Proofs, ProtectedEndpoint, RestoreRequest, RoutePath, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
-use crate::{Amount, HttpClient};
+use crate::Amount;
 
+mod auth;
 mod balance;
-pub mod client;
 mod keysets;
 mod melt;
 mod mint;
+mod mint_connector;
 pub mod multi_mint_wallet;
 mod proofs;
 mod receive;
@@ -41,6 +41,8 @@ pub mod subscription;
 mod swap;
 pub mod types;
 pub mod util;
+
+pub use mint_connector::{HttpClient, MintConnector};
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -59,6 +61,10 @@ pub struct Wallet {
     pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
+    /// Clear Auth token
+    pub cat: Option<String>,
+    /// Protected methods
+    pub protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
@@ -135,6 +141,7 @@ impl Wallet {
         localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
         target_proof_count: Option<usize>,
+        cat: Option<String>,
     ) -> Result<Self, Error> {
         let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
         let mint_url = MintUrl::from_str(mint_url)?;
@@ -149,6 +156,8 @@ impl Wallet {
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
+            cat,
+            protected_endpoints: HashMap::new(),
         })
     }
 
@@ -161,7 +170,7 @@ impl Wallet {
     /// Subscribe to events
     pub async fn subscribe<T: Into<Params>>(&self, query: T) -> ActiveSubscription {
         self.subscription
-            .subscribe(self.mint_url.clone(), query.into())
+            .subscribe(self.mint_url.clone(), query.into(), Arc::new(self.clone()))
             .await
     }
 
@@ -237,6 +246,8 @@ impl Wallet {
         self.localstore
             .add_mint(self.mint_url.clone(), mint_info.clone())
             .await?;
+
+        // TODO: Set the protected endpoints
 
         tracing::trace!("Mint info updated for {}", self.mint_url);
 
@@ -340,7 +351,14 @@ impl Wallet {
                     outputs: premint_secrets.blinded_messages(),
                 };
 
-                let response = self.client.post_restore(restore_request).await?;
+                let auth_token = self
+                    .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::Restore))
+                    .await?;
+
+                let response = self
+                    .client
+                    .post_restore(restore_request, auth_token)
+                    .await?;
 
                 if response.signatures.is_empty() {
                     empty_batch += 1;

@@ -1,18 +1,15 @@
-//! Wallet client
-
-use std::fmt::Debug;
-
 use async_trait::async_trait;
 use reqwest::Client;
 use tracing::instrument;
 #[cfg(not(target_arch = "wasm32"))]
 use url::Url;
 
-use super::Error;
+use super::{Error, MintConnector};
 use crate::error::ErrorResponse;
 use crate::mint_url::MintUrl;
+use crate::nuts::nutxx1::MintAuthRequest;
 use crate::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
+    AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest,
     RestoreResponse, SwapRequest, SwapResponse,
@@ -86,22 +83,37 @@ impl HttpClient {
 impl MintConnector for HttpClient {
     /// Get Active Mint Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
+    async fn get_mint_keys(&self, auth_token: Option<AuthToken>) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
-        let keys = self.inner.get(url).send().await?.text().await?;
+        let mut res = self.inner.get(url);
 
-        Ok(convert_http_response!(KeysResponse, keys)?.keysets)
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
+        Ok(convert_http_response!(KeysResponse, res)?.keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+    async fn get_mint_keyset(
+        &self,
+        keyset_id: Id,
+        auth_token: Option<AuthToken>,
+    ) -> Result<KeySet, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
-        let keys = self.inner.get(url).send().await?.text().await?;
+        let mut res = self.inner.get(url);
 
-        convert_http_response!(KeysResponse, keys)?
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
+
+        convert_http_response!(KeysResponse, res)?
             .keysets
             .drain(0..1)
             .next()
@@ -110,9 +122,18 @@ impl MintConnector for HttpClient {
 
     /// Get Keysets [NUT-02]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+    async fn get_mint_keysets(
+        &self,
+        auth_token: Option<AuthToken>,
+    ) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
-        let res = self.inner.get(url).send().await?.text().await?;
+        let mut res = self.inner.get(url);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(KeysetResponse, res)
     }
@@ -122,19 +143,19 @@ impl MintConnector for HttpClient {
     async fn post_mint_quote(
         &self,
         request: MintQuoteBolt11Request,
+        auth_token: Option<AuthToken>,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11"])?;
 
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
+        let mut res = self.inner.post(url).json(&request);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(MintQuoteBolt11Response<String>, res)
     }
@@ -144,12 +165,19 @@ impl MintConnector for HttpClient {
     async fn get_mint_quote_status(
         &self,
         quote_id: &str,
+        auth_token: Option<AuthToken>,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?.text().await?;
+        let mut res = self.inner.get(url);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(MintQuoteBolt11Response<String>, res)
     }
@@ -159,17 +187,17 @@ impl MintConnector for HttpClient {
     async fn post_mint(
         &self,
         request: MintBolt11Request<String>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MintBolt11Response, Error> {
         let url = self.mint_url.join_paths(&["v1", "mint", "bolt11"])?;
 
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
+        let mut res = self.inner.post(url).json(&request);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(MintBolt11Response, res)
     }
@@ -179,19 +207,19 @@ impl MintConnector for HttpClient {
     async fn post_melt_quote(
         &self,
         request: MeltQuoteBolt11Request,
+        auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11"])?;
 
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
+        let mut res = self.inner.post(url).json(&request);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(MeltQuoteBolt11Response<String>, res)
     }
@@ -201,12 +229,19 @@ impl MintConnector for HttpClient {
     async fn get_melt_quote_status(
         &self,
         quote_id: &str,
+        auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?.text().await?;
+        let mut res = self.inner.get(url);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(MeltQuoteBolt11Response<String>, res)
     }
@@ -217,34 +252,37 @@ impl MintConnector for HttpClient {
     async fn post_melt(
         &self,
         request: MeltBolt11Request<String>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = self.mint_url.join_paths(&["v1", "melt", "bolt11"])?;
 
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
+        let mut res = self.inner.post(url).json(&request);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(MeltQuoteBolt11Response<String>, res)
     }
 
     /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
-    async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
+    async fn post_swap(
+        &self,
+        swap_request: SwapRequest,
+        auth_token: Option<AuthToken>,
+    ) -> Result<SwapResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "swap"])?;
 
-        let res = self
-            .inner
-            .post(url)
-            .json(&swap_request)
-            .send()
-            .await?
-            .text()
-            .await?;
+        let mut res = self.inner.post(url).json(&swap_request);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(SwapResponse, res)
     }
@@ -264,25 +302,85 @@ impl MintConnector for HttpClient {
     async fn post_check_state(
         &self,
         request: CheckStateRequest,
+        auth_token: Option<AuthToken>,
     ) -> Result<CheckStateResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "checkstate"])?;
 
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
+        let mut res = self.inner.post(url).json(&request);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
 
         convert_http_response!(CheckStateResponse, res)
     }
 
     /// Restore request [NUT-13]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+    async fn post_restore(
+        &self,
+        request: RestoreRequest,
+        auth_token: Option<AuthToken>,
+    ) -> Result<RestoreResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "restore"])?;
+
+        let mut res = self.inner.post(url).json(&request);
+
+        if let Some(auth) = auth_token {
+            res = res.header(auth.header_key(), auth.to_string());
+        }
+
+        let res = res.send().await?.text().await?;
+
+        convert_http_response!(RestoreResponse, res)
+    }
+
+    /// Get Active Auth Mint Keys [NUT-XX1]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_blind_auth_keys(&self) -> Result<Vec<KeySet>, Error> {
+        let url = self.mint_url.join_paths(&["v1", "auth", "blind", "keys"])?;
+
+        let res = self.inner.get(url).send().await?.text().await?;
+
+        Ok(convert_http_response!(KeysResponse, res)?.keysets)
+    }
+
+    /// Get Auth Keyset Keys [NUT-XX1]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        let url =
+            self.mint_url
+                .join_paths(&["v1", "auth", "blind", "keys", &keyset_id.to_string()])?;
+        let res = self.inner.get(url).send().await?.text().await?;
+
+        convert_http_response!(KeysResponse, res)?
+            .keysets
+            .drain(0..1)
+            .next()
+            .ok_or_else(|| Error::UnknownKeySet)
+    }
+
+    /// Get Auth Keysets [NUT-XX1]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "auth", "blind", "keysets"])?;
+
+        let res = self.inner.get(url).send().await?.text().await?;
+
+        convert_http_response!(KeysetResponse, res)
+    }
+
+    /// Mint Tokens [NUT-XX!]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_mint_blind_auth(
+        &self,
+        request: MintAuthRequest,
+    ) -> Result<MintBolt11Response, Error> {
+        let url = self.mint_url.join_paths(&["v1", "mint", "auth", "blind"])?;
 
         let res = self
             .inner
@@ -293,60 +391,6 @@ impl MintConnector for HttpClient {
             .text()
             .await?;
 
-        convert_http_response!(RestoreResponse, res)
+        convert_http_response!(MintBolt11Response, res)
     }
-}
-
-/// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait MintConnector: Debug {
-    /// Get Active Mint Keys [NUT-01]
-    async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;
-    /// Get Keyset Keys [NUT-01]
-    async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error>;
-    /// Get Keysets [NUT-02]
-    async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error>;
-    /// Mint Quote [NUT-04]
-    async fn post_mint_quote(
-        &self,
-        request: MintQuoteBolt11Request,
-    ) -> Result<MintQuoteBolt11Response<String>, Error>;
-    /// Mint Quote status
-    async fn get_mint_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MintQuoteBolt11Response<String>, Error>;
-    /// Mint Tokens [NUT-04]
-    async fn post_mint(
-        &self,
-        request: MintBolt11Request<String>,
-    ) -> Result<MintBolt11Response, Error>;
-    /// Melt Quote [NUT-05]
-    async fn post_melt_quote(
-        &self,
-        request: MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
-    /// Melt Quote Status
-    async fn get_melt_quote_status(
-        &self,
-        quote_id: &str,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
-    /// Melt [NUT-05]
-    /// [Nut-08] Lightning fee return if outputs defined
-    async fn post_melt(
-        &self,
-        request: MeltBolt11Request<String>,
-    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
-    /// Split Token [NUT-06]
-    async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
-    /// Get Mint Info [NUT-06]
-    async fn get_mint_info(&self) -> Result<MintInfo, Error>;
-    /// Spendable check [NUT-07]
-    async fn post_check_state(
-        &self,
-        request: CheckStateRequest,
-    ) -> Result<CheckStateResponse, Error>;
-    /// Restore request [NUT-13]
-    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
 }

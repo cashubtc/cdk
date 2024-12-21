@@ -10,15 +10,16 @@ mod integration_tests_pure {
     use cdk::amount::SplitTarget;
     use cdk::cdk_database::mint_memory::MintMemoryDatabase;
     use cdk::cdk_database::WalletMemoryDatabase;
+    use cdk::nuts::nutxx1::MintAuthRequest;
     use cdk::nuts::{
-        CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
+        AuthToken, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
         MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
         MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response,
         MintQuoteState, Nuts, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
     };
     use cdk::types::QuoteTTL;
     use cdk::util::unix_time;
-    use cdk::wallet::client::MintConnector;
+    use cdk::wallet::MintConnector;
     use cdk::{Amount, Error, Mint, Wallet};
     use cdk_integration_tests::create_backends_fake_wallet;
     use rand::random;
@@ -45,24 +46,35 @@ mod integration_tests_pure {
     /// Convert the requests and responses between the [String] and [Uuid] variants as necessary.
     #[async_trait]
     impl MintConnector for DirectMintConnection {
-        async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
+        async fn get_mint_keys(
+            &self,
+            _auth_token: Option<AuthToken>,
+        ) -> Result<Vec<KeySet>, Error> {
             self.mint.pubkeys().await.map(|pks| pks.keysets)
         }
 
-        async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        async fn get_mint_keyset(
+            &self,
+            keyset_id: Id,
+            _auth_token: Option<AuthToken>,
+        ) -> Result<KeySet, Error> {
             self.mint
                 .keyset(&keyset_id)
                 .await
                 .and_then(|res| res.ok_or(Error::UnknownKeySet))
         }
 
-        async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        async fn get_mint_keysets(
+            &self,
+            _auth_token: Option<AuthToken>,
+        ) -> Result<KeysetResponse, Error> {
             self.mint.keysets().await
         }
 
         async fn post_mint_quote(
             &self,
             request: MintQuoteBolt11Request,
+            _auth_token: Option<AuthToken>,
         ) -> Result<MintQuoteBolt11Response<String>, Error> {
             self.mint
                 .get_mint_bolt11_quote(None, request)
@@ -73,6 +85,7 @@ mod integration_tests_pure {
         async fn get_mint_quote_status(
             &self,
             quote_id: &str,
+            _auth_token: Option<AuthToken>,
         ) -> Result<MintQuoteBolt11Response<String>, Error> {
             let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
             self.mint
@@ -84,6 +97,7 @@ mod integration_tests_pure {
         async fn post_mint(
             &self,
             request: MintBolt11Request<String>,
+            _auth_token: Option<AuthToken>,
         ) -> Result<MintBolt11Response, Error> {
             let request_uuid = request.try_into().unwrap();
             self.mint.process_mint_request(None, request_uuid).await
@@ -92,6 +106,7 @@ mod integration_tests_pure {
         async fn post_melt_quote(
             &self,
             request: MeltQuoteBolt11Request,
+            _auth_token: Option<AuthToken>,
         ) -> Result<MeltQuoteBolt11Response<String>, Error> {
             self.mint
                 .get_melt_bolt11_quote(None, &request)
@@ -102,6 +117,7 @@ mod integration_tests_pure {
         async fn get_melt_quote_status(
             &self,
             quote_id: &str,
+            _auth_token: Option<AuthToken>,
         ) -> Result<MeltQuoteBolt11Response<String>, Error> {
             let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
             self.mint
@@ -113,6 +129,7 @@ mod integration_tests_pure {
         async fn post_melt(
             &self,
             request: MeltBolt11Request<String>,
+            _auth_token: Option<AuthToken>,
         ) -> Result<MeltQuoteBolt11Response<String>, Error> {
             let request_uuid = request.try_into().unwrap();
             self.mint
@@ -121,7 +138,11 @@ mod integration_tests_pure {
                 .map(Into::into)
         }
 
-        async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
+        async fn post_swap(
+            &self,
+            swap_request: SwapRequest,
+            _auth_token: Option<AuthToken>,
+        ) -> Result<SwapResponse, Error> {
             self.mint.process_swap_request(None, swap_request).await
         }
 
@@ -132,12 +153,37 @@ mod integration_tests_pure {
         async fn post_check_state(
             &self,
             request: CheckStateRequest,
+            _auth_token: Option<AuthToken>,
         ) -> Result<CheckStateResponse, Error> {
             self.mint.check_state(&request).await
         }
 
-        async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        async fn post_restore(
+            &self,
+            request: RestoreRequest,
+            _auth_token: Option<AuthToken>,
+        ) -> Result<RestoreResponse, Error> {
             self.mint.restore(request).await
+        }
+
+        /// Get Blind Auth keys
+        async fn get_mint_blind_auth_keys(&self) -> Result<Vec<KeySet>, Error> {
+            todo!();
+        }
+        /// Get Blind Auth Keyset
+        async fn get_mint_blind_auth_keyset(&self, _keyset_id: Id) -> Result<KeySet, Error> {
+            todo!();
+        }
+        /// Get Blind Auth keysets
+        async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
+            todo!();
+        }
+        /// Post mint blind auth
+        async fn post_mint_blind_auth(
+            &self,
+            _request: MintAuthRequest,
+        ) -> Result<MintBolt11Response, Error> {
+            todo!();
         }
     }
 
@@ -199,7 +245,7 @@ mod integration_tests_pure {
         let unit = CurrencyUnit::Sat;
 
         let localstore = WalletMemoryDatabase::default();
-        let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None)?;
+        let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None, None)?;
 
         wallet.set_client(connector);
 

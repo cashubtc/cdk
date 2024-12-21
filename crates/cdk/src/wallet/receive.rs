@@ -10,7 +10,10 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State, Token};
+use crate::nuts::{
+    Conditions, Method, Proofs, ProtectedEndpoint, PublicKey, RoutePath, SecretKey, SigFlag, State,
+    Token,
+};
 use crate::types::ProofInfo;
 use crate::util::hex;
 use crate::{Amount, Error, Wallet, SECP256K1};
@@ -128,7 +131,14 @@ impl Wallet {
             }
         }
 
-        let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::Restore))
+            .await?;
+
+        let swap_response = self
+            .client
+            .post_swap(pre_swap.swap_request, auth_token)
+            .await?;
 
         // Proof to keep
         let recv_proofs = construct_proofs(

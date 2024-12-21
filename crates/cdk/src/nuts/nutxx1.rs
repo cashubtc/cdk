@@ -55,6 +55,29 @@ pub enum AuthToken {
     BlindAuth(BlindAuthToken),
 }
 
+impl fmt::Display for AuthToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ClearAuth(cat) => {
+                write!(f, "{}", cat)
+            }
+            Self::BlindAuth(bat) => {
+                write!(f, "{}", bat)
+            }
+        }
+    }
+}
+
+impl AuthToken {
+    /// Header key for auth token type
+    pub fn header_key(&self) -> String {
+        match self {
+            Self::ClearAuth(_) => "Clear-auth".to_string(),
+            Self::BlindAuth(_) => "Blind-auth".to_string(),
+        }
+    }
+}
+
 /// Required Auth
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AuthRequired {
@@ -96,6 +119,16 @@ impl From<AuthProof> for Proof {
             c: value.c,
             witness: None,
             dleq: None,
+        }
+    }
+}
+
+impl From<Proof> for AuthProof {
+    fn from(value: Proof) -> Self {
+        Self {
+            keyset_id: value.keyset_id,
+            secret: value.secret,
+            c: value.c,
         }
     }
 }
