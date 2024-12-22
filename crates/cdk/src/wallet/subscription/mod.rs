@@ -231,6 +231,7 @@ impl SubscriptionClient {
             subscriptions,
             new_subscription_recv,
             on_drop_recv,
+            wallet,
         );
 
         #[cfg(all(

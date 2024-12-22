@@ -66,6 +66,7 @@
 
         # Nightly used for formatting
         nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
+          targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [ "rustfmt" "clippy" "rust-src" ];
         });
 
