@@ -26,7 +26,7 @@ use crate::types::{LnKey, QuoteTTL};
 use crate::util::unix_time;
 use crate::Amount;
 
-mod auth;
+pub(crate) mod auth;
 mod builder;
 mod check_spendable;
 pub mod config;
@@ -38,6 +38,7 @@ mod start_up_check;
 mod swap;
 pub mod types;
 
+pub use auth::auth_database::MintAuthDatabase;
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use types::{MeltQuote, MintQuote};
 
@@ -48,6 +49,8 @@ pub struct Mint {
     pub config: SwappableConfig,
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
+    /// Mint Storage backend
+    pub auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
     /// Ln backends for mint
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
@@ -67,6 +70,7 @@ impl Mint {
         mint_info: MintInfo,
         quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
+        auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
@@ -198,6 +202,7 @@ impl Mint {
             localstore,
             ln,
             protected_endpoints,
+            auth_localstore,
         })
     }
 
@@ -750,6 +755,7 @@ mod tests {
             config.mint_info,
             config.quote_ttl,
             localstore,
+            None,
             HashMap::new(),
             config.supported_units,
             HashMap::new(),

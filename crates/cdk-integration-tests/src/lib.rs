@@ -81,6 +81,7 @@ pub async fn start_mint(
         mint_info,
         quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
+        None,
         ln_backends.clone(),
         supported_units,
         HashMap::new(),

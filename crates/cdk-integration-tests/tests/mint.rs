@@ -51,6 +51,7 @@ async fn new_mint(fee: u64) -> Mint {
         mint_info,
         quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
+        None,
         HashMap::new(),
         supported_units,
         HashMap::new(),

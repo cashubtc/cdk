@@ -36,10 +36,14 @@ use crate::wallet;
 use crate::wallet::MintQuote as WalletMintQuote;
 
 #[cfg(feature = "mint")]
+mod auth;
+#[cfg(feature = "mint")]
 pub mod mint_memory;
 #[cfg(feature = "wallet")]
 pub mod wallet_memory;
 
+#[cfg(feature = "mint")]
+pub use auth::MintMemoryAuthDatabase;
 #[cfg(feature = "wallet")]
 pub use wallet_memory::WalletMemoryDatabase;
 

@@ -218,6 +218,7 @@ mod integration_tests_pure {
             mint_info,
             quote_ttl,
             Arc::new(MintMemoryDatabase::default()),
+            None,
             create_backends_fake_wallet(),
             supported_units,
             HashMap::new(),
