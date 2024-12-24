@@ -160,6 +160,7 @@ pub async fn mint_proofs(
         amount,
         unit: CurrencyUnit::Sat,
         description,
+        pubkey: None,
     };
 
     let mint_quote = wallet_client.post_mint_quote(request).await?;
@@ -192,6 +193,7 @@ pub async fn mint_proofs(
     let request = MintBolt11Request {
         quote: mint_quote.quote,
         outputs: premint_secrets.blinded_messages(),
+        signature: None,
     };
 
     let mint_response = wallet_client.post_mint(request).await?;

@@ -381,10 +381,15 @@ async fn test_cached_mint() -> Result<()> {
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
 
-    let request = MintBolt11Request {
+    let mut request = MintBolt11Request {
         quote: quote.id,
         outputs: premint_secrets.blinded_messages(),
+        signature: None,
     };
+
+    let secret_key = quote.secret_key;
+
+    request.sign(secret_key.expect("Secret key on quote"))?;
 
     let response = http_client.post_mint(request.clone()).await?;
     let response1 = http_client.post_mint(request).await?;

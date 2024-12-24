@@ -247,6 +247,10 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "19")]
     pub nut19: nut19::Settings,
+    /// NUT20 Settings
+    #[serde(default)]
+    #[serde(rename = "20")]
+    pub nut20: SupportedSettings,
 }
 
 impl Nuts {
@@ -353,6 +357,14 @@ impl Nuts {
                 ttl,
                 cached_endpoints,
             },
+            ..self
+        }
+    }
+
+    /// Nut20 settings
+    pub fn nut20(self, supported: bool) -> Self {
+        Self {
+            nut20: SupportedSettings { supported },
             ..self
         }
     }
