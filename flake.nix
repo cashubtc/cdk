@@ -65,7 +65,7 @@
           targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
 
-        # Nightly for creating lock files
+        # Nightly used for formatting
         nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
           extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
         });
@@ -274,6 +274,7 @@
                 cargo update -p allocator-api2 --precise 0.2.18
                 cargo update -p async-compression --precise 0.4.3
                 cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
+                cargo update -p redb --precise 2.2.0
               '';
               buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
               inherit nativeBuildInputs;
