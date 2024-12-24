@@ -100,7 +100,7 @@ impl Mint {
             unit.clone(),
             payment_quote.amount,
             payment_quote.fee,
-            unix_time() + self.quote_ttl.melt_ttl,
+            unix_time() + self.config.quote_ttl().melt_ttl,
             payment_quote.request_lookup_id.clone(),
         );
 

@@ -21,6 +21,7 @@ http_subscription = []
 
 
 [dependencies]
+arc-swap = "1.7.1"
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
 bitcoin = { version = "0.32.2", features = [
@@ -59,7 +60,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
-arc-swap = "1.7.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.21", features = [

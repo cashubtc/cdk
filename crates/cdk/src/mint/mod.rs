@@ -44,8 +44,6 @@ pub use types::{MeltQuote, MintQuote};
 pub struct Mint {
     /// Mint Config
     pub config: SwappableConfig,
-    /// Quotes ttl
-    pub quote_ttl: QuoteTTL,
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
     /// Ln backends for mint
@@ -183,10 +181,14 @@ impl Mint {
         }
 
         Ok(Self {
-            config: SwappableConfig::new(MintUrl::from_str(mint_url)?, mint_info, active_keysets),
+            config: SwappableConfig::new(
+                MintUrl::from_str(mint_url)?,
+                quote_ttl,
+                mint_info,
+                active_keysets,
+            ),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
-            quote_ttl,
             xpriv,
             localstore,
             ln,

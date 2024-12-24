@@ -79,7 +79,7 @@ impl Mint {
                 Error::UnitUnsupported
             })?;
 
-        let quote_expiry = unix_time() + self.quote_ttl.mint_ttl;
+        let quote_expiry = unix_time() + self.config.quote_ttl().mint_ttl;
 
         if description.is_some() && !ln.get_settings().invoice_description {
             tracing::error!("Backend does not support invoice description");
