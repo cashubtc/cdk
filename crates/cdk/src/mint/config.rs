@@ -7,7 +7,8 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use super::{Id, MintInfo, MintKeySet};
-use crate::{mint_url::MintUrl, types::QuoteTTL};
+use crate::mint_url::MintUrl;
+use crate::types::QuoteTTL;
 
 /// Mint Inner configuration
 pub struct Config {
@@ -68,7 +69,7 @@ impl SwappableConfig {
         let current_inner = self.load();
         let new_inner = Config {
             mint_url,
-            quote_ttl: current_inner.quote_ttl.clone(),
+            quote_ttl: current_inner.quote_ttl,
             mint_info: current_inner.mint_info.clone(),
             keysets: current_inner.keysets.clone(),
         };
@@ -78,7 +79,7 @@ impl SwappableConfig {
 
     /// Gets a copy of the quote ttl
     pub fn quote_ttl(&self) -> QuoteTTL {
-        self.load().quote_ttl.clone()
+        self.load().quote_ttl
     }
 
     /// Replaces the current quote ttl with a new one
@@ -105,7 +106,7 @@ impl SwappableConfig {
         let new_inner = Config {
             mint_info,
             mint_url: current_inner.mint_url.clone(),
-            quote_ttl: current_inner.quote_ttl.clone(),
+            quote_ttl: current_inner.quote_ttl,
             keysets: current_inner.keysets.clone(),
         };
 
@@ -117,7 +118,7 @@ impl SwappableConfig {
         let current_inner = self.load();
         let new_inner = Config {
             mint_info: current_inner.mint_info.clone(),
-            quote_ttl: current_inner.quote_ttl.clone(),
+            quote_ttl: current_inner.quote_ttl,
             mint_url: current_inner.mint_url.clone(),
             keysets,
         };
