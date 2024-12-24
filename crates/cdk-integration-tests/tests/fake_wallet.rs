@@ -390,6 +390,7 @@ async fn test_fake_mint_with_witness() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
+        None,
     )?;
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -412,6 +413,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
+        None,
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -431,7 +433,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
         signature: None,
     };
 
-    let response = http_client.post_mint(request.clone()).await;
+    let response = http_client.post_mint(request.clone(), None).await;
 
     match response {
         Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),
@@ -440,7 +442,6 @@ async fn test_fake_mint_without_witness() -> Result<()> {
     }
 }
 
-// TODO: Rewrite this test to include witness wrong
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_wrong_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -448,6 +449,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
         None,
     )?;
 
@@ -472,7 +474,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
 
     request.sign(secret_key)?;
 
-    let response = http_client.post_mint(request.clone()).await;
+    let response = http_client.post_mint(request.clone(), None).await;
 
     match response {
         Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),

@@ -398,8 +398,8 @@ async fn test_cached_mint() -> Result<()> {
 
     request.sign(secret_key.expect("Secret key on quote"))?;
 
-    let response = http_client.post_mint(request.clone()).await?;
-    let response1 = http_client.post_mint(request).await?;
+    let response = http_client.post_mint(request.clone(), None).await?;
+    let response1 = http_client.post_mint(request, None).await?;
 
     assert!(response == response1);
     Ok(())
