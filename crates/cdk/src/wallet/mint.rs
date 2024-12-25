@@ -32,7 +32,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -173,7 +173,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;

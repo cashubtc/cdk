@@ -12,7 +12,9 @@ impl Mint {
         auth_token: AuthToken,
         mint_auth_request: MintAuthRequest,
     ) -> Result<MintBolt11Response, Error> {
-        let AuthToken::ClearAuth(cat) = auth_token else {
+        let cat = if let AuthToken::ClearAuth(cat) = auth_token {
+            cat
+        } else {
             return Err(Error::AuthRequired);
         };
 
