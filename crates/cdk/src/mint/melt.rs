@@ -27,7 +27,8 @@ impl Mint {
         unit: CurrencyUnit,
         method: PaymentMethod,
     ) -> Result<(), Error> {
-        let nut05 = &self.mint_info.nuts.nut05;
+        let mint_info = self.mint_info();
+        let nut05 = mint_info.nuts.nut05;
 
         if nut05.disabled {
             return Err(Error::MeltingDisabled);
@@ -99,7 +100,7 @@ impl Mint {
             unit.clone(),
             payment_quote.amount,
             payment_quote.fee,
-            unix_time() + self.quote_ttl.melt_ttl,
+            unix_time() + self.config.quote_ttl().melt_ttl,
             payment_quote.request_lookup_id.clone(),
         );
 

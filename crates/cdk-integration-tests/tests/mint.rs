@@ -72,7 +72,7 @@ async fn mint_proofs(
     let request_lookup = uuid::Uuid::new_v4().to_string();
 
     let quote = MintQuote::new(
-        mint.mint_url.clone(),
+        mint.config.mint_url(),
         "".to_string(),
         CurrencyUnit::Sat,
         amount,

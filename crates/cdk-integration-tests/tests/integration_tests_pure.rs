@@ -34,7 +34,7 @@ mod integration_tests_pure {
             write!(
                 f,
                 "DirectMintConnection {{ mint_info: {:?} }}",
-                self.mint.mint_info
+                self.mint.config.mint_info()
             )
         }
     }
@@ -191,7 +191,7 @@ mod integration_tests_pure {
         let connector = get_mint_connector(mint);
 
         let seed = random::<[u8; 32]>();
-        let mint_url = connector.mint.mint_url.to_string();
+        let mint_url = connector.mint.config.mint_url().to_string();
         let unit = CurrencyUnit::Sat;
 
         let localstore = WalletMemoryDatabase::default();

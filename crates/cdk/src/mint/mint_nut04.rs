@@ -17,7 +17,8 @@ impl Mint {
         amount: Amount,
         unit: &CurrencyUnit,
     ) -> Result<(), Error> {
-        let nut04 = &self.mint_info.nuts.nut04;
+        let mint_info = self.mint_info();
+        let nut04 = &mint_info.nuts.nut04;
 
         if nut04.disabled {
             return Err(Error::MintingDisabled);
@@ -79,7 +80,7 @@ impl Mint {
                 Error::UnitUnsupported
             })?;
 
-        let quote_expiry = unix_time() + self.quote_ttl.mint_ttl;
+        let quote_expiry = unix_time() + self.config.quote_ttl().mint_ttl;
 
         if description.is_some() && !ln.get_settings().invoice_description {
             tracing::error!("Backend does not support invoice description");
@@ -100,7 +101,7 @@ impl Mint {
             })?;
 
         let quote = MintQuote::new(
-            self.mint_url.clone(),
+            self.config.mint_url(),
             create_invoice_response.request.to_string(),
             unit.clone(),
             amount,
