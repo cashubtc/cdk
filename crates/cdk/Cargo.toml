@@ -21,6 +21,7 @@ http_subscription = []
 
 
 [dependencies]
+arc-swap = "1.7.1"
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
 bitcoin = { version = "0.32.2", features = [
