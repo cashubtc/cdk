@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use super::{Id, MintInfo, MintKeySet};
+use super::{AuthRequired, Id, MintInfo, MintKeySet};
 use crate::mint_url::MintUrl;
+use crate::nuts::ProtectedEndpoint;
 use crate::types::QuoteTTL;
 
 /// Mint Inner configuration
@@ -20,6 +21,8 @@ pub struct Config {
     pub mint_url: MintUrl,
     /// Quotes ttl
     pub quote_ttl: QuoteTTL,
+    /// Protected methods
+    pub protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
 }
 
 /// Mint configuration
@@ -41,12 +44,14 @@ impl SwappableConfig {
         quote_ttl: QuoteTTL,
         mint_info: MintInfo,
         keysets: HashMap<Id, MintKeySet>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     ) -> Self {
         let inner = Config {
             keysets,
             quote_ttl,
             mint_info,
             mint_url,
+            protected_endpoints,
         };
 
         Self {
@@ -72,6 +77,7 @@ impl SwappableConfig {
             quote_ttl: current_inner.quote_ttl,
             mint_info: current_inner.mint_info.clone(),
             keysets: current_inner.keysets.clone(),
+            protected_endpoints: current_inner.protected_endpoints.clone(),
         };
 
         self.config.store(Arc::new(new_inner));
@@ -90,6 +96,7 @@ impl SwappableConfig {
             mint_url: current_inner.mint_url.clone(),
             quote_ttl,
             keysets: current_inner.keysets.clone(),
+            protected_endpoints: current_inner.protected_endpoints.clone(),
         };
 
         self.config.store(Arc::new(new_inner));
@@ -108,6 +115,7 @@ impl SwappableConfig {
             mint_url: current_inner.mint_url.clone(),
             quote_ttl: current_inner.quote_ttl,
             keysets: current_inner.keysets.clone(),
+            protected_endpoints: current_inner.protected_endpoints.clone(),
         };
 
         self.config.store(Arc::new(new_inner));
@@ -121,6 +129,7 @@ impl SwappableConfig {
             quote_ttl: current_inner.quote_ttl,
             mint_url: current_inner.mint_url.clone(),
             keysets,
+            protected_endpoints: current_inner.protected_endpoints.clone(),
         };
 
         self.config.store(Arc::new(new_inner));

@@ -10,7 +10,7 @@ pub mod auth_database;
 impl Mint {
     /// Check if and what kind of auth is required for a method
     pub fn protected(&self, method: &ProtectedEndpoint) -> Option<AuthRequired> {
-        self.protected_endpoints.get(method).copied()
+        self.config.load().protected_endpoints.get(method).copied()
     }
 
     /// Verify Clear auth

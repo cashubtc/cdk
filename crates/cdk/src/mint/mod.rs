@@ -55,8 +55,6 @@ pub struct Mint {
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
-    /// Protected methods
-    pub protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: Xpriv,
 }
@@ -195,13 +193,13 @@ impl Mint {
                 quote_ttl,
                 mint_info,
                 active_keysets,
+                protected_endpoints,
             ),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
             xpriv,
             localstore,
             ln,
-            protected_endpoints,
             auth_localstore,
         })
     }
