@@ -8,6 +8,7 @@ use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use config::SwappableConfig;
 use futures::StreamExt;
+use nutxx::ProtectedEndpoint;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
@@ -25,17 +26,19 @@ use crate::types::{LnKey, QuoteTTL};
 use crate::util::unix_time;
 use crate::Amount;
 
+pub(crate) mod auth;
 mod builder;
 mod check_spendable;
 pub mod config;
 mod info;
+mod issue;
 mod keysets;
 mod melt;
-mod mint_nut04;
 mod start_up_check;
 mod swap;
 pub mod types;
 
+pub use auth::auth_database::MintAuthDatabase;
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use types::{MeltQuote, MintQuote};
 
@@ -46,6 +49,8 @@ pub struct Mint {
     pub config: SwappableConfig,
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
+    /// Mint Storage backend
+    pub auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
     /// Ln backends for mint
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
@@ -63,10 +68,12 @@ impl Mint {
         mint_info: MintInfo,
         quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
+        auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
@@ -186,12 +193,14 @@ impl Mint {
                 quote_ttl,
                 mint_info,
                 active_keysets,
+                protected_endpoints,
             ),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
             xpriv,
             localstore,
             ln,
+            auth_localstore,
         })
     }
 
@@ -429,7 +438,17 @@ impl Mint {
 
     /// Restore
     #[instrument(skip_all)]
-    pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+    pub async fn restore(
+        &self,
+        auth_token: Option<AuthToken>,
+        request: RestoreRequest,
+    ) -> Result<RestoreResponse, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
+        )
+        .await?;
+
         let output_len = request.outputs.len();
 
         let mut outputs = Vec::with_capacity(output_len);
@@ -591,10 +610,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
 }
 
 fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
-    let unit_index = match unit.derivation_index() {
-        Some(index) => index,
-        None => return None,
-    };
+    let unit_index = unit.derivation_index()?;
 
     Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
@@ -744,8 +760,10 @@ mod tests {
             config.mint_info,
             config.quote_ttl,
             localstore,
+            None,
             HashMap::new(),
             config.supported_units,
+            HashMap::new(),
             HashMap::new(),
         )
         .await

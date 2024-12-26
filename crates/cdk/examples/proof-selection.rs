@@ -18,7 +18,7 @@ async fn main() {
 
     let localstore = WalletMemoryDatabase::default();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None).unwrap();
 
     for amount in [64] {
         let amount = Amount::from(amount);

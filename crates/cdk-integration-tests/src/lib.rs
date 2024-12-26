@@ -7,6 +7,7 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
+use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
@@ -17,15 +18,16 @@ use cdk::nuts::{
     NotificationPayload, Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
 };
 use cdk::types::{LnKey, QuoteTTL};
-use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::subscription::SubscriptionManager;
-use cdk::wallet::WalletSubscription;
+use cdk::wallet::{HttpClient, MintConnector, WalletSubscription};
 use cdk::{Mint, Wallet};
 use cdk_fake_wallet::FakeWallet;
 use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 
+pub mod direct_mint_connection;
+pub mod init_direct_mint;
 pub mod init_fake_wallet;
 pub mod init_regtest;
 
@@ -81,8 +83,10 @@ pub async fn start_mint(
         mint_info,
         quote_ttl,
         Arc::new(MintMemoryDatabase::default()),
+        None,
         ln_backends.clone(),
         supported_units,
+        HashMap::new(),
         HashMap::new(),
     )
     .await?;
@@ -163,11 +167,22 @@ pub async fn mint_proofs(
         pubkey: None,
     };
 
-    let mint_quote = wallet_client.post_mint_quote(request).await?;
+    let mint_quote = wallet_client.post_mint_quote(request, None).await?;
 
     println!("Please pay: {}", mint_quote.request);
 
     let subscription_client = SubscriptionManager::new(Arc::new(wallet_client.clone()));
+
+    // Dumby wallet to pass to subscribe.
+    let wallet_db = WalletMemoryDatabase::default();
+    let wallet = Wallet::new(
+        mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(wallet_db),
+        &[0, 0],
+        None,
+        None,
+    )?;
 
     let mut subscription = subscription_client
         .subscribe(
@@ -177,6 +192,7 @@ pub async fn mint_proofs(
                 kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
                 id: "sub".into(),
             },
+            Arc::new(wallet),
         )
         .await;
 
@@ -196,7 +212,7 @@ pub async fn mint_proofs(
         signature: None,
     };
 
-    let mint_response = wallet_client.post_mint(request).await?;
+    let mint_response = wallet_client.post_mint(request, None).await?;
 
     let pre_swap_proofs = construct_proofs(
         mint_response.signatures,

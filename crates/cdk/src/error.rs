@@ -48,6 +48,9 @@ pub enum Error {
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,
+    /// Auth Required
+    #[error("Auth Required")]
+    AuthRequired,
 
     // Mint Errors
     /// Minting is disabled
@@ -245,6 +248,9 @@ pub enum Error {
     /// NUT20 Error
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
+    /// NUTXX1 Error
+    #[error(transparent)]
+    NUTXX1(#[from] crate::nuts::nutxx1::Error),
     /// Database Error
     #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]

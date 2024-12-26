@@ -5,8 +5,8 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    nut12, MintBolt11Request, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
-    SecretKey, SpendingConditions, State,
+    nut12, Method, MintBolt11Request, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    PreMintSecrets, ProtectedEndpoint, RoutePath, SecretKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -32,7 +32,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -74,7 +74,14 @@ impl Wallet {
             pubkey: Some(secret_key.public_key()),
         };
 
-        let quote_res = self.client.post_mint_quote(request).await?;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(
+                Method::Post,
+                RoutePath::MintQuoteBolt11,
+            ))
+            .await?;
+
+        let quote_res = self.client.post_mint_quote(request, auth_token).await?;
 
         let quote = MintQuote {
             mint_url,
@@ -98,7 +105,17 @@ impl Wallet {
         &self,
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        let response = self.client.get_mint_quote_status(quote_id).await?;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(
+                Method::Post,
+                RoutePath::MintQuoteBolt11,
+            ))
+            .await?;
+
+        let response = self
+            .client
+            .get_mint_quote_status(quote_id, auth_token)
+            .await?;
 
         match self.localstore.get_mint_quote(quote_id).await? {
             Some(quote) => {
@@ -156,7 +173,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -231,7 +248,11 @@ impl Wallet {
             request.sign(secret_key)?;
         }
 
-        let mint_res = self.client.post_mint(request).await?;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11))
+            .await?;
+
+        let mint_res = self.client.post_mint(request, auth_token).await?;
 
         let keys = self.get_keyset_keys(active_keyset_id).await?;
 

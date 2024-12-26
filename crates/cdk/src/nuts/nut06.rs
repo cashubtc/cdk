@@ -8,7 +8,7 @@ use super::nut01::PublicKey;
 #[cfg(feature = "mint")]
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
-use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
+use super::{nut04, nut05, nut15, nut19, nutxx1, MppMethodSettings};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -251,6 +251,10 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "20")]
     pub nut20: SupportedSettings,
+    /// NUTXX1 Settings
+    #[serde(default)]
+    #[serde(rename = "XX+1")]
+    pub nutxx1: nutxx1::Settings,
 }
 
 impl Nuts {

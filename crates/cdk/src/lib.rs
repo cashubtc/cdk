@@ -43,7 +43,7 @@ pub use self::amount::Amount;
 pub use self::util::SECP256K1;
 #[cfg(feature = "wallet")]
 #[doc(hidden)]
-pub use self::wallet::client::HttpClient;
+pub use self::wallet::HttpClient;
 
 /// Result
 #[doc(hidden)]

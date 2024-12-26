@@ -180,8 +180,10 @@ where
         mint_info,
         quote_ttl,
         Arc::new(database),
+        None,
         ln_backends,
         supported_units,
+        HashMap::new(),
         HashMap::new(),
     )
     .await?;

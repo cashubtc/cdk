@@ -7,8 +7,8 @@ use super::MeltQuote;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Mpp,
-    PreMintSecrets, Proofs, State,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Method, Mpp,
+    PreMintSecrets, Proofs, ProtectedEndpoint, RoutePath, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
@@ -32,7 +32,7 @@ impl Wallet {
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None).unwrap();
     ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///     let quote = wallet.melt_quote(bolt11, None).await?;
     ///
@@ -65,7 +65,17 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await?;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MeltQuoteBolt11,
+            ))
+            .await?;
+
+        let quote_res = self
+            .client
+            .post_melt_quote(quote_request, auth_token)
+            .await?;
 
         if quote_res.amount != amount {
             return Err(Error::IncorrectQuoteAmount);
@@ -93,7 +103,17 @@ impl Wallet {
         &self,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let response = self.client.get_melt_quote_status(quote_id).await?;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(
+                Method::Get,
+                RoutePath::MeltQuoteBolt11,
+            ))
+            .await?;
+
+        let response = self
+            .client
+            .get_melt_quote_status(quote_id, auth_token)
+            .await?;
 
         match self.localstore.get_melt_quote(quote_id).await? {
             Some(quote) => {
@@ -154,7 +174,11 @@ impl Wallet {
             outputs: Some(premint_secrets.blinded_messages()),
         };
 
-        let melt_response = self.client.post_melt(request).await;
+        let auth_token = self
+            .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11))
+            .await?;
+
+        let melt_response = self.client.post_melt(request, auth_token).await;
 
         let melt_response = match melt_response {
             Ok(melt_response) => melt_response,
@@ -261,7 +285,7 @@ impl Wallet {
     ///  let unit = CurrencyUnit::Sat;
     ///
     ///  let localstore = WalletMemoryDatabase::default();
-    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None).unwrap();
     ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///  let quote = wallet.melt_quote(bolt11, None).await?;
     ///  let quote_id = quote.id;

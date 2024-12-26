@@ -7,8 +7,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
-use cdk::wallet::client::HttpClient;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::wallet::{HttpClient, MultiMintWallet, Wallet};
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
@@ -150,6 +149,7 @@ async fn main() -> Result<()> {
             cdk::nuts::CurrencyUnit::Sat,
             localstore.clone(),
             &mnemonic.to_seed_normalized(""),
+            None,
             None,
         )?;
         if let Some(proxy_url) = args.proxy.as_ref() {
