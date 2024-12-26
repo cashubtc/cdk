@@ -11,7 +11,7 @@ use cdk_integration_tests::init_direct_mint::{
 #[tokio::test]
 pub async fn test_swap_to_send() -> anyhow::Result<()> {
     let mint_bob = create_and_start_test_mint().await?;
-    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())?;
+    let wallet_alice = create_test_wallet_for_mint(None, mint_bob.clone())?;
 
     // Alice gets 64 sats
     receive(wallet_alice.clone(), 64).await?;
@@ -33,7 +33,7 @@ pub async fn test_swap_to_send() -> anyhow::Result<()> {
     assert_eq!(Amount::from(24), wallet_alice.total_balance().await?);
 
     // Alice sends cashu, Carol receives
-    let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())?;
+    let wallet_carol = create_test_wallet_for_mint(None, mint_bob.clone())?;
     let received_amount = wallet_carol
         .receive_proofs(token.proofs(), SplitTarget::None, &[], &[])
         .await?;

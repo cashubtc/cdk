@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_database::WalletMemoryDatabase;
-use cdk::nuts::{CurrencyUnit, MintInfo, MintQuoteState, Nuts};
+use cdk::nuts::{AuthToken, CurrencyUnit, MintInfo, MintQuoteState, Nuts};
 use cdk::types::QuoteTTL;
 use cdk::{Amount, Mint, Wallet};
 use rand::random;
@@ -60,12 +60,18 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
     Ok(mint_arc)
 }
 
-pub fn get_mint_connector(mint: Arc<Mint>) -> DirectMintConnection {
-    DirectMintConnection { mint }
+pub fn get_mint_connector(cat: Option<String>, mint: Arc<Mint>) -> DirectMintConnection {
+    DirectMintConnection {
+        mint,
+        cat: cat.map(AuthToken::ClearAuth),
+    }
 }
 
-pub fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<Wallet>> {
-    let connector = get_mint_connector(mint);
+pub fn create_test_wallet_for_mint(
+    cat: Option<String>,
+    mint: Arc<Mint>,
+) -> anyhow::Result<Arc<Wallet>> {
+    let connector = get_mint_connector(cat, mint);
 
     let seed = random::<[u8; 32]>();
     let mint_url = connector.mint.config.mint_url().to_string();

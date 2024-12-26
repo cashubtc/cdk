@@ -322,13 +322,18 @@ pub async fn post_melt_bolt11(
 ///
 /// Check whether a secret has been spent already or not.
 pub async fn post_check(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
-    let state = state.mint.check_state(&payload).await.map_err(|err| {
-        tracing::error!("Could not check state of proofs");
-        into_response(err)
-    })?;
+    let state = state
+        .mint
+        .check_state(auth.into(), &payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not check state of proofs");
+            into_response(err)
+        })?;
 
     Ok(Json(state))
 }
@@ -390,13 +395,18 @@ pub async fn post_swap(
 ))]
 /// Restores blind signature for a set of outputs.
 pub async fn post_restore(
+    auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
-    let restore_response = state.mint.restore(payload).await.map_err(|err| {
-        tracing::error!("Could not process restore: {}", err);
-        into_response(err)
-    })?;
+    let restore_response = state
+        .mint
+        .restore(auth.into(), payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process restore: {}", err);
+            into_response(err)
+        })?;
 
     Ok(Json(restore_response))
 }

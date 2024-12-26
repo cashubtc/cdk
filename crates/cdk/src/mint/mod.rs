@@ -438,7 +438,17 @@ impl Mint {
 
     /// Restore
     #[instrument(skip_all)]
-    pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+    pub async fn restore(
+        &self,
+        auth_token: Option<AuthToken>,
+        request: RestoreRequest,
+    ) -> Result<RestoreResponse, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
+        )
+        .await?;
+
         let output_len = request.outputs.len();
 
         let mut outputs = Vec::with_capacity(output_len);
@@ -600,10 +610,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
 }
 
 fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
-    let unit_index = match unit.derivation_index() {
-        Some(index) => index,
-        None => return None,
-    };
+    let unit_index = unit.derivation_index()?;
 
     Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),

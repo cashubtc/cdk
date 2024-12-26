@@ -16,6 +16,7 @@ use cdk::{Error, Mint};
 use uuid::Uuid;
 
 pub struct DirectMintConnection {
+    pub cat: Option<AuthToken>,
     pub mint: Arc<Mint>,
 }
 
@@ -60,10 +61,10 @@ impl MintConnector for DirectMintConnection {
     async fn post_mint_quote(
         &self,
         request: MintQuoteBolt11Request,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         self.mint
-            .get_mint_bolt11_quote(None, request)
+            .get_mint_bolt11_quote(auth_token, request)
             .await
             .map(Into::into)
     }
@@ -71,11 +72,11 @@ impl MintConnector for DirectMintConnection {
     async fn get_mint_quote_status(
         &self,
         quote_id: &str,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
         self.mint
-            .check_mint_quote(None, &quote_id_uuid)
+            .check_mint_quote(auth_token, &quote_id_uuid)
             .await
             .map(Into::into)
     }
@@ -83,19 +84,21 @@ impl MintConnector for DirectMintConnection {
     async fn post_mint(
         &self,
         request: MintBolt11Request<String>,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MintBolt11Response, Error> {
         let request_uuid = request.try_into().unwrap();
-        self.mint.process_mint_request(None, request_uuid).await
+        self.mint
+            .process_mint_request(auth_token, request_uuid)
+            .await
     }
 
     async fn post_melt_quote(
         &self,
         request: MeltQuoteBolt11Request,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         self.mint
-            .get_melt_bolt11_quote(None, &request)
+            .get_melt_bolt11_quote(auth_token, &request)
             .await
             .map(Into::into)
     }
@@ -103,11 +106,11 @@ impl MintConnector for DirectMintConnection {
     async fn get_melt_quote_status(
         &self,
         quote_id: &str,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
         self.mint
-            .check_melt_quote(None, &quote_id_uuid)
+            .check_melt_quote(auth_token, &quote_id_uuid)
             .await
             .map(Into::into)
     }
@@ -115,11 +118,11 @@ impl MintConnector for DirectMintConnection {
     async fn post_melt(
         &self,
         request: MeltBolt11Request<String>,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
         self.mint
-            .melt_bolt11(None, &request_uuid)
+            .melt_bolt11(auth_token, &request_uuid)
             .await
             .map(Into::into)
     }
@@ -127,9 +130,11 @@ impl MintConnector for DirectMintConnection {
     async fn post_swap(
         &self,
         swap_request: SwapRequest,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<SwapResponse, Error> {
-        self.mint.process_swap_request(None, swap_request).await
+        self.mint
+            .process_swap_request(auth_token, swap_request)
+            .await
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
@@ -139,36 +144,44 @@ impl MintConnector for DirectMintConnection {
     async fn post_check_state(
         &self,
         request: CheckStateRequest,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<CheckStateResponse, Error> {
-        self.mint.check_state(&request).await
+        self.mint.check_state(auth_token, &request).await
     }
 
     async fn post_restore(
         &self,
         request: RestoreRequest,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
     ) -> Result<RestoreResponse, Error> {
-        self.mint.restore(request).await
+        self.mint.restore(auth_token, request).await
     }
 
     /// Get Blind Auth keys
     async fn get_mint_blind_auth_keys(&self) -> Result<Vec<KeySet>, Error> {
-        todo!();
+        Ok(self.mint.auth_pubkeys().await?.keysets)
     }
+
     /// Get Blind Auth Keyset
-    async fn get_mint_blind_auth_keyset(&self, _keyset_id: Id) -> Result<KeySet, Error> {
-        todo!();
+    async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        Ok(self
+            .mint
+            .keyset(&keyset_id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?)
     }
+
     /// Get Blind Auth keysets
     async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
-        todo!();
+        self.mint.auth_keysets().await
     }
+
     /// Post mint blind auth
     async fn post_mint_blind_auth(
         &self,
-        _request: MintAuthRequest,
+        request: MintAuthRequest,
     ) -> Result<MintBolt11Response, Error> {
-        todo!();
+        let cat = self.cat.clone().ok_or(Error::AuthRequired)?;
+        self.mint.mint_blind_auth(cat, request).await
     }
 }
