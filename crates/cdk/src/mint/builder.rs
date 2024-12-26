@@ -149,28 +149,26 @@ impl MintBuilder {
             self.mint_info.nuts.nut15 = mpp;
         }
 
-        match method {
-            PaymentMethod::Bolt11 => {
-                let mint_method_settings = MintMethodSettings {
-                    method,
-                    unit: unit.clone(),
-                    min_amount: Some(limits.mint_min),
-                    max_amount: Some(limits.mint_max),
-                    description: settings.invoice_description,
-                };
+        if method == PaymentMethod::Bolt11 {
+            let mint_method_settings = MintMethodSettings {
+                method,
+                unit: unit.clone(),
+                min_amount: Some(limits.mint_min),
+                max_amount: Some(limits.mint_max),
+                description: settings.invoice_description,
+            };
 
-                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-                self.mint_info.nuts.nut04.disabled = false;
+            self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+            self.mint_info.nuts.nut04.disabled = false;
 
-                let melt_method_settings = MeltMethodSettings {
-                    method,
-                    unit,
-                    min_amount: Some(limits.melt_min),
-                    max_amount: Some(limits.melt_max),
-                };
-                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-                self.mint_info.nuts.nut05.disabled = false;
-            }
+            let melt_method_settings = MeltMethodSettings {
+                method,
+                unit,
+                min_amount: Some(limits.melt_min),
+                max_amount: Some(limits.melt_max),
+            };
+            self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+            self.mint_info.nuts.nut05.disabled = false;
         }
 
         ln.insert(ln_key.clone(), ln_backend);

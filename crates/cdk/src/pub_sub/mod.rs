@@ -12,17 +12,14 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
-use std::str::FromStr;
 use std::sync::atomic::{self, AtomicUsize};
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+pub use cdk_common::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
+use cdk_common::pub_sub::OnNewSubscription;
+pub use cdk_common::pub_sub::SubId;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-
-mod index;
-
-pub use index::{Index, Indexable, SubscriptionGlobalId};
 
 type IndexTree<T, I> = Arc<RwLock<BTreeMap<Index<I>, mpsc::Sender<(SubId, T)>>>>;
 
@@ -31,25 +28,6 @@ pub const DEFAULT_REMOVE_SIZE: usize = 10_000;
 
 /// Default channel size for subscription buffering
 pub const DEFAULT_CHANNEL_SIZE: usize = 10;
-
-#[async_trait::async_trait]
-/// On New Subscription trait
-///
-/// This trait is optional and it is used to notify the application when a new
-/// subscription is created. This is useful when the application needs to send
-/// the initial state to the subscriber upon subscription
-pub trait OnNewSubscription {
-    /// Index type
-    type Index;
-    /// Subscription event type
-    type Event;
-
-    /// Called when a new subscription is created
-    async fn on_new_subscription(
-        &self,
-        request: &[&Self::Index],
-    ) -> Result<Vec<Self::Event>, String>;
-}
 
 /// Subscription manager
 ///
@@ -317,41 +295,6 @@ where
         let _ = self
             .drop
             .try_send((self.sub_id.clone(), self.indexes.drain(..).collect()));
-    }
-}
-
-/// Subscription Id wrapper
-///
-/// This is the place to add some sane default (like a max length) to the
-/// subscription ID
-#[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-pub struct SubId(String);
-
-impl From<&str> for SubId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl From<String> for SubId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl FromStr for SubId {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_string()))
-    }
-}
-
-impl Deref for SubId {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 

@@ -9,18 +9,9 @@ use super::PublicKey;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
-use crate::pub_sub::{Index, Indexable, SubscriptionGlobalId};
+use crate::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
+use crate::pub_sub::SubId;
 
-#[cfg(feature = "mint")]
-mod manager;
-#[cfg(feature = "mint")]
-mod on_subscription;
-#[cfg(feature = "mint")]
-pub use manager::PubSubManager;
-#[cfg(feature = "mint")]
-pub use on_subscription::OnSubscription;
-
-pub use crate::pub_sub::SubId;
 pub mod ws;
 
 /// Subscription Parameter according to the standard
@@ -33,6 +24,30 @@ pub struct Params {
     /// Subscription Id
     #[serde(rename = "subId")]
     pub id: SubId,
+}
+
+impl TryFrom<Params> for Vec<Index<Notification>> {
+    type Error = Error;
+
+    fn try_from(val: Params) -> Result<Self, Self::Error> {
+        let sub_id: SubscriptionGlobalId = Default::default();
+        val.filters
+            .into_iter()
+            .map(|filter| {
+                let idx = match val.kind {
+                    Kind::Bolt11MeltQuote => {
+                        Notification::MeltQuoteBolt11(Uuid::from_str(&filter)?)
+                    }
+                    Kind::Bolt11MintQuote => {
+                        Notification::MintQuoteBolt11(Uuid::from_str(&filter)?)
+                    }
+                    Kind::ProofState => Notification::ProofState(PublicKey::from_str(&filter)?),
+                };
+
+                Ok(Index::from((idx, val.id.clone(), sub_id)))
+            })
+            .collect::<Result<_, _>>()
+    }
 }
 
 /// Check state Settings
@@ -91,6 +106,24 @@ pub enum NotificationPayload<T> {
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
 }
 
+impl Indexable for NotificationPayload<Uuid> {
+    type Type = Notification;
+
+    fn to_indexes(&self) -> Vec<Index<Self::Type>> {
+        match self {
+            NotificationPayload::ProofState(proof_state) => {
+                vec![Index::from(Notification::ProofState(proof_state.y))]
+            }
+            NotificationPayload::MeltQuoteBolt11Response(melt_quote) => {
+                vec![Index::from(Notification::MeltQuoteBolt11(melt_quote.quote))]
+            }
+            NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
+                vec![Index::from(Notification::MintQuoteBolt11(mint_quote.quote))]
+            }
+        }
+    }
+}
+
 impl<T> From<ProofState> for NotificationPayload<T> {
     fn from(proof_state: ProofState) -> NotificationPayload<T> {
         NotificationPayload::ProofState(proof_state)
@@ -118,24 +151,6 @@ pub enum Notification {
     MeltQuoteBolt11(Uuid),
     /// MintQuote id is an Uuid
     MintQuoteBolt11(Uuid),
-}
-
-impl Indexable for NotificationPayload<Uuid> {
-    type Type = Notification;
-
-    fn to_indexes(&self) -> Vec<Index<Self::Type>> {
-        match self {
-            NotificationPayload::ProofState(proof_state) => {
-                vec![Index::from(Notification::ProofState(proof_state.y))]
-            }
-            NotificationPayload::MeltQuoteBolt11Response(melt_quote) => {
-                vec![Index::from(Notification::MeltQuoteBolt11(melt_quote.quote))]
-            }
-            NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
-                vec![Index::from(Notification::MintQuoteBolt11(mint_quote.quote))]
-            }
-        }
-    }
 }
 
 /// Kind
@@ -166,28 +181,4 @@ pub enum Error {
     #[error("PublicKey Error: {0}")]
     /// PublicKey Error
     PublicKey(#[from] crate::nuts::nut01::Error),
-}
-
-impl TryFrom<Params> for Vec<Index<Notification>> {
-    type Error = Error;
-
-    fn try_from(val: Params) -> Result<Self, Self::Error> {
-        let sub_id: SubscriptionGlobalId = Default::default();
-        val.filters
-            .into_iter()
-            .map(|filter| {
-                let idx = match val.kind {
-                    Kind::Bolt11MeltQuote => {
-                        Notification::MeltQuoteBolt11(Uuid::from_str(&filter)?)
-                    }
-                    Kind::Bolt11MintQuote => {
-                        Notification::MintQuoteBolt11(Uuid::from_str(&filter)?)
-                    }
-                    Kind::ProofState => Notification::ProofState(PublicKey::from_str(&filter)?),
-                };
-
-                Ok(Index::from((idx, val.id.clone(), sub_id)))
-            })
-            .collect::<Result<_, _>>()
-    }
 }

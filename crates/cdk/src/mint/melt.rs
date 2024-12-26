@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use anyhow::bail;
+use cdk_common::nut00::ProofsMethods;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 use uuid::Uuid;
@@ -13,7 +14,6 @@ use super::{
 use crate::amount::to_unit;
 use crate::cdk_lightning::{MintLightning, PayInvoiceResponse};
 use crate::mint::SigFlag;
-use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
 use crate::nuts::{Id, MeltQuoteState};
 use crate::types::LnKey;

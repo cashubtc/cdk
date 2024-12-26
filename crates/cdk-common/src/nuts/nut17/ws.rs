@@ -4,7 +4,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{NotificationPayload, Params, SubId};
+use super::{NotificationPayload, Params};
+use crate::pub_sub::SubId;
 
 /// JSON RPC version
 pub const JSON_RPC_VERSION: &str = "2.0";

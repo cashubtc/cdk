@@ -738,6 +738,7 @@ dependencies = [
  "bip39",
  "bitcoin 0.32.5",
  "cbor-diag",
+ "cdk-common",
  "ciborium",
  "criterion",
  "futures",
@@ -817,6 +818,28 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cdk-common"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "bip39",
+ "bitcoin 0.32.5",
+ "cbor-diag",
+ "ciborium",
+ "lightning-invoice",
+ "once_cell",
+ "rand",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.9",
+ "tracing",
+ "url",
+ "utoipa",
  "uuid",
 ]
 
