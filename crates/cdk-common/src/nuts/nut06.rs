@@ -5,7 +5,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
-#[cfg(feature = "mint")]
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
 use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
@@ -241,7 +240,6 @@ pub struct Nuts {
     /// NUT17 Settings
     #[serde(default)]
     #[serde(rename = "17")]
-    #[cfg(feature = "mint")]
     pub nut17: super::nut17::SupportedSettings,
     /// NUT19 Settings
     #[serde(default)]
@@ -342,7 +340,6 @@ impl Nuts {
     }
 
     /// Nut17 settings
-    #[cfg(feature = "mint")]
     pub fn nut17(self, supported: Vec<SupportedMethods>) -> Self {
         Self {
             nut17: super::nut17::SupportedSettings { supported },

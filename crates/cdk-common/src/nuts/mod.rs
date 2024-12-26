@@ -28,12 +28,8 @@ pub use nut00::{
     Proofs, ProofsMethods, Token, TokenV3, TokenV4, Witness,
 };
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
-#[cfg(feature = "mint")]
-pub use nut02::MintKeySet;
-pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
-#[cfg(feature = "wallet")]
-pub use nut03::PreSwap;
-pub use nut03::{SwapRequest, SwapResponse};
+pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse, MintKeySet};
+pub use nut03::{PreSwap, SwapRequest, SwapResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
     MintQuoteBolt11Response, QuoteState as MintQuoteState, Settings as NUT04Settings,
@@ -50,7 +46,5 @@ pub use nut11::{Conditions, P2PKWitness, SigFlag, SpendingConditions};
 pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
-#[cfg(feature = "mint")]
-pub use nut17::PubSubManager;
-pub use nut17::{NotificationPayload, SupportedSettings as Nut17SupportedSettings};
+pub use nut17::NotificationPayload;
 pub use nut18::{PaymentRequest, PaymentRequestPayload, Transport};

@@ -1,12 +1,11 @@
-//! Mint Types
+//! Mint types
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{CurrencyUnit, PublicKey};
 use crate::mint_url::MintUrl;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
-use crate::Amount;
+use crate::{Amount, CurrencyUnit, PublicKey};
 
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,7 +57,7 @@ impl MintQuote {
     }
 }
 
-/// Melt Quote Info
+// Melt Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id

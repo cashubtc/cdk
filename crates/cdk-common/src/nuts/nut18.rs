@@ -147,15 +147,15 @@ mod tests {
     const PAYMENT_REQUEST: &str = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW45ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmprY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF4Imh0dHBzOi8vbm9mZWVzLnRlc3RudXQuY2FzaHUuc3BhY2U=";
 
     #[test]
-    fn test_decode_payment_req() -> anyhow::Result<()> {
-        let req = PaymentRequest::from_str(PAYMENT_REQUEST)?;
+    fn test_decode_payment_req() {
+        let req = PaymentRequest::from_str(PAYMENT_REQUEST).expect("valid payment request");
 
         assert_eq!(&req.payment_id.unwrap(), "b7a90176");
         assert_eq!(req.amount.unwrap(), 10.into());
         assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
             req.mints.unwrap(),
-            vec![MintUrl::from_str("https://nofees.testnut.cashu.space")?]
+            vec![MintUrl::from_str("https://nofees.testnut.cashu.space").expect("valid mint url")]
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
@@ -164,12 +164,10 @@ mod tests {
         let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
 
         assert_eq!(transport, &expected_transport);
-
-        Ok(())
     }
 
     #[test]
-    fn test_roundtrip_payment_req() -> anyhow::Result<()> {
+    fn test_roundtrip_payment_req() {
         let transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
 
         let request = PaymentRequest {
@@ -177,27 +175,27 @@ mod tests {
             amount: Some(10.into()),
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
-            mints: Some(vec!["https://nofees.testnut.cashu.space".parse()?]),
+            mints: Some(vec!["https://nofees.testnut.cashu.space"
+                .parse()
+                .expect("valid mint url")]),
             description: None,
             transports: vec![transport.clone()],
         };
 
         let request_str = request.to_string();
 
-        let req = PaymentRequest::from_str(&request_str)?;
+        let req = PaymentRequest::from_str(&request_str).expect("valid payment request");
 
         assert_eq!(&req.payment_id.unwrap(), "b7a90176");
         assert_eq!(req.amount.unwrap(), 10.into());
         assert_eq!(req.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(
             req.mints.unwrap(),
-            vec![MintUrl::from_str("https://nofees.testnut.cashu.space")?]
+            vec![MintUrl::from_str("https://nofees.testnut.cashu.space").expect("valid mint url")]
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
         let t = req.transports.first().unwrap();
         assert_eq!(&transport, t);
-
-        Ok(())
     }
 }

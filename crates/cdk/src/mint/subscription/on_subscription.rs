@@ -3,12 +3,13 @@
 //! This module contains the code that is triggered when a new subscription is created.
 use std::sync::Arc;
 
+use cdk_common::nut17::Notification;
+use cdk_common::pub_sub::OnNewSubscription;
+use cdk_common::NotificationPayload;
 use uuid::Uuid;
 
-use super::{Notification, NotificationPayload};
 use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};
-use crate::pub_sub::OnNewSubscription;
 
 #[derive(Default)]
 /// Subscription Init

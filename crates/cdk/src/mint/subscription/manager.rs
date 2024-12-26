@@ -2,9 +2,11 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
+use cdk_common::nut17::Notification;
+use cdk_common::NotificationPayload;
 use uuid::Uuid;
 
-use super::{Notification, NotificationPayload, OnSubscription};
+use super::OnSubscription;
 use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{
     BlindSignature, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,

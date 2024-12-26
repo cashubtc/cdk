@@ -4,7 +4,8 @@ use axum::extract::ws::{Message, WebSocket};
 use cdk::nuts::nut17::ws::{
     NotificationInner, WsErrorBody, WsMessageOrResponse, WsMethodRequest, WsRequest,
 };
-use cdk::nuts::nut17::{NotificationPayload, SubId};
+use cdk::nuts::nut17::NotificationPayload;
+use cdk::pub_sub::SubId;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use uuid::Uuid;
