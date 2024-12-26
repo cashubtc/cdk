@@ -3,12 +3,12 @@ import "./misc/test.just"
 
 alias b := build
 alias c := check
-alias t := test
+alias t := dtest
 
 default:
   @just --list
 
-final-check: typos format clippy test
+final-check: typos format clippy dtest
 
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
@@ -38,14 +38,22 @@ format:
   cargo fmt --all
   nixpkgs-fmt $(echo **.nix)
 
-# run tests
-test: build
+# run doc tests
+dtest: build
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
   cargo test --lib
+
+test-all db:
+    #!/usr/bin/env bash
+    just dtest
+    cargo test -p cdk-integration-tests --test mint
+    ./misc/itests.sh "{{db}}"
+    ./misc/fake_itests.sh "{{db}}"
+    
 
 # run `cargo clippy` on everything
 clippy *ARGS="--locked --offline --workspace --all-targets":

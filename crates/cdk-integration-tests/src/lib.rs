@@ -26,6 +26,8 @@ use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 
+pub mod direct_mint_connection;
+pub mod init_direct_mint;
 pub mod init_fake_wallet;
 pub mod init_regtest;
 
