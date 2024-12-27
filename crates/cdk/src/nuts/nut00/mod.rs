@@ -376,6 +376,14 @@ pub enum CurrencyUnit {
     Usd,
     /// Euro
     Eur,
+    /// Nigerian Naira
+    Ngn,
+    /// Ghanaian Cedis
+    Ghs,
+    /// Kenyan Shillings
+    Kes,
+    /// South African Rands
+    Zar,
     /// Custom currency unit
     Custom(String),
 }
@@ -389,6 +397,10 @@ impl CurrencyUnit {
             Self::Msat => Some(1),
             Self::Usd => Some(2),
             Self::Eur => Some(3),
+            Self::Ngn => Some(4),
+            Self::Ghs => Some(5),
+            Self::Kes => Some(6),
+            Self::Zar => Some(7),
             _ => None,
         }
     }
@@ -403,6 +415,10 @@ impl FromStr for CurrencyUnit {
             "MSAT" => Ok(Self::Msat),
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
+            "NGN" => Ok(Self::Ngn),
+            "GHS" => Ok(Self::Ghs),
+            "KES" => Ok(Self::Kes),
+            "ZAR" => Ok(Self::Zar),
             c => Ok(Self::Custom(c.to_string())),
         }
     }
@@ -415,6 +431,10 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Msat => "MSAT",
             CurrencyUnit::Usd => "USD",
             CurrencyUnit::Eur => "EUR",
+            CurrencyUnit::Ngn => "NGN",
+            CurrencyUnit::Ghs => "GHS",
+            CurrencyUnit::Kes => "KES",
+            CurrencyUnit::Zar => "ZAR",
             CurrencyUnit::Custom(unit) => unit,
         };
         if let Some(width) = f.width() {
