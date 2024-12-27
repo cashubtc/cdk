@@ -20,7 +20,6 @@ async fn main() -> Result<()> {
         }
         "SQLITE" => {
             let sqlite_db = MintSqliteDatabase::new(&get_temp_dir().join("mint")).await?;
-            sqlite_db.migrate().await;
             start_fake_mint(addr, port, sqlite_db).await?;
         }
         "REDB" => {

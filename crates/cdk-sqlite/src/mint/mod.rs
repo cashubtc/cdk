@@ -49,15 +49,9 @@ impl MintSqliteDatabase {
             .connect_with(db_options)
             .await?;
 
-        Ok(Self { pool })
-    }
+        sqlx::migrate!("./src/mint/migrations").run(&pool).await?;
 
-    /// Migrate [`MintSqliteDatabase`]
-    pub async fn migrate(&self) {
-        sqlx::migrate!("./src/mint/migrations")
-            .run(&self.pool)
-            .await
-            .expect("Could not run migrations");
+        Ok(Self { pool })
     }
 }
 
