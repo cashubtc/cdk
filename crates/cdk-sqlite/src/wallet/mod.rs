@@ -42,15 +42,9 @@ impl WalletSqliteDatabase {
 
         let pool = SqlitePool::connect(path).await?;
 
-        Ok(Self { pool })
-    }
+        sqlx::migrate!("./src/wallet/migrations").run(&pool).await?;
 
-    /// Migrate [`WalletSqliteDatabase`]
-    pub async fn migrate(&self) {
-        sqlx::migrate!("./src/wallet/migrations")
-            .run(&self.pool)
-            .await
-            .expect("Could not run migrations");
+        Ok(Self { pool })
     }
 
     async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), database::Error> {

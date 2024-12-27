@@ -89,21 +89,14 @@ async fn main() -> anyhow::Result<()> {
     // This check for any settings defined in ENV VARs
     // ENV VARS will take **priority** over those in the config
     let settings = settings.from_env()?;
+    let backups_to_keep = settings.database.backups_to_keep;
 
     let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
         match settings.database.engine {
             DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd.sqlite");
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
-
-                sqlite_db.migrate().await;
-
-                Arc::new(sqlite_db)
+                Arc::new(MintSqliteDatabase::new(&work_dir, backups_to_keep).await?)
             }
-            DatabaseEngine::Redb => {
-                let redb_path = work_dir.join("cdk-mintd.redb");
-                Arc::new(MintRedbDatabase::new(&redb_path)?)
-            }
+            DatabaseEngine::Redb => Arc::new(MintRedbDatabase::new(&work_dir, backups_to_keep)?),
         };
 
     mint_builder = mint_builder.with_localstore(localstore);

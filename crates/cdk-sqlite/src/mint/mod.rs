@@ -1,7 +1,7 @@
 //! SQLite Mint
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -35,9 +35,15 @@ pub struct MintSqliteDatabase {
 
 impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
-    pub async fn new(path: &Path) -> Result<Self, Error> {
-        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
-        let db_options = SqliteConnectOptions::from_str(path)?
+    ///
+    /// # Arguments
+    ///
+    /// * `work_dir`: full path to the working directory, the folder where the DB file should be located
+    /// * `backups_to_keep`: configured number of backups to keep
+    pub async fn new(work_dir: &Path, backups_to_keep: u8) -> Result<Self, Error> {
+        let db_file_path = work_dir.join("cdk-mintd.sqlite");
+        let db_file_path_str = db_file_path.to_str().ok_or(Error::InvalidDbPath)?;
+        let db_options = SqliteConnectOptions::from_str(db_file_path_str)?
             .busy_timeout(Duration::from_secs(5))
             .read_only(false)
             .create_if_missing(true)
@@ -48,21 +54,59 @@ impl MintSqliteDatabase {
             .connect_with(db_options)
             .await?;
 
-        Ok(Self { pool })
-    }
+        let db = Self { pool: pool.clone() };
 
-    /// Migrate [`MintSqliteDatabase`]
-    pub async fn migrate(&self) {
-        sqlx::migrate!("./src/mint/migrations")
-            .run(&self.pool)
+        if let Some(new_backup_file) = db
+            .prepare_backup(work_dir, backups_to_keep)
             .await
-            .expect("Could not run migrations");
+            .map_err(Error::DbBackup)?
+        {
+            db.create_backup(new_backup_file)
+                .await
+                .map_err(Error::DbBackup)?;
+        }
+
+        sqlx::migrate!("./src/mint/migrations").run(&pool).await?;
+
+        Ok(db)
     }
 }
 
 #[async_trait]
 impl MintDatabase for MintSqliteDatabase {
     type Err = database::Error;
+
+    async fn create_backup(&self, backup_file_path: PathBuf) -> Result<(), Self::Err> {
+        let backup_path_str = backup_file_path
+            .to_str()
+            .ok_or_else(|| Self::Err::Database("Invalid backup path".into()))?;
+
+        // Create a backup connection with the destination path
+        let backup_options = SqliteConnectOptions::from_str(backup_path_str)
+            .map_err(|e| {
+                Self::Err::Database(format!("Failed to create backup options: {e}").into())
+            })?
+            .create_if_missing(true);
+
+        let backup_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(backup_options)
+            .await
+            .map_err(|e| {
+                Self::Err::Database(format!("Failed to create backup connection: {e}").into())
+            })?;
+
+        // Execute backup
+        sqlx::query("VACUUM INTO ?")
+            .bind(backup_path_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Self::Err::Database(format!("Failed to create backup: {e}").into()))?;
+
+        backup_pool.close().await;
+
+        Ok(())
+    }
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;

@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -54,11 +54,11 @@ pub struct MintRedbDatabase {
 
 impl MintRedbDatabase {
     /// Create new [`MintRedbDatabase`]
-    pub fn new(path: &Path) -> Result<Self, Error> {
-        {
-            // Check database version
+    pub fn new(work_dir: &Path, _backups_to_keep: u8) -> Result<Self, Error> {
+        let db_file_path = work_dir.join("cdk-mintd.redb");
 
-            let db = Arc::new(Database::create(path)?);
+        {
+            let db = Arc::new(Database::create(&db_file_path)?);
 
             // Check database version
             let read_txn = db.begin_read()?;
@@ -154,7 +154,7 @@ impl MintRedbDatabase {
             drop(db);
         }
 
-        let db = Database::create(path)?;
+        let db = Database::create(db_file_path)?;
         Ok(Self { db: Arc::new(db) })
     }
 }
@@ -162,6 +162,12 @@ impl MintRedbDatabase {
 #[async_trait]
 impl MintDatabase for MintRedbDatabase {
     type Err = database::Error;
+
+    async fn create_backup(&self, _backup_file_path: PathBuf) -> Result<(), Self::Err> {
+        // TODO Can redb do backups?
+
+        todo!()
+    }
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;

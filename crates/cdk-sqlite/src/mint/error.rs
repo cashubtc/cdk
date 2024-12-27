@@ -8,6 +8,9 @@ pub enum Error {
     /// SQLX Error
     #[error(transparent)]
     SQLX(#[from] sqlx::Error),
+    /// SQLX Migration Error
+    #[error(transparent)]
+    SQLXMigration(#[from] sqlx::migrate::MigrateError),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),
@@ -41,6 +44,9 @@ pub enum Error {
     /// Invalid Database Path
     #[error("Invalid database path")]
     InvalidDbPath,
+    /// Error while trying to prepare or executing a DB backup
+    #[error("Error while doing DB backup: {0}")]
+    DbBackup(cdk_common::database::Error),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),

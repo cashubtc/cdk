@@ -14,7 +14,8 @@ use crate::config::{
 
 pub const ENV_WORK_DIR: &str = "CDK_MINTD_WORK_DIR";
 
-pub const DATABASE_ENV_VAR: &str = "CDK_MINTD_DATABASE";
+pub const ENV_DATABASE: &str = "CDK_MINTD_DATABASE";
+pub const ENV_BACKUPS_TO_KEEP: &str = "CDK_MINTD_BACKUPS_TO_KEEP";
 pub const ENV_URL: &str = "CDK_MINTD_URL";
 pub const ENV_LISTEN_HOST: &str = "CDK_MINTD_LISTEN_HOST";
 pub const ENV_LISTEN_PORT: &str = "CDK_MINTD_LISTEN_PORT";
@@ -84,9 +85,13 @@ pub const ENV_MINT_MANAGEMENT_TLS_DIR_PATH: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
-        if let Ok(database) = env::var(DATABASE_ENV_VAR) {
+        if let Ok(database) = env::var(ENV_DATABASE) {
             let engine = DatabaseEngine::from_str(&database).map_err(|err| anyhow!(err))?;
-            self.database = Database { engine };
+            let backups_to_keep = u8::from_str(ENV_BACKUPS_TO_KEEP).unwrap_or_default();
+            self.database = Database {
+                engine,
+                backups_to_keep,
+            };
         }
 
         self.info = self.info.clone().from_env();

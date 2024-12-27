@@ -190,6 +190,7 @@ impl std::str::FromStr for DatabaseEngine {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Database {
     pub engine: DatabaseEngine,
+    pub backups_to_keep: u8,
 }
 
 /// CDK settings, derived from `config.toml`

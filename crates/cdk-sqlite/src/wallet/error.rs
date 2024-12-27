@@ -8,6 +8,9 @@ pub enum Error {
     /// SQLX Error
     #[error(transparent)]
     SQLX(#[from] sqlx::Error),
+    /// SQLX Migration Error
+    #[error(transparent)]
+    SQLXMigration(#[from] sqlx::migrate::MigrateError),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),

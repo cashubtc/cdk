@@ -108,8 +108,6 @@ async fn main() -> Result<()> {
                 let sql_path = work_dir.join("cdk-cli.sqlite");
                 let sql = WalletSqliteDatabase::new(&sql_path).await?;
 
-                sql.migrate().await;
-
                 Arc::new(sql)
             }
             "redb" => {
