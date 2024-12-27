@@ -1,37 +1,44 @@
 //! Wallet example with memory store
 
 use std::sync::Arc;
-
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk::Amount;
 use rand::Rng;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Generate a random seed for the wallet
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
+    // Mint URL and currency unit
     let mint_url = "https://testnut.cashu.space";
     let unit = CurrencyUnit::Sat;
 
+    // Initialize the memory store
     let localstore = WalletMemoryDatabase::default();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    // Create a new wallet
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
 
+    // Amount to mint
     for amount in [64] {
         let amount = Amount::from(amount);
-        let quote = wallet.mint_quote(amount, None).await.unwrap();
-
+        
+        // Request a mint quote from the wallet
+        let quote = wallet.mint_quote(amount, None).await?;
         println!("Pay request: {}", quote.request);
 
+        // Subscribe to the wallet for updates on the mint quote state
         let mut subscription = wallet
-            .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
-                .id
-                .clone()]))
+            .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote.id.clone()]))
             .await;
 
+        // Wait for the mint quote to be paid
         while let Some(msg) = subscription.recv().await {
             if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
                 if response.state == MintQuoteState::Paid {
@@ -40,22 +47,19 @@ async fn main() {
             }
         }
 
-        let receive_amount = wallet
-            .mint(&quote.id, SplitTarget::default(), None)
-            .await
-            .unwrap();
-
+        // Mint the received amount
+        let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
         println!("Minted {}", receive_amount);
     }
 
-    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    // Get unspent proofs
+    let proofs = wallet.get_unspent_proofs().await?;
 
-    let selected = wallet
-        .select_proofs_to_send(Amount::from(64), proofs, false)
-        .await
-        .unwrap();
-
+    // Select proofs to send
+    let selected = wallet.select_proofs_to_send(Amount::from(64), proofs, false).await?;
     for (i, proof) in selected.iter().enumerate() {
         println!("{}: {}", i, proof.amount);
     }
+
+    Ok(())
 }
