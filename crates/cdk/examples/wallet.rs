@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
@@ -52,9 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Mint the received amount
-    let receive_amount = wallet
-        .mint(&quote.id, SplitTarget::default(), None)
-        .await?;
+    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
 
     println!("Minted {}", receive_amount);
 

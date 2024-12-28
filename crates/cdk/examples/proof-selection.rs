@@ -1,14 +1,13 @@
 //! Wallet example with memory store
 
 use std::sync::Arc;
+
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk::Amount;
 use rand::Rng;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,14 +27,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Amount to mint
     for amount in [64] {
         let amount = Amount::from(amount);
-        
+
         // Request a mint quote from the wallet
         let quote = wallet.mint_quote(amount, None).await?;
         println!("Pay request: {}", quote.request);
 
         // Subscribe to the wallet for updates on the mint quote state
         let mut subscription = wallet
-            .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote.id.clone()]))
+            .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+                .id
+                .clone()]))
             .await;
 
         // Wait for the mint quote to be paid
@@ -56,7 +57,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proofs = wallet.get_unspent_proofs().await?;
 
     // Select proofs to send
-    let selected = wallet.select_proofs_to_send(Amount::from(64), proofs, false).await?;
+    let selected = wallet
+        .select_proofs_to_send(Amount::from(64), proofs, false)
+        .await?;
     for (i, proof) in selected.iter().enumerate() {
         println!("{}: {}", i, proof.amount);
     }

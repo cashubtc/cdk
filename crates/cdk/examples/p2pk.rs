@@ -1,4 +1,5 @@
 use std::sync::Arc;
+
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
@@ -12,7 +13,7 @@ use rand::Rng;
 async fn main() -> Result<(), Error> {
     // Initialize the memory store for the wallet
     let localstore = WalletMemoryDatabase::default();
-    
+
     // Generate a random seed for the wallet
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
@@ -31,7 +32,9 @@ async fn main() -> Result<(), Error> {
 
     // Subscribe to updates on the mint quote state
     let mut subscription = wallet
-        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote.id.clone()]))
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+            .id
+            .clone()]))
         .await;
 
     // Wait for the mint quote to be paid
