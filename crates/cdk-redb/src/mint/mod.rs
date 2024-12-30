@@ -7,16 +7,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database::MintDatabase;
-use cdk::dhke::hash_to_curve;
-use cdk::mint::{MintKeySetInfo, MintQuote};
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{
+use cdk_common::common::LnKey;
+use cdk_common::database::{self, MintDatabase};
+use cdk_common::dhke::hash_to_curve;
+use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
+use cdk_common::nut00::ProofsMethods;
+use cdk_common::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
     Proofs, PublicKey, State,
 };
-use cdk::types::LnKey;
-use cdk::{cdk_database, mint};
 use migrations::{migrate_01_to_02, migrate_04_to_05};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use uuid::Uuid;
@@ -162,7 +161,7 @@ impl MintRedbDatabase {
 
 #[async_trait]
 impl MintDatabase for MintRedbDatabase {
-    type Err = cdk_database::Error;
+    type Err = database::Error;
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;

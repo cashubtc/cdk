@@ -7,11 +7,7 @@
 pub mod cdk_database;
 
 #[cfg(feature = "mint")]
-pub mod cdk_lightning;
-pub mod error;
-#[cfg(feature = "mint")]
 pub mod mint;
-pub mod types;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
@@ -20,15 +16,16 @@ pub mod pub_sub;
 /// Re-export amount type
 #[doc(hidden)]
 pub use cdk_common::{
-    amount, dhke, lightning_invoice, mint_url, nuts, secret, util, Amount, Bolt11Invoice,
+    amount, common as types, dhke,
+    error::{self, Error},
+    lightning as cdk_lightning, lightning_invoice, mint_url, nuts, secret, util, Amount,
+    Bolt11Invoice,
 };
 
 pub mod fees;
 
 #[doc(hidden)]
 pub use bitcoin::secp256k1;
-#[doc(hidden)]
-pub use error::Error;
 #[cfg(feature = "mint")]
 #[doc(hidden)]
 pub use mint::Mint;

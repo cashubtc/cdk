@@ -7,7 +7,7 @@ use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
-use cdk::wallet::multi_mint_wallet::WalletKey;
+use cdk::wallet::types::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet, WalletSubscription};
 use cdk::Amount;
 use clap::Args;

@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use cdk_common::database::{self, MintDatabase};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
 use super::Nuts;
 use crate::amount::Amount;
-use crate::cdk_database::{self, MintDatabase};
 use crate::cdk_lightning::{self, MintLightning};
 use crate::mint::Mint;
 use crate::nuts::{
@@ -26,7 +26,7 @@ pub struct MintBuilder {
     /// Mint Info
     mint_info: MintInfo,
     /// Mint Storage backend
-    localstore: Option<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>>,
+    localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
@@ -57,7 +57,7 @@ impl MintBuilder {
     /// Set localstore
     pub fn with_localstore(
         mut self,
-        localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
         self

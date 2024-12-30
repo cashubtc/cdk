@@ -7,18 +7,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk::cdk_database::{self, MintDatabase};
-use cdk::mint::{MintKeySetInfo, MintQuote};
-use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::nut05::QuoteState;
-use cdk::nuts::{
-    BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState,
-    MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+use cdk_common::common::LnKey;
+use cdk_common::database::{self, MintDatabase};
+use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
+use cdk_common::mint_url::MintUrl;
+use cdk_common::nut00::ProofsMethods;
+use cdk_common::nut05::QuoteState;
+use cdk_common::secret::Secret;
+use cdk_common::{
+    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
+    MeltQuoteState, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };
-use cdk::secret::Secret;
-use cdk::types::LnKey;
-use cdk::{mint, Amount};
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
@@ -63,7 +62,7 @@ impl MintSqliteDatabase {
 
 #[async_trait]
 impl MintDatabase for MintSqliteDatabase {
-    type Err = cdk_database::Error;
+    type Err = database::Error;
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;

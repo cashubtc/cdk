@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
+use cdk_common::database::{self, WalletDatabase};
 use client::MintConnector;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
@@ -14,7 +15,6 @@ use tracing::instrument;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::amount::SplitTarget;
-use crate::cdk_database::{self, WalletDatabase};
 use crate::dhke::construct_proofs;
 use crate::error::Error;
 use crate::fees::calculate_fee;
@@ -39,8 +39,9 @@ mod receive;
 mod send;
 pub mod subscription;
 mod swap;
-pub mod types;
 pub mod util;
+
+pub use cdk_common::wallet as types;
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -56,7 +57,7 @@ pub struct Wallet {
     /// Unit
     pub unit: CurrencyUnit,
     /// Storage backend
-    pub localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     xpriv: Xpriv,
@@ -132,7 +133,7 @@ impl Wallet {
     pub fn new(
         mint_url: &str,
         unit: CurrencyUnit,
-        localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {

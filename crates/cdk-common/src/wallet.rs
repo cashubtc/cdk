@@ -1,10 +1,34 @@
 //! Wallet Types
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 use crate::Amount;
+
+/// Wallet Key
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct WalletKey {
+    /// Mint Url
+    pub mint_url: MintUrl,
+    /// Currency Unit
+    pub unit: CurrencyUnit,
+}
+
+impl fmt::Display for WalletKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "mint_url: {}, unit: {}", self.mint_url, self.unit,)
+    }
+}
+
+impl WalletKey {
+    /// Create new [`WalletKey`]
+    pub fn new(mint_url: MintUrl, unit: CurrencyUnit) -> Self {
+        Self { mint_url, unit }
+    }
+}
 
 /// Mint Quote Info
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

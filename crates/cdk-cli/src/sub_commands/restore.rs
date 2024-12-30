@@ -5,7 +5,7 @@ use anyhow::Result;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::WalletKey;
+use cdk::wallet::types::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
 use clap::Args;
 

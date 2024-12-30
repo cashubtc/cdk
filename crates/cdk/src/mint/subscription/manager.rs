@@ -2,12 +2,12 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
+use cdk_common::database::{self, MintDatabase};
 use cdk_common::nut17::Notification;
 use cdk_common::NotificationPayload;
 use uuid::Uuid;
 
 use super::OnSubscription;
-use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{
     BlindSignature, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
     MintQuoteState, ProofState,
@@ -28,8 +28,8 @@ impl Default for PubSubManager {
     }
 }
 
-impl From<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>> for PubSubManager {
-    fn from(val: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>) -> Self {
+impl From<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>> for PubSubManager {
+    fn from(val: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>) -> Self {
         PubSubManager(OnSubscription(Some(val)).into())
     }
 }

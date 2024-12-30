@@ -4,7 +4,8 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::{MultiMintWallet, WalletKey};
+use cdk::wallet::multi_mint_wallet::MultiMintWallet;
+use cdk::wallet::types::WalletKey;
 use cdk::Bolt11Invoice;
 use clap::Args;
 
