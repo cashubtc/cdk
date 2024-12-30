@@ -3,12 +3,12 @@
 //! This module contains the code that is triggered when a new subscription is created.
 use std::sync::Arc;
 
+use cdk_common::database::{self, MintDatabase};
 use cdk_common::nut17::Notification;
 use cdk_common::pub_sub::OnNewSubscription;
 use cdk_common::NotificationPayload;
 use uuid::Uuid;
 
-use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};
 
 #[derive(Default)]
@@ -18,7 +18,7 @@ use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, 
 ///
 /// It is used to send the initial state of the subscription to the client.
 pub struct OnSubscription(
-    pub(crate) Option<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>>,
+    pub(crate) Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
 );
 
 #[async_trait::async_trait]

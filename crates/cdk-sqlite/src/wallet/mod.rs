@@ -5,17 +5,16 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk::amount::Amount;
-use cdk::cdk_database::{self, WalletDatabase};
-use cdk::mint_url::MintUrl;
-use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MeltQuoteState, MintInfo, MintQuoteState, Proof, PublicKey,
-    SecretKey, SpendingConditions, State,
+use cdk_common::common::ProofInfo;
+use cdk_common::database::WalletDatabase;
+use cdk_common::mint_url::MintUrl;
+use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
+use cdk_common::secret::Secret;
+use cdk_common::wallet::{self, MintQuote};
+use cdk_common::{
+    database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, PublicKey, SecretKey,
+    SpendingConditions, State,
 };
-use cdk::secret::Secret;
-use cdk::types::ProofInfo;
-use cdk::wallet;
-use cdk::wallet::MintQuote;
 use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
@@ -54,7 +53,7 @@ impl WalletSqliteDatabase {
             .expect("Could not run migrations");
     }
 
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), cdk_database::Error> {
+    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), database::Error> {
         sqlx::query(
             r#"
     UPDATE proof
@@ -74,7 +73,7 @@ impl WalletSqliteDatabase {
 
 #[async_trait]
 impl WalletDatabase for WalletSqliteDatabase {
-    type Err = cdk_database::Error;
+    type Err = database::Error;
 
     #[instrument(skip(self, mint_info))]
     async fn add_mint(

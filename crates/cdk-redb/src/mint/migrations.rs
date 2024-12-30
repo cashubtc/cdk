@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::mint::MintQuote;
-use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, Proof, State};
-use cdk::Amount;
+use cdk_common::mint::MintQuote;
+use cdk_common::mint_url::MintUrl;
+use cdk_common::{Amount, CurrencyUnit, MintQuoteState, Proof, State};
 use lightning_invoice::Bolt11Invoice;
 use redb::{
     Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,

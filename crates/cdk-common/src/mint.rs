@@ -1,11 +1,12 @@
 //! Mint types
 
+use bitcoin::bip32::DerivationPath;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::mint_url::MintUrl;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
-use crate::{Amount, CurrencyUnit, PublicKey};
+use crate::{Amount, CurrencyUnit, Id, KeySetInfo, PublicKey};
 
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +109,48 @@ impl MeltQuote {
             payment_preimage: None,
             request_lookup_id,
             msat_to_pay,
+        }
+    }
+}
+
+/// Mint Keyset Info
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MintKeySetInfo {
+    /// Keyset [`Id`]
+    pub id: Id,
+    /// Keyset [`CurrencyUnit`]
+    pub unit: CurrencyUnit,
+    /// Keyset active or inactive
+    /// Mint will only issue new [`BlindSignature`] on active keysets
+    pub active: bool,
+    /// Starting unix time Keyset is valid from
+    pub valid_from: u64,
+    /// When the Keyset is valid to
+    /// This is not shown to the wallet and can only be used internally
+    pub valid_to: Option<u64>,
+    /// [`DerivationPath`] keyset
+    pub derivation_path: DerivationPath,
+    /// DerivationPath index of Keyset
+    pub derivation_path_index: Option<u32>,
+    /// Max order of keyset
+    pub max_order: u8,
+    /// Input Fee ppk
+    #[serde(default = "default_fee")]
+    pub input_fee_ppk: u64,
+}
+
+/// Default fee
+pub fn default_fee() -> u64 {
+    0
+}
+
+impl From<MintKeySetInfo> for KeySetInfo {
+    fn from(keyset_info: MintKeySetInfo) -> Self {
+        Self {
+            id: keyset_info.id,
+            unit: keyset_info.unit,
+            active: keyset_info.active,
+            input_fee_ppk: keyset_info.input_fee_ppk,
         }
     }
 }

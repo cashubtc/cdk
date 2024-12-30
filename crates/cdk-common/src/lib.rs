@@ -7,7 +7,11 @@
 //! internal crates.
 
 pub mod amount;
+pub mod common;
+pub mod database;
 pub mod dhke;
+pub mod error;
+pub mod lightning;
 pub mod mint;
 pub mod mint_url;
 pub mod nuts;
@@ -15,10 +19,11 @@ pub mod pub_sub;
 pub mod secret;
 pub mod signatory;
 pub mod util;
+pub mod wallet;
 
 // re-exporting external crates
-pub use bitcoin;
 pub use lightning_invoice::{self, Bolt11Invoice};
+pub use {bitcoin, reqwest};
 
 pub use self::amount::Amount;
 pub use self::nuts::*;

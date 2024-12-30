@@ -31,6 +31,9 @@ tracing = "0.1.41"
 url = "2.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 utoipa = { version = "4", optional = true }
+futures = "0.3.31"
+anyhow = "1.0.95"
+reqwest = "0.12.11"
 
 [dev-dependencies]
 rand = "0.8.5"

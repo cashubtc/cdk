@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
+use cdk_common::common::{LnKey, QuoteTTL};
+use cdk_common::database::{self, MintDatabase};
+use cdk_common::mint::MintKeySetInfo;
 use config::SwappableConfig;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -15,14 +18,12 @@ use tokio::task::JoinSet;
 use tracing::instrument;
 use uuid::Uuid;
 
-use crate::cdk_database::{self, MintDatabase};
 use crate::cdk_lightning::{self, MintLightning};
 use crate::dhke::{sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::*;
-use crate::types::{LnKey, QuoteTTL};
 use crate::util::unix_time;
 use crate::Amount;
 
@@ -46,7 +47,7 @@ pub struct Mint {
     /// Mint Config
     pub config: SwappableConfig,
     /// Mint Storage backend
-    pub localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     /// Ln backends for mint
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
@@ -63,7 +64,7 @@ impl Mint {
         seed: &[u8],
         mint_info: MintInfo,
         quote_ttl: QuoteTTL,
-        localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
@@ -517,47 +518,6 @@ pub struct FeeReserve {
     pub percent_fee_reserve: f32,
 }
 
-/// Mint Keyset Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintKeySetInfo {
-    /// Keyset [`Id`]
-    pub id: Id,
-    /// Keyset [`CurrencyUnit`]
-    pub unit: CurrencyUnit,
-    /// Keyset active or inactive
-    /// Mint will only issue new [`BlindSignature`] on active keysets
-    pub active: bool,
-    /// Starting unix time Keyset is valid from
-    pub valid_from: u64,
-    /// When the Keyset is valid to
-    /// This is not shown to the wallet and can only be used internally
-    pub valid_to: Option<u64>,
-    /// [`DerivationPath`] keyset
-    pub derivation_path: DerivationPath,
-    /// DerivationPath index of Keyset
-    pub derivation_path_index: Option<u32>,
-    /// Max order of keyset
-    pub max_order: u8,
-    /// Input Fee ppk
-    #[serde(default = "default_fee")]
-    pub input_fee_ppk: u64,
-}
-
-fn default_fee() -> u64 {
-    0
-}
-
-impl From<MintKeySetInfo> for KeySetInfo {
-    fn from(keyset_info: MintKeySetInfo) -> Self {
-        Self {
-            id: keyset_info.id,
-            unit: keyset_info.unit,
-            active: keyset_info.active,
-            input_fee_ppk: keyset_info.input_fee_ppk,
-        }
-    }
-}
-
 /// Generate new [`MintKeySetInfo`] from path
 #[instrument(skip_all)]
 fn create_new_keyset<C: secp256k1::Signing>(
@@ -606,11 +566,11 @@ mod tests {
     use std::collections::HashSet;
 
     use bitcoin::Network;
+    use cdk_common::common::{LnKey, QuoteTTL};
     use secp256k1::Secp256k1;
     use uuid::Uuid;
 
     use super::*;
-    use crate::types::LnKey;
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
@@ -698,7 +658,7 @@ mod tests {
         assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
     }
 
-    use cdk_database::mint_memory::MintMemoryDatabase;
+    use crate::cdk_database::mint_memory::MintMemoryDatabase;
 
     #[derive(Default)]
     struct MintConfig<'a> {

@@ -8,8 +8,7 @@ use thiserror::Error;
 
 use crate::nuts::Id;
 use crate::util::hex;
-#[cfg(feature = "wallet")]
-use crate::wallet::multi_mint_wallet::WalletKey;
+use crate::wallet::WalletKey;
 use crate::Amount;
 
 /// CDK Error
@@ -128,7 +127,6 @@ pub enum Error {
     #[error("Incorrect wallet: `{0}`")]
     IncorrectWallet(String),
     /// Unknown Wallet
-    #[cfg(feature = "wallet")]
     #[error("Unknown wallet: `{0}`")]
     UnknownWallet(WalletKey),
     /// Max Fee Ecxeded
@@ -197,7 +195,6 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     HexError(#[from] hex::Error),
-    #[cfg(feature = "wallet")]
     /// From hex error
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
@@ -249,13 +246,11 @@ pub enum Error {
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
     /// Database Error
-    #[cfg(any(feature = "wallet", feature = "mint"))]
     #[error(transparent)]
-    Database(#[from] crate::cdk_database::Error),
+    Database(#[from] crate::database::Error),
     /// Lightning Error
-    #[cfg(feature = "mint")]
     #[error(transparent)]
-    Lightning(#[from] crate::cdk_lightning::Error),
+    Lightning(#[from] crate::lightning::Error),
 }
 
 /// CDK Error Response
