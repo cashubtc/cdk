@@ -7,6 +7,9 @@ use once_cell::sync::Lazy;
 pub mod hex;
 
 #[cfg(target_arch = "wasm32")]
+use instant::SystemTime;
+
+#[cfg(target_arch = "wasm32")]
 const UNIX_EPOCH: SystemTime = SystemTime::UNIX_EPOCH;
 
 /// Secp256k1 global context
