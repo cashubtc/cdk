@@ -6,7 +6,7 @@ use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     nut12, MintBolt11Request, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
-    SecretKey, SpendingConditions, State,
+    Proofs, SecretKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -126,10 +126,10 @@ impl Wallet {
 
             if mint_quote_response.state == MintQuoteState::Paid {
                 // TODO: Need to pass in keys here
-                let amount = self
+                let proofs = self
                     .mint(&mint_quote.id, SplitTarget::default(), None)
                     .await?;
-                total_amount += amount;
+                total_amount += proofs.total_amount()?;
             } else if mint_quote.expiry.le(&unix_time()) {
                 self.localstore.remove_mint_quote(&mint_quote.id).await?;
             }
@@ -162,7 +162,8 @@ impl Wallet {
     ///     let quote = wallet.mint_quote(amount, None).await?;
     ///     let quote_id = quote.id;
     ///     // To be called after quote request is paid
-    ///     let amount_minted = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    ///     let minted_proofs = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    ///     let minted_amount = minted_proofs.total_amount()?;
     ///
     ///     Ok(())
     /// }
@@ -173,7 +174,7 @@ impl Wallet {
         quote_id: &str,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Amount, Error> {
+    ) -> Result<Proofs, Error> {
         // Check that mint is in store of mints
         if self
             .localstore
@@ -254,8 +255,6 @@ impl Wallet {
             &keys,
         )?;
 
-        let minted_amount = proofs.total_amount()?;
-
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
 
@@ -272,11 +271,11 @@ impl Wallet {
                 .await?;
         }
 
-        let proofs = proofs
-            .into_iter()
+        let proof_infos = proofs
+            .iter()
             .map(|proof| {
                 ProofInfo::new(
-                    proof,
+                    proof.clone(),
                     self.mint_url.clone(),
                     State::Unspent,
                     quote_info.unit.clone(),
@@ -285,8 +284,8 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proofs, vec![]).await?;
+        self.localstore.update_proofs(proof_infos, vec![]).await?;
 
-        Ok(minted_amount)
+        Ok(proofs)
     }
 }

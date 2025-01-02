@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::Wallet;
@@ -53,8 +54,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Mint the received amount
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
-
+    let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let receive_amount = proofs.total_amount()?;
     println!("Minted {}", receive_amount);
 
     // Send the token

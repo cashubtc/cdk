@@ -3,6 +3,7 @@ use std::sync::Arc;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{Wallet, WalletSubscription};
@@ -46,7 +47,8 @@ async fn main() -> Result<(), Error> {
     }
 
     // Mint the received amount
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let receive_amount = proofs.total_amount()?;
     println!("Received {} from mint {}", receive_amount, mint_url);
 
     // Send a token with the specified amount
