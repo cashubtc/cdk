@@ -146,6 +146,7 @@ impl Wallet {
     /// use cdk::amount::{Amount, SplitTarget};
     /// use cdk::cdk_database::WalletMemoryDatabase;
     /// use cdk::nuts::CurrencyUnit;
+    /// use cdk::nuts::nut00::ProofsMethods;
     /// use cdk::wallet::Wallet;
     /// use rand::Rng;
     ///
