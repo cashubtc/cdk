@@ -591,10 +591,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
 }
 
 fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
-    let unit_index = match unit.derivation_index() {
-        Some(index) => index,
-        None => return None,
-    };
+    let unit_index = unit.derivation_index();
 
     Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
@@ -615,7 +612,7 @@ mod tests {
     use crate::types::LnKey;
 
     #[test]
-    fn mint_mod_generate_keyset_from_seed() {
+    fn test_generate_keyset_from_seed() {
         let seed = "test_seed".as_bytes();
         let keyset = MintKeySet::generate_from_seed(
             &Secp256k1::new(),
@@ -657,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn mint_mod_generate_keyset_from_xpriv() {
+    fn test_generate_keyset_from_xpriv() {
         let seed = "test_seed".as_bytes();
         let network = Network::Bitcoin;
         let xpriv = Xpriv::new_master(network, seed).expect("Failed to create xpriv");
@@ -698,6 +695,28 @@ mod tests {
             .collect();
 
         assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
+    }
+
+    #[test]
+    fn test_derivation_path_from_unit() {
+        let test_cases = vec![
+            // min value for a hardened derivation path index
+            (CurrencyUnit::Sat, 0, "0'/0'/0'"),
+            // max value for a hardened derivation path index
+            (CurrencyUnit::Msat, i32::MAX as u32, "0'/1'/2147483647'"),
+            (CurrencyUnit::Usd, 21, "0'/2'/21'"),
+            (CurrencyUnit::Eur, 1337, "0'/3'/1337'"),
+            (
+                CurrencyUnit::Custom("DOGE".to_string(), 69),
+                420,
+                "0'/69'/420'",
+            ),
+        ];
+
+        for (unit, index, expected) in test_cases {
+            let path = derivation_path_from_unit(unit, index).unwrap();
+            assert_eq!(path.to_string(), expected);
+        }
     }
 
     use cdk_database::mint_memory::MintMemoryDatabase;
