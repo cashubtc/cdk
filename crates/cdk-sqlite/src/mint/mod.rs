@@ -7,14 +7,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::LnKey;
-use cdk_common::database::{self, MintDatabase};
-use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
-use cdk_common::mint_url::MintUrl;
-use cdk_common::nut00::ProofsMethods;
-use cdk_common::nut05::QuoteState;
-use cdk_common::secret::Secret;
-use cdk_common::{
+use cashu::common::LnKey;
+use cashu::database::{self, MintDatabase};
+use cashu::mint::{self, MintKeySetInfo, MintQuote};
+use cashu::mint_url::MintUrl;
+use cashu::nut00::ProofsMethods;
+use cashu::nut05::QuoteState;
+use cashu::secret::Secret;
+use cashu::{
     Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
     MeltQuoteState, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };

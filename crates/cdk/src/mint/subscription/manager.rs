@@ -2,9 +2,9 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cdk_common::database::{self, MintDatabase};
-use cdk_common::nut17::Notification;
-use cdk_common::NotificationPayload;
+use cashu::database::{self, MintDatabase};
+use cashu::nut17::Notification;
+use cashu::NotificationPayload;
 use uuid::Uuid;
 
 use super::OnSubscription;

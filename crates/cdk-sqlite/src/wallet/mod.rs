@@ -5,13 +5,13 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::common::ProofInfo;
-use cdk_common::database::WalletDatabase;
-use cdk_common::mint_url::MintUrl;
-use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
-use cdk_common::secret::Secret;
-use cdk_common::wallet::{self, MintQuote};
-use cdk_common::{
+use cashu::common::ProofInfo;
+use cashu::database::WalletDatabase;
+use cashu::mint_url::MintUrl;
+use cashu::nuts::{MeltQuoteState, MintQuoteState};
+use cashu::secret::Secret;
+use cashu::wallet::{self, MintQuote};
+use cashu::{
     database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, PublicKey, SecretKey,
     SpendingConditions, State,
 };
