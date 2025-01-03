@@ -62,17 +62,7 @@ impl Mint {
             options: _,
         } = melt_request;
 
-        let amount = match melt_request.options {
-            Some(mpp_amount) => mpp_amount.amount,
-            None => {
-                let amount_msat = request
-                    .amount_milli_satoshis()
-                    .ok_or(Error::InvoiceAmountUndefined)?;
-
-                to_unit(amount_msat, &CurrencyUnit::Msat, unit)
-                    .map_err(|_err| Error::UnsupportedUnit)?
-            }
-        };
+        let amount = melt_request.amount_msat()?;
 
         self.check_melt_request_acceptable(amount, unit.clone(), PaymentMethod::Bolt11)?;
 

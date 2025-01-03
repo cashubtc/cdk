@@ -6,8 +6,9 @@ use tracing::instrument;
 use super::MeltQuote;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut05::Options;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, Mpp,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     PreMintSecrets, Proofs, State,
 };
 use crate::types::{Melted, ProofInfo};
@@ -43,7 +44,7 @@ impl Wallet {
     pub async fn melt_quote(
         &self,
         request: String,
-        mpp: Option<Amount>,
+        options: Option<Options>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
@@ -56,8 +57,6 @@ impl Wallet {
             CurrencyUnit::Msat => Amount::from(request_amount),
             _ => return Err(Error::UnitUnsupported),
         };
-
-        let options = mpp.map(|amount| Mpp { amount });
 
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,

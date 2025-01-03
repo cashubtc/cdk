@@ -28,6 +28,12 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Invalid Amount
+    #[error("Invalid Request")]
+    InvalidAmountRequest,
+    /// Unsupported unit
+    #[error("Unsupported unit")]
+    UnsupportedUnit,
 }
 
 /// Melt quote request [NUT-05]
@@ -40,7 +46,39 @@ pub struct MeltQuoteBolt11Request {
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
     /// Payment Options
-    pub options: Option<Mpp>,
+    pub options: Option<Options>,
+}
+
+/// Options for Melt Request
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", untagged)]
+pub enum Options {
+    /// Multi partpayment option
+    Mpp {
+        /// mpp
+        mpp: Mpp,
+    },
+}
+
+impl Options {
+    /// Create new [`Options::Mpp`]
+    pub fn new_mpp<A>(amount: A) -> Self
+    where
+        A: Into<Amount>,
+    {
+        Self::Mpp {
+            mpp: Mpp {
+                amount: amount.into(),
+            },
+        }
+    }
+
+    /// Payment amount
+    pub fn amount_msat(&self) -> Amount {
+        match self {
+            Self::Mpp { mpp } => mpp.amount,
+        }
+    }
 }
 
 /// Possible states of a quote
@@ -280,6 +318,29 @@ pub struct MeltBolt11Request<Q> {
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
+impl MeltQuoteBolt11Request {
+    /// Amount from [`MeltQuoteBolt11Request`]
+    ///
+    /// Amount can either be defined in the bolt11 invoice,
+    /// in the request for an amountless bolt11 or in MPP option.
+    pub fn amount_msat(&self) -> Result<Amount, Error> {
+        let MeltQuoteBolt11Request {
+            request,
+            unit: _,
+            options,
+            ..
+        } = self;
+
+        match options {
+            None => Ok(request
+                .amount_milli_satoshis()
+                .ok_or(Error::InvalidAmountRequest)?
+                .into()),
+            Some(Options::Mpp { mpp }) => Ok(mpp.amount),
+        }
+    }
+}
+
 #[cfg(feature = "mint")]
 impl TryFrom<MeltBolt11Request<String>> for MeltBolt11Request<Uuid> {
     type Error = uuid::Error;
@@ -362,5 +423,20 @@ impl Default for Settings {
             methods: vec![bolt11_mint],
             disabled: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_melt_request_mpp_deser() {
+        let melt: MeltQuoteBolt11Request = serde_json::from_str(
+            r#"{"request":"lntbs200n1pnhsp43pp5ysnjp6uwqpmyv25qccwrgj2zah50ce66027pqcc8jpqp9tap8gushp57t8sp5tcchfv0y29yg46nqujktk2ufwcjcc7zvyd8rteadd7rjyscqzzsxqyz5vqrzjq0w0f29u6f7yrrpr5y6wj45gtnyhtch9u2m2j7qrws8eevrw90c72pqnycqq0agqquzltcgqqqqqqqqqfqsp5akuep6uk00wdm4qm5t0jln3tjc98maruwt04rnwqaxryxux2nngq9p4gqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpqysgqjt60cck80lumnzteyd997xqhwjlvfnr4j3k0weukshgqafq244mq9jcgcw6s74a0hxdu4xlkr6zhp5fdf0fuz3urk7t003srfusa54qqxcft2g","unit":"sat","options":{"mpp":{"amount":19}}}"#,
+        ).unwrap();
+
+        println!("{:?}", melt);
     }
 }
