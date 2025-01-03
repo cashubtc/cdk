@@ -48,6 +48,9 @@ pub enum Error {
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,
+    /// Amountless Invoice Not supported
+    #[error("Amount Less Invoice is not allowed")]
+    AmountLessNotAllowed,
 
     // Mint Errors
     /// Minting is disabled
@@ -60,7 +63,7 @@ pub enum Error {
     #[error("Expired quote: Expired: `{0}`, Time: `{1}`")]
     ExpiredQuote(u64, u64),
     /// Amount is outside of allowed range
-    #[error("Amount but be between `{0}` and `{1}` is `{2}`")]
+    #[error("Amount must be between `{0}` and `{1}` is `{2}`")]
     AmountOutofLimitRange(Amount, Amount, Amount),
     /// Quote is not paiud
     #[error("Quote not paid")]

@@ -70,6 +70,7 @@ impl MintLightning for Strike {
             mpp: false,
             unit: self.unit.clone(),
             invoice_description: true,
+            amountless: false,
         }
     }
 
@@ -167,9 +168,11 @@ impl MintLightning for Strike {
 
         let fee = from_strike_amount(quote.lightning_network_fee, &melt_quote_request.unit)?;
 
+        let amount = from_strike_amount(quote.amount, &melt_quote_request.unit)?.into();
+
         Ok(PaymentQuoteResponse {
             request_lookup_id: quote.payment_quote_id,
-            amount: from_strike_amount(quote.amount, &melt_quote_request.unit)?.into(),
+            amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })

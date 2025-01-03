@@ -96,8 +96,7 @@ impl WalletDatabase for WalletMemoryDatabase {
     ) -> Result<(), Self::Err> {
         let proofs = self
             .get_proofs(Some(old_mint_url), None, None, None)
-            .await
-            .map_err(Error::from)?;
+            .await?;
 
         // Update proofs
         {

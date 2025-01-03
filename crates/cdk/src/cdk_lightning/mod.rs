@@ -41,6 +41,9 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+    /// NUT05 Error
+    #[error(transparent)]
+    NUT05(#[from] crate::nuts::nut05::Error),
 }
 
 /// MintLighting Trait
@@ -149,4 +152,6 @@ pub struct Settings {
     pub unit: CurrencyUnit,
     /// Invoice Description supported
     pub invoice_description: bool,
+    /// Paying amountless invoices supported
+    pub amountless: bool,
 }
