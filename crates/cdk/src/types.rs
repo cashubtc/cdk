@@ -40,9 +40,11 @@ impl Melted {
             Some(change_proofs) => change_proofs.total_amount()?,
             None => Amount::ZERO,
         };
+
         let fee_paid = proofs_amount
             .checked_sub(amount + change_amount)
-            .ok_or(Error::AmountOverflow)?;
+            .ok_or(Error::AmountOverflow)
+            .unwrap();
 
         Ok(Self {
             state,

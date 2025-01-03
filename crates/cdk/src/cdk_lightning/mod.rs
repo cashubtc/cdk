@@ -41,6 +41,9 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+    /// NUT05 Error
+    #[error(transparent)]
+    NUT05(#[from] crate::nuts::nut05::Error),
 }
 
 /// MintLighting Trait
