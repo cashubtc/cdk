@@ -5,6 +5,7 @@ use anyhow::Result;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::multi_mint_wallet::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet, WalletSubscription};
@@ -71,7 +72,9 @@ pub async fn mint(
         }
     }
 
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+
+    let receive_amount = proofs.total_amount()?;
 
     println!("Received {receive_amount} from mint {mint_url}");
 

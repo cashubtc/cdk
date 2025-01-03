@@ -10,6 +10,7 @@ mod integration_tests_pure {
     use cdk::amount::SplitTarget;
     use cdk::cdk_database::mint_memory::MintMemoryDatabase;
     use cdk::cdk_database::WalletMemoryDatabase;
+    use cdk::nuts::nut00::ProofsMethods;
     use cdk::nuts::{
         CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
         MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
@@ -215,10 +216,10 @@ mod integration_tests_pure {
             }
         }
 
-        wallet
+        Ok(wallet
             .mint(&quote.id, SplitTarget::default(), None)
-            .await
-            .map_err(Into::into)
+            .await?
+            .total_amount()?)
     }
 
     mod nut03 {

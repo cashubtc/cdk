@@ -11,6 +11,7 @@ use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
 use cdk::mint_url::MintUrl;
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut17::Params;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MintBolt11Request, MintInfo, MintQuoteBolt11Request, MintQuoteState,
@@ -137,7 +138,9 @@ pub async fn wallet_mint(
         }
     }
 
-    let receive_amount = wallet.mint(&quote.id, split_target, None).await?;
+    let proofs = wallet.mint(&quote.id, split_target, None).await?;
+
+    let receive_amount = proofs.total_amount()?;
 
     println!("Minted: {}", receive_amount);
 

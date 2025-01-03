@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, MintQuoteState,
     NotificationPayload, PreMintSecrets, SecretKey, State,
@@ -389,9 +390,11 @@ async fn test_fake_mint_with_witness() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
-    let mint_amount = wallet
+    let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
+
+    let mint_amount = proofs.total_amount()?;
 
     assert!(mint_amount == 100.into());
 
