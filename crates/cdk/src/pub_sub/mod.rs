@@ -15,9 +15,9 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{self, AtomicUsize};
 use std::sync::Arc;
 
-pub use cdk_common::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
-use cdk_common::pub_sub::OnNewSubscription;
-pub use cdk_common::pub_sub::SubId;
+pub use cashu::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
+use cashu::pub_sub::OnNewSubscription;
+pub use cashu::pub_sub::SubId;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 

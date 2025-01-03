@@ -1,9 +1,9 @@
 [package]
-name = "cdk-common"
+name = "cashu"
 version = "0.6.0"
 edition = "2021"
-description = "CDK shared types and crypto utilities"
-rust-version = "1.63.0"                               # MSRV
+description = "Cashu shared types and crypto utilities, used as the foundation for the CDK and their crates"
+rust-version = "1.63.0"                                                                                      # MSRV
 
 [features]
 swagger = ["dep:utoipa"]

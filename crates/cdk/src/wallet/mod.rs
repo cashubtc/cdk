@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
-use cdk_common::database::{self, WalletDatabase};
+use cashu::database::{self, WalletDatabase};
 use client::MintConnector;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
@@ -41,7 +41,7 @@ pub mod subscription;
 mod swap;
 pub mod util;
 
-pub use cdk_common::wallet as types;
+pub use cashu::wallet as types;
 
 use crate::nuts::nut00::ProofsMethods;
 

@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::common::{LnKey, QuoteTTL};
-use cdk_common::database::{self, MintDatabase};
-use cdk_common::mint::MintKeySetInfo;
+use cashu::common::{LnKey, QuoteTTL};
+use cashu::database::{self, MintDatabase};
+use cashu::mint::MintKeySetInfo;
 use config::SwappableConfig;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ pub mod subscription;
 mod swap;
 
 pub use builder::{MintBuilder, MintMeltLimits};
-pub use cdk_common::mint::{MeltQuote, MintQuote};
+pub use cashu::mint::{MeltQuote, MintQuote};
 
 /// Cashu Mint
 #[derive(Clone)]
@@ -566,7 +566,7 @@ mod tests {
     use std::collections::HashSet;
 
     use bitcoin::Network;
-    use cdk_common::common::{LnKey, QuoteTTL};
+    use cashu::common::{LnKey, QuoteTTL};
     use secp256k1::Secp256k1;
     use uuid::Uuid;
 

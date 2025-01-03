@@ -683,6 +683,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cashu"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bip39",
+ "bitcoin 0.32.5",
+ "cbor-diag",
+ "ciborium",
+ "futures",
+ "instant",
+ "lightning-invoice",
+ "once_cell",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.9",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -737,8 +763,8 @@ dependencies = [
  "bech32 0.9.1",
  "bip39",
  "bitcoin 0.32.5",
+ "cashu",
  "cbor-diag",
- "cdk-common",
  "ciborium",
  "criterion",
  "futures",
@@ -817,32 +843,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cdk-common"
-version = "0.6.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bip39",
- "bitcoin 0.32.5",
- "cbor-diag",
- "ciborium",
- "futures",
- "instant",
- "lightning-invoice",
- "once_cell",
- "rand",
- "reqwest",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.9",
- "tracing",
- "url",
- "utoipa",
  "uuid",
 ]
 
@@ -985,7 +985,7 @@ name = "cdk-redb"
 version = "0.6.0"
 dependencies = [
  "async-trait",
- "cdk-common",
+ "cashu",
  "lightning-invoice",
  "redb",
  "serde",
@@ -1016,7 +1016,7 @@ version = "0.6.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
- "cdk-common",
+ "cashu",
  "lightning-invoice",
  "serde_json",
  "sqlx",
