@@ -7,6 +7,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
     PreMintSecrets, State,
@@ -78,9 +79,11 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
-    let mint_amount = wallet
+    let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
+
+    let mint_amount = proofs.total_amount()?;
 
     assert!(mint_amount == 100.into());
 
@@ -158,9 +161,11 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
-    let mint_amount = wallet
+    let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
+
+    let mint_amount = proofs.total_amount()?;
 
     assert!(mint_amount == 100.into());
 
@@ -240,9 +245,11 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
-    let mint_amount = wallet
+    let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
+
+    let mint_amount = proofs.total_amount()?;
 
     assert_eq!(mint_amount, 100.into());
 
