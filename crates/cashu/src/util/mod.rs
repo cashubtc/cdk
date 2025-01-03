@@ -1,15 +1,13 @@
-//! Util
-
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
 use bitcoin::secp256k1::{rand, All, Secp256k1};
-#[cfg(target_arch = "wasm32")]
-use instant::SystemTime;
 use once_cell::sync::Lazy;
 
 pub mod hex;
+
+#[cfg(target_arch = "wasm32")]
+use instant::SystemTime;
 
 #[cfg(target_arch = "wasm32")]
 const UNIX_EPOCH: SystemTime = SystemTime::UNIX_EPOCH;
@@ -30,10 +28,22 @@ pub fn unix_time() -> u64 {
         .as_secs()
 }
 
+#[derive(Debug, thiserror::Error)]
+/// Error type for serialization
+pub enum CborError {
+    /// CBOR serialization error
+    #[error("CBOR serialization error")]
+    Cbor(#[from] ciborium::ser::Error<std::io::Error>),
+
+    /// CBOR diagnostic notation error
+    #[error("CBOR diagnostic notation error: {0}")]
+    CborDiag(#[from] cbor_diag::Error),
+}
+
 /// Serializes a struct to the CBOR diagnostic notation.
 ///
 /// See <https://www.rfc-editor.org/rfc/rfc8949.html#name-diagnostic-notation>
-pub fn serialize_to_cbor_diag<T: serde::Serialize>(data: &T) -> Result<String> {
+pub fn serialize_to_cbor_diag<T: serde::Serialize>(data: &T) -> Result<String, CborError> {
     let mut cbor_buffer = Vec::new();
     ciborium::ser::into_writer(data, &mut cbor_buffer)?;
 

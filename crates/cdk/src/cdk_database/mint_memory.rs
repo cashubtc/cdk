@@ -4,13 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cashu::database::{Error, MintDatabase};
+use cashu::mint::MintKeySetInfo;
+use cashu::nut00::ProofsMethods;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-use super::{Error, MintDatabase};
 use crate::dhke::hash_to_curve;
-use crate::mint::{self, MintKeySetInfo, MintQuote};
-use crate::nuts::nut00::ProofsMethods;
+use crate::mint::{self, MintQuote};
 use crate::nuts::nut07::State;
 use crate::nuts::{
     nut07, BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState,

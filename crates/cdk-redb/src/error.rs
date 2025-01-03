@@ -33,22 +33,22 @@ pub enum Error {
     ParseInt(#[from] ParseIntError),
     /// CDK Database Error
     #[error(transparent)]
-    CDKDatabase(#[from] cdk::cdk_database::Error),
+    CDKDatabase(#[from] cashu::database::Error),
     /// CDK Mint Url Error
     #[error(transparent)]
-    CDKMintUrl(#[from] cdk::mint_url::Error),
+    CDKMintUrl(#[from] cashu::mint_url::Error),
     /// CDK Error
     #[error(transparent)]
-    CDK(#[from] cdk::error::Error),
+    CDK(#[from] cashu::error::Error),
     /// NUT00 Error
     #[error(transparent)]
-    CDKNUT00(#[from] cdk::nuts::nut00::Error),
+    CDKNUT00(#[from] cashu::nuts::nut00::Error),
     /// NUT02 Error
     #[error(transparent)]
-    CDKNUT02(#[from] cdk::nuts::nut02::Error),
+    CDKNUT02(#[from] cashu::nuts::nut02::Error),
     /// DHKE Error
     #[error(transparent)]
-    DHKE(#[from] cdk::dhke::Error),
+    DHKE(#[from] cashu::dhke::Error),
     /// Unknown Mint Info
     #[error("Unknown mint info")]
     UnknownMintInfo,
@@ -60,7 +60,7 @@ pub enum Error {
     UnknownDatabaseVersion,
 }
 
-impl From<Error> for cdk::cdk_database::Error {
+impl From<Error> for cashu::database::Error {
     fn from(e: Error) -> Self {
         Self::Database(Box::new(e))
     }

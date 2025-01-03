@@ -7,16 +7,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database::MintDatabase;
-use cdk::dhke::hash_to_curve;
-use cdk::mint::{MintKeySetInfo, MintQuote};
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{
+use cashu::common::LnKey;
+use cashu::database::{self, MintDatabase};
+use cashu::dhke::hash_to_curve;
+use cashu::mint::{self, MintKeySetInfo, MintQuote};
+use cashu::nut00::ProofsMethods;
+use cashu::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
     Proofs, PublicKey, State,
 };
-use cdk::types::LnKey;
-use cdk::{cdk_database, mint};
 use migrations::{migrate_01_to_02, migrate_04_to_05};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use uuid::Uuid;
@@ -162,7 +161,7 @@ impl MintRedbDatabase {
 
 #[async_trait]
 impl MintDatabase for MintRedbDatabase {
-    type Err = cdk_database::Error;
+    type Err = database::Error;
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;

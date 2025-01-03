@@ -3,12 +3,13 @@
 //! This module contains the code that is triggered when a new subscription is created.
 use std::sync::Arc;
 
+use cashu::database::{self, MintDatabase};
+use cashu::nut17::Notification;
+use cashu::pub_sub::OnNewSubscription;
+use cashu::NotificationPayload;
 use uuid::Uuid;
 
-use super::{Notification, NotificationPayload};
-use crate::cdk_database::{self, MintDatabase};
 use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};
-use crate::pub_sub::OnNewSubscription;
 
 #[derive(Default)]
 /// Subscription Init
@@ -17,7 +18,7 @@ use crate::pub_sub::OnNewSubscription;
 ///
 /// It is used to send the initial state of the subscription to the client.
 pub struct OnSubscription(
-    pub(crate) Option<Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync>>,
+    pub(crate) Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
 );
 
 #[async_trait::async_trait]
