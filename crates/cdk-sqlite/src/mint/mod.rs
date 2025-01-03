@@ -805,11 +805,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .map(|row| {
                 PublicKey::from_slice(row.get("y"))
                     .map_err(Error::from)
-                    .and_then(|y| {
-                        sqlite_row_to_proof(row)
-                            .map_err(Error::from)
-                            .map(|proof| (y, proof))
-                    })
+                    .and_then(|y| sqlite_row_to_proof(row).map(|proof| (y, proof)))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
@@ -1061,11 +1057,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .map(|row| {
                 PublicKey::from_slice(row.get("y"))
                     .map_err(Error::from)
-                    .and_then(|y| {
-                        sqlite_row_to_blind_signature(row)
-                            .map_err(Error::from)
-                            .map(|blinded| (y, blinded))
-                    })
+                    .and_then(|y| sqlite_row_to_blind_signature(row).map(|blinded| (y, blinded)))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
 

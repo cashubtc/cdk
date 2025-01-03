@@ -426,11 +426,13 @@ async fn test_regtest_melt_amountless() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
-    let mint_amount = wallet
+    let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
-    assert!(mint_amount == 100.into());
+    let amount = proofs.total_amount()?;
+
+    assert!(mint_amount == amount);
 
     let invoice = lnd_client.create_invoice(None).await?;
 
