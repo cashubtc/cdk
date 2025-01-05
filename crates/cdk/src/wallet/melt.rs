@@ -47,20 +47,12 @@ impl Wallet {
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
-        let mut options = options;
+        let amount_msat = options
+            .map(|opt| opt.amount_msat().into())
+            .or_else(|| invoice.amount_milli_satoshis())
+            .ok_or(Error::InvoiceAmountUndefined)?;
 
-        let request_amount = match invoice.amount_milli_satoshis() {
-            Some(invoice_amount) => {
-                options = None;
-                invoice_amount
-            }
-            None => options
-                .ok_or(Error::InvoiceAmountUndefined)?
-                .amount_msat()
-                .into(),
-        };
-
-        let amount = to_unit(request_amount, &CurrencyUnit::Msat, &self.unit).unwrap();
+        let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit).unwrap();
 
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,
@@ -68,12 +60,12 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await.unwrap();
+        let quote_res = self.client.post_melt_quote(quote_request).await?;
 
-        if quote_res.amount != amount {
+        if quote_res.amount != amount_quote_unit {
             tracing::warn!(
                 "Mint returned incorrect quote amount. Expected {}, got {}",
-                amount,
+                amount_quote_unit,
                 quote_res.amount
             );
             return Err(Error::IncorrectQuoteAmount);
@@ -81,7 +73,7 @@ impl Wallet {
 
         let quote = MeltQuote {
             id: quote_res.quote,
-            amount,
+            amount: amount_quote_unit,
             request,
             unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,

@@ -16,6 +16,9 @@ pub struct MeltSubCommand {
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,
+    /// Mpp
+    #[arg(short, long)]
+    mpp: bool,
 }
 
 pub async fn pay(
@@ -55,8 +58,8 @@ pub async fn pay(
 
     let mut options: Option<MeltOptions> = None;
 
-    if bolt11.amount_milli_satoshis().is_none() {
-        println!("Enter the amount you would like to pay in sats.");
+    if sub_command_args.mpp {
+        println!("Enter the amount you would like to pay in sats, for a mpp payment.");
         let mut user_input = String::new();
         let stdin = io::stdin();
         io::stdout().flush().unwrap();
