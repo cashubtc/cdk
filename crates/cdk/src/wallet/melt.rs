@@ -6,11 +6,9 @@ use tracing::instrument;
 use super::MeltQuote;
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
-use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::nut05::Options;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    PreMintSecrets, Proofs, State,
+    CurrencyUnit, MeltBolt11Request, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    PreMintSecrets, Proofs, ProofsMethods, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
@@ -45,7 +43,7 @@ impl Wallet {
     pub async fn melt_quote(
         &self,
         request: String,
-        options: Option<Options>,
+        options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 

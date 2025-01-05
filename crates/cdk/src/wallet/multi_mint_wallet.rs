@@ -16,8 +16,7 @@ use super::types::SendKind;
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
-use crate::nuts::nut05::Options;
-use crate::nuts::{CurrencyUnit, Proof, Proofs, SecretKey, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SecretKey, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
@@ -282,7 +281,7 @@ impl MultiMintWallet {
     pub async fn pay_invoice_for_wallet(
         &self,
         bolt11: &str,
-        options: Option<Options>,
+        options: Option<MeltOptions>,
         wallet_key: &WalletKey,
         max_fee: Option<Amount>,
     ) -> Result<Melted, Error> {
