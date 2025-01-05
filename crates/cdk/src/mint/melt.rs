@@ -60,21 +60,14 @@ impl Mint {
             request,
             unit,
             options: _,
+            ..
         } = melt_request;
 
-        let amount = match melt_request.options {
-            Some(mpp_amount) => mpp_amount.amount,
-            None => {
-                let amount_msat = request
-                    .amount_milli_satoshis()
-                    .ok_or(Error::InvoiceAmountUndefined)?;
+        let amount_msats = melt_request.amount_msat()?;
 
-                to_unit(amount_msat, &CurrencyUnit::Msat, unit)
-                    .map_err(|_err| Error::UnsupportedUnit)?
-            }
-        };
+        let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
 
-        self.check_melt_request_acceptable(amount, unit.clone(), PaymentMethod::Bolt11)?;
+        self.check_melt_request_acceptable(amount_quote_unit, unit.clone(), PaymentMethod::Bolt11)?;
 
         let ln = self
             .ln
@@ -95,6 +88,14 @@ impl Mint {
             Error::UnitUnsupported
         })?;
 
+        // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
+        // or we want to ignore the amount and do an mpp payment
+        let msats_to_pay = if request.amount_milli_satoshis().is_some() {
+            None
+        } else {
+            Some(amount_msats)
+        };
+
         let quote = MeltQuote::new(
             request.to_string(),
             unit.clone(),
@@ -102,12 +103,13 @@ impl Mint {
             payment_quote.fee,
             unix_time() + self.config.quote_ttl().melt_ttl,
             payment_quote.request_lookup_id.clone(),
+            msats_to_pay,
         );
 
         tracing::debug!(
             "New melt quote {} for {} {} with request id {}",
             quote.id,
-            amount,
+            amount_quote_unit,
             unit,
             payment_quote.request_lookup_id
         );
@@ -182,10 +184,13 @@ impl Mint {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
 
-        let invoice_amount_msats: Amount = invoice
-            .amount_milli_satoshis()
-            .ok_or(Error::InvoiceAmountUndefined)?
-            .into();
+        let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
+            Some(amount) => amount,
+            None => invoice
+                .amount_milli_satoshis()
+                .ok_or(Error::InvoiceAmountUndefined)?
+                .into(),
+        };
 
         let partial_amount = match invoice_amount_msats > quote_msats {
             true => {
@@ -582,7 +587,6 @@ impl Mint {
 
         Ok(res)
     }
-
     /// Process melt request marking [`Proofs`] as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]

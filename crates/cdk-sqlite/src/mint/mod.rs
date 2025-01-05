@@ -468,8 +468,8 @@ WHERE id=?
         let res = sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -481,6 +481,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(quote.expiry as i64)
         .bind(quote.payment_preimage)
         .bind(quote.request_lookup_id)
+        .bind(quote.msat_to_pay.map(|a| u64::from(a) as i64))
         .execute(&mut transaction)
         .await;
 
@@ -804,11 +805,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .map(|row| {
                 PublicKey::from_slice(row.get("y"))
                     .map_err(Error::from)
-                    .and_then(|y| {
-                        sqlite_row_to_proof(row)
-                            .map_err(Error::from)
-                            .map(|proof| (y, proof))
-                    })
+                    .and_then(|y| sqlite_row_to_proof(row).map(|proof| (y, proof)))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
@@ -1060,11 +1057,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .map(|row| {
                 PublicKey::from_slice(row.get("y"))
                     .map_err(Error::from)
-                    .and_then(|y| {
-                        sqlite_row_to_blind_signature(row)
-                            .map_err(Error::from)
-                            .map(|blinded| (y, blinded))
-                    })
+                    .and_then(|y| sqlite_row_to_blind_signature(row).map(|blinded| (y, blinded)))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
@@ -1307,6 +1300,8 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
 
     let request_lookup_id = row_request_lookup.unwrap_or(row_request.clone());
 
+    let row_msat_to_pay: Option<i64> = row.try_get("msat_to_pay").map_err(Error::from)?;
+
     Ok(mint::MeltQuote {
         id: row_id.into_uuid(),
         amount: Amount::from(row_amount as u64),
@@ -1317,6 +1312,7 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
         expiry: row_expiry as u64,
         payment_preimage: row_preimage,
         request_lookup_id,
+        msat_to_pay: row_msat_to_pay.map(|a| Amount::from(a as u64)),
     })
 }
 

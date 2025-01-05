@@ -25,7 +25,7 @@ pub mod nut20;
 
 pub use nut00::{
     BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, PreMint, PreMintSecrets, Proof,
-    Proofs, Token, TokenV3, TokenV4, Witness,
+    Proofs, ProofsMethods, Token, TokenV3, TokenV4, Witness,
 };
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 #[cfg(feature = "mint")]
@@ -39,8 +39,8 @@ pub use nut04::{
     MintQuoteBolt11Response, QuoteState as MintQuoteState, Settings as NUT04Settings,
 };
 pub use nut05::{
-    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    QuoteState as MeltQuoteState, Settings as NUT05Settings,
+    MeltBolt11Request, MeltMethodSettings, MeltOptions, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
 pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};

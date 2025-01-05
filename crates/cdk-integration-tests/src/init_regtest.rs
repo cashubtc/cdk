@@ -19,7 +19,6 @@ use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
-use tracing_subscriber::EnvFilter;
 
 const BITCOIND_ADDR: &str = "127.0.0.1:18443";
 const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
@@ -193,19 +192,6 @@ pub async fn start_cln_mint<D>(addr: &str, port: u16, database: D) -> Result<()>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
 {
-    let default_filter = "debug";
-
-    let sqlx_filter = "sqlx=warn";
-    let hyper_filter = "hyper=warn";
-
-    let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
-    ));
-
-    // Parse input
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
-
     let cln_client = init_cln_client().await?;
 
     let cln_backend = create_cln_backend(&cln_client).await?;

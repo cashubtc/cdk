@@ -8,9 +8,24 @@ use cdk_integration_tests::init_regtest::{
 };
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let default_filter = "debug";
+
+    let sqlx_filter = "sqlx=warn";
+    let hyper_filter = "hyper=warn";
+    let h2_filter = "h2=warn";
+
+    let env_filter = EnvFilter::new(format!(
+        "{},{},{},{}",
+        default_filter, sqlx_filter, hyper_filter, h2_filter
+    ));
+
+    // Parse input
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     let mut bitcoind = init_bitcoind();
     bitcoind.start_bitcoind()?;
 

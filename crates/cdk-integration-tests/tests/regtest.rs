@@ -77,7 +77,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    lnd_client.pay_invoice(mint_quote.request).await?;
+    lnd_client.pay_invoice(mint_quote.request).await.unwrap();
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)

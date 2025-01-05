@@ -152,16 +152,9 @@ impl MintLightning for LNbits {
             return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
         }
 
-        let invoice_amount_msat = melt_quote_request
-            .request
-            .amount_milli_satoshis()
-            .ok_or(Error::UnknownInvoiceAmount)?;
+        let amount = melt_quote_request.amount_msat()?;
 
-        let amount = to_unit(
-            invoice_amount_msat,
-            &CurrencyUnit::Msat,
-            &melt_quote_request.unit,
-        )?;
+        let amount = amount / MSAT_IN_SAT.into();
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
