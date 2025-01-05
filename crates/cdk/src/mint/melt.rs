@@ -59,7 +59,7 @@ impl Mint {
         let MeltQuoteBolt11Request {
             request,
             unit,
-            options: _,
+            options,
             ..
         } = melt_request;
 
@@ -90,11 +90,7 @@ impl Mint {
 
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
         // or we want to ignore the amount and do an mpp payment
-        let msats_to_pay = if request.amount_milli_satoshis().is_some() {
-            None
-        } else {
-            Some(amount_msats)
-        };
+        let msats_to_pay = options.map(|opt| opt.amount_msat());
 
         let quote = MeltQuote::new(
             request.to_string(),
