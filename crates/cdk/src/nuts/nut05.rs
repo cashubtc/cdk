@@ -28,6 +28,12 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Invalid Amount
+    #[error("Invalid Request")]
+    InvalidAmountRequest,
+    /// Unsupported unit
+    #[error("Unsupported unit")]
+    UnsupportedUnit,
 }
 
 /// Melt quote request [NUT-05]
@@ -40,7 +46,63 @@ pub struct MeltQuoteBolt11Request {
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
     /// Payment Options
-    pub options: Option<Mpp>,
+    pub options: Option<MeltOptions>,
+}
+
+/// Melt Options
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub enum MeltOptions {
+    /// Mpp Options
+    Mpp {
+        /// MPP
+        mpp: Mpp,
+    },
+}
+
+impl MeltOptions {
+    /// Create new [`Options::Mpp`]
+    pub fn new_mpp<A>(amount: A) -> Self
+    where
+        A: Into<Amount>,
+    {
+        Self::Mpp {
+            mpp: Mpp {
+                amount: amount.into(),
+            },
+        }
+    }
+
+    /// Payment amount
+    pub fn amount_msat(&self) -> Amount {
+        match self {
+            Self::Mpp { mpp } => mpp.amount,
+        }
+    }
+}
+
+impl MeltQuoteBolt11Request {
+    /// Amount from [`MeltQuoteBolt11Request`]
+    ///
+    /// Amount can either be defined in the bolt11 invoice,
+    /// in the request for an amountless bolt11 or in MPP option.
+    pub fn amount_msat(&self) -> Result<Amount, Error> {
+        let MeltQuoteBolt11Request {
+            request,
+            unit: _,
+            options,
+            ..
+        } = self;
+
+        match options {
+            None => Ok(request
+                .amount_milli_satoshis()
+                .ok_or(Error::InvalidAmountRequest)?
+                .into()),
+            Some(MeltOptions::Mpp { mpp }) => Ok(mpp.amount),
+        }
+    }
 }
 
 /// Possible states of a quote
