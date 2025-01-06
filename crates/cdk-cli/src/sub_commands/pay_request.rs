@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use anyhow::{anyhow, Result};
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut18::TransportType;
-use cdk::nuts::{PaymentRequest, PaymentRequestPayload};
+use cdk::nuts::{PaymentRequest, PaymentRequestPayload, SpendingConditions};
 use cdk::wallet::{MultiMintWallet, SendKind};
 use clap::Args;
 use nostr_sdk::nips::nip19::Nip19Profile;
@@ -81,11 +81,15 @@ pub async fn pay_request(
         })
         .ok_or(anyhow!("No supported transport method found"))?;
 
+    let conditions = payment_request
+        .public_key
+        .map(|pk| SpendingConditions::new_p2pk(pk, None));
+
     let proofs = matching_wallet
         .send(
             amount,
             None,
-            None,
+            conditions,
             &SplitTarget::default(),
             &SendKind::default(),
             true,
