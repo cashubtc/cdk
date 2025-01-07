@@ -8,6 +8,9 @@ pub enum Error {
     /// SQLX Error
     #[error(transparent)]
     SQLX(#[from] sqlx::Error),
+    /// SQLX Migration Error
+    #[error(transparent)]
+    SQLXMigration(#[from] sqlx::migrate::MigrateError),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk::nuts::nut00::Error),
