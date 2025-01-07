@@ -10,7 +10,7 @@ use bitcoin::base64::{alphabet, Engine};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{CurrencyUnit, Proofs};
+use super::{CurrencyUnit, Proofs, PublicKey};
 use crate::mint_url::MintUrl;
 use crate::Amount;
 
@@ -95,6 +95,9 @@ pub struct PaymentRequest {
     /// Transport
     #[serde(rename = "t")]
     pub transports: Vec<Transport>,
+    /// Public key
+    #[serde(rename = "p")]
+    pub public_key: Option<PublicKey>,
 }
 
 impl fmt::Display for PaymentRequest {
@@ -180,6 +183,7 @@ mod tests {
             mints: Some(vec!["https://nofees.testnut.cashu.space".parse()?]),
             description: None,
             transports: vec![transport.clone()],
+            public_key: None,
         };
 
         let request_str = request.to_string();
