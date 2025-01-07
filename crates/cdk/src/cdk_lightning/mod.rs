@@ -152,4 +152,6 @@ pub struct Settings {
     pub unit: CurrencyUnit,
     /// Invoice Description supported
     pub invoice_description: bool,
+    /// Paying amountless invoices supported
+    pub amountless: bool,
 }
