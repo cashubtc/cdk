@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use cashu::database::{self, MintDatabase};
+use cdk_common::database::{self, MintDatabase};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};

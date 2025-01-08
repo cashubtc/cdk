@@ -2,9 +2,9 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use cashu::database::{self, MintDatabase};
-use cashu::nut17::Notification;
-use cashu::NotificationPayload;
+use cdk_common::database::{self, MintDatabase};
+use cdk_common::nut17::Notification;
+use cdk_common::NotificationPayload;
 use uuid::Uuid;
 
 use super::OnSubscription;
@@ -84,19 +84,21 @@ mod test {
     use tokio::time::sleep;
 
     use super::*;
-    use crate::nuts::nut17::{Kind, Params};
+    use crate::nuts::nut17::Kind;
     use crate::nuts::{PublicKey, State};
+    use crate::subscription::{IndexableParams, Params};
 
     #[tokio::test]
     async fn active_and_drop() {
         let manager = PubSubManager::default();
-        let params = Params {
+        let params: IndexableParams = Params {
             kind: Kind::ProofState,
             filters: vec![
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2".to_owned(),
             ],
             id: "uno".into(),
-        };
+        }
+        .into();
 
         // Although the same param is used, two subscriptions are created, that
         // is because each index is unique, thanks to `Unique`, it is the
@@ -125,25 +127,31 @@ mod test {
         let manager = PubSubManager::default();
         let mut subscriptions = [
             manager
-                .try_subscribe(Params {
-                    kind: Kind::ProofState,
-                    filters: vec![
-                        "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
-                            .to_string(),
-                    ],
-                    id: "uno".into(),
-                })
+                .try_subscribe::<IndexableParams>(
+                    Params {
+                        kind: Kind::ProofState,
+                        filters: vec![
+                            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
+                                .to_string(),
+                        ],
+                        id: "uno".into(),
+                    }
+                    .into(),
+                )
                 .await
                 .expect("valid subscription"),
             manager
-                .try_subscribe(Params {
-                    kind: Kind::ProofState,
-                    filters: vec![
-                        "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
-                            .to_string(),
-                    ],
-                    id: "dos".into(),
-                })
+                .try_subscribe::<IndexableParams>(
+                    Params {
+                        kind: Kind::ProofState,
+                        filters: vec![
+                            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
+                                .to_string(),
+                        ],
+                        id: "dos".into(),
+                    }
+                    .into(),
+                )
                 .await
                 .expect("valid subscription"),
         ];
@@ -184,7 +192,7 @@ mod test {
     async fn json_test() {
         let manager = PubSubManager::default();
         let mut subscription = manager
-            .try_subscribe::<Params>(
+            .try_subscribe::<IndexableParams>(
                 serde_json::from_str(r#"{"kind":"proof_state","filters":["02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"],"subId":"uno"}"#)
                     .expect("valid json"),
             )

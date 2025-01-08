@@ -7,12 +7,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu::common::ProofInfo;
-use cashu::database::WalletDatabase;
-use cashu::mint_url::MintUrl;
-use cashu::util::unix_time;
-use cashu::wallet::{self, MintQuote};
-use cashu::{
+use cdk_common::common::ProofInfo;
+use cdk_common::database::WalletDatabase;
+use cdk_common::mint_url::MintUrl;
+use cdk_common::util::unix_time;
+use cdk_common::wallet::{self, MintQuote};
+use cdk_common::{
     database, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};

@@ -15,11 +15,11 @@ pub mod pub_sub;
 
 /// Re-export amount type
 #[doc(hidden)]
-pub use cashu::{
+pub use cdk_common::{
     amount, common as types, dhke,
     error::{self, Error},
-    lightning as cdk_lightning, lightning_invoice, mint_url, nuts, secret, util, Amount,
-    Bolt11Invoice,
+    lightning as cdk_lightning, lightning_invoice, mint_url, nuts, secret, subscription, util, ws,
+    Amount, Bolt11Invoice,
 };
 
 pub mod fees;

@@ -3,10 +3,10 @@
 //! This module contains the code that is triggered when a new subscription is created.
 use std::sync::Arc;
 
-use cashu::database::{self, MintDatabase};
-use cashu::nut17::Notification;
-use cashu::pub_sub::OnNewSubscription;
-use cashu::NotificationPayload;
+use cdk_common::database::{self, MintDatabase};
+use cdk_common::nut17::Notification;
+use cdk_common::pub_sub::OnNewSubscription;
+use cdk_common::NotificationPayload;
 use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};

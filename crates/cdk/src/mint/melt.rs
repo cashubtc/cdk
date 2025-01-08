@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use anyhow::bail;
-use cashu::nut00::ProofsMethods;
+use cdk_common::nut00::ProofsMethods;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 use uuid::Uuid;

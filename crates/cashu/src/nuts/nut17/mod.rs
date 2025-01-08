@@ -1,6 +1,4 @@
 //! Specific Subscription for the cdk crate
-use std::str::FromStr;
-
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -9,45 +7,20 @@ use super::PublicKey;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
-use crate::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
-use crate::pub_sub::SubId;
 
 pub mod ws;
 
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash, Deserialize)]
-pub struct Params {
+#[serde(bound = "I: DeserializeOwned + Serialize")]
+pub struct Params<I> {
     /// Kind
     pub kind: Kind,
     /// Filters
     pub filters: Vec<String>,
     /// Subscription Id
     #[serde(rename = "subId")]
-    pub id: SubId,
-}
-
-impl TryFrom<Params> for Vec<Index<Notification>> {
-    type Error = Error;
-
-    fn try_from(val: Params) -> Result<Self, Self::Error> {
-        let sub_id: SubscriptionGlobalId = Default::default();
-        val.filters
-            .into_iter()
-            .map(|filter| {
-                let idx = match val.kind {
-                    Kind::Bolt11MeltQuote => {
-                        Notification::MeltQuoteBolt11(Uuid::from_str(&filter)?)
-                    }
-                    Kind::Bolt11MintQuote => {
-                        Notification::MintQuoteBolt11(Uuid::from_str(&filter)?)
-                    }
-                    Kind::ProofState => Notification::ProofState(PublicKey::from_str(&filter)?),
-                };
-
-                Ok(Index::from((idx, val.id.clone(), sub_id)))
-            })
-            .collect::<Result<_, _>>()
-    }
+    pub id: I,
 }
 
 /// Check state Settings
@@ -106,24 +79,6 @@ pub enum NotificationPayload<T> {
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
 }
 
-impl Indexable for NotificationPayload<Uuid> {
-    type Type = Notification;
-
-    fn to_indexes(&self) -> Vec<Index<Self::Type>> {
-        match self {
-            NotificationPayload::ProofState(proof_state) => {
-                vec![Index::from(Notification::ProofState(proof_state.y))]
-            }
-            NotificationPayload::MeltQuoteBolt11Response(melt_quote) => {
-                vec![Index::from(Notification::MeltQuoteBolt11(melt_quote.quote))]
-            }
-            NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
-                vec![Index::from(Notification::MintQuoteBolt11(mint_quote.quote))]
-            }
-        }
-    }
-}
-
 impl<T> From<ProofState> for NotificationPayload<T> {
     fn from(proof_state: ProofState) -> NotificationPayload<T> {
         NotificationPayload::ProofState(proof_state)
@@ -165,8 +120,8 @@ pub enum Kind {
     ProofState,
 }
 
-impl AsRef<SubId> for Params {
-    fn as_ref(&self) -> &SubId {
+impl<I> AsRef<I> for Params<I> {
+    fn as_ref(&self) -> &I {
         &self.id
     }
 }

@@ -6,6 +6,6 @@ pub mod mint_memory;
 pub mod wallet_memory;
 
 /// re-export types
-pub use cashu::database::{Error, MintDatabase, WalletDatabase};
+pub use cdk_common::database::{Error, MintDatabase, WalletDatabase};
 #[cfg(feature = "wallet")]
 pub use wallet_memory::WalletMemoryDatabase;

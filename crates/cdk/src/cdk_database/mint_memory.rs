@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu::database::{Error, MintDatabase};
-use cashu::mint::MintKeySetInfo;
-use cashu::nut00::ProofsMethods;
+use cdk_common::database::{Error, MintDatabase};
+use cdk_common::mint::MintKeySetInfo;
+use cdk_common::nut00::ProofsMethods;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 

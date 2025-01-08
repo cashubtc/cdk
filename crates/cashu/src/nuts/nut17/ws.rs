@@ -2,32 +2,32 @@
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::{NotificationPayload, Params};
-use crate::pub_sub::SubId;
 
 /// JSON RPC version
 pub const JSON_RPC_VERSION: &str = "2.0";
 
 /// The response to a subscription request
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsSubscribeResponse {
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+pub struct WsSubscribeResponse<I> {
     /// Status
     pub status: String,
     /// Subscription ID
     #[serde(rename = "subId")]
-    pub sub_id: SubId,
+    pub sub_id: I,
 }
 
 /// The response to an unsubscription request
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsUnsubscribeResponse {
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+pub struct WsUnsubscribeResponse<I> {
     /// Status
     pub status: String,
     /// Subscription ID
     #[serde(rename = "subId")]
-    pub sub_id: SubId,
+    pub sub_id: I,
 }
 
 /// The notification
@@ -35,87 +35,74 @@ pub struct WsUnsubscribeResponse {
 /// This is the notification that is sent to the client when an event matches a
 /// subscription
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "T: Serialize + DeserializeOwned")]
-pub struct NotificationInner<T> {
+#[serde(bound = "T: Serialize + DeserializeOwned, I: Serialize + DeserializeOwned")]
+pub struct NotificationInner<T, I> {
     /// The subscription ID
     #[serde(rename = "subId")]
-    pub sub_id: SubId,
+    pub sub_id: I,
 
     /// The notification payload
     pub payload: NotificationPayload<T>,
 }
 
-impl From<NotificationInner<Uuid>> for NotificationInner<String> {
-    fn from(value: NotificationInner<Uuid>) -> Self {
-        NotificationInner {
-            sub_id: value.sub_id,
-            payload: match value.payload {
-                NotificationPayload::ProofState(pk) => NotificationPayload::ProofState(pk),
-                NotificationPayload::MeltQuoteBolt11Response(quote) => {
-                    NotificationPayload::MeltQuoteBolt11Response(quote.to_string_id())
-                }
-                NotificationPayload::MintQuoteBolt11Response(quote) => {
-                    NotificationPayload::MintQuoteBolt11Response(quote.to_string_id())
-                }
-            },
-        }
-    }
-}
-
 /// Responses from the web socket server
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound = "I: Serialize + DeserializeOwned")]
 #[serde(untagged)]
-pub enum WsResponseResult {
+pub enum WsResponseResult<I> {
     /// A response to a subscription request
-    Subscribe(WsSubscribeResponse),
+    Subscribe(WsSubscribeResponse<I>),
     /// Unsubscribe
-    Unsubscribe(WsUnsubscribeResponse),
+    Unsubscribe(WsUnsubscribeResponse<I>),
 }
 
-impl From<WsSubscribeResponse> for WsResponseResult {
-    fn from(response: WsSubscribeResponse) -> Self {
+impl<I> From<WsSubscribeResponse<I>> for WsResponseResult<I> {
+    fn from(response: WsSubscribeResponse<I>) -> Self {
         WsResponseResult::Subscribe(response)
     }
 }
 
-impl From<WsUnsubscribeResponse> for WsResponseResult {
-    fn from(response: WsUnsubscribeResponse) -> Self {
+impl<I> From<WsUnsubscribeResponse<I>> for WsResponseResult<I> {
+    fn from(response: WsUnsubscribeResponse<I>) -> Self {
         WsResponseResult::Unsubscribe(response)
     }
 }
 
 /// The request to unsubscribe
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsUnsubscribeRequest {
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+pub struct WsUnsubscribeRequest<I> {
     /// Subscription ID
     #[serde(rename = "subId")]
-    pub sub_id: SubId,
+    pub sub_id: I,
 }
 
 /// The inner method of the websocket request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "method", content = "params")]
-pub enum WsMethodRequest {
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+pub enum WsMethodRequest<I> {
     /// Subscribe method
-    Subscribe(Params),
+    Subscribe(Params<I>),
     /// Unsubscribe method
-    Unsubscribe(WsUnsubscribeRequest),
+    Unsubscribe(WsUnsubscribeRequest<I>),
 }
 
 /// Websocket request
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsRequest {
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+pub struct WsRequest<I> {
     /// JSON RPC version
     pub jsonrpc: String,
     /// The method body
     #[serde(flatten)]
-    pub method: WsMethodRequest,
+    pub method: WsMethodRequest<I>,
     /// The request ID
     pub id: usize,
 }
 
-impl From<(WsMethodRequest, usize)> for WsRequest {
-    fn from((method, id): (WsMethodRequest, usize)) -> Self {
+impl<I> From<(WsMethodRequest<I>, usize)> for WsRequest<I> {
+    fn from((method, id): (WsMethodRequest<I>, usize)) -> Self {
         WsRequest {
             jsonrpc: JSON_RPC_VERSION.to_owned(),
             method,
@@ -146,11 +133,12 @@ pub struct WsErrorBody {
 
 /// Websocket response
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsResponse {
+#[serde(bound = "I: Serialize + DeserializeOwned")]
+pub struct WsResponse<I> {
     /// JSON RPC version
     pub jsonrpc: String,
     /// The result
-    pub result: WsResponseResult,
+    pub result: WsResponseResult<I>,
     /// The request ID
     pub id: usize,
 }
@@ -168,18 +156,19 @@ pub struct WsErrorResponse {
 
 /// Message from the server to the client
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound = "I: Serialize + DeserializeOwned")]
 #[serde(untagged)]
-pub enum WsMessageOrResponse {
+pub enum WsMessageOrResponse<I> {
     /// A response to a request
-    Response(WsResponse),
+    Response(WsResponse<I>),
     /// An error response
     ErrorResponse(WsErrorResponse),
     /// A notification
-    Notification(WsNotification<NotificationInner<String>>),
+    Notification(WsNotification<NotificationInner<String, I>>),
 }
 
-impl From<(usize, Result<WsResponseResult, WsErrorBody>)> for WsMessageOrResponse {
-    fn from((id, result): (usize, Result<WsResponseResult, WsErrorBody>)) -> Self {
+impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrResponse<I> {
+    fn from((id, result): (usize, Result<WsResponseResult<I>, WsErrorBody>)) -> Self {
         match result {
             Ok(result) => WsMessageOrResponse::Response(WsResponse {
                 jsonrpc: JSON_RPC_VERSION.to_owned(),
@@ -192,25 +181,5 @@ impl From<(usize, Result<WsResponseResult, WsErrorBody>)> for WsMessageOrRespons
                 id,
             }),
         }
-    }
-}
-
-impl From<NotificationInner<Uuid>> for WsMessageOrResponse {
-    fn from(notification: NotificationInner<Uuid>) -> Self {
-        WsMessageOrResponse::Notification(WsNotification {
-            jsonrpc: JSON_RPC_VERSION.to_owned(),
-            method: "subscribe".to_string(),
-            params: notification.into(),
-        })
-    }
-}
-
-impl From<NotificationInner<String>> for WsMessageOrResponse {
-    fn from(notification: NotificationInner<String>) -> Self {
-        WsMessageOrResponse::Notification(WsNotification {
-            jsonrpc: JSON_RPC_VERSION.to_owned(),
-            method: "subscribe".to_string(),
-            params: notification,
-        })
     }
 }

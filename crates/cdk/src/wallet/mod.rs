@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
-use cashu::database::{self, WalletDatabase};
+use cdk_common::database::{self, WalletDatabase};
+use cdk_common::subscription::Params;
 use client::MintConnector;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
@@ -20,7 +21,7 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
-use crate::nuts::nut17::{Kind, Params};
+use crate::nuts::nut17::Kind;
 use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
     RestoreRequest, SpendingConditions, State,
@@ -41,7 +42,7 @@ pub mod subscription;
 mod swap;
 pub mod util;
 
-pub use cashu::wallet as types;
+pub use cdk_common::wallet as types;
 
 use crate::nuts::nut00::ProofsMethods;
 

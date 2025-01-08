@@ -7,12 +7,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu::common::LnKey;
-use cashu::database::{self, MintDatabase};
-use cashu::dhke::hash_to_curve;
-use cashu::mint::{self, MintKeySetInfo, MintQuote};
-use cashu::nut00::ProofsMethods;
-use cashu::{
+use cdk_common::common::LnKey;
+use cdk_common::database::{self, MintDatabase};
+use cdk_common::dhke::hash_to_curve;
+use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
+use cdk_common::nut00::ProofsMethods;
+use cdk_common::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
     Proofs, PublicKey, State,
 };
