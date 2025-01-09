@@ -9,10 +9,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+#[cfg(feature = "mint")]
 use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
+#[cfg(feature = "mint")]
 use crate::mint::{self, MeltQuote};
 use crate::nuts::MeltQuoteState;
 use crate::{Amount, Bolt11Invoice};
@@ -192,6 +194,7 @@ impl<Q: ToString> MeltQuoteBolt11Response<Q> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<MeltQuoteBolt11Response<Uuid>> for MeltQuoteBolt11Response<String> {
     fn from(value: MeltQuoteBolt11Response<Uuid>) -> Self {
         Self {
@@ -207,6 +210,7 @@ impl From<MeltQuoteBolt11Response<Uuid>> for MeltQuoteBolt11Response<String> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
     fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         MeltQuoteBolt11Response {
@@ -306,6 +310,7 @@ impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<mint::MeltQuote> for MeltQuoteBolt11Response<Uuid> {
     fn from(melt_quote: mint::MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         let paid = melt_quote.state == QuoteState::Paid;
@@ -337,6 +342,7 @@ pub struct MeltBolt11Request<Q> {
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
+#[cfg(feature = "mint")]
 impl TryFrom<MeltBolt11Request<String>> for MeltBolt11Request<Uuid> {
     type Error = uuid::Error;
 

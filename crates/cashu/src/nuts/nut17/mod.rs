@@ -1,8 +1,10 @@
 //! Specific Subscription for the cdk crate
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "mint")]
 use uuid::Uuid;
 
+#[cfg(feature = "mint")]
 use super::PublicKey;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
@@ -97,6 +99,7 @@ impl<T> From<MintQuoteBolt11Response<T>> for NotificationPayload<T> {
     }
 }
 
+#[cfg(feature = "mint")]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 /// A parsed notification
 pub enum Notification {
@@ -129,6 +132,7 @@ impl<I> AsRef<I> for Params<I> {
 /// Parsing error
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[cfg(feature = "mint")]
     #[error("Uuid Error: {0}")]
     /// Uuid Error
     Uuid(#[from] uuid::Error),

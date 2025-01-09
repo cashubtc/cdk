@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::nuts::Id;
 use crate::util::hex;
+#[cfg(feature = "wallet")]
 use crate::wallet::WalletKey;
 use crate::Amount;
 
@@ -128,6 +129,7 @@ pub enum Error {
     IncorrectWallet(String),
     /// Unknown Wallet
     #[error("Unknown wallet: `{0}`")]
+    #[cfg(feature = "wallet")]
     UnknownWallet(WalletKey),
     /// Max Fee Ecxeded
     #[error("Max fee exceeded")]
@@ -250,6 +252,7 @@ pub enum Error {
     Database(#[from] crate::database::Error),
     /// Lightning Error
     #[error(transparent)]
+    #[cfg(feature = "mint")]
     Lightning(#[from] crate::lightning::Error),
 }
 

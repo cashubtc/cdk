@@ -8,6 +8,7 @@ use std::str::FromStr;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(feature = "mint")]
 use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
@@ -115,6 +116,7 @@ impl<Q: ToString> MintQuoteBolt11Response<Q> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
     fn from(value: MintQuoteBolt11Response<Uuid>) -> Self {
         Self {
@@ -127,6 +129,7 @@ impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<crate::mint::MintQuote> for MintQuoteBolt11Response<Uuid> {
     fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<Uuid> {
         MintQuoteBolt11Response {
@@ -155,6 +158,7 @@ pub struct MintBolt11Request<Q> {
     pub signature: Option<String>,
 }
 
+#[cfg(feature = "mint")]
 impl TryFrom<MintBolt11Request<String>> for MintBolt11Request<Uuid> {
     type Error = uuid::Error;
 

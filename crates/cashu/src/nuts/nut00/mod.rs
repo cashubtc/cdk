@@ -379,6 +379,7 @@ pub enum CurrencyUnit {
     Custom(String),
 }
 
+#[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
     pub fn derivation_index(&self) -> Option<u32> {

@@ -28,7 +28,9 @@ pub use nut00::{
     Proofs, ProofsMethods, Token, TokenV3, TokenV4, Witness,
 };
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
-pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse, MintKeySet};
+#[cfg(feature = "mint")]
+pub use nut02::MintKeySet;
+pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 pub use nut03::{PreSwap, SwapRequest, SwapResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,

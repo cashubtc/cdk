@@ -9,15 +9,20 @@
 pub mod common;
 pub mod database;
 pub mod error;
+#[cfg(feature = "mint")]
 pub mod lightning;
 pub mod pub_sub;
+#[cfg(feature = "mint")]
 pub mod subscription;
-pub mod wallet;
 pub mod ws;
 
 // re-exporting external crates
 pub use cashu::amount::{self, Amount};
 pub use cashu::lightning_invoice::{self, Bolt11Invoice};
+#[cfg(feature = "mint")]
+pub use cashu::mint;
 pub use cashu::nuts::{self, *};
-pub use cashu::{dhke, mint, mint_url, secret, util, SECP256K1};
+#[cfg(feature = "wallet")]
+pub use cashu::wallet;
+pub use cashu::{dhke, mint_url, secret, util, SECP256K1};
 pub use {bitcoin, reqwest};
