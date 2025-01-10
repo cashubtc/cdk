@@ -4,6 +4,7 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ use cdk::types::LnKey;
 use cdk_axum::cache::HttpCache;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
+use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -54,18 +56,23 @@ async fn main() -> anyhow::Result<()> {
 
     let args = CLIArgs::parse();
 
-    let work_dir = match args.work_dir {
-        Some(w) => w,
-        None => work_dir()?,
+    let work_dir = if let Some(work_dir) = args.work_dir {
+        tracing::info!("Using work dir from cmd arg");
+        work_dir.into()
+    } else if let Ok(env_work_dir) = env::var(ENV_WORK_DIR) {
+        tracing::info!("Using work dir from env var");
+        env_work_dir.into()
+    } else {
+        work_dir()?
     };
+
+    tracing::info!("Using work dir: {}", work_dir.display());
 
     // get config file name from args
     let config_file_arg = match args.config {
         Some(c) => c,
         None => work_dir.join("config.toml"),
     };
-
-    tracing::info!("Using work dir: {}", work_dir.display());
 
     let mut mint_builder = MintBuilder::new();
 
