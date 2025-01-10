@@ -65,6 +65,7 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [17][17] | WebSocket subscriptions  | :heavy_check_mark: |
 | [18][18] | Payment Requests  | :heavy_check_mark: |
 | [19][19] | Cached responses  | :heavy_check_mark: |
+| [20][20] | Signature on Mint Quote  | :heavy_check_mark: |
 
 
 ## Bindings
@@ -104,3 +105,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [17]: https://github.com/cashubtc/nuts/blob/main/17.md
 [18]: https://github.com/cashubtc/nuts/blob/main/18.md
 [19]: https://github.com/cashubtc/nuts/blob/main/19.md
+[20]: https://github.com/cashubtc/nuts/blob/main/20.md
