@@ -35,6 +35,10 @@
 
 ### Removed
 
+#[0.6.1]
+### Added
+cdk-mintd: Get work-dir from env var ([thesimplekid])
+
 #[0.6.0]
 
 ### Changed
