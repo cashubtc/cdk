@@ -11,11 +11,18 @@ use std::string::FromUtf8Error;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+#[cfg(feature = "wallet")]
 use super::nut10;
+#[cfg(feature = "wallet")]
 use super::nut11::SpendingConditions;
+#[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
-use crate::dhke::{blind_message, hash_to_curve};
-use crate::nuts::nut01::{PublicKey, SecretKey};
+#[cfg(feature = "wallet")]
+use crate::dhke::blind_message;
+use crate::dhke::hash_to_curve;
+use crate::nuts::nut01::PublicKey;
+#[cfg(feature = "wallet")]
+use crate::nuts::nut01::SecretKey;
 use crate::nuts::nut11::{serde_p2pk_witness, P2PKWitness};
 use crate::nuts::nut12::BlindSignatureDleq;
 use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
@@ -491,6 +498,7 @@ impl<'de> Deserialize<'de> for PaymentMethod {
 }
 
 /// PreMint
+#[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreMint {
     /// Blinded message
@@ -503,12 +511,14 @@ pub struct PreMint {
     pub amount: Amount,
 }
 
+#[cfg(feature = "wallet")]
 impl Ord for PreMint {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.amount.cmp(&other.amount)
     }
 }
 
+#[cfg(feature = "wallet")]
 impl PartialOrd for PreMint {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -516,6 +526,7 @@ impl PartialOrd for PreMint {
 }
 
 /// Premint Secrets
+#[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreMintSecrets {
     /// Secrets
@@ -524,6 +535,7 @@ pub struct PreMintSecrets {
     pub keyset_id: Id,
 }
 
+#[cfg(feature = "wallet")]
 impl PreMintSecrets {
     /// Create new [`PreMintSecrets`]
     pub fn new(keyset_id: Id) -> Self {
@@ -712,6 +724,7 @@ impl PreMintSecrets {
 }
 
 // Implement Iterator for PreMintSecrets
+#[cfg(feature = "wallet")]
 impl Iterator for PreMintSecrets {
     type Item = PreMint;
 
@@ -721,12 +734,14 @@ impl Iterator for PreMintSecrets {
     }
 }
 
+#[cfg(feature = "wallet")]
 impl Ord for PreMintSecrets {
     fn cmp(&self, other: &Self) -> Ordering {
         self.secrets.cmp(&other.secrets)
     }
 }
 
+#[cfg(feature = "wallet")]
 impl PartialOrd for PreMintSecrets {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -753,6 +768,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wallet")]
     fn test_blank_blinded_messages() {
         let b = PreMintSecrets::blank(
             Id::from_str("009a1f293253e41e").unwrap(),

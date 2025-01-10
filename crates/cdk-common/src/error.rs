@@ -199,6 +199,7 @@ pub enum Error {
     HexError(#[from] hex::Error),
     /// From hex error
     #[error(transparent)]
+    #[cfg(feature = "wallet")]
     ReqwestError(#[from] reqwest::Error),
 
     // Crate error conversions
@@ -237,6 +238,7 @@ pub enum Error {
     NUT12(#[from] crate::nuts::nut12::Error),
     /// NUT13 Error
     #[error(transparent)]
+    #[cfg(feature = "wallet")]
     NUT13(#[from] crate::nuts::nut13::Error),
     /// NUT14 Error
     #[error(transparent)]

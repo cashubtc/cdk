@@ -34,7 +34,6 @@ bitcoin = { version = "0.32.2", features = [
 ] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-once_cell = "1.19"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = [
     "json",

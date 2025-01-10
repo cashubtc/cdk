@@ -2,9 +2,12 @@
 //!
 //! This module extends the `cashu` crate with types and functions for the CDK, using the correct
 //! expected ID types.
+#[cfg(feature = "mint")]
 use cashu::nut17::ws::JSON_RPC_VERSION;
 use cashu::nut17::{self};
+#[cfg(feature = "mint")]
 use cashu::NotificationPayload;
+#[cfg(feature = "mint")]
 use uuid::Uuid;
 
 use crate::pub_sub::SubId;
@@ -21,6 +24,7 @@ pub type WsErrorBody = nut17::ws::WsErrorBody;
 pub type WsMessageOrResponse = nut17::ws::WsMessageOrResponse<SubId>;
 pub type NotificationInner<T> = nut17::ws::NotificationInner<T, SubId>;
 
+#[cfg(feature = "mint")]
 pub fn notification_uuid_to_notification_string(
     notification: NotificationInner<Uuid>,
 ) -> NotificationInner<String> {
@@ -38,6 +42,7 @@ pub fn notification_uuid_to_notification_string(
     }
 }
 
+#[cfg(feature = "mint")]
 pub fn notification_to_ws_message(notification: NotificationInner<Uuid>) -> WsMessageOrResponse {
     nut17::ws::WsMessageOrResponse::Notification(nut17::ws::WsNotification {
         jsonrpc: JSON_RPC_VERSION.to_owned(),

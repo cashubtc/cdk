@@ -15,6 +15,7 @@ pub mod nut09;
 pub mod nut10;
 pub mod nut11;
 pub mod nut12;
+#[cfg(feature = "wallet")]
 pub mod nut13;
 pub mod nut14;
 pub mod nut15;
@@ -24,14 +25,18 @@ pub mod nut19;
 pub mod nut20;
 
 pub use nut00::{
-    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, PreMint, PreMintSecrets, Proof,
-    Proofs, ProofsMethods, Token, TokenV3, TokenV4, Witness,
+    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Proofs, ProofsMethods,
+    Token, TokenV3, TokenV4, Witness,
 };
+#[cfg(feature = "wallet")]
+pub use nut00::{PreMint, PreMintSecrets};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 #[cfg(feature = "mint")]
 pub use nut02::MintKeySet;
 pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
-pub use nut03::{PreSwap, SwapRequest, SwapResponse};
+#[cfg(feature = "wallet")]
+pub use nut03::PreSwap;
+pub use nut03::{SwapRequest, SwapResponse};
 pub use nut04::{
     MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
     MintQuoteBolt11Response, QuoteState as MintQuoteState, Settings as NUT04Settings,
