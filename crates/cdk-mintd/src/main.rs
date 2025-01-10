@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     let work_dir = if let Some(work_dir) = args.work_dir {
         tracing::info!("Using work dir from cmd arg");
-        work_dir.into()
+        work_dir
     } else if let Ok(env_work_dir) = env::var(ENV_WORK_DIR) {
         tracing::info!("Using work dir from env var");
         env_work_dir.into()
