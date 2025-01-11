@@ -10,6 +10,8 @@ use crate::config::{
     Phoenixd, Settings, Strike,
 };
 
+pub const ENV_WORK_DIR: &str = "CDK_MINTD_WORK_DIR";
+
 pub const DATABASE_ENV_VAR: &str = "CDK_MINTD_DATABASE";
 pub const ENV_URL: &str = "CDK_MINTD_URL";
 pub const ENV_LISTEN_HOST: &str = "CDK_MINTD_LISTEN_HOST";
