@@ -20,18 +20,6 @@ use crate::nuts::{
     RestoreResponse, SwapRequest, SwapResponse,
 };
 
-macro_rules! convert_http_response {
-    ($type:ty, $data:ident) => {
-        serde_json::from_str::<$type>(&$data).map_err(|err| {
-            tracing::warn!("Http Response error: {}", err);
-            match ErrorResponse::from_json(&$data) {
-                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
-                Err(err) => err.into(),
-            }
-        })
-    };
-}
-
 /// Http Client
 #[derive(Debug, Clone)]
 pub struct HttpClient {
@@ -60,7 +48,13 @@ impl HttpClient {
             .await
             .map_err(|e| Error::HttpError(e.to_string()))?;
 
-        convert_http_response!(R, response)
+        serde_json::from_str::<R>(&response).map_err(|err| {
+            tracing::warn!("Http Response error: {}", err);
+            match ErrorResponse::from_json(&response) {
+                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
+                Err(err) => err.into(),
+            }
+        })
     }
 
     #[inline]
@@ -79,7 +73,14 @@ impl HttpClient {
             .text()
             .await
             .map_err(|e| Error::HttpError(e.to_string()))?;
-        convert_http_response!(R, response)
+
+        serde_json::from_str::<R>(&response).map_err(|err| {
+            tracing::warn!("Http Response error: {}", err);
+            match ErrorResponse::from_json(&response) {
+                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
+                Err(err) => err.into(),
+            }
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
