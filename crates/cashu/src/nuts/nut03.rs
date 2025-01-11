@@ -5,7 +5,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut00::{BlindSignature, BlindedMessage, PreMintSecrets, Proofs};
+#[cfg(feature = "wallet")]
+use super::nut00::PreMintSecrets;
+use super::nut00::{BlindSignature, BlindedMessage, Proofs};
 use crate::Amount;
 
 /// NUT03 Error
@@ -20,6 +22,7 @@ pub enum Error {
 }
 
 /// Preswap information
+#[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreSwap {
     /// Preswap mint secrets

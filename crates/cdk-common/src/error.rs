@@ -237,6 +237,7 @@ pub enum Error {
     NUT12(#[from] crate::nuts::nut12::Error),
     /// NUT13 Error
     #[error(transparent)]
+    #[cfg(feature = "wallet")]
     NUT13(#[from] crate::nuts::nut13::Error),
     /// NUT14 Error
     #[error(transparent)]
