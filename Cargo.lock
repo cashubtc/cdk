@@ -864,7 +864,6 @@ dependencies = [
  "lightning-invoice",
  "once_cell",
  "rand",
- "reqwest",
  "serde",
  "serde_json",
  "serde_with",

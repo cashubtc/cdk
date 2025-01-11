@@ -197,9 +197,9 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     HexError(#[from] hex::Error),
-    /// From hex error
-    #[error(transparent)]
-    ReqwestError(#[from] reqwest::Error),
+    /// Http transport error
+    #[error("Http transport error: {0}")]
+    HttpError(String),
 
     // Crate error conversions
     /// Cashu Url Error
