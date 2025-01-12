@@ -11,11 +11,11 @@ use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint::MintQuote;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::nut17::Params;
 use cdk::nuts::{
     CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PreMintSecrets,
     ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
+use cdk::subscription::{IndexableParams, Params};
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
@@ -232,11 +232,14 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let mut listener = mint
         .pubsub_manager
-        .try_subscribe(Params {
-            kind: cdk::nuts::nut17::Kind::ProofState,
-            filters: public_keys_to_listen.clone(),
-            id: "test".into(),
-        })
+        .try_subscribe::<IndexableParams>(
+            Params {
+                kind: cdk::nuts::nut17::Kind::ProofState,
+                filters: public_keys_to_listen.clone(),
+                id: "test".into(),
+            }
+            .into(),
+        )
         .await
         .expect("valid subscription");
 

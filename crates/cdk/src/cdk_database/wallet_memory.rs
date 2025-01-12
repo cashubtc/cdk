@@ -4,10 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk_common::database::{Error, WalletDatabase};
 use tokio::sync::RwLock;
 
-use super::WalletDatabase;
-use crate::cdk_database::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,

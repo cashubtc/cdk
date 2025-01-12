@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use cdk_common::subscription::Params;
+use cdk_common::ws::{WsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::connect_async;
@@ -10,10 +12,6 @@ use tokio_tungstenite::tungstenite::Message;
 use super::http::http_main;
 use super::WsSubscriptionBody;
 use crate::mint_url::MintUrl;
-use crate::nuts::nut17::ws::{
-    WsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
-};
-use crate::nuts::nut17::Params;
 use crate::pub_sub::SubId;
 use crate::wallet::client::MintConnector;
 

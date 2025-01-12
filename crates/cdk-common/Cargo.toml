@@ -1,0 +1,43 @@
+[package]
+name = "cdk-common"
+version = "0.6.0"
+edition = "2021"
+description = "CDK common types and traits"
+rust-version = "1.63.0"                     # MSRV
+
+[features]
+default = ["mint", "wallet"]
+swagger = ["dep:utoipa", "cashu/swagger"]
+bench = []
+wallet = ["cashu/wallet"]
+mint = ["cashu/mint", "dep:uuid"]
+
+[dependencies]
+async-trait = "0.1"
+bitcoin = { version = "0.32.2", features = [
+    "base64",
+    "serde",
+    "rand",
+    "rand-std",
+] }
+cashu = { path = "../cashu", default-features = false, version = "0.6.0" }
+cbor-diag = "0.1.12"
+ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+thiserror = "2"
+tracing = "0.1"
+url = "2.3"
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+utoipa = { version = "4", optional = true }
+futures = "0.3.31"
+anyhow = "1.0"
+serde_json = "1"
+serde_with = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
+
+[dev-dependencies]
+rand = "0.8.5"
+bip39 = "2.0"

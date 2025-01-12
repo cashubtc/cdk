@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::mint_url::MintUrl;
+use cdk_common::mint_url::MintUrl;
 use redb::{
     Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
 };

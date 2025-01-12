@@ -6,9 +6,8 @@ use std::collections::HashMap;
 
 use tracing::instrument;
 
-use crate::error::Error;
 use crate::nuts::Id;
-use crate::Amount;
+use crate::{Amount, Error};
 
 /// Fee required for proof set
 #[instrument(skip_all)]

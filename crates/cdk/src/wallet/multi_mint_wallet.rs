@@ -4,11 +4,10 @@
 //! pairs
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
@@ -26,26 +25,6 @@ use crate::{Amount, Wallet};
 pub struct MultiMintWallet {
     /// Wallets
     pub wallets: Arc<Mutex<BTreeMap<WalletKey, Wallet>>>,
-}
-
-/// Wallet Key
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct WalletKey {
-    mint_url: MintUrl,
-    unit: CurrencyUnit,
-}
-
-impl fmt::Display for WalletKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "mint_url: {}, unit: {}", self.mint_url, self.unit,)
-    }
-}
-
-impl WalletKey {
-    /// Create new [`WalletKey`]
-    pub fn new(mint_url: MintUrl, unit: CurrencyUnit) -> Self {
-        Self { mint_url, unit }
-    }
 }
 
 impl MultiMintWallet {

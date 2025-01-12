@@ -7,15 +7,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database::WalletDatabase;
-use cdk::mint_url::MintUrl;
-use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+use cdk_common::common::ProofInfo;
+use cdk_common::database::WalletDatabase;
+use cdk_common::mint_url::MintUrl;
+use cdk_common::util::unix_time;
+use cdk_common::wallet::{self, MintQuote};
+use cdk_common::{
+    database, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
-use cdk::types::ProofInfo;
-use cdk::util::unix_time;
-use cdk::wallet::MintQuote;
-use cdk::{cdk_database, wallet};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
 
@@ -153,7 +152,7 @@ impl WalletRedbDatabase {
         &self,
         ys: Vec<PublicKey>,
         state: State,
-    ) -> Result<(), cdk_database::Error> {
+    ) -> Result<(), database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
@@ -192,7 +191,7 @@ impl WalletRedbDatabase {
 
 #[async_trait]
 impl WalletDatabase for WalletRedbDatabase {
-    type Err = cdk_database::Error;
+    type Err = database::Error;
 
     #[instrument(skip(self))]
     async fn add_mint(

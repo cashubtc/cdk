@@ -49,6 +49,16 @@ jobs:
       matrix:
         build-args:
           [
+            -p cashu,
+            -p cashu --no-default-features,
+            -p cashu --no-default-features --features wallet,
+            -p cashu --no-default-features --features mint,
+            -p cashu --no-default-features --features "mint swagger",
+            -p cdk-common,
+            -p cdk-common --no-default-features,
+            -p cdk-common --no-default-features --features wallet,
+            -p cdk-common --no-default-features --features mint,
+            -p cdk-common --no-default-features --features "mint swagger",
             -p cdk,
             -p cdk --no-default-features,
             -p cdk --no-default-features --features wallet,
@@ -154,10 +164,9 @@ jobs:
       matrix:
         build-args:
           [
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-            -p cdk --no-default-features --features mint,
+            -p cashu --no-default-features --features "wallet mint",
+            -p cdk-common --no-default-features --features "wallet mint",
+            -p cdk --no-default-features --features "mint mint",
             -p cdk-axum,
             -p cdk-axum --no-default-features --features redis,
             -p cdk-strike,

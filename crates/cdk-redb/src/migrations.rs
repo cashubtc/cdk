@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
-use cdk::Amount;
+use cdk_common::mint_url::MintUrl;
+use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
