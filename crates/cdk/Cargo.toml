@@ -12,15 +12,17 @@ license = "MIT"
 
 [features]
 default = ["mint", "wallet"]
-mint = ["dep:futures"]
+mint = ["dep:futures", "cdk-common/mint"]
 # We do not commit to a MSRV with swagger enabled
-swagger = ["mint", "dep:utoipa"]
-wallet = ["dep:reqwest"]
+swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
+wallet = ["dep:reqwest", "cdk-common/wallet"]
 bench = []
 http_subscription = []
 
 
 [dependencies]
+cdk-common = { path = "../cdk-common", version = "0.6.0" }
+cbor-diag = "0.1.12"
 arc-swap = "1.7.1"
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
@@ -31,16 +33,17 @@ bitcoin = { version = "0.32.2", features = [
     "rand-std",
 ] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
-cbor-diag = "0.1.12"
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-once_cell = "1.19"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",
     "socks",
-    "zstd", "brotli", "gzip", "deflate"
+    "zstd",
+    "brotli",
+    "gzip",
+    "deflate",
 ], optional = true }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
@@ -77,7 +80,6 @@ tokio-tungstenite = { version = "0.19.0", features = [
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.21", features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
-instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [[example]]
 name = "mint-token"

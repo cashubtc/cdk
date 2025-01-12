@@ -7,26 +7,31 @@ description = "SQLite storage backend for CDK"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.66.0" # MSRV
+rust-version = "1.66.0"                            # MSRV
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["mint", "wallet"]
-mint = ["cdk/mint"]
-wallet = ["cdk/wallet"]
+mint = []
+wallet = []
 
 [dependencies]
 async-trait = "0.1"
-cdk = { path = "../cdk", version = "0.6.0", default-features = false }
+cdk-common = { path = "../cdk-common", version = "0.6.0" }
 bitcoin = { version = "0.32.2", default-features = false }
-sqlx = { version = "0.6.3", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid"] }
-thiserror = "1"
-tokio = { version = "1", features = [
-    "time",
+sqlx = { version = "0.6.3", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "sqlite",
     "macros",
-    "sync",
+    "migrate",
+    "uuid",
 ] }
-tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+thiserror = "1"
+tokio = { version = "1", features = ["time", "macros", "sync"] }
+tracing = { version = "0.1", default-features = false, features = [
+    "attributes",
+    "log",
+] }
 serde_json = "1"
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 uuid = { version = "1", features = ["v4", "serde"] }

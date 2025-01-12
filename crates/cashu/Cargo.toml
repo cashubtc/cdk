@@ -1,0 +1,41 @@
+[package]
+name = "cashu"
+version = "0.6.0"
+edition = "2021"
+description = "Cashu shared types and crypto utilities, used as the foundation for the CDK and their crates"
+rust-version = "1.63.0"                                                                                      # MSRV
+
+[features]
+default = ["mint", "wallet"]
+swagger = ["dep:utoipa"]
+mint = ["dep:uuid"]
+wallet = []
+bench = []
+
+[dependencies]
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+bitcoin = { version = "0.32.2", features = [
+    "base64",
+    "serde",
+    "rand",
+    "rand-std",
+] }
+cbor-diag = "0.1.12"
+ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
+once_cell = "1.20.2"
+serde = { version = "1", features = ["derive"] }
+lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+thiserror = "2"
+tracing = "0.1"
+url = "2.3"
+utoipa = { version = "4", optional = true }
+serde_json = "1"
+serde_with = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
+
+[dev-dependencies]
+rand = "0.8.5"
+bip39 = "2.0"
+uuid = { version = "1", features = ["v4", "serde"] }

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use axum::extract::ws::{Message, WebSocket};
-use cdk::nuts::nut17::ws::{
-    NotificationInner, WsErrorBody, WsMessageOrResponse, WsMethodRequest, WsRequest,
+use cdk::nuts::nut17::NotificationPayload;
+use cdk::pub_sub::SubId;
+use cdk::ws::{
+    notification_to_ws_message, NotificationInner, WsErrorBody, WsMessageOrResponse,
+    WsMethodRequest, WsRequest,
 };
-use cdk::nuts::nut17::{NotificationPayload, SubId};
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -61,10 +63,10 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     // unsubscribed from the subscription manager, just ignore it.
                     continue;
                 }
-                let notification: WsMessageOrResponse= NotificationInner {
+                let notification = notification_to_ws_message(NotificationInner {
                     sub_id,
                     payload,
-                }.into();
+                });
                 let message = match serde_json::to_string(&notification) {
                     Ok(message) => message,
                     Err(err) => {

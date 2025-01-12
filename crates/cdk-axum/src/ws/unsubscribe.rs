@@ -1,4 +1,4 @@
-use cdk::nuts::nut17::ws::{WsResponseResult, WsUnsubscribeRequest, WsUnsubscribeResponse};
+use cdk::ws::{WsResponseResult, WsUnsubscribeRequest, WsUnsubscribeResponse};
 
 use super::{WsContext, WsError};
 
