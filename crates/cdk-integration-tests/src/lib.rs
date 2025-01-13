@@ -3,10 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use axum::Router;
-use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
 use cdk::mint::FeeReserve;
@@ -14,20 +11,18 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut17::Params;
 use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MintBolt11Request, MintInfo, MintQuoteBolt11Request, MintQuoteState,
-    NotificationPayload, Nuts, PaymentMethod, PreMintSecrets, Proofs, State,
+    CurrencyUnit, Id, KeySet, MintBolt11Request, MintQuoteBolt11Request, MintQuoteState,
+    NotificationPayload, PaymentMethod, PreMintSecrets, Proofs, State,
 };
-use cdk::types::{LnKey, QuoteTTL};
+use cdk::types::LnKey;
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::subscription::SubscriptionManager;
 use cdk::wallet::WalletSubscription;
-use cdk::{Mint, Wallet};
+use cdk::Wallet;
 use cdk_fake_wallet::FakeWallet;
-use init_regtest::{get_mint_addr, get_mint_port, get_mint_url};
-use tokio::sync::Notify;
-use tower_http::cors::CorsLayer;
 
 pub mod init_fake_wallet;
+pub mod init_mint;
 pub mod init_regtest;
 
 pub fn create_backends_fake_wallet(
@@ -52,68 +47,6 @@ pub fn create_backends_fake_wallet(
     ln_backends.insert(ln_key, wallet.clone());
 
     ln_backends
-}
-
-pub async fn start_mint(
-    ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
-    >,
-    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-) -> Result<()> {
-    let nuts = Nuts::new()
-        .nut07(true)
-        .nut08(true)
-        .nut09(true)
-        .nut10(true)
-        .nut11(true)
-        .nut12(true)
-        .nut14(true);
-
-    let mint_info = MintInfo::new().nuts(nuts);
-
-    let mnemonic = Mnemonic::generate(12)?;
-
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-
-    let mint = Mint::new(
-        &get_mint_url(),
-        &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        Arc::new(MintMemoryDatabase::default()),
-        ln_backends.clone(),
-        supported_units,
-        HashMap::new(),
-    )
-    .await?;
-
-    let mint_arc = Arc::new(mint);
-
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc)).await?;
-
-    let mint_service = Router::new()
-        .merge(v1_service)
-        .layer(CorsLayer::permissive());
-
-    let mint = Arc::clone(&mint_arc);
-
-    let shutdown = Arc::new(Notify::new());
-
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        async move { mint.wait_for_paid_invoices(shutdown).await }
-    });
-
-    axum::Server::bind(
-        &format!("{}:{}", get_mint_addr(), get_mint_port())
-            .as_str()
-            .parse()?,
-    )
-    .serve(mint_service.into_make_service())
-    .await?;
-
-    Ok(())
 }
 
 pub async fn wallet_mint(
