@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
@@ -14,8 +13,8 @@ use ln_regtest_rs::bitcoind::Bitcoind;
 use ln_regtest_rs::cln::Clnd;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
-use tokio::sync::Notify;
-use tower_http::cors::CorsLayer;
+
+use crate::init_mint::start_mint;
 
 const BITCOIND_ADDR: &str = "127.0.0.1:18443";
 const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
@@ -172,29 +171,7 @@ where
 
     let mint = mint_builder.build().await?;
 
-    let mint_arc = Arc::new(mint);
-
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc))
-        .await
-        .unwrap();
-
-    let mint_service = Router::new()
-        .merge(v1_service)
-        .layer(CorsLayer::permissive());
-
-    let mint = Arc::clone(&mint_arc);
-
-    let shutdown = Arc::new(Notify::new());
-
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        async move { mint.wait_for_paid_invoices(shutdown).await }
-    });
-
-    println!("Staring Axum server");
-    axum::Server::bind(&format!("{}:{}", addr, port).as_str().parse().unwrap())
-        .serve(mint_service.into_make_service())
-        .await?;
+    start_mint(addr, port, mint).await?;
 
     Ok(())
 }
