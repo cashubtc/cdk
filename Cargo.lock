@@ -761,11 +761,13 @@ dependencies = [
  "bitcoin 0.32.5",
  "cbor-diag",
  "cdk-common",
+ "cdk-signatory",
  "ciborium",
  "criterion",
  "futures",
  "getrandom",
  "lightning-invoice",
+ "paste",
  "rand",
  "regex",
  "reqwest",
@@ -1028,6 +1030,17 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "web-sys",
+]
+
+[[package]]
+name = "cdk-signatory"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "bitcoin 0.32.5",
+ "cdk-common",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

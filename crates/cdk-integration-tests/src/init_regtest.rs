@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use anyhow::Result;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::mint::{FeeReserve, MemorySignatory, MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk_cln::Cln as CdkCln;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
@@ -152,7 +153,9 @@ where
 
     let mut mint_builder = MintBuilder::new();
 
-    mint_builder = mint_builder.with_localstore(Arc::new(database));
+    let localstore = Arc::new(database);
+
+    mint_builder = mint_builder.with_localstore(localstore.clone());
 
     mint_builder = mint_builder.add_ln_backend(
         CurrencyUnit::Sat,
@@ -163,8 +166,18 @@ where
 
     let mnemonic = Mnemonic::generate(12)?;
 
+    let signatory_manager = MemorySignatory::new(
+        localstore,
+        &mnemonic.to_seed_normalized(""),
+        mint_builder.supported_units.clone(),
+        HashMap::new(),
+    )
+    .await
+    .expect("valid signatory");
+
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())
+        .with_signatory(Arc::new(signatory_manager))
         .with_mint_url(format!("http://{addr}:{port}"))
         .with_description("regtest mint".to_string())
         .with_quote_ttl(10000, 10000)

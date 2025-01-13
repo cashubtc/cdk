@@ -1,12 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use bitcoin::bip32::DerivationPath;
 use tracing::instrument;
 
-use super::{
-    create_new_keyset, derivation_path_from_unit, CurrencyUnit, Id, KeySet, KeySetInfo,
-    KeysResponse, KeysetResponse, Mint, MintKeySet, MintKeySetInfo,
-};
+use super::{CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse, Mint};
 use crate::Error;
 
 impl Mint {
@@ -14,78 +11,26 @@ impl Mint {
     /// clients
     #[instrument(skip(self))]
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
-        self.ensure_keyset_loaded(keyset_id).await?;
-        let keyset = self
-            .config
-            .load()
-            .keysets
-            .get(keyset_id)
-            .ok_or(Error::UnknownKeySet)?
-            .clone();
-        Ok(KeysResponse {
-            keysets: vec![keyset.into()],
-        })
+        self.signatory.keyset_pubkeys(keyset_id.to_owned()).await
     }
 
     /// Retrieve the public keys of the active keyset for distribution to wallet
     /// clients
     #[instrument(skip_all)]
     pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
-        let active_keysets = self.localstore.get_active_keysets().await?;
-
-        let active_keysets: HashSet<&Id> = active_keysets.values().collect();
-
-        for id in active_keysets.iter() {
-            self.ensure_keyset_loaded(id).await?;
-        }
-
-        Ok(KeysResponse {
-            keysets: self
-                .config
-                .load()
-                .keysets
-                .values()
-                .filter_map(|k| match active_keysets.contains(&k.id) {
-                    true => Some(k.clone().into()),
-                    false => None,
-                })
-                .collect(),
-        })
+        self.signatory.pubkeys().await
     }
 
     /// Return a list of all supported keysets
     #[instrument(skip_all)]
     pub async fn keysets(&self) -> Result<KeysetResponse, Error> {
-        let keysets = self.localstore.get_keyset_infos().await?;
-        let active_keysets: HashSet<Id> = self
-            .localstore
-            .get_active_keysets()
-            .await?
-            .values()
-            .cloned()
-            .collect();
-
-        let keysets = keysets
-            .into_iter()
-            .map(|k| KeySetInfo {
-                id: k.id,
-                unit: k.unit,
-                active: active_keysets.contains(&k.id),
-                input_fee_ppk: k.input_fee_ppk,
-            })
-            .collect();
-
-        Ok(KeysetResponse { keysets })
+        self.signatory.keysets().await
     }
 
     /// Get keysets
     #[instrument(skip(self))]
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
-        self.ensure_keyset_loaded(id).await?;
-        let config = self.config.load();
-        let keysets = &config.keysets;
-        let keyset = keysets.get(id).map(|k| k.clone().into());
-        Ok(keyset)
+        self.signatory.keyset(id.to_owned()).await
     }
 
     /// Add current keyset to inactive keysets
@@ -99,61 +44,14 @@ impl Mint {
         input_fee_ppk: u64,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<(), Error> {
-        let derivation_path = match custom_paths.get(&unit) {
-            Some(path) => path.clone(),
-            None => derivation_path_from_unit(unit.clone(), derivation_path_index)
-                .ok_or(Error::UnsupportedUnit)?,
-        };
-
-        let (keyset, keyset_info) = create_new_keyset(
-            &self.secp_ctx,
-            self.xpriv,
-            derivation_path,
-            Some(derivation_path_index),
-            unit.clone(),
-            max_order,
-            input_fee_ppk,
-        );
-        let id = keyset_info.id;
-        self.localstore.add_keyset_info(keyset_info).await?;
-        self.localstore.set_active_keyset(unit, id).await?;
-
-        let mut keysets = self.config.load().keysets.clone();
-        keysets.insert(id, keyset);
-        self.config.set_keysets(keysets);
-
-        Ok(())
-    }
-
-    /// Ensure Keyset is loaded in mint
-    #[instrument(skip(self))]
-    pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
-        if self.config.load().keysets.contains_key(id) {
-            return Ok(());
-        }
-
-        let mut keysets = self.config.load().keysets.clone();
-        let keyset_info = self
-            .localstore
-            .get_keyset_info(id)
-            .await?
-            .ok_or(Error::UnknownKeySet)?;
-        let id = keyset_info.id;
-        keysets.insert(id, self.generate_keyset(keyset_info));
-        self.config.set_keysets(keysets);
-
-        Ok(())
-    }
-
-    /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
-    #[instrument(skip_all)]
-    pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
-        MintKeySet::generate_from_xpriv(
-            &self.secp_ctx,
-            self.xpriv,
-            keyset_info.max_order,
-            keyset_info.unit,
-            keyset_info.derivation_path,
-        )
+        self.signatory
+            .rotate_keyset(
+                unit,
+                derivation_path_index,
+                max_order,
+                input_fee_ppk,
+                custom_paths,
+            )
+            .await
     }
 }

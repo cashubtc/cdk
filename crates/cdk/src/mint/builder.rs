@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::signatory::Signatory;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
+use super::signatory::SignatoryManager;
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_lightning::{self, MintLightning};
@@ -31,7 +33,9 @@ pub struct MintBuilder {
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
     quote_ttl: Option<QuoteTTL>,
-    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    /// expose supported units
+    pub supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    signatory: Option<Arc<dyn Signatory + Sync + Send + 'static>>,
 }
 
 impl MintBuilder {
@@ -52,6 +56,12 @@ impl MintBuilder {
         builder.mint_info.nuts = nuts;
 
         builder
+    }
+
+    /// Set signatory service
+    pub fn with_signatory(mut self, signatory: Arc<dyn Signatory + Sync + Send + 'static>) -> Self {
+        self.signatory = Some(signatory);
+        self
     }
 
     /// Set localstore
@@ -225,18 +235,31 @@ impl MintBuilder {
     }
 
     /// Build mint
-    pub async fn build(&self) -> anyhow::Result<Mint> {
+    pub async fn build(self) -> anyhow::Result<Mint> {
+        let localstore = self.localstore.ok_or(anyhow!("Localstore not set"))?;
+        let signatory = if let Some(signatory) = self.signatory {
+            signatory
+        } else {
+            Arc::new(
+                cdk_signatory::MemorySignatory::new(
+                    localstore.clone(),
+                    self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
+                    self.supported_units,
+                    HashMap::new(),
+                )
+                .await?,
+            )
+        };
+
+        let signatory_manager = Arc::new(SignatoryManager::new(signatory));
+
         Ok(Mint::new(
             self.mint_url.as_ref().ok_or(anyhow!("Mint url not set"))?,
-            self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
             self.mint_info.clone(),
             self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,
-            self.localstore
-                .clone()
-                .ok_or(anyhow!("Localstore not set"))?,
+            localstore,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
-            self.supported_units.clone(),
-            HashMap::new(),
+            signatory_manager,
         )
         .await?)
     }
