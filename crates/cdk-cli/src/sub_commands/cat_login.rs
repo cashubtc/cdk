@@ -52,13 +52,13 @@ pub async fn cat_login(
     let openid_discovery = mint_info
         .nuts
         .nutxx
-        .expect("Nutxx definded")
+        .expect("Nutxx defined")
         .openid_discovery;
 
     let oidc_client = OidcClient::new(openid_discovery);
 
     let access_token = oidc_client
-        .get_access_token(
+        .get_access_token_with_user_password(
             sub_command_args.username.clone(),
             sub_command_args.password.clone(),
         )

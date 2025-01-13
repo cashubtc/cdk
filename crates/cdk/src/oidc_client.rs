@@ -31,6 +31,9 @@ pub enum Error {
     /// Unsupported Algo
     #[error("Unsupported signing algo")]
     UnsupportedSigningAlgo,
+    /// Access token not returned
+    #[error("Error getting access token")]
+    AccessTokenMissing,
 }
 
 impl From<Error> for cdk_common::error::Error {
@@ -183,7 +186,7 @@ impl OidcClient {
 
     /// Get Access token (CAT)
     #[cfg(feature = "wallet")]
-    pub async fn get_access_token(
+    pub async fn get_access_token_with_user_password(
         &self,
         username: String,
         password: String,
@@ -206,7 +209,9 @@ impl OidcClient {
             .json()
             .await?;
 
-        let token = response.get("access_token").expect("access token");
+        let token = response
+            .get("access_token")
+            .ok_or(Error::AccessTokenMissing)?;
 
         Ok(token.to_string())
     }
