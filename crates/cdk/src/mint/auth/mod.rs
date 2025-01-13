@@ -1,6 +1,6 @@
 use tracing::instrument;
 
-use super::nutxx::{self, ProtectedEndpoint};
+use super::nutxx::ProtectedEndpoint;
 use super::{
     AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage, Error, Id,
     Mint, State,
@@ -21,8 +21,7 @@ impl Mint {
             .as_ref()
             .ok_or(Error::OidcNotSet)?
             .verify_cat(&token)
-            .await
-            .map_err(nutxx::Error::from)?)
+            .await?)
     }
 
     /// Ensure Keyset is loaded in mint

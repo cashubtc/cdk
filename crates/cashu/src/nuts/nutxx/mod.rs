@@ -3,20 +3,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[cfg(any(feature = "mint", feature = "wallet"))]
-mod oidc;
-
-#[cfg(any(feature = "mint", feature = "wallet"))]
-pub use oidc::OidcClient;
-
 /// NUTXX Error
 #[derive(Debug, Error)]
-pub enum Error {
-    /// Oidc Error
-    #[cfg(any(feature = "mint", feature = "wallet"))]
-    #[error(transparent)]
-    Oidc(#[from] oidc::Error),
-}
+pub enum Error {}
 
 /// Clear Auth Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

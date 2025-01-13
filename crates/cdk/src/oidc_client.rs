@@ -1,6 +1,8 @@
 //! Open Id Connect
 
 use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::Arc;
 
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
@@ -8,6 +10,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use tokio::sync::RwLock;
 use tracing::instrument;
 
 /// OIDC Error
@@ -30,8 +33,14 @@ pub enum Error {
     UnsupportedSigningAlgo,
 }
 
+impl From<Error> for cdk_common::error::Error {
+    fn from(value: Error) -> Self {
+        cdk_common::error::Error::Custom(value.to_string())
+    }
+}
+
 /// Open Id Config
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct OidcConfig {
     pub jwks_uri: String,
     pub issuer: String,
@@ -41,8 +50,10 @@ pub struct OidcConfig {
 /// Http Client
 #[derive(Debug, Clone)]
 pub struct OidcClient {
-    inner: Client,
+    client: Client,
     openid_discovery: String,
+    oidc_config: Arc<RwLock<Option<OidcConfig>>>,
+    jwks_set: Arc<RwLock<Option<JwkSet>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,8 +68,10 @@ impl OidcClient {
     /// Create new [`OidcClient`]
     pub fn new(openid_discovery: String) -> Self {
         Self {
-            inner: Client::new(),
+            client: Client::new(),
             openid_discovery,
+            oidc_config: Arc::new(RwLock::new(None)),
+            jwks_set: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -66,39 +79,80 @@ impl OidcClient {
     #[instrument(skip(self))]
     pub async fn get_oidc_config(&self) -> Result<OidcConfig, Error> {
         tracing::debug!("Getting oidc config");
-        Ok(self
-            .inner
+        let oidc_config = self
+            .client
             .get(&self.openid_discovery)
             .send()
             .await?
             .json::<OidcConfig>()
-            .await?)
+            .await?;
+
+        let mut current_config = self.oidc_config.write().await;
+
+        *current_config = Some(oidc_config.clone());
+
+        Ok(oidc_config)
     }
 
     /// Get jwk set
     #[instrument(skip(self))]
     pub async fn get_jwkset(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
         tracing::debug!("Getting jwks set");
-        Ok(self
-            .inner
+        let jwks_set = self
+            .client
             .get(jwks_uri)
             .send()
             .await?
             .json::<JwkSet>()
-            .await?)
+            .await?;
+
+        let mut current_set = self.jwks_set.write().await;
+
+        *current_set = Some(jwks_set.clone());
+
+        Ok(jwks_set)
     }
 
     /// Verify cat token
-    #[instrument(skip(self))]
+    #[instrument(skip(self, cat_jwt))]
     pub async fn verify_cat(&self, cat_jwt: &str) -> Result<(), Error> {
         tracing::debug!("Verifying cat");
         let header = decode_header(cat_jwt)?;
 
         let kid = header.kid.ok_or(Error::MissingKidHeader)?;
-        let oidc_config = self.get_oidc_config().await?;
-        let jwks = self.get_jwkset(&oidc_config.jwks_uri).await?;
 
-        let jwk = jwks.find(&kid).ok_or(Error::MissingJwkHeader)?;
+        let oidc_config = {
+            let locked = self.oidc_config.read().await;
+            match locked.deref() {
+                Some(config) => config.clone(),
+                None => {
+                    drop(locked);
+                    self.get_oidc_config().await?
+                }
+            }
+        };
+
+        let jwks = {
+            let locked = self.jwks_set.read().await;
+            match locked.deref() {
+                Some(set) => set.clone(),
+                None => {
+                    drop(locked);
+                    self.get_jwkset(&oidc_config.jwks_uri).await?
+                }
+            }
+        };
+
+        let jwk = match jwks.find(&kid) {
+            Some(jwk) => jwk.clone(),
+            None => {
+                let refreshed_jwks = self.get_jwkset(&oidc_config.jwks_uri).await?;
+                refreshed_jwks
+                    .find(&kid)
+                    .ok_or(Error::MissingKidHeader)?
+                    .clone()
+            }
+        };
 
         let decoding_key = match &jwk.algorithm {
             AlgorithmParameters::RSA(rsa) => DecodingKey::from_rsa_components(&rsa.n, &rsa.e)?,
@@ -127,6 +181,8 @@ impl OidcClient {
         Ok(())
     }
 
+    /// Get Access token (CAT)
+    #[cfg(feature = "wallet")]
     pub async fn get_access_token(
         &self,
         username: String,
@@ -142,15 +198,13 @@ impl OidcClient {
         };
 
         let response: Value = self
-            .inner
+            .client
             .post(token_url)
             .form(&request)
             .send()
             .await?
             .json()
             .await?;
-
-        println!("{:?}", response);
 
         let token = response.get("access_token").expect("access token");
 

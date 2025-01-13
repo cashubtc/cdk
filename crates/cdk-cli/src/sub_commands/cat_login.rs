@@ -4,10 +4,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nutxx::OidcClient;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::types::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::OidcClient;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 

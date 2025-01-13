@@ -11,7 +11,7 @@ use cdk_common::database::{self, MintAuthDatabase, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use config::SwappableConfig;
 use futures::StreamExt;
-use nutxx::{OidcClient, ProtectedEndpoint};
+use nutxx::ProtectedEndpoint;
 use serde::{Deserialize, Serialize};
 use subscription::PubSubManager;
 use tokio::sync::Notify;
@@ -26,7 +26,7 @@ use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::*;
 use crate::util::unix_time;
-use crate::Amount;
+use crate::{Amount, OidcClient};
 
 pub(crate) mod auth;
 mod builder;

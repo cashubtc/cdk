@@ -11,6 +11,10 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+mod oidc_client;
+
+pub use oidc_client::OidcClient;
+
 pub mod pub_sub;
 
 /// Re-export amount type
