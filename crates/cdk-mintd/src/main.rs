@@ -5,17 +5,15 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::bail;
 use axum::http::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::{middleware, Router};
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -27,11 +25,10 @@ use cdk_axum::cache::HttpCache;
 #[cfg(feature = "management-rpc")]
 use cdk_mint_rpc::MintRPCServer;
 use cdk_mintd::cli::CLIArgs;
-use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
+use cdk_mintd::config::{self, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
-use cdk_redb::MintRedbDatabase;
-use cdk_sqlite::MintSqliteDatabase;
+use cdk_mintd::work_dir;
 use clap::Parser;
 use tokio::sync::Notify;
 use tower_http::compression::CompressionLayer;
@@ -79,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut mint_builder = MintBuilder::new();
 
-    let mut settings = if config_file_arg.exists() {
+    let settings = if config_file_arg.exists() {
         config::Settings::new(Some(config_file_arg))
     } else {
         tracing::info!("Config file does not exist. Attempting to read env vars");
@@ -89,22 +86,7 @@ async fn main() -> anyhow::Result<()> {
     // This check for any settings defined in ENV VARs
     // ENV VARS will take **priority** over those in the config
     let settings = settings.from_env()?;
-
-    let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
-        match settings.database.engine {
-            DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd.sqlite");
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
-
-                sqlite_db.migrate().await;
-
-                Arc::new(sqlite_db)
-            }
-            DatabaseEngine::Redb => {
-                let redb_path = work_dir.join("cdk-mintd.redb");
-                Arc::new(MintRedbDatabase::new(&redb_path)?)
-            }
-        };
+    let localstore = settings.database.engine.clone().mint(&work_dir).await?;
 
     mint_builder = mint_builder.with_localstore(localstore);
 
@@ -308,6 +290,12 @@ async fn main() -> anyhow::Result<()> {
         .with_description(settings.mint_info.description)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
+    mint_builder = if let Some(remote_signatory) = settings.remote_signatory.clone() {
+        mint_builder.with_remote_signatory(remote_signatory)
+    } else {
+        mint_builder
+    };
+
     let cached_endpoints = vec![
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt11),
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MeltBolt11),
@@ -458,15 +446,6 @@ async fn logging_middleware<B>(req: Request<B>, next: Next<B>) -> Response {
     );
 
     response
-}
-
-fn work_dir() -> Result<PathBuf> {
-    let home_dir = home::home_dir().ok_or(anyhow!("Unknown home dir"))?;
-    let dir = home_dir.join(".cdk-mintd");
-
-    std::fs::create_dir_all(&dir)?;
-
-    Ok(dir)
 }
 
 async fn shutdown_signal() {
