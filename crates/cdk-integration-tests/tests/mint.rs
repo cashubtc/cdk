@@ -1,6 +1,7 @@
 //! Mint tests
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,7 +11,8 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::construct_proofs;
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits, MintQuote};
+use cdk::mint::signatory::SignatoryManager;
+use cdk::mint::{FeeReserve, MemorySignatory, MintBuilder, MintMeltLimits, MintQuote};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PaymentMethod,
@@ -26,7 +28,7 @@ use tokio::time::sleep;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
 
-static INSTANCE: OnceCell<Mint> = OnceCell::const_new();
+static INSTANCE: OnceCell<Arc<Mint>> = OnceCell::const_new();
 
 async fn new_mint(fee: u64) -> Mint {
     let mut supported_units = HashMap::new();
@@ -51,19 +53,29 @@ async fn new_mint(fee: u64) -> Mint {
         .expect("Could not set mint info");
     let mnemonic = Mnemonic::generate(12).unwrap();
 
+    let localstore = Arc::new(MintMemoryDatabase::default());
+    let seed = mnemonic.to_seed_normalized("");
+    let signatory_manager = Arc::new(SignatoryManager::new(Arc::new(
+        MemorySignatory::new(localstore.clone(), &seed, supported_units, HashMap::new())
+            .await
+            .expect("valid signatory"),
+    )));
+
     Mint::new(
-        &mnemonic.to_seed_normalized(""),
-        Arc::new(localstore),
+        localstore,
         HashMap::new(),
-        supported_units,
+        signatory_manager,
         HashMap::new(),
     )
     .await
     .unwrap()
 }
 
-async fn initialize() -> &'static Mint {
-    INSTANCE.get_or_init(|| new_mint(0)).await
+async fn initialize() -> Arc<Mint> {
+    INSTANCE
+        .get_or_init(|| async { Arc::new(new_mint(0).await) })
+        .await
+        .clone()
 }
 
 async fn mint_proofs(
@@ -115,7 +127,7 @@ async fn test_mint_double_spend() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 100.into(), &SplitTarget::default())?;
 
@@ -149,7 +161,7 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let amount = 2_u64.pow(63);
 
@@ -188,7 +200,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let secret = SecretKey::generate();
 
@@ -306,7 +318,7 @@ async fn test_swap_unbalanced() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 95.into(), &SplitTarget::default())?;
 
@@ -470,7 +482,7 @@ async fn test_correct_keyset() -> Result<()> {
         .with_description("regtest mint".to_string())
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    let mint = mint_builder.build().await?;
+    let mint = mint_builder.clone().build().await?;
 
     localstore
         .set_mint_info(mint_builder.mint_info.clone())
@@ -495,7 +507,10 @@ async fn test_correct_keyset() -> Result<()> {
 
     assert!(keyset_info.derivation_path_index == Some(2));
 
-    let mint = mint_builder.build().await?;
+    let mint = mint_builder
+        .with_signatory(mint.signatory.deref().deref().to_owned())
+        .build()
+        .await?;
 
     let active = mint.localstore.get_active_keysets().await?;
 

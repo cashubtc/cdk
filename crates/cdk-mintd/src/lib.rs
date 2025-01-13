@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use anyhow::anyhow;
+
 pub mod cli;
 pub mod config;
 pub mod env_vars;
@@ -20,6 +22,16 @@ fn expand_path(path: &str) -> Option<PathBuf> {
     } else {
         Some(PathBuf::from(path))
     }
+}
+
+/// Work dir
+pub fn work_dir() -> anyhow::Result<PathBuf> {
+    let home_dir = home::home_dir().ok_or(anyhow!("Unknown home dir"))?;
+    let dir = home_dir.join(".cdk-mintd");
+
+    std::fs::create_dir_all(&dir)?;
+
+    Ok(dir)
 }
 
 #[cfg(test)]

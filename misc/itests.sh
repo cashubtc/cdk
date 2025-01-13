@@ -46,8 +46,8 @@ fi
 echo "Temp directory created: $cdk_itests"
 export MINT_DATABASE="$1";
 
-cargo build -p cdk-integration-tests 
-cargo build --bin regtest_mint 
+cargo build -p cdk-integration-tests
+cargo build --bin regtest_mint
 # cargo run --bin regtest_mint > "$cdk_itests/mint.log" 2>&1 &
 cargo run --bin regtest_mint &
 
@@ -61,7 +61,7 @@ START_TIME=$(date +%s)
 while true; do
     # Get the current time
     CURRENT_TIME=$(date +%s)
-    
+
     # Calculate the elapsed time
     ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
 
@@ -84,6 +84,7 @@ while true; do
     fi
 done
 
+export RUST_BACKTRACE=1
 
 # Run cargo test
 cargo test -p cdk-integration-tests --test regtest

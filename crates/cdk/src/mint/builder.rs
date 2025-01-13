@@ -6,9 +6,11 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::signatory::Signatory;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
+use super::signatory::SignatoryManager;
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_lightning::{self, MintLightning};
@@ -19,8 +21,14 @@ use crate::nuts::{
 };
 use crate::types::LnKey;
 
+#[derive(Clone, Debug)]
+pub enum SignatoryInfo {
+    Seed(Vec<u8>),
+    Remote(String),
+}
+
 /// Cashu Mint
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MintBuilder {
     /// Mint Info
     pub mint_info: MintInfo,
@@ -28,8 +36,10 @@ pub struct MintBuilder {
     localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
-    seed: Option<Vec<u8>>,
-    supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    signatory_info: Option<SignatoryInfo>,
+    /// expose supported units
+    pub supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    signatory: Option<Arc<dyn Signatory + Sync + Send + 'static>>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
 }
 
@@ -53,6 +63,12 @@ impl MintBuilder {
         builder
     }
 
+    /// Set signatory service
+    pub fn with_signatory(mut self, signatory: Arc<dyn Signatory + Sync + Send + 'static>) -> Self {
+        self.signatory = Some(signatory);
+        self
+    }
+
     /// Set localstore
     pub fn with_localstore(
         mut self,
@@ -62,9 +78,15 @@ impl MintBuilder {
         self
     }
 
-    /// Set seed
+    /// Set seed to create a local signatory
     pub fn with_seed(mut self, seed: Vec<u8>) -> Self {
-        self.seed = Some(seed);
+        self.signatory_info = Some(SignatoryInfo::Seed(seed));
+        self
+    }
+
+    /// connect to a remote signatary instead of a creating a local one
+    pub fn with_remote_signatory(mut self, url: String) -> Self {
+        self.signatory_info = Some(SignatoryInfo::Remote(url));
         self
     }
 
@@ -224,11 +246,43 @@ impl MintBuilder {
             .clone()
             .ok_or(anyhow!("Localstore not set"))?;
 
+        let signatory = if let Some(signatory) = self.signatory.as_ref() {
+            signatory.clone()
+        } else {
+            match self.signatory_info.as_ref() {
+                Some(SignatoryInfo::Seed(seed)) => Arc::new(
+                    cdk_signatory::MemorySignatory::new(
+                        localstore.clone(),
+                        seed,
+                        self.supported_units.clone(),
+                        HashMap::new(),
+                    )
+                    .await?,
+                )
+                    as Arc<dyn Signatory + Sync + Send + 'static>,
+                #[cfg(feature = "grpc")]
+                Some(SignatoryInfo::Remote(url)) => Arc::new(
+                    cdk_signatory::RemoteSigner::new(url)
+                        .await
+                        .map_err(|e| anyhow!("Remote signatory error: {}", e.to_string()))?,
+                )
+                    as Arc<dyn Signatory + Sync + Send + 'static>,
+                #[cfg(not(feature = "grpc"))]
+                Some(SignatoryInfo::Remote(url)) => panic!(
+                    "CDK not compiled with grpc feature, therefore the remote signatory is disabled (url={})", url
+                ),
+                None => {
+                    return Err(anyhow!("Signatory not set"));
+                }
+            }
+        };
+
+        let signatory_manager = Arc::new(SignatoryManager::new(signatory));
+
         Ok(Mint::new(
-            self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
             localstore,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
-            self.supported_units.clone(),
+            signatory_manager,
             self.custom_paths.clone(),
         )
         .await?)
