@@ -1,5 +1,4 @@
 //! CDK common types and traits
-//!
 pub mod amount;
 pub mod dhke;
 #[cfg(feature = "mint")]

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,10 +6,8 @@ use anyhow::Result;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{FeeReserve, Mint};
-use cdk::nuts::{CurrencyUnit, MintInfo};
-use cdk::types::{LnKey, QuoteTTL};
+use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk_cln::Cln as CdkCln;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
@@ -145,49 +142,6 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
     Ok(CdkCln::new(rpc_path, fee_reserve).await?)
 }
 
-pub async fn create_mint<D>(
-    database: D,
-    ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
-    >,
-) -> Result<Mint>
-where
-    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
-{
-    let nuts = cdk::nuts::Nuts::new()
-        .nut07(true)
-        .nut08(true)
-        .nut09(true)
-        .nut10(true)
-        .nut11(true)
-        .nut12(true)
-        .nut14(true);
-
-    let mint_info = MintInfo::new().nuts(nuts);
-
-    let mnemonic = Mnemonic::generate(12)?;
-
-    let mut supported_units: HashMap<CurrencyUnit, (u64, u8)> = HashMap::new();
-    supported_units.insert(CurrencyUnit::Sat, (0, 32));
-
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-
-    let mint = Mint::new(
-        &get_mint_url(),
-        &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        Arc::new(database),
-        ln_backends,
-        supported_units,
-        HashMap::new(),
-    )
-    .await?;
-
-    Ok(mint)
-}
-
 pub async fn start_cln_mint<D>(addr: &str, port: u16, database: D) -> Result<()>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
@@ -196,17 +150,28 @@ where
 
     let cln_backend = create_cln_backend(&cln_client).await?;
 
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
-    > = HashMap::new();
+    let mut mint_builder = MintBuilder::new();
 
-    ln_backends.insert(
-        LnKey::new(CurrencyUnit::Sat, cdk::nuts::PaymentMethod::Bolt11),
+    mint_builder = mint_builder.with_localstore(Arc::new(database));
+
+    mint_builder = mint_builder.add_ln_backend(
+        CurrencyUnit::Sat,
+        PaymentMethod::Bolt11,
+        MintMeltLimits::default(),
         Arc::new(cln_backend),
     );
 
-    let mint = create_mint(database, ln_backends.clone()).await?;
+    let mnemonic = Mnemonic::generate(12)?;
+
+    mint_builder = mint_builder
+        .with_name("regtest mint".to_string())
+        .with_mint_url(format!("http://{addr}:{port}"))
+        .with_description("regtest mint".to_string())
+        .with_quote_ttl(10000, 10000)
+        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+
+    let mint = mint_builder.build().await?;
+
     let mint_arc = Arc::new(mint);
 
     let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc))
