@@ -79,6 +79,8 @@ enum Commands {
     CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
     /// Mint blind auth proofs
     MintBlindAuth(sub_commands::mint_blind_auth::MintBlindAuthSubCommand),
+    /// Cat login
+    CatLogin(sub_commands::cat_login::CatLoginSubCommand),
 }
 
 #[tokio::main]
@@ -232,6 +234,15 @@ async fn main() -> Result<()> {
         }
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+            )
+            .await
+        }
+        Commands::CatLogin(sub_command_args) => {
+            sub_commands::cat_login::cat_login(
                 &multi_mint_wallet,
                 &mnemonic.to_seed_normalized(""),
                 localstore,

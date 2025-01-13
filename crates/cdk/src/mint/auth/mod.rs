@@ -8,8 +8,6 @@ use super::{
 use crate::dhke::{sign_message, verify_message};
 use crate::Amount;
 
-pub mod auth_database;
-
 impl Mint {
     /// Check if and what kind of auth is required for a method
     pub fn protected(&self, method: &ProtectedEndpoint) -> Option<AuthRequired> {

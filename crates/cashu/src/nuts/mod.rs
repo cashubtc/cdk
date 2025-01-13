@@ -57,5 +57,5 @@ pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 pub use nut17::NotificationPayload;
 pub use nut18::{PaymentRequest, PaymentRequestPayload, Transport};
-pub use nutxx::{Method, ProtectedEndpoint, RoutePath};
+pub use nutxx::{Method, OidcClient, ProtectedEndpoint, RoutePath};
 pub use nutxx1::{AuthProof, AuthRequired, AuthToken, BlindAuthToken};

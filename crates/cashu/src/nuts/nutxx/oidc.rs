@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tracing::instrument;
 
@@ -34,6 +35,7 @@ pub enum Error {
 pub struct OidcConfig {
     pub jwks_uri: String,
     pub issuer: String,
+    pub token_endpoint: String,
 }
 
 /// Http Client
@@ -41,6 +43,14 @@ pub struct OidcConfig {
 pub struct OidcClient {
     inner: Client,
     openid_discovery: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccessTokenRequest {
+    pub grant_type: String,
+    pub client_id: String,
+    pub username: String,
+    pub password: String,
 }
 
 impl OidcClient {
@@ -115,5 +125,35 @@ impl OidcClient {
         }
 
         Ok(())
+    }
+
+    pub async fn get_access_token(
+        &self,
+        username: String,
+        password: String,
+    ) -> Result<String, Error> {
+        let token_url = self.get_oidc_config().await?.token_endpoint;
+
+        let request = AccessTokenRequest {
+            grant_type: "password".to_string(),
+            client_id: "cashu-client".to_string(),
+            username,
+            password,
+        };
+
+        let response: Value = self
+            .inner
+            .post(token_url)
+            .form(&request)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        println!("{:?}", response);
+
+        let token = response.get("access_token").expect("access token");
+
+        Ok(token.to_string())
     }
 }
