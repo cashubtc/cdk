@@ -1,19 +1,16 @@
 //! Active mint configuration
 //!
 //! This is the active configuration that can be updated at runtime.
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use super::{Id, MintInfo, MintKeySet};
+use super::MintInfo;
 use crate::mint_url::MintUrl;
 use crate::types::QuoteTTL;
 
 /// Mint Inner configuration
 pub struct Config {
-    /// Active Mint Keysets
-    pub keysets: HashMap<Id, MintKeySet>,
     /// Mint url
     pub mint_info: MintInfo,
     /// Mint config
@@ -36,14 +33,8 @@ pub struct SwappableConfig {
 
 impl SwappableConfig {
     /// Creates a new configuration instance
-    pub fn new(
-        mint_url: MintUrl,
-        quote_ttl: QuoteTTL,
-        mint_info: MintInfo,
-        keysets: HashMap<Id, MintKeySet>,
-    ) -> Self {
+    pub fn new(mint_url: MintUrl, quote_ttl: QuoteTTL, mint_info: MintInfo) -> Self {
         let inner = Config {
-            keysets,
             quote_ttl,
             mint_info,
             mint_url,
@@ -71,7 +62,6 @@ impl SwappableConfig {
             mint_url,
             quote_ttl: current_inner.quote_ttl,
             mint_info: current_inner.mint_info.clone(),
-            keysets: current_inner.keysets.clone(),
         };
 
         self.config.store(Arc::new(new_inner));
@@ -89,7 +79,6 @@ impl SwappableConfig {
             mint_info: current_inner.mint_info.clone(),
             mint_url: current_inner.mint_url.clone(),
             quote_ttl,
-            keysets: current_inner.keysets.clone(),
         };
 
         self.config.store(Arc::new(new_inner));
@@ -107,20 +96,6 @@ impl SwappableConfig {
             mint_info,
             mint_url: current_inner.mint_url.clone(),
             quote_ttl: current_inner.quote_ttl,
-            keysets: current_inner.keysets.clone(),
-        };
-
-        self.config.store(Arc::new(new_inner));
-    }
-
-    /// Replaces the current keysets with a new one
-    pub fn set_keysets(&self, keysets: HashMap<Id, MintKeySet>) {
-        let current_inner = self.load();
-        let new_inner = Config {
-            mint_info: current_inner.mint_info.clone(),
-            quote_ttl: current_inner.quote_ttl,
-            mint_url: current_inner.mint_url.clone(),
-            keysets,
         };
 
         self.config.store(Arc::new(new_inner));

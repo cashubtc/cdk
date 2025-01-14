@@ -9,7 +9,8 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
-use cdk::mint::FeeReserve;
+use cdk::mint::signatory::SignatoryManager;
+use cdk::mint::{FeeReserve, MemorySignatory};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut17::Params;
@@ -76,15 +77,25 @@ pub async fn start_mint(
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
+    let localstore = Arc::new(MintMemoryDatabase::default());
+    let signatory_manager = Arc::new(SignatoryManager::new(Arc::new(
+        MemorySignatory::new(
+            localstore.clone(),
+            &mnemonic.to_seed_normalized(""),
+            supported_units,
+            HashMap::new(),
+        )
+        .await
+        .expect("valid signatory"),
+    )));
+
     let mint = Mint::new(
         &get_mint_url(),
-        &mnemonic.to_seed_normalized(""),
         mint_info,
         quote_ttl,
-        Arc::new(MintMemoryDatabase::default()),
+        localstore,
         ln_backends.clone(),
-        supported_units,
-        HashMap::new(),
+        signatory_manager,
     )
     .await?;
 

@@ -9,7 +9,8 @@ use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::dhke::construct_proofs;
-use cdk::mint::MintQuote;
+use cdk::mint::signatory::SignatoryManager;
+use cdk::mint::{MemorySignatory, MintQuote};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PreMintSecrets,
@@ -45,15 +46,21 @@ async fn new_mint(fee: u64) -> Mint {
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
+    let localstore = Arc::new(MintMemoryDatabase::default());
+    let seed = mnemonic.to_seed_normalized("");
+    let signatory_manager = Arc::new(SignatoryManager::new(Arc::new(
+        MemorySignatory::new(localstore.clone(), &seed, supported_units, HashMap::new())
+            .await
+            .expect("valid signatory"),
+    )));
+
     Mint::new(
         MINT_URL,
-        &mnemonic.to_seed_normalized(""),
         mint_info,
         quote_ttl,
-        Arc::new(MintMemoryDatabase::default()),
+        localstore,
         HashMap::new(),
-        supported_units,
-        HashMap::new(),
+        signatory_manager,
     )
     .await
     .unwrap()

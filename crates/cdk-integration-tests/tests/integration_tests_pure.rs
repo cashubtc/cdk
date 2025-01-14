@@ -10,6 +10,8 @@ mod integration_tests_pure {
     use cdk::amount::SplitTarget;
     use cdk::cdk_database::mint_memory::MintMemoryDatabase;
     use cdk::cdk_database::WalletMemoryDatabase;
+    use cdk::mint::signatory::SignatoryManager;
+    use cdk::mint::MemorySignatory;
     use cdk::nuts::nut00::ProofsMethods;
     use cdk::nuts::{
         CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
@@ -164,15 +166,21 @@ mod integration_tests_pure {
         let mint_url = "http://aaa";
 
         let seed = random::<[u8; 32]>();
+
+        let localstore = Arc::new(MintMemoryDatabase::default());
+        let signatory_manager = Arc::new(SignatoryManager::new(Arc::new(
+            MemorySignatory::new(localstore.clone(), &seed, supported_units, HashMap::new())
+                .await
+                .expect("valid signatory"),
+        )));
+
         let mint: Mint = Mint::new(
             mint_url,
-            &seed,
             mint_info,
             quote_ttl,
-            Arc::new(MintMemoryDatabase::default()),
+            localstore,
             create_backends_fake_wallet(),
-            supported_units,
-            HashMap::new(),
+            signatory_manager,
         )
         .await?;
 

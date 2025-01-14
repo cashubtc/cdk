@@ -13,6 +13,8 @@ pub mod error;
 pub mod lightning;
 pub mod pub_sub;
 #[cfg(feature = "mint")]
+pub mod signatory;
+#[cfg(feature = "mint")]
 pub mod subscription;
 pub mod ws;
 

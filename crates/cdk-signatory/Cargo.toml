@@ -1,0 +1,19 @@
+[package]
+name = "cdk-signatory"
+version = "0.6.0"
+edition = "2021"
+description = "CDK signatory default implementation"
+
+[dependencies]
+async-trait = "0.1.83"
+bitcoin = { version = "0.32.2", features = [
+    "base64",
+    "serde",
+    "rand",
+    "rand-std",
+] }
+cdk-common = { path = "../cdk-common", default-features = false, features = [
+    "mint",
+] }
+tracing = "0.1.41"
+tokio = { version = "1.21", features = ["rt", "macros", "sync", "time"] }
