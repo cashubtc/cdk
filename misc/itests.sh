@@ -45,8 +45,8 @@ echo "Temp directory created: $cdk_itests"
 export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
-cargo build --bin cdk-integration-tests 
-cargo run --bin cdk-integration-tests &
+cargo build --bin regtest_mint 
+cargo run --bin regtest_mint &
 # Capture its PID
 CDK_ITEST_MINT_BIN_PID=$!
 

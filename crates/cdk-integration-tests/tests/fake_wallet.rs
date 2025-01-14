@@ -6,13 +6,13 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, MintQuoteState,
-    NotificationPayload, PreMintSecrets, SecretKey, State,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, SecretKey,
+    State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::Wallet;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
-use cdk_integration_tests::attempt_to_swap_pending;
+use cdk_integration_tests::{attempt_to_swap_pending, wait_for_mint_to_be_paid};
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
 
@@ -476,23 +476,4 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
         Err(err) => bail!("Wrong mint response for minting without witness: {}", err),
         Ok(_) => bail!("Minting should not have succeed without a witness"),
     }
-}
-
-// Keep polling the state of the mint quote id until it's paid
-async fn wait_for_mint_to_be_paid(wallet: &Wallet, mint_quote_id: &str) -> Result<()> {
-    let mut subscription = wallet
-        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![
-            mint_quote_id.to_owned(),
-        ]))
-        .await;
-
-    while let Some(msg) = subscription.recv().await {
-        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-            if response.state == MintQuoteState::Paid {
-                break;
-            }
-        }
-    }
-
-    Ok(())
 }
