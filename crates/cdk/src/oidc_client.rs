@@ -8,6 +8,7 @@ use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wallet")]
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::RwLock;
