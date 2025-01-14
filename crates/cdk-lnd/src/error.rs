@@ -28,7 +28,7 @@ pub enum Error {
     MissingLastHop,
     /// No MPP record in last hop
     #[error("LND missing MPP record in last hop")]
-    MissingMppRecord
+    MissingMppRecord,
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {
