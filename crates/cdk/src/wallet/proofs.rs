@@ -126,7 +126,7 @@ impl Wallet {
             .await?;
 
         // Both `State::Pending` and `State::Unspent` should be included in the pending
-        // table. This is because a proof that has been crated to send will be
+        // table. This is because a proof that has been created to send will be
         // stored in the pending table in order to avoid accidentally double
         // spending but to allow it to be explicitly reclaimed
         let pending_states: HashSet<PublicKey> = states
