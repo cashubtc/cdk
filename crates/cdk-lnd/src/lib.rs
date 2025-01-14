@@ -19,9 +19,9 @@ use cdk::cdk_lightning::{
 };
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::secp256k1::hashes::Hash;
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
-use cdk::secp256k1::hashes::Hash;
 use error::Error;
 use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
 use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
@@ -259,11 +259,16 @@ impl MintLightning for Lnd {
                 .await
                 .map_err(|_| Error::PaymentFailed)?
                 .into_inner();
-            let mut payment_response: HtlcAttempt = HtlcAttempt { ..Default::default() };
+            let mut payment_response: HtlcAttempt = HtlcAttempt {
+                ..Default::default()
+            };
             for mut route in routes_response.routes.into_iter() {
                 let last_hop = route.hops.last_mut().ok_or(Error::MissingLastHop)?;
-                let mpp_record = last_hop.mpp_record.as_mut().ok_or(Error::MissingMppRecord)?;
-                
+                let mpp_record = last_hop
+                    .mpp_record
+                    .as_mut()
+                    .ok_or(Error::MissingMppRecord)?;
+
                 mpp_record.payment_addr = payer_addr.clone();
                 mpp_record.total_amt_msat = amount_msat as i64;
 
@@ -276,7 +281,8 @@ impl MintLightning for Lnd {
                         payment_hash: payment_hash.to_byte_array().to_vec(),
                         route: Some(route),
                         ..Default::default()
-                    }).await
+                    })
+                    .await
                     .map_err(|_| Error::PaymentFailed)?
                     .into_inner();
 
@@ -291,14 +297,17 @@ impl MintLightning for Lnd {
             }
             let (status, payment_preimage) = match payment_response.status {
                 0 => (MeltQuoteState::Pending, None),
-                1 => (MeltQuoteState::Paid, Some(hex::encode(payment_response.preimage))),
+                1 => (
+                    MeltQuoteState::Paid,
+                    Some(hex::encode(payment_response.preimage)),
+                ),
                 2 => (MeltQuoteState::Unpaid, None),
                 _ => (MeltQuoteState::Unknown, None),
             };
-            
+
             let mut total_amt: u64 = 0;
             if let Some(route) = payment_response.route {
-                total_amt = (route.total_amt_msat / 1000) as u64; 
+                total_amt = (route.total_amt_msat / 1000) as u64;
             }
 
             Ok(PayInvoiceResponse {
@@ -313,13 +322,13 @@ impl MintLightning for Lnd {
                 payment_request,
                 fee_limit: max_fee.map(|f| {
                     let limit = Limit::Fixed(u64::from(f) as i64);
-    
+
                     FeeLimit { limit: Some(limit) }
                 }),
                 amt_msat: amount_msat as i64,
                 ..Default::default()
             };
-    
+
             let payment_response = self
                 .client
                 .lock()
@@ -334,10 +343,10 @@ impl MintLightning for Lnd {
                 .into_inner();
 
             let total_amount = payment_response
-            .payment_route
-            .map_or(0, |route| route.total_amt_msat / MSAT_IN_SAT as i64)
-            as u64;
-    
+                .payment_route
+                .map_or(0, |route| route.total_amt_msat / MSAT_IN_SAT as i64)
+                as u64;
+
             let (status, payment_preimage) = match total_amount == 0 {
                 true => (MeltQuoteState::Unpaid, None),
                 false => (
