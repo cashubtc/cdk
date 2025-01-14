@@ -344,7 +344,7 @@ impl Mint {
         if let Ok(secret) =
             <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)
         {
-            // Checks and verifes known secret kinds.
+            // Checks and verifies known secret kinds.
             // If it is an unknown secret kind it will be treated as a normal secret.
             // Spending conditions will **not** be check. It is up to the wallet to ensure
             // only supported secret kinds are used as there is no way for the mint to

@@ -161,7 +161,7 @@ pub struct MeltQuoteBolt11Response<Q> {
     pub amount: Amount,
     /// The fee reserve that is required
     pub fee_reserve: Amount,
-    /// Whether the the request haas be paid
+    /// Whether the request haas be paid
     // TODO: To be deprecated
     /// Deprecated
     pub paid: Option<bool>,
