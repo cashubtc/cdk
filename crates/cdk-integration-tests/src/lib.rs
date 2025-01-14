@@ -1,53 +1,25 @@
-use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_lightning::MintLightning;
 use cdk::dhke::construct_proofs;
-use cdk::mint::FeeReserve;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut17::Params;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MintBolt11Request, MintQuoteBolt11Request, MintQuoteState,
-    NotificationPayload, PaymentMethod, PreMintSecrets, Proofs, State,
+    NotificationPayload, PreMintSecrets, Proofs, State,
 };
-use cdk::types::LnKey;
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::subscription::SubscriptionManager;
 use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
-use cdk_fake_wallet::FakeWallet;
 
 pub mod init_fake_wallet;
 pub mod init_mint;
+pub mod init_pure_tests;
 pub mod init_regtest;
-
-pub fn create_backends_fake_wallet(
-) -> HashMap<LnKey, Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>> {
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: 1.into(),
-        percent_fee_reserve: 1.0,
-    };
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
-    > = HashMap::new();
-    let ln_key = LnKey::new(CurrencyUnit::Sat, PaymentMethod::Bolt11);
-
-    let wallet = Arc::new(FakeWallet::new(
-        fee_reserve.clone(),
-        HashMap::default(),
-        HashSet::default(),
-        0,
-    ));
-
-    ln_backends.insert(ln_key, wallet.clone());
-
-    ln_backends
-}
 
 pub async fn wallet_mint(
     wallet: Arc<Wallet>,
@@ -176,6 +148,25 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
                 bail!("Wrong error")
             }
         },
+    }
+
+    Ok(())
+}
+
+// Keep polling the state of the mint quote id until it's paid
+pub async fn wait_for_mint_to_be_paid(wallet: &Wallet, mint_quote_id: &str) -> Result<()> {
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![
+            mint_quote_id.to_owned(),
+        ]))
+        .await;
+
+    while let Some(msg) = subscription.recv().await {
+        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+            if response.state == MintQuoteState::Paid {
+                break;
+            }
+        }
     }
 
     Ok(())
