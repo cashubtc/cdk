@@ -233,13 +233,17 @@ impl MintLightning for Lnd {
             }
         };
 
+        // Detect partial payments
         if let Some(part_amt) = partial_amount {
             let partial_amount_msat = to_unit(part_amt, &melt_quote.unit, &CurrencyUnit::Msat)?;
             let invoice = Bolt11Invoice::from_str(&payment_request)?;
+
+            // Extract information from invoice
             let pub_key = invoice.get_payee_pub_key();
             let payer_addr = invoice.payment_secret().0.to_vec();
             let payment_hash = invoice.payment_hash();
 
+            // Create a request for the routes
             let route_req = fedimint_tonic_lnd::lnrpc::QueryRoutesRequest {
                 pub_key: hex::encode(pub_key.serialize()),
                 amt_msat: u64::from(partial_amount_msat) as i64,
@@ -250,6 +254,7 @@ impl MintLightning for Lnd {
                 ..Default::default()
             };
 
+            // Query the routes
             let routes_response: fedimint_tonic_lnd::lnrpc::QueryRoutesResponse = self
                 .client
                 .lock()
@@ -259,9 +264,14 @@ impl MintLightning for Lnd {
                 .await
                 .map_err(|_| Error::PaymentFailed)?
                 .into_inner();
+
             let mut payment_response: HtlcAttempt = HtlcAttempt {
                 ..Default::default()
             };
+
+            // For each route:
+            // update its MPP record,
+            // attempt it and check the result
             for mut route in routes_response.routes.into_iter() {
                 let last_hop = route.hops.last_mut().ok_or(Error::MissingLastHop)?;
                 let mpp_record = last_hop
@@ -295,6 +305,8 @@ impl MintLightning for Lnd {
                     break;
                 }
             }
+
+            // Get status and maybe the preimage
             let (status, payment_preimage) = match payment_response.status {
                 0 => (MeltQuoteState::Pending, None),
                 1 => (
@@ -305,6 +317,7 @@ impl MintLightning for Lnd {
                 _ => (MeltQuoteState::Unknown, None),
             };
 
+            // Get the actual amount paid in sats
             let mut total_amt: u64 = 0;
             if let Some(route) = payment_response.route {
                 total_amt = (route.total_amt_msat / 1000) as u64;
