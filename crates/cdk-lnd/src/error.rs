@@ -23,6 +23,12 @@ pub enum Error {
     /// Unknown payment status
     #[error("LND unknown payment status")]
     UnknownPaymentStatus,
+    /// Missing last hop in route
+    #[error("LND missing last hop in route")]
+    MissingLastHop,
+    /// No MPP record in last hop
+    #[error("LND missing MPP record in last hop")]
+    MissingMppRecord
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {
