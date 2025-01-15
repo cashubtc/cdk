@@ -37,6 +37,7 @@ mod mint_nut04;
 mod start_up_check;
 pub mod subscription;
 mod swap;
+mod kvac;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintQuote};

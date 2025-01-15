@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS kvac_nullifiers (
 );
 
 CREATE TABLE IF NOT EXISTS kvac_signed_tags (
-    t_tag BLOB PRIMARY KEY,
+    u BLOB PRIMARY KEY,
     mac BLOB NOT NULL,
     keyset_id TEXT NOT NULL
 );
