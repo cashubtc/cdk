@@ -327,7 +327,7 @@ async fn main() -> anyhow::Result<()> {
         let mint_blind_auth_endpoint =
             ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintBlindAuth);
 
-        mint_builder = mint_builder.set_cleat_auth_settings(
+        mint_builder = mint_builder.set_clear_auth_settings(
             auth_settings.openid_discovery,
             auth_settings.openid_client_id,
             vec![mint_blind_auth_endpoint],

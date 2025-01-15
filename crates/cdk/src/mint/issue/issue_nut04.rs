@@ -144,7 +144,7 @@ impl Mint {
     ) -> Result<MintQuoteBolt11Response<Uuid>, Error> {
         self.verify_auth(
             auth_token,
-            &ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
         )
         .await?;
 

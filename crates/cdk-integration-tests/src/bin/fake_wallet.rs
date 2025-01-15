@@ -6,9 +6,23 @@ use cdk_integration_tests::init_fake_wallet::start_fake_mint;
 use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let default_filter = "debug";
+
+    let sqlx_filter = "sqlx=warn";
+    let hyper_filter = "hyper=warn";
+
+    let env_filter = EnvFilter::new(format!(
+        "{},{},{}",
+        default_filter, sqlx_filter, hyper_filter
+    ));
+
+    // Parse input
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     let addr = "127.0.0.1";
     let port = 8086;
 

@@ -132,7 +132,7 @@ impl Mint {
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         self.verify_auth(
             auth_token,
-            &ProtectedEndpoint::new(Method::Get, RoutePath::MeltBolt11),
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
         )
         .await?;
 

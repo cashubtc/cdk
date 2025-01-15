@@ -238,7 +238,7 @@ impl MintBuilder {
     }
 
     /// Set clear auth settings
-    pub fn set_cleat_auth_settings(
+    pub fn set_clear_auth_settings(
         mut self,
         openid_discovery: String,
         client_id: String,

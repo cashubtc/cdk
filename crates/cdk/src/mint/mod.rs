@@ -482,7 +482,7 @@ impl Mint {
     ) -> Result<RestoreResponse, Error> {
         self.verify_auth(
             auth_token,
-            &ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
         )
         .await?;
 

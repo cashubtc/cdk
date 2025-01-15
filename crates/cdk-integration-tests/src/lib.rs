@@ -16,6 +16,7 @@ use cdk::wallet::subscription::SubscriptionManager;
 use cdk::wallet::{HttpClient, MintConnector, WalletSubscription};
 use cdk::Wallet;
 
+pub mod init_auth_mint;
 pub mod init_fake_wallet;
 pub mod init_mint;
 pub mod init_pure_tests;

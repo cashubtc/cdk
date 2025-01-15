@@ -408,6 +408,11 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::AuthRequired => ErrorResponse {
+                code: ErrorCode::AuthRequired,
+                error: None,
+                detail: None,
+            },
             Error::NUT20(err) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 error: Some(err.to_string()),
@@ -443,6 +448,7 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::TokenPending => Self::TokenPending,
             ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
+            ErrorCode::AuthRequired => Self::AuthRequired,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -486,6 +492,8 @@ pub enum ErrorCode {
     AmountOutofLimitRange,
     /// Witness missing or invalid
     WitnessMissingOrInvalid,
+    /// Auth Required
+    AuthRequired,
     /// Unknown error code
     Unknown(u16),
 }
@@ -511,6 +519,7 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
+            20009 => Self::AuthRequired,
             _ => Self::Unknown(code),
         }
     }
@@ -535,6 +544,7 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
+            Self::AuthRequired => 20009,
             Self::Unknown(code) => *code,
         }
     }
