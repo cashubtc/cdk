@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use tracing::instrument;
 
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
-use super::{Id, Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
+use super::nutxx::{Method, ProtectedEndpoint, RoutePath};
+use super::{AuthToken, Id, Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
 use crate::nuts::nut00::ProofsMethods;
 use crate::Error;
 
@@ -12,8 +13,15 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_swap_request(
         &self,
+        auth_token: Option<AuthToken>,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
+        )
+        .await?;
+
         let blinded_messages: Vec<PublicKey> = swap_request
             .outputs
             .iter()

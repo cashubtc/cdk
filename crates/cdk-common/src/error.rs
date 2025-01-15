@@ -51,6 +51,24 @@ pub enum Error {
     /// Amountless Invoice Not supported
     #[error("Amount Less Invoice is not allowed")]
     AmountLessNotAllowed,
+    /// Auth Required
+    #[error("Auth Required")]
+    AuthRequired,
+    /// Auth settings undefined
+    #[error("Auth settings undefinded")]
+    AuthSettingsUndefinded,
+    /// Mint time outside of tolerance
+    #[error("Mint time outside of tolerance")]
+    MintTimeExceedsTolerance,
+    /// Insufficient blind auth tokens
+    #[error("Insufficient blind auth tokens, must reauth")]
+    InsufficientBlindAuthTokens,
+    /// Auth localstore undefined
+    #[error("Auth localstore undefinded")]
+    AuthLocalstoreUndefinded,
+    /// Wallet cat not set
+    #[error("Wallet cat not set")]
+    CatNotSet,
 
     // Mint Errors
     /// Minting is disabled
@@ -113,6 +131,9 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
+    /// Oidc config not set
+    #[error("Oidc client not set")]
+    OidcNotSet,
 
     // Wallet Errors
     /// P2PK spending conditions not met
@@ -200,7 +221,7 @@ pub enum Error {
     /// Http transport error
     #[error("Http transport error: {0}")]
     HttpError(String),
-
+    #[cfg(feature = "wallet")]
     // Crate error conversions
     /// Cashu Url Error
     #[error(transparent)]
@@ -248,6 +269,12 @@ pub enum Error {
     /// NUT20 Error
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
+    /// NUTXX Error
+    #[error(transparent)]
+    NUTXX(#[from] crate::nuts::nutxx::Error),
+    /// NUTXX1 Error
+    #[error(transparent)]
+    NUTXX1(#[from] crate::nuts::nutxx1::Error),
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::database::Error),
@@ -381,6 +408,11 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::AuthRequired => ErrorResponse {
+                code: ErrorCode::AuthRequired,
+                error: None,
+                detail: None,
+            },
             Error::NUT20(err) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 error: Some(err.to_string()),
@@ -416,6 +448,7 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::TokenPending => Self::TokenPending,
             ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
+            ErrorCode::AuthRequired => Self::AuthRequired,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -459,6 +492,8 @@ pub enum ErrorCode {
     AmountOutofLimitRange,
     /// Witness missing or invalid
     WitnessMissingOrInvalid,
+    /// Auth Required
+    AuthRequired,
     /// Unknown error code
     Unknown(u16),
 }
@@ -484,6 +519,7 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
+            20009 => Self::AuthRequired,
             _ => Self::Unknown(code),
         }
     }
@@ -508,6 +544,7 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
+            Self::AuthRequired => 20009,
             Self::Unknown(code) => *code,
         }
     }

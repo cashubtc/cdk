@@ -7,7 +7,6 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk_fake_wallet::FakeWallet;
-use tracing_subscriber::EnvFilter;
 
 use crate::init_mint::start_mint;
 
@@ -15,19 +14,6 @@ pub async fn start_fake_mint<D>(addr: &str, port: u16, database: D) -> Result<()
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
 {
-    let default_filter = "debug";
-
-    let sqlx_filter = "sqlx=warn";
-    let hyper_filter = "hyper=warn";
-
-    let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
-    ));
-
-    // Parse input
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
-
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
         percent_fee_reserve: 1.0,

@@ -7,10 +7,11 @@ use std::sync::Arc;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::common::{LnKey, QuoteTTL};
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{self, MintAuthDatabase, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use config::SwappableConfig;
 use futures::StreamExt;
+use nutxx::ProtectedEndpoint;
 use serde::{Deserialize, Serialize};
 use subscription::PubSubManager;
 use tokio::sync::Notify;
@@ -25,15 +26,16 @@ use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::*;
 use crate::util::unix_time;
-use crate::Amount;
+use crate::{Amount, OidcClient};
 
+pub(crate) mod auth;
 mod builder;
 mod check_spendable;
 pub mod config;
 mod info;
+mod issue;
 mod keysets;
 mod melt;
-mod mint_nut04;
 mod start_up_check;
 pub mod subscription;
 mod swap;
@@ -48,10 +50,13 @@ pub struct Mint {
     pub config: SwappableConfig,
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+    /// Mint Storage backend
+    pub auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
+    oidc_client: Option<OidcClient>,
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: Xpriv,
 }
@@ -65,10 +70,12 @@ impl Mint {
         mint_info: MintInfo,
         quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
@@ -182,18 +189,55 @@ impl Mint {
             }
         }
 
+        let oidc_client = if let Some(nutxx_settings) = &mint_info.nuts.nutxx {
+            tracing::info!("Auth enabled creating auth keysets");
+            let auth_localstore = auth_localstore
+                .as_ref()
+                .ok_or(Error::AuthSettingsUndefinded)?;
+
+            let derivation_path = match custom_paths.get(&CurrencyUnit::Auth) {
+                Some(path) => path.clone(),
+                None => derivation_path_from_unit(CurrencyUnit::Auth, 0)
+                    .ok_or(Error::UnsupportedUnit)?,
+            };
+
+            let (keyset, keyset_info) = create_new_keyset(
+                &secp_ctx,
+                xpriv,
+                derivation_path,
+                Some(0),
+                CurrencyUnit::Auth,
+                1,
+                0,
+            );
+
+            println!("{:?}", keyset_info);
+
+            let id = keyset_info.id;
+            auth_localstore.add_keyset_info(keyset_info).await?;
+            auth_localstore.set_active_keyset(id).await?;
+            active_keysets.insert(id, keyset);
+
+            Some(OidcClient::new(nutxx_settings.openid_discovery.clone()))
+        } else {
+            None
+        };
+
         Ok(Self {
             config: SwappableConfig::new(
                 MintUrl::from_str(mint_url)?,
                 quote_ttl,
                 mint_info,
                 active_keysets,
+                protected_endpoints,
             ),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
             xpriv,
             localstore,
+            oidc_client,
             ln,
+            auth_localstore,
         })
     }
 
@@ -431,7 +475,17 @@ impl Mint {
 
     /// Restore
     #[instrument(skip_all)]
-    pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+    pub async fn restore(
+        &self,
+        auth_token: Option<AuthToken>,
+        request: RestoreRequest,
+    ) -> Result<RestoreResponse, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
+        )
+        .await?;
+
         let output_len = request.outputs.len();
 
         let mut outputs = Vec::with_capacity(output_len);
@@ -702,8 +756,10 @@ mod tests {
             config.mint_info,
             config.quote_ttl,
             localstore,
+            None,
             HashMap::new(),
             config.supported_units,
+            HashMap::new(),
             HashMap::new(),
         )
         .await

@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
-use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
+use super::{nut04, nut05, nut15, nut19, nutxx, nutxx1, MppMethodSettings};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -249,6 +249,16 @@ pub struct Nuts {
     #[serde(default)]
     #[serde(rename = "20")]
     pub nut20: SupportedSettings,
+    /// NUTXX Settings
+    #[serde(default)]
+    #[serde(rename = "XX")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nutxx: Option<nutxx::Settings>,
+    /// NUTXX1 Settings
+    #[serde(default)]
+    #[serde(rename = "XX+1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nutxx1: Option<nutxx1::Settings>,
 }
 
 impl Nuts {

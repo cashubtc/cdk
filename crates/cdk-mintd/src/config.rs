@@ -174,6 +174,16 @@ pub struct Database {
     pub engine: DatabaseEngine,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Auth {
+    pub openid_discovery: String,
+    pub openid_client_id: String,
+    pub mint_max_bat: u64,
+    pub enabled_mint: bool,
+    pub enabled_melt: bool,
+    pub enabled_swap: bool,
+}
+
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
@@ -187,6 +197,7 @@ pub struct Settings {
     pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
+    pub auth: Option<Auth>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

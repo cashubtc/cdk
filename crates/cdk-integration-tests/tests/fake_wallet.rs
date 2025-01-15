@@ -9,8 +9,7 @@ use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, SecretKey,
     State,
 };
-use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::Wallet;
+use cdk::wallet::{HttpClient, MintConnector, Wallet};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::{attempt_to_swap_pending, wait_for_mint_to_be_paid};
 
@@ -24,6 +23,7 @@ async fn test_fake_tokens_pending() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
         None,
     )?;
 
@@ -64,6 +64,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
         None,
     )?;
 
@@ -128,6 +129,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
+        None,
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -172,6 +174,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
         None,
     )?;
 
@@ -232,6 +235,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
         None,
     )?;
 
@@ -294,6 +298,7 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
+        None,
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -332,6 +337,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
+        None,
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -362,7 +368,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         outputs: Some(premint_secrets.blinded_messages()),
     };
 
-    let melt_response = client.post_melt(melt_request).await?;
+    let melt_response = client.post_melt(melt_request, None).await?;
 
     assert!(melt_response.change.is_some());
 
@@ -384,6 +390,7 @@ async fn test_fake_mint_with_witness() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
         None,
     )?;
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -409,6 +416,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
+        None,
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -428,7 +436,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
         signature: None,
     };
 
-    let response = http_client.post_mint(request.clone()).await;
+    let response = http_client.post_mint(request.clone(), None).await;
 
     match response {
         Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),
@@ -437,7 +445,6 @@ async fn test_fake_mint_without_witness() -> Result<()> {
     }
 }
 
-// TODO: Rewrite this test to include witness wrong
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_wrong_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -445,6 +452,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
         None,
     )?;
 
@@ -469,7 +477,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
 
     request.sign(secret_key)?;
 
-    let response = http_client.post_mint(request.clone()).await;
+    let response = http_client.post_mint(request.clone(), None).await;
 
     match response {
         Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),

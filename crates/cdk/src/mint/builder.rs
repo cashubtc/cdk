@@ -8,13 +8,14 @@ use cdk_common::database::{self, MintDatabase};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
-use super::Nuts;
+use super::{nutxx, nutxx1, AuthRequired, MintAuthDatabase, Nuts};
 use crate::amount::Amount;
+use crate::cdk_database;
 use crate::cdk_lightning::{self, MintLightning};
 use crate::mint::Mint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod,
+    MppMethodSettings, PaymentMethod, ProtectedEndpoint,
 };
 use crate::types::{LnKey, QuoteTTL};
 
@@ -27,11 +28,14 @@ pub struct MintBuilder {
     mint_info: MintInfo,
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
+    /// Mint Storage backend
+    auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
     quote_ttl: Option<QuoteTTL>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
 }
 
 impl MintBuilder {
@@ -60,6 +64,15 @@ impl MintBuilder {
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
+        self
+    }
+
+    /// Set auth localstore
+    pub fn with_auth_localstore(
+        mut self,
+        localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>,
+    ) -> MintBuilder {
+        self.auth_localstore = Some(localstore);
         self
     }
 
@@ -127,6 +140,9 @@ impl MintBuilder {
         limits: MintMeltLimits,
         ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     ) -> Self {
+        tracing::debug!("Adding ln backed for {}, {}", unit, method);
+        tracing::debug!("with limits {:?}", limits);
+
         let ln_key = LnKey {
             unit: unit.clone(),
             method,
@@ -224,6 +240,54 @@ impl MintBuilder {
         self
     }
 
+    /// Set clear auth settings
+    pub fn set_clear_auth_settings(
+        mut self,
+        openid_discovery: String,
+        client_id: String,
+        protected_endpoints: Vec<ProtectedEndpoint>,
+    ) -> Self {
+        let mut nuts = self.mint_info.nuts;
+
+        nuts.nutxx = Some(nutxx::Settings::new(
+            openid_discovery,
+            client_id,
+            protected_endpoints.clone(),
+        ));
+
+        self.mint_info.nuts = nuts;
+
+        for endpoint in protected_endpoints {
+            self.protected_endpoints
+                .insert(endpoint, AuthRequired::Clear);
+        }
+
+        self
+    }
+
+    /// Set blind auth settings
+    pub fn set_blind_auth_settings(
+        mut self,
+        bat_max_mint: u64,
+        protected_endpoints: Vec<ProtectedEndpoint>,
+    ) -> Self {
+        let mut nuts = self.mint_info.nuts;
+
+        nuts.nutxx1 = Some(nutxx1::Settings::new(
+            bat_max_mint,
+            protected_endpoints.clone(),
+        ));
+
+        for endpoint in protected_endpoints {
+            self.protected_endpoints
+                .insert(endpoint, AuthRequired::Blind);
+        }
+
+        self.mint_info.nuts = nuts;
+
+        self
+    }
+
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
         Ok(Mint::new(
@@ -234,9 +298,11 @@ impl MintBuilder {
             self.localstore
                 .clone()
                 .ok_or(anyhow!("Localstore not set"))?,
+            self.auth_localstore.clone(),
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
             self.supported_units.clone(),
             HashMap::new(),
+            self.protected_endpoints.clone(),
         )
         .await?)
     }
@@ -253,4 +319,16 @@ pub struct MintMeltLimits {
     pub melt_min: Amount,
     /// Max melt amount
     pub melt_max: Amount,
+}
+
+impl MintMeltLimits {
+    /// Create new [`MintMeltLimits`]
+    pub fn new(min: u64, max: u64) -> Self {
+        Self {
+            mint_min: min.into(),
+            mint_max: max.into(),
+            melt_min: min.into(),
+            melt_max: max.into(),
+        }
+    }
 }

@@ -43,12 +43,14 @@ pub async fn mint(
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None)?;
+            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None, None)?;
 
             multi_mint_wallet.add_wallet(wallet.clone()).await;
             wallet
         }
     };
+
+    wallet.get_mint_info().await?;
 
     let quote = wallet
         .mint_quote(Amount::from(sub_command_args.amount), description)

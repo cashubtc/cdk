@@ -13,6 +13,10 @@ use crate::nuts::{
     Proofs, PublicKey, State,
 };
 
+mod auth;
+
+pub use auth::MintAuthDatabase;
+
 /// Mint Database trait
 #[async_trait]
 pub trait Database {

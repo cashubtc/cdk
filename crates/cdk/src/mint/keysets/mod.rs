@@ -9,6 +9,8 @@ use super::{
 };
 use crate::Error;
 
+mod auth;
+
 impl Mint {
     /// Retrieve the public keys of the active keyset for distribution to wallet
     /// clients
@@ -31,7 +33,10 @@ impl Mint {
     /// clients
     #[instrument(skip_all)]
     pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
-        let active_keysets = self.localstore.get_active_keysets().await?;
+        let mut active_keysets = self.localstore.get_active_keysets().await?;
+
+        // We don't want to return auth keys here even though in the db we treat them the same
+        active_keysets.remove(&CurrencyUnit::Auth);
 
         let active_keysets: HashSet<&Id> = active_keysets.values().collect();
 
@@ -67,6 +72,7 @@ impl Mint {
 
         let keysets = keysets
             .into_iter()
+            .filter(|k| k.unit != CurrencyUnit::Auth)
             .map(|k| KeySetInfo {
                 id: k.id,
                 unit: k.unit,

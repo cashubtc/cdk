@@ -1,14 +1,14 @@
 use tracing::instrument;
 use uuid::Uuid;
 
-use super::{
-    nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    NotificationPayload, PaymentMethod, PublicKey,
+use crate::mint::{
+    CurrencyUnit, MintBolt11Request, MintBolt11Response, MintQuote, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteState, NotificationPayload, PublicKey,
 };
-use crate::nuts::MintQuoteState;
+use crate::nuts::{AuthToken, Method, PaymentMethod, ProtectedEndpoint, RoutePath};
 use crate::types::LnKey;
 use crate::util::unix_time;
-use crate::{Amount, Error};
+use crate::{Amount, Error, Mint};
 
 impl Mint {
     /// Checks that minting is enabled, request is supported unit and within range
@@ -60,8 +60,15 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn get_mint_bolt11_quote(
         &self,
+        auth_token: Option<AuthToken>,
         mint_quote_request: MintQuoteBolt11Request,
     ) -> Result<MintQuoteBolt11Response<Uuid>, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
+        )
+        .await?;
+
         let MintQuoteBolt11Request {
             amount,
             unit,
@@ -132,8 +139,15 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn check_mint_quote(
         &self,
+        auth_token: Option<AuthToken>,
         quote_id: &Uuid,
     ) -> Result<MintQuoteBolt11Response<Uuid>, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
+        )
+        .await?;
+
         let quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -258,8 +272,15 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_mint_request(
         &self,
-        mint_request: nut04::MintBolt11Request<Uuid>,
-    ) -> Result<nut04::MintBolt11Response, Error> {
+        auth_token: Option<AuthToken>,
+        mint_request: MintBolt11Request<Uuid>,
+    ) -> Result<MintBolt11Response, Error> {
+        self.verify_auth(
+            auth_token,
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+        )
+        .await?;
+
         let mint_quote =
             if let Some(mint_quote) = self.localstore.get_mint_quote(&mint_request.quote).await? {
                 mint_quote
@@ -346,7 +367,7 @@ impl Mint {
         self.pubsub_manager
             .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);
 
-        Ok(nut04::MintBolt11Response {
+        Ok(MintBolt11Response {
             signatures: blind_signatures,
         })
     }
