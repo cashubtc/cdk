@@ -127,7 +127,7 @@ jobs:
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
           
   fake-mint-itest:
-    name: "Integration fake wallet tests"
+    name: "Integration fake mint tests"
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -156,7 +156,7 @@ jobs:
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
 
   fake-auth-mint-itest:
-    name: "Integration fake wallet tests"
+    name: "Integration fake auth mint tests"
     runs-on: ubuntu-latest
     strategy:
       matrix:
