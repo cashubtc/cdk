@@ -150,6 +150,13 @@ pub struct BlindAuthToken {
     pub auth_proof: AuthProof,
 }
 
+impl BlindAuthToken {
+    /// Create new [ `BlindAuthToken`]
+    pub fn new(auth_proof: AuthProof) -> Self {
+        BlindAuthToken { auth_proof }
+    }
+}
+
 impl fmt::Display for BlindAuthToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let json_string = serde_json::to_string(&self.auth_proof).map_err(|_| fmt::Error)?;

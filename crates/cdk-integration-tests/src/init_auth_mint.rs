@@ -6,6 +6,8 @@ use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, Method, PaymentMethod, ProtectedEndpoint, RoutePath};
+use cdk::wallet::Wallet;
+use cdk::OidcClient;
 use cdk_fake_wallet::FakeWallet;
 
 use crate::init_mint::start_mint;
@@ -35,7 +37,7 @@ where
     mint_builder = mint_builder.add_ln_backend(
         CurrencyUnit::Sat,
         PaymentMethod::Bolt11,
-        MintMeltLimits::default(),
+        MintMeltLimits::new(1, 300),
         Arc::new(fake_wallet),
     );
 
@@ -79,4 +81,41 @@ where
     start_mint(addr, port, mint).await?;
 
     Ok(())
+}
+
+pub async fn top_up_blind_auth_proofs(
+    wallet: Arc<Wallet>,
+    count: u64,
+    oidc_user: &str,
+    oidc_pass: &str,
+) {
+    let mint_info = wallet
+        .get_mint_info()
+        .await
+        .expect("Mint info not found")
+        .expect("Mint info not found");
+
+    let openid_discovery = mint_info
+        .nuts
+        .nutxx
+        .expect("Nutxx defined")
+        .openid_discovery;
+
+    let oidc_client = OidcClient::new(openid_discovery);
+
+    let access_token = oidc_client
+        .get_access_token_with_user_password(oidc_user.to_string(), oidc_pass.to_string())
+        .await
+        .expect("Could not get cat");
+
+    {
+        let mut cat = wallet.cat.write().await;
+
+        *cat = Some(access_token);
+    }
+
+    let _proofs = wallet
+        .mint_blind_auth(count.into())
+        .await
+        .expect("could not mint blind auth");
 }

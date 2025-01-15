@@ -140,6 +140,9 @@ impl MintBuilder {
         limits: MintMeltLimits,
         ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
     ) -> Self {
+        tracing::debug!("Adding ln backed for {}, {}", unit, method);
+        tracing::debug!("with limits {:?}", limits);
+
         let ln_key = LnKey {
             unit: unit.clone(),
             method,
@@ -316,4 +319,16 @@ pub struct MintMeltLimits {
     pub melt_min: Amount,
     /// Max melt amount
     pub melt_max: Amount,
+}
+
+impl MintMeltLimits {
+    /// Create new [`MintMeltLimits`]
+    pub fn new(min: u64, max: u64) -> Self {
+        Self {
+            mint_min: min.into(),
+            mint_max: max.into(),
+            melt_min: min.into(),
+            melt_max: max.into(),
+        }
+    }
 }

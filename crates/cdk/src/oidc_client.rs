@@ -210,8 +210,11 @@ impl OidcClient {
             .json()
             .await?;
 
+        // REVIEW: Handle this better, can we define the expected struct, or with different oauth providers be different?;
         let token = response
             .get("access_token")
+            .ok_or(Error::AccessTokenMissing)?
+            .as_str()
             .ok_or(Error::AccessTokenMissing)?;
 
         Ok(token.to_string())

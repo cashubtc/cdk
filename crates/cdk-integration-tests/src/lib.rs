@@ -6,7 +6,6 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::nut17::Params;
 use cdk::nuts::{
     CurrencyUnit, Id, KeySet, MintBolt11Request, MintQuoteBolt11Request, MintQuoteState,
@@ -22,13 +21,11 @@ pub mod init_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
 
-pub async fn wallet_mint(
-    wallet: Arc<Wallet>,
-    amount: Amount,
-    split_target: SplitTarget,
-    description: Option<String>,
-) -> Result<()> {
-    let quote = wallet.mint_quote(amount, description).await?;
+pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
+    let quote = wallet
+        .mint_quote(amount, None)
+        .await
+        .expect("Could not get mint quote");
 
     let mut subscription = wallet
         .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
@@ -44,13 +41,10 @@ pub async fn wallet_mint(
         }
     }
 
-    let proofs = wallet.mint(&quote.id, split_target, None).await?;
-
-    let receive_amount = proofs.total_amount()?;
-
-    println!("Minted: {}", receive_amount);
-
-    Ok(())
+    let _proofs = wallet
+        .mint(&quote.id, SplitTarget::default(), None)
+        .await
+        .expect("Could not mint");
 }
 
 pub async fn mint_proofs(
@@ -60,9 +54,6 @@ pub async fn mint_proofs(
     mint_keys: &KeySet,
     description: Option<String>,
 ) -> anyhow::Result<Proofs> {
-    println!("Minting for ecash");
-    println!();
-
     let wallet_client = HttpClient::new(MintUrl::from_str(mint_url)?);
 
     let request = MintQuoteBolt11Request {

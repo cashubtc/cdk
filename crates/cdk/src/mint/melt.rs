@@ -39,6 +39,10 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnitUnsupported)?;
 
+        println!("{settings:?}");
+
+        println!("{}", amount);
+
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {

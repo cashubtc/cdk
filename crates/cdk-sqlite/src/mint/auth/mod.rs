@@ -227,7 +227,7 @@ FROM keyset;
             r#"
 INSERT INTO proof
 (y, keyset_id, secret, c, state)
-VALUES (?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?);
         "#,
         )
         .bind(proof.y()?.to_bytes().to_vec())

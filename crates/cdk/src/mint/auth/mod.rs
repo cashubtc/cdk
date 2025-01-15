@@ -1,3 +1,4 @@
+use cdk_common::CurrencyUnit;
 use tracing::instrument;
 
 use super::nutxx::ProtectedEndpoint;
@@ -60,6 +61,11 @@ impl Mint {
             .get(&keyset_id)
             .ok_or(Error::UnknownKeySet)?
             .clone();
+
+        if keyset.unit != CurrencyUnit::Auth {
+            tracing::info!("Blind auth attempted with non auth keyset");
+            return Err(Error::AuthRequired);
+        }
 
         let keypair = match keyset.keys.get(&Amount::from(1)) {
             Some(key_pair) => key_pair,
