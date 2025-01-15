@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use bitcoin::secp256k1;
-use cashu_kvac::kvac;
 use cashu_kvac::models::{MintPrivateKey, MintPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, VecSkipError};

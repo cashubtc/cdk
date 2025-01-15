@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
-use super::nut01::{Keys, MintKvacKeys};
+use super::nut01::{Keys, KvacKeys, MintKvacKeys};
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::amount::AmountStr;
@@ -222,6 +222,8 @@ pub struct KeySet {
     pub unit: CurrencyUnit,
     /// Keyset [`Keys`]
     pub keys: Keys,
+    /// Kvac keys [`KvacKeys`]
+    pub kvac_keys: KvacKeys, 
 }
 
 impl KeySet {
@@ -244,6 +246,7 @@ impl From<MintKeySet> for KeySet {
             id: keyset.id,
             unit: keyset.unit,
             keys: Keys::from(keyset.keys),
+            kvac_keys: KvacKeys::from(keyset.kvac_keys)
         }
     }
 }
