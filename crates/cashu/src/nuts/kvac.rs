@@ -83,7 +83,7 @@ impl MintKvacKeySet {
                 .expect("RNG busted")
                 .private_key
                 .secret_bytes();
-            scalars[i] = Scalar::new(&secret_key);
+            scalars.push(Scalar::new(&secret_key));
         }
         let private_key = cashu_kvac::models::MintPrivateKey::from_scalars(&scalars)
             .expect("couldn't generate KVAC privkey")

@@ -20,5 +20,6 @@ CREATE TABLE IF NOT EXISTS kvac_keyset (
     valid_from INTEGER NOT NULL,
     valid_to INTEGER,
     derivation_path TEXT NOT NULL,
-    derivation_path_index INTEGER NOT NULL
+    derivation_path_index INTEGER NOT NULL,
+    input_fee_ppk INTEGER NOT NULL
 );
