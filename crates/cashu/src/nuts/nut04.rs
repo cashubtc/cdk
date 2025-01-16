@@ -211,7 +211,7 @@ pub struct MintMethodSettings {
 }
 
 /// Mint Settings
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut04::Settings))]
 pub struct Settings {
     /// Methods to mint
@@ -239,22 +239,5 @@ impl Settings {
         }
 
         None
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        let bolt11_mint = MintMethodSettings {
-            method: PaymentMethod::Bolt11,
-            unit: CurrencyUnit::Sat,
-            min_amount: Some(Amount::from(1)),
-            max_amount: Some(Amount::from(1000000)),
-            description: true,
-        };
-
-        Settings {
-            methods: vec![bolt11_mint],
-            disabled: false,
-        }
     }
 }

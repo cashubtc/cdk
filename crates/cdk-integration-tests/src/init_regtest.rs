@@ -156,7 +156,7 @@ where
     mint_builder = mint_builder.add_ln_backend(
         CurrencyUnit::Sat,
         PaymentMethod::Bolt11,
-        MintMeltLimits::default(),
+        MintMeltLimits::new(1, 5_000),
         Arc::new(cln_backend),
     );
 
