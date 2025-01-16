@@ -8,6 +8,10 @@ use crate::Error;
 use super::Mint;
 
 impl Mint {
+    /// Processes a [`BootstrapRequest`].
+    /// 
+    /// Issues MACs for zero-valued attributes
+    /// so that the client might use these as inputs in further (swap/mint/melt) requests
     #[instrument(skip_all)]
     pub async fn process_bootstrap_request(
         &self,
