@@ -254,3 +254,15 @@ pub struct MintMeltLimits {
     /// Max melt amount
     pub melt_max: Amount,
 }
+
+impl MintMeltLimits {
+    /// Create new [`MintMeltLimits`]
+    pub fn new(min: u64, max: u64) -> Self {
+        Self {
+            mint_min: min.into(),
+            mint_max: max.into(),
+            melt_min: min.into(),
+            melt_max: max.into(),
+        }
+    }
+}
