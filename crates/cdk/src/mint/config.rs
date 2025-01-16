@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use cdk_common::kvac::MintKvacKeySet;
 
 use super::{Id, MintInfo, MintKeySet};
 use crate::mint_url::MintUrl;
@@ -14,6 +15,8 @@ use crate::types::QuoteTTL;
 pub struct Config {
     /// Active Mint Keysets
     pub keysets: HashMap<Id, MintKeySet>,
+    /// Active Mint KVAC Keysets
+    pub kvac_keysets: HashMap<Id, MintKvacKeySet>,
     /// Mint url
     pub mint_info: MintInfo,
     /// Mint config
@@ -41,9 +44,11 @@ impl SwappableConfig {
         quote_ttl: QuoteTTL,
         mint_info: MintInfo,
         keysets: HashMap<Id, MintKeySet>,
+        kvac_keysets: HashMap<Id, MintKvacKeySet>,
     ) -> Self {
         let inner = Config {
             keysets,
+            kvac_keysets,
             quote_ttl,
             mint_info,
             mint_url,
@@ -72,6 +77,7 @@ impl SwappableConfig {
             quote_ttl: current_inner.quote_ttl,
             mint_info: current_inner.mint_info.clone(),
             keysets: current_inner.keysets.clone(),
+            kvac_keysets: current_inner.kvac_keysets.clone()
         };
 
         self.config.store(Arc::new(new_inner));
@@ -90,6 +96,7 @@ impl SwappableConfig {
             mint_url: current_inner.mint_url.clone(),
             quote_ttl,
             keysets: current_inner.keysets.clone(),
+            kvac_keysets: current_inner.kvac_keysets.clone(),
         };
 
         self.config.store(Arc::new(new_inner));
@@ -108,6 +115,7 @@ impl SwappableConfig {
             mint_url: current_inner.mint_url.clone(),
             quote_ttl: current_inner.quote_ttl,
             keysets: current_inner.keysets.clone(),
+            kvac_keysets: current_inner.kvac_keysets.clone(),
         };
 
         self.config.store(Arc::new(new_inner));
@@ -121,6 +129,21 @@ impl SwappableConfig {
             quote_ttl: current_inner.quote_ttl,
             mint_url: current_inner.mint_url.clone(),
             keysets,
+            kvac_keysets: current_inner.kvac_keysets.clone(),
+        };
+
+        self.config.store(Arc::new(new_inner));
+    }
+
+    /// Replaces the current kvac keysets with a new one
+    pub fn set_kvac_keysets(&self, kvac_keysets: HashMap<Id, MintKvacKeySet>) {
+        let current_inner = self.load();
+        let new_inner = Config {
+            mint_info: current_inner.mint_info.clone(),
+            quote_ttl: current_inner.quote_ttl,
+            mint_url: current_inner.mint_url.clone(),
+            keysets: current_inner.keysets.clone(),
+            kvac_keysets,
         };
 
         self.config.store(Arc::new(new_inner));

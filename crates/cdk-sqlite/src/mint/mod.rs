@@ -974,7 +974,7 @@ FROM kvac_keyset;
                 transaction.commit().await.map_err(Error::from)?;
                 Ok(recs
                     .into_iter()
-                    .map(sqlite_row_to_keyset_info)
+                    .map(sqlite_row_to_kvac_keyset_info)
                     .collect::<Result<_, _>>()?)
             }
             Err(err) => {

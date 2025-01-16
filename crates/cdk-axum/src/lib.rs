@@ -169,7 +169,16 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mint_router = Router::new().nest("/v1", v1_router).with_state(state);
+    let v2_router = Router::new()
+        .route("/kvac/keys", get(get_kvac_keys))
+        .route("/kvac/keysets", get(get_kvac_keysets))
+        .route("/kvac/key/:keyset_id", get(get_kvac_keyset_pubkeys));
+
+
+    let mint_router = Router::new()
+        .nest("/v1", v1_router)
+        .nest("/v2", v2_router)
+        .with_state(state);
 
     Ok(mint_router)
 }

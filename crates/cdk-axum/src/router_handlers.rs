@@ -10,6 +10,7 @@ use cdk::nuts::{
     MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
+use cdk::nuts::kvac::{KvacKeysResponse, KvacKeysetResponse};
 use cdk::util::unix_time;
 use paste::paste;
 use uuid::Uuid;
@@ -84,6 +85,26 @@ pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysRespons
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
+    context_path = "/v2",
+    path = "/kvac/keys",
+    responses(
+        (status = 200, description = "Successful response", body = KvacKeysResponse, content_type = "application/json")
+    )
+))]
+/// Get the public keys of the newest mint keyset
+///
+/// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
+pub async fn get_kvac_keys(State(state): State<MintState>) -> Result<Json<KvacKeysResponse>, Response> {
+    let pubkeys = state.mint.kvac_pubkeys().await.map_err(|err| {
+        tracing::error!("Could not get keys: {}", err);
+        into_response(err)
+    })?;
+
+    Ok(Json(pubkeys))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
     context_path = "/v1",
     path = "/keys/{keyset_id}",
     params(
@@ -111,6 +132,33 @@ pub async fn get_keyset_pubkeys(
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
+    context_path = "/v2",
+    path = "/kvac/keys/{keyset_id}",
+    params(
+        ("keyset_id" = String, description = "The keyset ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = KvacKeysResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Get the public keys of a specific keyset
+///
+/// Get the public keys of the mint from a specific keyset ID.
+pub async fn get_kvac_keyset_pubkeys(
+    State(state): State<MintState>,
+    Path(keyset_id): Path<Id>,
+) -> Result<Json<KvacKeysResponse>, Response> {
+    let pubkeys = state.mint.kvac_keyset_pubkeys(&keyset_id).await.map_err(|err| {
+        tracing::error!("Could not get keyset pubkeys: {}", err);
+        into_response(err)
+    })?;
+
+    Ok(Json(pubkeys))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
     context_path = "/v1",
     path = "/keysets",
     responses(
@@ -123,6 +171,27 @@ pub async fn get_keyset_pubkeys(
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
 pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetResponse>, Response> {
     let keysets = state.mint.keysets().await.map_err(|err| {
+        tracing::error!("Could not get keysets: {}", err);
+        into_response(err)
+    })?;
+
+    Ok(Json(keysets))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v2",
+    path = "/kvac/keysets",
+    responses(
+        (status = 200, description = "Successful response", body = KvacKeysetResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Get all active keyset IDs of the mint
+///
+/// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
+pub async fn get_kvac_keysets(State(state): State<MintState>) -> Result<Json<KvacKeysetResponse>, Response> {
+    let keysets = state.mint.kvac_keysets().await.map_err(|err| {
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)
     })?;

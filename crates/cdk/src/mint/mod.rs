@@ -292,6 +292,7 @@ impl Mint {
                 quote_ttl,
                 mint_info,
                 active_keysets,
+                active_kvac_keysets,
             ),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,

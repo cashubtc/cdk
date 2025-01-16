@@ -12,10 +12,20 @@ use cashu_kvac::models::MAC;
 use cashu_kvac::secp::GroupElement;
 use cashu_kvac::secp::Scalar;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use crate::util::hex;
 use super::nut02::KeySetVersion;
 use super::CurrencyUnit;
 use super::Id;
+use super::KeySetInfo;
+use thiserror::Error;
+use serde_with::VecSkipError;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("Incorrect KVAC KeySet ID")]
+    IncorrectKeySetId
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintKvacKeys {
@@ -97,6 +107,42 @@ impl MintKvacKeySet {
     }
 }
 
+/// Keyset
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacKeySet {
+    /// Keyset [`Id`]
+    pub id: Id,
+    /// Keyset [`CurrencyUnit`]
+    pub unit: CurrencyUnit,
+    /// Keyset [`KvacKeys`]
+    pub kvac_keys: KvacKeys, 
+}
+
+impl KvacKeySet {
+    /// Verify the keyset is matches keys
+    pub fn verify_id(&self) -> Result<(), Error> {
+        let keys_id: Id = (&self.kvac_keys).into();
+
+        if keys_id != self.id {
+            return Err(Error::IncorrectKeySetId);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "mint")]
+impl From<MintKvacKeySet> for KvacKeySet {
+    fn from(keyset: MintKvacKeySet) -> Self {
+        Self {
+            id: keyset.id,
+            unit: keyset.unit,
+            kvac_keys: KvacKeys::from(keyset.kvac_keys),
+        }
+    }
+}
+
 /// Kvac Coin Message
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
@@ -121,6 +167,8 @@ pub struct KvacCoinMessage {
     pub coin: (GroupElement, GroupElement)
 }
 
+// --- Requests ---
+
 /// Bootstrap Request
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
@@ -135,6 +183,24 @@ pub struct BootstrapRequest {
     /// [`Vec<ZKP>`] proving that each coin is worth 0
     #[cfg_attr(feature = "swagger", schema(max_items = 1_000, min_items = 2))]
     pub proofs: Vec<ZKP>,
+}
+
+// --- Responses ---
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacKeysResponse {
+    pub kvac_keysets: Vec<KvacKeySet>
+}
+
+/// Ids of mints keyset ids
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacKeysetResponse {
+    /// set of public key ids that the mint generates
+    #[serde_as(as = "VecSkipError<_>")]
+    pub kvac_keysets: Vec<KeySetInfo>,
 }
 
 /// Bootstrap Response

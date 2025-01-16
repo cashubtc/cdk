@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bitcoin::bip32::DerivationPath;
+use cdk_common::kvac::{KvacKeysResponse, KvacKeysetResponse, MintKvacKeySet};
 use tracing::instrument;
 
 use super::{
@@ -29,6 +30,23 @@ impl Mint {
 
     /// Retrieve the public keys of the active keyset for distribution to wallet
     /// clients
+    #[instrument(skip(self))]
+    pub async fn kvac_keyset_pubkeys(&self, keyset_id: &Id) -> Result<KvacKeysResponse, Error> {
+        self.ensure_kvac_keyset_loaded(keyset_id).await?;
+        let keyset = self
+            .config
+            .load()
+            .kvac_keysets
+            .get(keyset_id)
+            .ok_or(Error::UnknownKeySet)?
+            .clone();
+        Ok(KvacKeysResponse {
+            kvac_keysets: vec![keyset.into()],
+        })
+    }
+
+    /// Retrieve the public keys of the active keyset for distribution to wallet
+    /// clients
     #[instrument(skip_all)]
     pub async fn pubkeys(&self) -> Result<KeysResponse, Error> {
         let active_keysets = self.localstore.get_active_keysets().await?;
@@ -44,6 +62,32 @@ impl Mint {
                 .config
                 .load()
                 .keysets
+                .values()
+                .filter_map(|k| match active_keysets.contains(&k.id) {
+                    true => Some(k.clone().into()),
+                    false => None,
+                })
+                .collect(),
+        })
+    }
+
+    /// Retrieve the public keys of the active keyset for distribution to wallet
+    /// clients
+    #[instrument(skip_all)]
+    pub async fn kvac_pubkeys(&self) -> Result<KvacKeysResponse, Error> {
+        let active_keysets = self.localstore.get_active_kvac_keysets().await?;
+
+        let active_keysets: HashSet<&Id> = active_keysets.values().collect();
+
+        for id in active_keysets.iter() {
+            self.ensure_kvac_keyset_loaded(id).await?;
+        }
+
+        Ok(KvacKeysResponse {
+            kvac_keysets: self
+                .config
+                .load()
+                .kvac_keysets
                 .values()
                 .filter_map(|k| match active_keysets.contains(&k.id) {
                     true => Some(k.clone().into()),
@@ -76,6 +120,31 @@ impl Mint {
             .collect();
 
         Ok(KeysetResponse { keysets })
+    }
+
+    /// Return a list of all supported keysets
+    #[instrument(skip_all)]
+    pub async fn kvac_keysets(&self) -> Result<KvacKeysetResponse, Error> {
+        let keysets = self.localstore.get_kvac_keyset_infos().await?;
+        let active_keysets: HashSet<Id> = self
+            .localstore
+            .get_active_kvac_keysets()
+            .await?
+            .values()
+            .cloned()
+            .collect();
+
+        let kvac_keysets = keysets
+            .into_iter()
+            .map(|k| KeySetInfo {
+                id: k.id,
+                unit: k.unit,
+                active: active_keysets.contains(&k.id),
+                input_fee_ppk: k.input_fee_ppk,
+            })
+            .collect();
+
+        Ok(KvacKeysetResponse { kvac_keysets })
     }
 
     /// Get keysets
@@ -145,6 +214,26 @@ impl Mint {
         Ok(())
     }
 
+    /// Ensure Kvac Keyset is loaded in mint
+    #[instrument(skip(self))]
+    pub async fn ensure_kvac_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
+        if self.config.load().kvac_keysets.contains_key(id) {
+            return Ok(());
+        }
+
+        let mut kvac_keysets = self.config.load().kvac_keysets.clone();
+        let keyset_info = self
+            .localstore
+            .get_kvac_keyset_info(id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
+        let id = keyset_info.id;
+        kvac_keysets.insert(id, self.generate_kvac_keyset(keyset_info));
+        self.config.set_kvac_keysets(kvac_keysets);
+
+        Ok(())
+    }
+
     /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
     #[instrument(skip_all)]
     pub fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
@@ -154,6 +243,18 @@ impl Mint {
             keyset_info.max_order,
             keyset_info.unit,
             keyset_info.derivation_path,
+        )
+    }
+
+    /// Generate [`MintKeySet`] from [`MintKeySetInfo`]
+    #[instrument(skip_all)]
+    pub fn generate_kvac_keyset(&self, keyset_info: MintKeySetInfo) -> MintKvacKeySet {
+        MintKvacKeySet::generate(
+            &self.secp_ctx,
+            self.xpriv,
+            keyset_info.unit,
+            keyset_info.derivation_path,
+            keyset_info.derivation_path_index.unwrap_or(0),
         )
     }
 }
