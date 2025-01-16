@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
 use bitcoin::secp256k1;
-use cashu_kvac::models::{MintPrivateKey, MintPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
@@ -137,23 +136,6 @@ impl MintKeyPair {
             public_key: secret_key.public_key(),
             secret_key,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintKvacKeys {
-    pub private_key: MintPrivateKey,
-    pub public_key: MintPublicKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KvacKeys(MintPublicKey);
-
-impl From<MintKvacKeys> for KvacKeys {
-    fn from(keys: MintKvacKeys) -> Self {
-        Self(
-            keys.public_key
-        )
     }
 }
 

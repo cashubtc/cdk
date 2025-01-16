@@ -58,6 +58,9 @@ pub enum Error {
     /// Unknown Database Version
     #[error("Unknown database version")]
     UnknownDatabaseVersion,
+    /// Unimplmented
+    #[error("Unimplemented method")]
+    Unimplemented,
 }
 
 impl From<Error> for cdk_common::database::Error {

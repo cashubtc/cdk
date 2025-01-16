@@ -120,6 +120,62 @@ AND id IS ?;
         Ok(())
     }
 
+    async fn set_active_kvac_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let update_res = sqlx::query(
+            r#"
+UPDATE kvac_keyset
+SET active=FALSE
+WHERE unit IS ?;
+        "#,
+        )
+        .bind(unit.to_string())
+        .execute(&mut transaction)
+        .await;
+
+        match update_res {
+            Ok(_) => (),
+            Err(err) => {
+                tracing::error!("SQLite Could not update keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                return Err(Error::from(err).into());
+            }
+        };
+
+        let update_res = sqlx::query(
+            r#"
+UPDATE kvac_keyset
+SET active=TRUE
+WHERE unit IS ?
+AND id IS ?;
+        "#,
+        )
+        .bind(unit.to_string())
+        .bind(id.to_string())
+        .execute(&mut transaction)
+        .await;
+
+        match update_res {
+            Ok(_) => (),
+            Err(err) => {
+                tracing::error!("SQLite Could not update keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                return Err(Error::from(err).into());
+            }
+        };
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -161,6 +217,47 @@ AND unit IS ?
         ))
     }
 
+    async fn get_active_kvac_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT id
+FROM kvac_keyset
+WHERE active = 1
+AND unit IS ?
+        "#,
+        )
+        .bind(unit.to_string())
+        .fetch_one(&mut transaction)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+                rec
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Ok(None);
+                }
+                _ => {
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
+                    }
+                }
+            },
+        };
+
+        Ok(Some(
+            Id::from_str(rec.try_get("id").map_err(Error::from)?).map_err(Error::from)?,
+        ))
+    }
+
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -168,6 +265,45 @@ AND unit IS ?
             r#"
 SELECT id, unit
 FROM keyset
+WHERE active = 1
+        "#,
+        )
+        .fetch_all(&mut transaction)
+        .await;
+
+        match recs {
+            Ok(recs) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let keysets = recs
+                    .iter()
+                    .filter_map(|r| match Id::from_str(r.get("id")) {
+                        Ok(id) => Some((
+                            CurrencyUnit::from_str(r.get::<'_, &str, &str>("unit")).unwrap(),
+                            id,
+                        )),
+                        Err(_) => None,
+                    })
+                    .collect();
+                Ok(keysets)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get active keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let recs = sqlx::query(
+            r#"
+SELECT id, unit
+FROM kvac_keyset
 WHERE active = 1
         "#,
         )
@@ -687,6 +823,42 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         }
     }
 
+    async fn add_kvac_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO kvac_keyset
+(id, unit, active, valid_from, valid_to, derivation_path, input_fee_ppk, derivation_path_index)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        "#,
+        )
+        .bind(keyset.id.to_string())
+        .bind(keyset.unit.to_string())
+        .bind(keyset.active)
+        .bind(keyset.valid_from as i64)
+        .bind(keyset.valid_to.map(|v| v as i64))
+        .bind(keyset.derivation_path.to_string())
+        .bind(keyset.input_fee_ppk as i64)
+        .bind(keyset.derivation_path_index)
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not add keyset info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
@@ -721,12 +893,76 @@ WHERE id=?;
         }
     }
 
+    async fn get_kvac_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset
+WHERE id=?;
+        "#,
+        )
+        .bind(id.to_string())
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(Some(sqlite_row_to_kvac_keyset_info(rec)?))
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Ok(None);
+                }
+                _ => {
+                    tracing::error!("SQLite could not get keyset info");
+                    if let Err(err) = transaction.rollback().await {
+                        tracing::error!("Could not rollback sql transaction: {}", err);
+                    }
+                    return Err(Error::SQLX(err).into());
+                }
+            },
+        }
+    }
+
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let recs = sqlx::query(
             r#"
 SELECT *
 FROM keyset;
+        "#,
+        )
+        .fetch_all(&mut transaction)
+        .await
+        .map_err(Error::from);
+
+        match recs {
+            Ok(recs) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(recs
+                    .into_iter()
+                    .map(sqlite_row_to_keyset_info)
+                    .collect::<Result<_, _>>()?)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get keyset info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(err.into())
+            }
+        }
+    }
+
+    async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset;
         "#,
         )
         .fetch_all(&mut transaction)
@@ -1221,6 +1457,30 @@ WHERE quote_id=?;
             }
         }
     }
+}
+
+fn sqlite_row_to_kvac_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
+    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_unit: String = row.try_get("unit").map_err(Error::from)?;
+    let row_active: bool = row.try_get("active").map_err(Error::from)?;
+    let row_valid_from: i64 = row.try_get("valid_from").map_err(Error::from)?;
+    let row_valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
+    let row_derivation_path: String = row.try_get("derivation_path").map_err(Error::from)?;
+    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
+    let row_derivation_path_index: Option<i64> =
+        row.try_get("derivation_path_index").map_err(Error::from)?;
+
+    Ok(MintKeySetInfo {
+        id: Id::from_str(&row_id).map_err(Error::from)?,
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
+        active: row_active,
+        valid_from: row_valid_from as u64,
+        valid_to: row_valid_to.map(|v| v as u64),
+        derivation_path: DerivationPath::from_str(&row_derivation_path).map_err(Error::from)?,
+        derivation_path_index: row_derivation_path_index.map(|d| d as u32),
+        max_order: 0,
+        input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
+    })
 }
 
 fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {

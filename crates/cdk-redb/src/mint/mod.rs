@@ -179,6 +179,10 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
+    async fn set_active_kvac_keyset(&self, _unit: CurrencyUnit, _id: Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
@@ -190,6 +194,10 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         Ok(None)
+    }
+
+    async fn get_active_kvac_keyset_id(&self, _unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
@@ -208,6 +216,10 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         Ok(active_keysets)
+    }
+
+    async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
@@ -229,6 +241,10 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
+    async fn add_kvac_keyset_info(&self, _keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_keyset_info(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
@@ -240,6 +256,10 @@ impl MintDatabase for MintRedbDatabase {
             Some(keyset) => Ok(serde_json::from_str(keyset.value()).map_err(Error::from)?),
             None => Ok(None),
         }
+    }
+
+    async fn get_kvac_keyset_info(&self, _keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
@@ -255,6 +275,10 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         Ok(keysets)
+    }
+
+    async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {

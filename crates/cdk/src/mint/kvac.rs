@@ -10,3 +10,6 @@ use crate::types::LnKey;
 use crate::util::unix_time;
 use crate::{Amount, Error};
 
+impl Mint {
+    
+}

@@ -100,12 +100,24 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
+    async fn set_active_kvac_keyset(&self, _unit: CurrencyUnit, _id: Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         Ok(self.active_keysets.read().await.get(unit).cloned())
     }
 
+    async fn get_active_kvac_keyset_id(&self, _unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         Ok(self.active_keysets.read().await.clone())
+    }
+
+    async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
@@ -113,12 +125,24 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
+    async fn add_kvac_keyset_info(&self, _keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_keyset_info(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         Ok(self.keysets.read().await.get(keyset_id).cloned())
     }
 
+    async fn get_kvac_keyset_info(&self, _keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
         Ok(self.keysets.read().await.values().cloned().collect())
+    }
+
+    async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {

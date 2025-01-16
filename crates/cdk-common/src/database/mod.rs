@@ -1,7 +1,7 @@
 //! CDK Database
 
 #[cfg(feature = "mint")]
-mod mint;
+pub mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
@@ -31,4 +31,7 @@ pub enum Error {
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,
+    /// Unimplemented
+    #[error("Unimplemented")]
+    Unimplemented,
 }

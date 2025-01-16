@@ -16,13 +16,11 @@ use bitcoin::hashes::Hash;
 use bitcoin::key::Secp256k1;
 #[cfg(feature = "mint")]
 use bitcoin::secp256k1;
-use cashu_kvac::models::MintPrivateKey;
-use cashu_kvac::secp::Scalar;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
-use super::nut01::{Keys, KvacKeys, MintKvacKeys};
+use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::amount::AmountStr;
@@ -92,8 +90,8 @@ impl fmt::Display for KeySetVersion {
 #[serde(into = "String", try_from = "String")]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = String))]
 pub struct Id {
-    version: KeySetVersion,
-    id: [u8; Self::BYTELEN],
+    pub(crate) version: KeySetVersion,
+    pub(crate) id: [u8; Self::BYTELEN],
 }
 
 impl Id {
@@ -221,9 +219,7 @@ pub struct KeySet {
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
     /// Keyset [`Keys`]
-    pub keys: Keys,
-    /// Kvac keys [`KvacKeys`]
-    pub kvac_keys: KvacKeys, 
+    pub keys: Keys, 
 }
 
 impl KeySet {
@@ -246,7 +242,6 @@ impl From<MintKeySet> for KeySet {
             id: keyset.id,
             unit: keyset.unit,
             keys: Keys::from(keyset.keys),
-            kvac_keys: KvacKeys::from(keyset.kvac_keys)
         }
     }
 }
@@ -281,8 +276,6 @@ pub struct MintKeySet {
     pub unit: CurrencyUnit,
     /// Keyset [`MintKeys`]
     pub keys: MintKeys,
-    /// Kvac Keyset [`MintKvacKeys`]
-    pub kvac_keys: MintKvacKeys,
 }
 
 #[cfg(feature = "mint")]
@@ -313,28 +306,11 @@ impl MintKeySet {
                 },
             );
         }
-        // Derive KVAC keys
-        let mut scalars: Vec<Scalar> = Vec::new();
-        for i in max_order..max_order+6 {
-            let secret_key = xpriv
-                .derive_priv(
-                    secp,
-                    &[ChildNumber::from_hardened_idx(i as u32).expect("order is valid index")],
-                )
-                .expect("RNG busted")
-                .private_key
-                .secret_bytes();
-            scalars.push(Scalar::new(&secret_key));
-        }
-        let kvac_privkey = MintPrivateKey::from_scalars(&scalars).expect("");
-        let kvac_pubkey = kvac_privkey.public_key.clone();
-        let kvac_keys = MintKvacKeys { private_key: kvac_privkey, public_key: kvac_pubkey };
         let keys = MintKeys::new(map);
         Self {
             id: (&keys).into(),
             unit,
             keys,
-            kvac_keys,
         }
     }
 
