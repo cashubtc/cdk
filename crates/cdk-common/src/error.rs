@@ -113,6 +113,15 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
+    /// KVAC Request Minimum Length
+    #[error("Invalid input length for this request")]
+    RequestInvalidInputLength,
+    /// KVAC Proofs and inputs mismatch
+    #[error("Number of length does not match number of proofs provided")]
+    InputsToProofsLengthMismatch,
+    /// KVAC Bootstrap proofs failed to verify
+    #[error("Failed to verify one of the provided proofs")]
+    BootstrapVerificationError,
 
     // Wallet Errors
     /// P2PK spending conditions not met

@@ -10,7 +10,7 @@ use cdk::nuts::{
     MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
-use cdk::nuts::kvac::{KvacKeysResponse, KvacKeysetResponse};
+use cdk::nuts::kvac::{KvacKeysResponse, KvacKeysetResponse, BootstrapRequest, BootstrapResponse};
 use cdk::util::unix_time;
 use paste::paste;
 use uuid::Uuid;
@@ -61,6 +61,11 @@ post_cache_wrapper!(
     post_melt_bolt11,
     MeltBolt11Request<Uuid>,
     MeltQuoteBolt11Response<Uuid>
+);
+post_cache_wrapper!(
+    post_bootstrap,
+    BootstrapRequest,
+    BootstrapResponse
 );
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -432,6 +437,34 @@ pub async fn post_swap(
     let swap_response = state
         .mint
         .process_swap_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process swap request: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(swap_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/bootstrap",
+    request_body(content = SwapRequest, description = "Swap params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = BootstrapResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Client requests a MAC for coins of zero value
+///
+/// This endpoint can be used by Alice to obtain valid zero-valued coins to be used as inputs in other requests
+pub async fn post_bootstrap(
+    State(state): State<MintState>,
+    Json(payload): Json<BootstrapRequest>,
+) -> Result<Json<BootstrapResponse>, Response> {
+    let swap_response = state
+        .mint
+        .process_bootstrap_request(payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process swap request: {}", err);

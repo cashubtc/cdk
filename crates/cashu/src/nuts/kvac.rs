@@ -207,12 +207,16 @@ pub struct KvacKeysetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct BootstrapResponse {
+    /// Input coins for which a MAC was issued
+    /// 
+    /// [`Vec<KvacCoinMessage>`]
+    pub coins: Vec<KvacCoinMessage>,
     /// MACs
     /// 
-    /// Approval stamp of the Mint
+    /// [`Vec<MAC>`] Approval stamp of the Mint
     pub macs: Vec<MAC>,
     /// IParams Proofs
     /// 
-    /// [`Vec<ZKP>`] Proving that [`MintPrivateKey`] was used to issue each [`MAC`]
+    /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
     pub proofs: Vec<ZKP>,
 }

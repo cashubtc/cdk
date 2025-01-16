@@ -6,12 +6,16 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
+use cashu_kvac::kvac::IParamsProof;
+use cashu_kvac::models::{MAC, ZKP};
+use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::kvac::MintKvacKeySet;
 use cdk_common::mint::MintKeySetInfo;
 use config::SwappableConfig;
 use futures::StreamExt;
+use kvac::KvacCoinMessage;
 use serde::{Deserialize, Serialize};
 use subscription::PubSubManager;
 use tokio::sync::Notify;
@@ -38,7 +42,7 @@ mod mint_nut04;
 mod start_up_check;
 pub mod subscription;
 mod swap;
-mod kvac;
+mod kvac_bootstrap;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintQuote};
@@ -440,6 +444,49 @@ impl Mint {
         )?;
 
         Ok(blinded_signature)
+    }
+
+    /// Issue a MAC
+    #[instrument(skip_all)]
+    pub async fn issue_mac(
+        &self,
+        input: &KvacCoinMessage,
+        proving_transcript: &mut CashuTranscript,
+    ) -> Result<(MAC, ZKP), Error> {
+        let KvacCoinMessage {
+            coin,
+            keyset_id,
+            t_tag
+        } = input;
+        self.ensure_kvac_keyset_loaded(keyset_id).await?;
+
+        let keyset_info = self
+            .localstore
+            .get_kvac_keyset_info(keyset_id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
+
+        let active = self
+            .localstore
+            .get_active_kvac_keyset_id(&keyset_info.unit)
+            .await?
+            .ok_or(Error::InactiveKeyset)?;
+
+        // Check that the keyset is active and should be used to sign
+        if keyset_info.id.ne(&active) {
+            return Err(Error::InactiveKeyset);
+        }
+
+        let config = self.config.load();
+        let keysets = &config.kvac_keysets;
+        let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
+
+        let key_pair = &keyset.kvac_keys;
+
+        let c = MAC::generate(&key_pair.private_key, &coin.0, Some(&coin.1), Some(&t_tag)).expect("MAC generate");
+        let iparams_proof = IParamsProof::create(&key_pair.private_key, &c, &coin.0, Some(&coin.1), proving_transcript);
+
+        Ok((c, iparams_proof))
     }
 
     /// Verify [`Proof`] meets conditions and is signed
