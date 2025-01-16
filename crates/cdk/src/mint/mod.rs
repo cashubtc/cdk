@@ -224,7 +224,6 @@ impl Mint {
                         derivation_path,
                         Some(derivation_path_index),
                         unit.clone(),
-                        *max_order,
                         *input_fee_ppk,
                     );
 
@@ -239,8 +238,9 @@ impl Mint {
 
         // Create new normal keysets
         for (unit, (fee, max_order)) in supported_units.iter() {
-            if !active_keyset_units.contains(&unit) {
-                let derivation_path = match custom_paths.get(&unit) {
+            if !active_keyset_units.contains(unit) {
+                tracing::debug!("Creating new keyset");
+                let derivation_path = match custom_paths.get(unit) {
                     Some(path) => path.clone(),
                     None => {
                         derivation_path_from_unit(unit.clone(), 0).ok_or(Error::UnsupportedUnit)?
@@ -265,8 +265,9 @@ impl Mint {
         }
 
         // Create new KVAC keysets
-        for (unit, (fee, max_order)) in supported_units {
+        for (unit, (fee, _max_order)) in supported_units {
             if !active_kvac_keyset_units.contains(&unit) {
+                tracing::debug!("Creating new kvac keyset");
                 let derivation_path = kvac_derivation_path_from_unit(unit.clone()).ok_or(Error::UnsupportedUnit)?;
 
                 let (keyset, keyset_info) = create_new_kvac_keyset(
@@ -275,7 +276,6 @@ impl Mint {
                     derivation_path,
                     Some(0),
                     unit.clone(),
-                    max_order,
                     fee,
                 );
 
@@ -630,7 +630,6 @@ fn create_new_kvac_keyset<C: secp256k1::Signing>(
     derivation_path: DerivationPath,
     derivation_path_index: Option<u32>,
     unit: CurrencyUnit,
-    max_order: u8,
     input_fee_ppk: u64,
 ) -> (MintKvacKeySet, MintKeySetInfo) {
     let keyset = MintKvacKeySet::generate(
@@ -650,7 +649,7 @@ fn create_new_kvac_keyset<C: secp256k1::Signing>(
         valid_to: None,
         derivation_path,
         derivation_path_index,
-        max_order,
+        max_order: 0,
         input_fee_ppk,
     };
     (keyset, keyset_info)
