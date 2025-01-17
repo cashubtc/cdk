@@ -695,7 +695,7 @@ version = "0.6.0"
 dependencies = [
  "bip39",
  "bitcoin 0.32.5",
- "cashu_kvac",
+ "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=802d7187cea96b034bd65e0949bc9c8d3db79156)",
  "cbor-diag",
  "ciborium",
  "instant",
@@ -710,6 +710,22 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "cashu_kvac"
+version = "0.0.1-alpha"
+source = "git+https://github.com/lollerfirst/cashu-kvac.git?rev=2d6c2f46e12a638e14d1a3f4126e52dd0ac0b7ef#2d6c2f46e12a638e14d1a3f4126e52dd0ac0b7ef"
+dependencies = [
+ "bitcoin 0.32.5",
+ "hex",
+ "itertools 0.13.0",
+ "merlin",
+ "once_cell",
+ "rug",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.11",
 ]
 
 [[package]]
@@ -764,9 +780,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.9"
+version = "1.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8293772165d9345bdaaa39b45b2109591e63fe5e6fbc23c6ff930a048aa310b"
+checksum = "13208fcbb66eaeffe09b99fffbe1af420f00a7b35aa99ad683dfc1aa76145229"
 dependencies = [
  "jobserver",
  "libc",
@@ -783,7 +799,7 @@ dependencies = [
  "bech32 0.9.1",
  "bip39",
  "bitcoin 0.32.5",
- "cashu_kvac",
+ "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=2d6c2f46e12a638e14d1a3f4126e52dd0ac0b7ef)",
  "cbor-diag",
  "cdk-common",
  "ciborium",
@@ -5241,9 +5257,9 @@ dependencies = [
 
 [[package]]
 name = "valuable"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b7e5d4d90034032940e4ace0d9a9a057e7a45cd94e6c007832e39edb82f6d"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"
