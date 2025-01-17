@@ -462,7 +462,7 @@ pub async fn post_bootstrap(
     State(state): State<MintState>,
     Json(payload): Json<BootstrapRequest>,
 ) -> Result<Json<BootstrapResponse>, Response> {
-    let swap_response = state
+    let bootstrap_response = state
         .mint
         .process_bootstrap_request(payload)
         .await
@@ -470,7 +470,7 @@ pub async fn post_bootstrap(
             tracing::error!("Could not process swap request: {}", err);
             into_response(err)
         })?;
-    Ok(Json(swap_response))
+    Ok(Json(bootstrap_response))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
