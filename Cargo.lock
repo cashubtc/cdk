@@ -695,7 +695,7 @@ version = "0.6.0"
 dependencies = [
  "bip39",
  "bitcoin 0.32.5",
- "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=802d7187cea96b034bd65e0949bc9c8d3db79156)",
+ "cashu_kvac",
  "cbor-diag",
  "ciborium",
  "instant",
@@ -716,22 +716,6 @@ dependencies = [
 name = "cashu_kvac"
 version = "0.0.1-alpha"
 source = "git+https://github.com/lollerfirst/cashu-kvac.git?rev=2d6c2f46e12a638e14d1a3f4126e52dd0ac0b7ef#2d6c2f46e12a638e14d1a3f4126e52dd0ac0b7ef"
-dependencies = [
- "bitcoin 0.32.5",
- "hex",
- "itertools 0.13.0",
- "merlin",
- "once_cell",
- "rug",
- "serde",
- "serde_json",
- "thiserror 2.0.11",
-]
-
-[[package]]
-name = "cashu_kvac"
-version = "0.0.1-alpha"
-source = "git+https://github.com/lollerfirst/cashu-kvac.git?rev=802d7187cea96b034bd65e0949bc9c8d3db79156#802d7187cea96b034bd65e0949bc9c8d3db79156"
 dependencies = [
  "bitcoin 0.32.5",
  "hex",
@@ -799,7 +783,7 @@ dependencies = [
  "bech32 0.9.1",
  "bip39",
  "bitcoin 0.32.5",
- "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=2d6c2f46e12a638e14d1a3f4126e52dd0ac0b7ef)",
+ "cashu_kvac",
  "cbor-diag",
  "cdk-common",
  "ciborium",
