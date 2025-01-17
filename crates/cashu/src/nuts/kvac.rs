@@ -5,6 +5,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1;
+use cashu_kvac::models::Coin;
 use cashu_kvac::models::MintPrivateKey;
 use cashu_kvac::models::MintPublicKey;
 use cashu_kvac::models::ZKP;
@@ -34,7 +35,7 @@ pub struct MintKvacKeys {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KvacKeys(MintPublicKey);
+pub struct KvacKeys(pub MintPublicKey);
 
 impl From<MintKvacKeys> for KvacKeys {
     fn from(keys: MintKvacKeys) -> Self {
@@ -144,6 +145,8 @@ impl From<MintKvacKeySet> for KvacKeySet {
 }
 
 /// Kvac Coin Message
+/// 
+/// A kvac coin as intended to be seen by the Mint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacCoinMessage {
@@ -158,13 +161,30 @@ pub struct KvacCoinMessage {
     /// and for recovery purporses
     #[serde(rename = "t")]
     pub t_tag: Scalar,
-    /// Coin
+    /// Pair of commitments
     /// 
     /// Pair ([`GroupElement`], [`GroupElement`]) that represent:
     /// 1) Value: encoding value 0
     /// 2) Script: encoding a custom script (Mint doesn't care)
     #[serde(rename = "c")]
-    pub coin: (GroupElement, GroupElement)
+    pub commitments: (GroupElement, GroupElement)
+}
+
+/// Kvac Coin
+/// 
+/// A KVAC coin as intended to be saved in the wallet.
+#[cfg(feature = "wallet")]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacCoin {
+    /// Keyset ID
+    ///
+    /// [`ID`] from which we expect a signature.
+    pub keyset_id: Id,
+    /// Coin
+    /// 
+    /// [`Coin`] containing [`MAC`], [`AmountAttribute`] and [`ScriptAttribute`]
+    pub coin: Coin,
 }
 
 // --- Requests ---

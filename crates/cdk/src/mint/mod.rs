@@ -454,7 +454,7 @@ impl Mint {
         proving_transcript: &mut CashuTranscript,
     ) -> Result<(MAC, ZKP), Error> {
         let KvacCoinMessage {
-            coin,
+            commitments,
             keyset_id,
             t_tag
         } = input;
@@ -483,8 +483,8 @@ impl Mint {
 
         let key_pair = &keyset.kvac_keys;
 
-        let c = MAC::generate(&key_pair.private_key, &coin.0, Some(&coin.1), Some(&t_tag)).expect("MAC generate");
-        let iparams_proof = IParamsProof::create(&key_pair.private_key, &c, &coin.0, Some(&coin.1), proving_transcript);
+        let c = MAC::generate(&key_pair.private_key, &commitments.0, Some(&commitments.1), Some(&t_tag)).expect("MAC generate");
+        let iparams_proof = IParamsProof::create(&key_pair.private_key, &c, &commitments.0, Some(&commitments.1), proving_transcript);
 
         Ok((c, iparams_proof))
     }

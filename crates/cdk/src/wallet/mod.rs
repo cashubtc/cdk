@@ -40,6 +40,7 @@ mod receive;
 mod send;
 pub mod subscription;
 mod swap;
+pub mod kvac;
 pub mod util;
 
 pub use cdk_common::wallet as types;

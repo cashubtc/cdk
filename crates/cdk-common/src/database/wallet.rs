@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use cashu::kvac::KvacKeys;
 
 use super::Error;
 use crate::common::ProofInfo;
@@ -46,13 +47,26 @@ pub trait Database: Debug {
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err>;
+    /// Add mint kvac keyset to storage
+    async fn add_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Self::Err>;
     /// Get mint keysets for mint url
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err>;
+    /// Get mint keysets for mint url
+    async fn get_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err>;
     /// Get mint keyset by id
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
+    /// Get mint kvac keyset by id
+    async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
 
     /// Add mint quote to storage
     async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Self::Err>;
@@ -72,10 +86,16 @@ pub trait Database: Debug {
 
     /// Add [`Keys`] to storage
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err>;
+    /// Add [`KvacKeys`] to storage
+    async fn add_kvac_keys(&self, keys: KvacKeys) -> Result<(), Self::Err>;
     /// Get [`Keys`] from storage
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err>;
+    /// Get [`KvacKeys`] from storage
+    async fn get_kvac_keys(&self, id: &Id) -> Result<Option<KvacKeys>, Self::Err>;
     /// Remove [`Keys`] from storage
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err>;
+    /// Remove [`KvacKeys`] from storage
+    async fn remove_kvac_keys(&self, id: &Id) -> Result<(), Self::Err>;
 
     /// Update the proofs in storage by adding new proofs or removing proofs by
     /// their Y value.
@@ -103,8 +123,12 @@ pub trait Database: Debug {
 
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
+    /// Increment Kvac Keyset counter
+    async fn increment_kvac_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     /// Get current Keyset counter
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
+    /// Get current Kvac Keyset counter
+    async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
 
     /// Get when nostr key was last checked
     async fn get_nostr_last_checked(

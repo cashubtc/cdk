@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{Error, WalletDatabase};
+use cdk_common::kvac::{KvacCoin, KvacKeys};
 use tokio::sync::RwLock;
 
 use crate::mint_url::MintUrl;

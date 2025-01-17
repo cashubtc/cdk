@@ -1,5 +1,6 @@
 //! Types
 
+use cashu_kvac::models::Coin;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -58,6 +59,23 @@ impl Melted {
     pub fn total_amount(&self) -> Amount {
         self.amount + self.fee_paid
     }
+}
+
+/// KvacCoininfo
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvacCoinInfo {
+    /// Coin
+    pub coin: Coin,
+    /// Amount
+    pub amount: Amount,
+    /// Mint Url
+    pub mint_url: MintUrl,
+    /// Coin State
+    pub state: State,
+    /// Coin Script
+    pub script: Option<Vec<u8>>,
+    /// Unit
+    pub unit: CurrencyUnit,
 }
 
 /// Prooinfo

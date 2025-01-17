@@ -5,8 +5,11 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::common::ProofInfo;
+use cashu_kvac::models::MintPublicKey;
+use cashu_kvac::secp::GroupElement;
+use cdk_common::common::{KvacCoinInfo, ProofInfo};
 use cdk_common::database::WalletDatabase;
+use cdk_common::kvac::KvacKeys;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
@@ -282,6 +285,39 @@ FROM mint
         Ok(())
     }
 
+    #[instrument(skip(self, keysets))]
+    async fn add_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Self::Err> {
+        for keyset in keysets {
+            sqlx::query(
+                r#"
+    INSERT INTO kvac_keyset
+    (mint_url, id, unit, active, input_fee_ppk)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        unit = excluded.unit,
+        active = excluded.active,
+        input_fee_ppk = excluded.input_fee_ppk;
+    "#,
+            )
+            .bind(mint_url.to_string())
+            .bind(keyset.id.to_string())
+            .bind(keyset.unit.to_string())
+            .bind(keyset.active)
+            .bind(keyset.input_fee_ppk as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        Ok(())
+    }
+
+
     #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
@@ -317,12 +353,71 @@ WHERE mint_url=?
         }
     }
 
+    #[instrument(skip(self))]
+    async fn get_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset
+WHERE mint_url=?
+        "#,
+        )
+        .bind(mint_url.to_string())
+        .fetch_all(&self.pool)
+        .await;
+
+        let recs = match recs {
+            Ok(recs) => recs,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        let keysets = recs
+            .iter()
+            .map(sqlite_row_to_keyset)
+            .collect::<Result<Vec<KeySetInfo>, _>>()?;
+
+        match keysets.is_empty() {
+            false => Ok(Some(keysets)),
+            true => Ok(None),
+        }
+    }
+
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
 FROM keyset
+WHERE id=?
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(recs) => recs,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(Some(sqlite_row_to_keyset(&rec)?))
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset
 WHERE id=?
         "#,
         )
@@ -506,6 +601,25 @@ VALUES (?, ?);
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    async fn add_kvac_keys(&self, keys: KvacKeys) -> Result<(), Self::Err> {
+        sqlx::query(
+            r#"
+INSERT OR REPLACE INTO kvac_key
+(id, Cw, I)
+VALUES (?, ?, ?);
+        "#,
+        )
+        .bind(Id::from(&keys).to_string())
+        .bind(keys.0.Cw.to_bytes().to_vec())
+        .bind(keys.0.I.to_bytes().to_vec())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
         let rec = sqlx::query(
@@ -532,11 +646,61 @@ WHERE id=?;
         Ok(serde_json::from_str(&keys).map_err(Error::from)?)
     }
 
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_kvac_keys(&self, keyset_id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_key
+WHERE id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+    
+        let cw: Vec<u8> = rec.try_get("Cw").map_err(Error::from)?;
+        let i: Vec<u8> = rec.try_get("I").map_err(Error::from)?;
+
+        let mint_key = KvacKeys { 
+            0: MintPublicKey { 
+                Cw: GroupElement::new(&cw),
+                I: GroupElement::new(&i),
+            }
+        };
+
+        Ok(Some(mint_key))
+    }
+
     #[instrument(skip(self))]
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
 DELETE FROM key
+WHERE id=?
+        "#,
+        )
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_kvac_keys(&self, id: &Id) -> Result<(), Self::Err> {
+        sqlx::query(
+            r#"
+DELETE FROM kvac_key
 WHERE id=?
         "#,
         )
@@ -701,11 +865,60 @@ WHERE id=?;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn increment_kvac_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        sqlx::query(
+            r#"
+UPDATE kvac_keyset
+SET counter=counter+?
+WHERE id=?;
+        "#,
+        )
+        .bind(count as i64)
+        .bind(keyset_id.to_string())
+        .execute(&mut transaction)
+        .await
+        .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT counter
 FROM keyset
+WHERE id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await;
+
+        let count = match rec {
+            Ok(rec) => {
+                let count: Option<u32> = rec.try_get("counter").map_err(Error::from)?;
+                count
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(count)
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT counter
+FROM kvac_keyset
 WHERE id=?;
         "#,
         )
@@ -907,3 +1120,8 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
     })
 }
+
+/*
+fn sqlite_row_to_kvac_coin_info(row: &SqliteRow) -> Result<KvacCoinInfo, Error> {
+
+}*/

@@ -57,7 +57,7 @@ impl Mint {
 
         let mut transcript = CashuTranscript::new();
         for (input, proof) in outputs.iter().zip(proofs) {
-            if !BootstrapProof::verify(&input.coin.0, proof, &mut transcript) {
+            if !BootstrapProof::verify(&input.commitments.0, proof, &mut transcript) {
                 return Err(Error::BootstrapVerificationError)
             }
         }
