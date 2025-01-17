@@ -11,7 +11,7 @@ impl Mint {
     /// Processes a [`BootstrapRequest`].
     /// 
     /// Issues MACs for zero-valued attributes
-    /// so that the client might use these as inputs in further (swap/mint/melt) requests
+    /// so that the client might use these as inputs in further (swap/mint/melt) requests.
     #[instrument(skip_all)]
     pub async fn process_bootstrap_request(
         &self,
@@ -22,26 +22,26 @@ impl Mint {
         // Length of the input vector must be 2
         // further privacy hardening
         // (if enforced at a protocol level)
-        let inputs = bootstrap_request.inputs;
-        if inputs.len() != 2 {
+        let outputs = bootstrap_request.outputs;
+        if outputs.len() != 2 {
             return Err(Error::RequestInvalidInputLength);
         }
 
         let proofs = bootstrap_request.proofs;
-        if inputs.len() != proofs.len() {
+        if outputs.len() != proofs.len() {
             return Err(Error::InputsToProofsLengthMismatch);
         }
 
         let mut keysets = vec![];
-        let mut keyset_units = HashSet::with_capacity(inputs.len());
-        for input in inputs.iter() {
+        let mut keyset_units = HashSet::with_capacity(outputs.len());
+        for input in outputs.iter() {
             match self.localstore.get_keyset_info(&input.keyset_id).await? {
                 Some(keyset) => {
                     keyset_units.insert(keyset.unit.clone());
                     keysets.push(keyset);
                 }
                 None => {
-                    tracing::info!("Bootstrap request with unknown keyset in inputs");
+                    tracing::info!("Bootstrap request with unknown keyset in outputs");
                     return Err(Error::UnknownKeySet);
                 }
             }
@@ -56,7 +56,7 @@ impl Mint {
         }
 
         let mut transcript = CashuTranscript::new();
-        for (input, proof) in inputs.iter().zip(proofs) {
+        for (input, proof) in outputs.iter().zip(proofs) {
             if !BootstrapProof::verify(&input.coin.0, proof, &mut transcript) {
                 return Err(Error::BootstrapVerificationError)
             }
@@ -67,14 +67,14 @@ impl Mint {
         let mut macs = vec![];
         let mut proofs = vec![];
         let mut proving_transcript = CashuTranscript::new();
-        for input in inputs.iter() {
-            let (mac, proof) = self.issue_mac(input, &mut proving_transcript).await?;
+        for output in outputs.iter() {
+            let (mac, proof) = self.issue_mac(output, &mut proving_transcript).await?;
             macs.push(mac);
             proofs.push(proof);
         }
 
         Ok(BootstrapResponse {
-            coins: inputs,
+            coins: outputs,
             macs,
             proofs,
         })

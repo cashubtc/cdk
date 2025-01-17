@@ -173,11 +173,11 @@ pub struct KvacCoinMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct BootstrapRequest {
-    /// Inputs
+    /// Outputs
     /// 
     /// [`Vec<KvacCoinMessage>`] Where each element is a coin encoding 0 as an amount.
     #[cfg_attr(feature = "swagger", schema(max_items = 1_000, min_items = 2))]
-    pub inputs: Vec<KvacCoinMessage>,
+    pub outputs: Vec<KvacCoinMessage>,
     /// Bootstrap Proofs
     /// 
     /// [`Vec<ZKP>`] proving that each coin is worth 0
