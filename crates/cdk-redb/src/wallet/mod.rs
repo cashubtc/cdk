@@ -9,7 +9,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
 use cdk_common::database::WalletDatabase;
-use cdk_common::kvac::KvacKeys;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote};
@@ -359,15 +358,6 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn add_mint_kvac_keysets(
-        &self,
-        _mint_url: MintUrl,
-        _keysets: Vec<KeySetInfo>,
-    ) -> Result<(), Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
-    }
-
-    #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
@@ -405,14 +395,6 @@ impl WalletDatabase for WalletRedbDatabase {
         }
     }
 
-    #[instrument(skip(self))]
-    async fn get_mint_kvac_keysets(
-        &self,
-        _mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
-    }
-
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
@@ -430,11 +412,6 @@ impl WalletDatabase for WalletRedbDatabase {
             }
             None => Ok(None),
         }
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
     }
 
     #[instrument(skip_all)]
@@ -573,11 +550,6 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip_all)]
-    async fn add_kvac_keys(&self, _keys: KvacKeys) -> Result<(), Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
-    }
-
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
@@ -591,11 +563,6 @@ impl WalletDatabase for WalletRedbDatabase {
         }
 
         Ok(None)
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_kvac_keys(&self, keyset_id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
@@ -613,11 +580,6 @@ impl WalletDatabase for WalletRedbDatabase {
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn remove_kvac_keys(&self, keyset_id: &Id) -> Result<(), Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
     }
 
     #[instrument(skip(self, added, deleted_ys))]
@@ -730,11 +692,6 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_kvac_keyset_counter(&self, keyset_id: &Id, _count: u32) -> Result<(), Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
@@ -744,11 +701,6 @@ impl WalletDatabase for WalletRedbDatabase {
             .map_err(Error::from)?;
 
         Ok(counter.map(|c| c.value()))
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
-        Err(Self::Err::from(Error::Unimplemented))
     }
 
     #[instrument(skip_all)]

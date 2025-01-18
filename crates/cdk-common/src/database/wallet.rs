@@ -50,9 +50,11 @@ pub trait Database: Debug {
     /// Add mint kvac keyset to storage
     async fn add_mint_kvac_keysets(
         &self,
-        mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
-    ) -> Result<(), Self::Err>;
+        _mint_url: MintUrl,
+        _keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get mint keysets for mint url
     async fn get_mint_keysets(
         &self,
@@ -61,12 +63,16 @@ pub trait Database: Debug {
     /// Get mint keysets for mint url
     async fn get_mint_kvac_keysets(
         &self,
-        mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err>;
+        _mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get mint keyset by id
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
     /// Get mint kvac keyset by id
-    async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
+    async fn get_kvac_keyset_by_id(&self, _keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add mint quote to storage
     async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Self::Err>;
@@ -87,15 +93,21 @@ pub trait Database: Debug {
     /// Add [`Keys`] to storage
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err>;
     /// Add [`KvacKeys`] to storage
-    async fn add_kvac_keys(&self, keys: KvacKeys) -> Result<(), Self::Err>;
+    async fn add_kvac_keys(&self, _keys: KvacKeys) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Keys`] from storage
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err>;
     /// Get [`KvacKeys`] from storage
-    async fn get_kvac_keys(&self, id: &Id) -> Result<Option<KvacKeys>, Self::Err>;
+    async fn get_kvac_keys(&self, _id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Remove [`Keys`] from storage
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err>;
     /// Remove [`KvacKeys`] from storage
-    async fn remove_kvac_keys(&self, id: &Id) -> Result<(), Self::Err>;
+    async fn remove_kvac_keys(&self, _id: &Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Update the proofs in storage by adding new proofs or removing proofs by
     /// their Y value.
@@ -124,11 +136,15 @@ pub trait Database: Debug {
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     /// Increment Kvac Keyset counter
-    async fn increment_kvac_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
+    async fn increment_kvac_keyset_counter(&self, _keyset_id: &Id, _count: u32) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get current Keyset counter
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
     /// Get current Kvac Keyset counter
-    async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
+    async fn get_kvac_keyset_counter(&self, _keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Get when nostr key was last checked
     async fn get_nostr_last_checked(
