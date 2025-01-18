@@ -342,6 +342,14 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
+    async fn add_mint_kvac_keysets(
+        &self,
+        _mint_url: MintUrl,
+        _keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
@@ -391,6 +399,13 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(keysets)
     }
 
+    async fn get_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let rexie = self.db.lock().await;
 
@@ -408,6 +423,10 @@ impl WalletDatabase for WalletRexieDatabase {
             .and_then(|k| serde_wasm_bindgen::from_value(k).ok());
 
         Ok(keyset)
+    }
+
+    async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
@@ -571,6 +590,10 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
+    async fn add_kvac_keys(&self, keys: Keys) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err> {
         let rexie = self.db.lock().await;
 
@@ -590,6 +613,10 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(keys)
     }
 
+    async fn get_kvac_keys(&self, _id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
         let rexie = self.db.lock().await;
 
@@ -603,6 +630,10 @@ impl WalletDatabase for WalletRexieDatabase {
         keys_store.delete(keyset_id).await.map_err(Error::from)?;
 
         Ok(())
+    }
+
+    async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn update_proofs(
@@ -728,6 +759,10 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
+    async fn increment_kvac_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let rexie = self.db.lock().await;
 
@@ -746,6 +781,10 @@ impl WalletDatabase for WalletRexieDatabase {
             .and_then(|c| serde_wasm_bindgen::from_value(c).ok());
 
         Ok(current_count)
+    }
+
+    async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
     }
 
     async fn add_nostr_last_checked(

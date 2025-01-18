@@ -594,7 +594,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_kvac_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+    async fn get_kvac_keys(&self, keyset_id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
 
