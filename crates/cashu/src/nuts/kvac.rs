@@ -5,16 +5,21 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1;
+use cashu_kvac::models::AmountAttribute;
 use cashu_kvac::models::Coin;
 use cashu_kvac::models::MintPrivateKey;
 use cashu_kvac::models::MintPublicKey;
+use cashu_kvac::models::ScriptAttribute;
 use cashu_kvac::models::ZKP;
 use cashu_kvac::models::MAC;
 use cashu_kvac::secp::GroupElement;
 use cashu_kvac::secp::Scalar;
+use cashu_kvac::secp::SCALAR_ZERO;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use crate::util::hex;
+use crate::Amount;
+use crate::SECP256K1;
 use super::nut02::KeySetVersion;
 use super::CurrencyUnit;
 use super::Id;
@@ -25,7 +30,10 @@ use serde_with::VecSkipError;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Incorrect KVAC KeySet ID")]
-    IncorrectKeySetId
+    IncorrectKeySetId,
+    /// Bip32 Error
+    #[error(transparent)]
+    Bip32(#[from] bitcoin::bip32::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +178,133 @@ pub struct KvacCoinMessage {
     pub commitments: (GroupElement, GroupElement)
 }
 
+impl From<&KvacPreCoin> for KvacCoinMessage {
+    fn from(c: &KvacPreCoin) -> Self {
+        Self {
+            keyset_id: c.keyset_id,
+            t_tag: c.t_tag.clone(),
+            commitments: (
+                c.attributes.0.commitment(),
+                c.attributes.1.commitment(),
+            )
+        }
+    }
+}
+
+
+/// Coin without a MAC
+/// 
+/// A kvac coin as intended to be seen by the Mint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacPreCoin {
+    /// Keyset ID
+    ///
+    /// ID from which we expect a signature.
+    pub keyset_id: Id,
+    /// Amount
+    /// 
+    /// Amount encoded in [`AmountAttribute`]
+    /// (for easier retrieval)
+    pub amount: Amount,
+    /// Script
+    /// 
+    /// Script encoded in [`ScriptAttribute`]
+    pub script: Option<Vec<u8>>,
+    /// CurrencyUnit
+    /// 
+    /// Unit of the coin
+    pub unit: CurrencyUnit,
+    /// Tag
+    /// 
+    /// Unique identifier used to create the algebraic MAC from
+    /// and for recovery purporses
+    pub t_tag: Scalar,
+    /// Pair of attributes
+    /// 
+    /// Pair ([`AmountAttribute`], [`ScriptAttribute`]) that represent:
+    /// 1) Value: encoding value 0
+    /// 2) Script: encoding a custom script
+    pub attributes: (AmountAttribute, ScriptAttribute)
+}
+
+impl KvacPreCoin {
+    pub fn from_xpriv(
+        keyset_id: Id,
+        amount: Amount,
+        unit: CurrencyUnit,
+        script: Option<Vec<u8>>,
+        counter: u32,
+        xpriv: Xpriv,
+    ) -> Result<Self, Error> {
+        let t_path = derive_path_from_kvac_keyset_id(keyset_id)?
+            .child(ChildNumber::from_hardened_idx(counter)?)
+            .child(ChildNumber::from_normal_idx(0)?);
+        let r_a_path = derive_path_from_kvac_keyset_id(keyset_id)?
+            .child(ChildNumber::from_hardened_idx(counter)?)
+            .child(ChildNumber::from_normal_idx(1)?);
+        let r_s_path = derive_path_from_kvac_keyset_id(keyset_id)?
+            .child(ChildNumber::from_hardened_idx(counter)?)
+            .child(ChildNumber::from_normal_idx(2)?);
+        
+        let t_xpriv = xpriv.derive_priv(&SECP256K1, &t_path)?;
+        let r_a_priv = xpriv.derive_priv(&SECP256K1, &r_a_path)?;
+        let r_s_priv = xpriv.derive_priv(&SECP256K1, &r_s_path)?;
+
+        let t_tag = Scalar::new(&t_xpriv.private_key.secret_bytes());
+        let a = AmountAttribute::new(amount.0, Some(&r_a_priv.private_key.secret_bytes()));
+        let s = match script.clone() {
+            Some(script_vec) => ScriptAttribute::new(
+                &script_vec,
+                Some(&r_s_priv.private_key.secret_bytes())
+            ),
+            None => ScriptAttribute {
+                s: Scalar::new(&SCALAR_ZERO),
+                r: Scalar::new(&r_s_priv.private_key.secret_bytes()),
+            }
+        };
+
+        Ok(Self {
+            keyset_id,
+            amount,
+            script,
+            unit,
+            t_tag,
+            attributes: (a, s)
+        })
+        
+    }
+
+    pub fn new(
+        keyset_id: Id,
+        amount: Amount,
+        unit: CurrencyUnit,
+        script: Option<Vec<u8>>,
+    ) -> Self {
+        let t_tag = Scalar::random();
+        let a = AmountAttribute::new(amount.0, None);
+        let s = match script.clone() {
+            Some(script_vec) => ScriptAttribute::new(
+                &script_vec,
+                None,
+            ),
+            None => ScriptAttribute {
+                s: Scalar::new(&SCALAR_ZERO),
+                r: Scalar::random(),
+            }
+        };
+        
+        Self {
+            keyset_id,
+            amount,
+            script,
+            unit,
+            t_tag,
+            attributes: (a, s)
+        } 
+    }
+}
+
 /// Kvac Coin
 /// 
 /// A KVAC coin as intended to be saved in the wallet.
@@ -181,10 +316,36 @@ pub struct KvacCoin {
     ///
     /// [`ID`] from which we expect a signature.
     pub keyset_id: Id,
+    /// Amount
+    /// 
+    /// Amount encoded in AmountAttribute
+    /// (for easier retrieval)
+    pub amount: Amount,
+    /// Script
+    /// 
+    /// Script encoded in ScriptAttribute
+    pub script: Option<Vec<u8>>,
+    /// CurrencyUnit
+    /// 
+    /// Unit of the coin
+    pub unit: CurrencyUnit,
     /// Coin
     /// 
     /// [`Coin`] containing [`MAC`], [`AmountAttribute`] and [`ScriptAttribute`]
     pub coin: Coin,
+}
+
+// --- Helpers ---
+
+fn derive_path_from_kvac_keyset_id(id: Id) -> Result<DerivationPath, Error> {
+    let index = u32::from(id);
+
+    let keyset_child_number = ChildNumber::from_hardened_idx(index)?;
+    Ok(DerivationPath::from(vec![
+        ChildNumber::from_hardened_idx(129372)?,
+        ChildNumber::from_hardened_idx(1)?,
+        keyset_child_number,
+    ]))
 }
 
 // --- Requests ---

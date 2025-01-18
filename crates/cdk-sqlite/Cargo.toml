@@ -16,7 +16,7 @@ mint = []
 wallet = []
 
 [dependencies]
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "657f74e0a04e67fe9a7c83f9c4080cfb0b652c6a" }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "f7bcd0ae6cc23b9881979f81f26261eabfecdd0d" }
 async-trait = "0.1"
 cdk-common = { path = "../cdk-common", version = "0.6.0" }
 bitcoin = { version = "0.32.2", default-features = false }

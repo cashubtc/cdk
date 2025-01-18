@@ -29,7 +29,7 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(transparent)]
-pub struct Amount(u64);
+pub struct Amount(pub u64);
 
 impl Amount {
     /// Amount zero

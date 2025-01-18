@@ -5,9 +5,10 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cashu::kvac::KvacKeys;
+use cashu_kvac::secp::Scalar;
 
 use super::Error;
-use crate::common::ProofInfo;
+use crate::common::{KvacCoinInfo, ProofInfo};
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
@@ -116,6 +117,14 @@ pub trait Database: Debug {
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err>;
+    /// Update the coins in storage by adding new coins or removing coins
+    async fn update_kvac_coins(
+        &self,
+        _added: Vec<KvacCoinInfo>,
+        _removed_ts: Vec<Scalar>,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Set proofs as pending in storage. Proofs are identified by their Y
     /// value.
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;

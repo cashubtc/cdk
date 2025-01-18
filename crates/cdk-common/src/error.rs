@@ -122,6 +122,16 @@ pub enum Error {
     /// KVAC Bootstrap proofs failed to verify
     #[error("Failed to verify one of the provided proofs")]
     BootstrapVerificationError,
+    /// KVAC IParams proofs failed to verify
+    #[error("Failed to verify one of the provided proofs")]
+    IParamsVerificationError,
+    #[error("Out of bounds")]
+    OutOfBounds,
+
+    // Implementation Status
+    /// Not yet implemented
+    #[error("This is not yet implemented")]
+    NotImplemented,
 
     // Wallet Errors
     /// P2PK spending conditions not met
@@ -264,6 +274,10 @@ pub enum Error {
     #[error(transparent)]
     #[cfg(feature = "mint")]
     Lightning(#[from] crate::lightning::Error),
+    /// KVAC Error
+    #[error(transparent)]
+    #[cfg(feature = "wallet")]
+    Kvac(#[from] crate::nuts::kvac::Error)
 }
 
 /// CDK Error Response
