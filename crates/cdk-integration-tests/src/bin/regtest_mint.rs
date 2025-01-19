@@ -75,6 +75,7 @@ async fn main() -> Result<()> {
 
     let mut lnd = init_lnd().await;
     lnd.start_lnd().unwrap();
+    tracing::info!("Started lnd node");
 
     let lnd_client = init_lnd_client().await.unwrap();
 
