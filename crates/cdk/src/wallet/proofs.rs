@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_over() {
         let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
-        let selected_proofs = Wallet::select_proofs_v2(21.into(), proofs).unwrap();
+        let selected_proofs = Wallet::select_proofs_v2(31.into(), proofs).unwrap();
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 32.into());
     }
