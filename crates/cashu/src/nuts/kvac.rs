@@ -165,7 +165,7 @@ pub struct KvacCoinMessage {
     pub keyset_id: Id,
     /// Tag
     /// 
-    /// Unique identifier used to create the algebraic MAC from
+    /// Unique identifier used by the Mint to create the algebraic MAC
     /// and for recovery purporses
     #[serde(rename = "t")]
     pub t_tag: Scalar,

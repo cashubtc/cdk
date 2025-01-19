@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cashu_kvac::secp::Scalar;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::database::{Error, WalletDatabase};
 use cdk_common::kvac::KvacKeys;
@@ -31,8 +32,7 @@ pub struct WalletMemoryDatabase {
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
     mint_kvac_keys: Arc<RwLock<HashMap<Id, KvacKeys>>>,
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
-    kvac_coins: Arc<RwLock<Vec<KvacCoinInfo>>>,
-    kvac_null_coins: Arc<RwLock<Vec<KvacCoinInfo>>>,
+    kvac_coins: Arc<RwLock<HashMap<Scalar, KvacCoinInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
     kvac_keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
     nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
@@ -68,8 +68,7 @@ impl WalletMemoryDatabase {
                 mint_kvac_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
             )),
             proofs: Arc::new(RwLock::new(HashMap::new())),
-            kvac_coins: Arc::new(RwLock::new(Vec::new())),
-            kvac_null_coins: Arc::new(RwLock::new(Vec::new())),
+            kvac_coins: Arc::new(RwLock::new(HashMap::new())),
             keyset_counter: Arc::new(RwLock::new(keyset_counter)),
             kvac_keyset_counter: Arc::new(RwLock::new(kvac_keyset_counter)),
             nostr_last_checked: Arc::new(RwLock::new(nostr_last_checked)),
@@ -326,6 +325,24 @@ impl WalletDatabase for WalletMemoryDatabase {
 
         for y in removed_ys.into_iter() {
             all_proofs.remove(&y);
+        }
+
+        Ok(())
+    }
+
+    async fn update_kvac_coins(
+        &self,
+        added: Vec<KvacCoinInfo>,
+        removed_ts: Vec<Scalar>,
+    ) -> Result<(), Self::Err> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for coin_info in added.into_iter() {
+            all_coins.insert(coin_info.coin.mac.t.clone(), coin_info);
+        }
+
+        for t in removed_ts.into_iter() {
+            all_coins.remove(&t);
         }
 
         Ok(())

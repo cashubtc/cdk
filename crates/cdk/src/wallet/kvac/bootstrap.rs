@@ -12,6 +12,9 @@ use tracing::instrument;
 use crate::Wallet;
 
 impl Wallet {
+    /// Request the Mint for a MAC on zero-valued coins
+    /// 
+    /// Use this to obtain initial inputs for further KVAC requests
     #[instrument(skip(self))]
     pub async fn bootstrap(
         &self,
@@ -34,10 +37,10 @@ impl Wallet {
         let mut bootstrap_proofs = vec![];
         let mut proving_transcript = CashuTranscript::new();
         for _ in 0..2 {
-            let pre_coin = KvacPreCoin::new(active_keyset_id.clone(), Amount::from(0), self.unit, script);
+            let pre_coin = KvacPreCoin::new(active_keyset_id.clone(), Amount::from(0), self.unit.clone(), script.clone());
             bootstrap_proofs.push(BootstrapProof::create(&pre_coin.attributes.0, &mut proving_transcript));
-            pre_coins.push(pre_coin);
             coin_messages.push(KvacCoinMessage::from(&pre_coin));
+            pre_coins.push(pre_coin);
         }
 
         let request = BootstrapRequest {
@@ -50,7 +53,7 @@ impl Wallet {
         // Verify IParams Proofs and construct coins
         let mut coins = vec![];
         let mint_keys = self.get_kvac_keyset_keys(active_keyset_id).await?;
-        let verifying_transcript = CashuTranscript::new();
+        let mut verifying_transcript = CashuTranscript::new();
         for (i, pre_coin) in pre_coins.into_iter().enumerate() {
             let proof = response.proofs.get(i).ok_or(Error::OutOfBounds)?;
             let mac = response.macs.get(i).ok_or(Error::OutOfBounds)?;
@@ -77,14 +80,14 @@ impl Wallet {
                     amount: coin.amount,
                     mint_url: self.mint_url.clone(),
                     state: State::Unspent,
-                    script: coin.script,
-                    unit: coin.unit,
+                    script: coin.script.clone(),
+                    unit: coin.unit.clone(),
                 }
             )
-            .collect()?;
+            .collect::<Vec<KvacCoinInfo>>();
 
         // Add new proofs to store
-        self.localstore.update_kvac_coins(coins_info, vec![]).await?;
+        self.localstore.update_kvac_coins(coins_infos, vec![]).await?;
 
         Ok(coins)
     }
