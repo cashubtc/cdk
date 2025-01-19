@@ -14,7 +14,6 @@ use cashu_kvac::models::ZKP;
 use cashu_kvac::models::MAC;
 use cashu_kvac::secp::GroupElement;
 use cashu_kvac::secp::Scalar;
-use cashu_kvac::secp::SCALAR_ZERO;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use crate::util::hex;
@@ -210,7 +209,7 @@ pub struct KvacPreCoin {
     /// Script
     /// 
     /// Script encoded in [`ScriptAttribute`]
-    pub script: Option<Vec<u8>>,
+    pub script: Option<String>,
     /// CurrencyUnit
     /// 
     /// Unit of the coin
@@ -233,7 +232,7 @@ impl KvacPreCoin {
         keyset_id: Id,
         amount: Amount,
         unit: CurrencyUnit,
-        script: Option<Vec<u8>>,
+        script: Option<String>,
         counter: u32,
         xpriv: Xpriv,
     ) -> Result<Self, Error> {
@@ -255,13 +254,13 @@ impl KvacPreCoin {
         let a = AmountAttribute::new(amount.0, Some(&r_a_priv.private_key.secret_bytes()));
         let s = match script.clone() {
             Some(script_vec) => ScriptAttribute::new(
-                &script_vec,
+                script_vec.as_bytes(),
                 Some(&r_s_priv.private_key.secret_bytes())
             ),
-            None => ScriptAttribute {
-                s: Scalar::new(&SCALAR_ZERO),
-                r: Scalar::new(&r_s_priv.private_key.secret_bytes()),
-            }
+            None => ScriptAttribute::new(
+                b"",
+                Some(&r_s_priv.private_key.secret_bytes()),
+            ),
         };
 
         Ok(Self {
@@ -279,19 +278,19 @@ impl KvacPreCoin {
         keyset_id: Id,
         amount: Amount,
         unit: CurrencyUnit,
-        script: Option<Vec<u8>>,
+        script: Option<String>,
     ) -> Self {
         let t_tag = Scalar::random();
         let a = AmountAttribute::new(amount.0, None);
         let s = match script.clone() {
             Some(script_vec) => ScriptAttribute::new(
-                &script_vec,
+                script_vec.as_bytes(),
                 None,
             ),
-            None => ScriptAttribute {
-                s: Scalar::new(&SCALAR_ZERO),
-                r: Scalar::random(),
-            }
+            None => ScriptAttribute::new(
+                b"",
+                None,
+            )
         };
         
         Self {
@@ -324,7 +323,7 @@ pub struct KvacCoin {
     /// Script
     /// 
     /// Script encoded in ScriptAttribute
-    pub script: Option<Vec<u8>>,
+    pub script: Option<String>,
     /// CurrencyUnit
     /// 
     /// Unit of the coin

@@ -73,7 +73,7 @@ pub struct KvacCoinInfo {
     /// Coin State
     pub state: State,
     /// Coin Script
-    pub script: Option<Vec<u8>>,
+    pub script: Option<String>,
     /// Unit
     pub unit: CurrencyUnit,
 }

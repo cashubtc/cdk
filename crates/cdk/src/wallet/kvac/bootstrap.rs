@@ -18,7 +18,7 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn bootstrap(
         &self,
-        script: Option<Vec<u8>>,
+        script: Option<String>,
     ) -> Result<Vec<KvacCoin>, Error> {
         // Check that mint is in store of mints
         if self
