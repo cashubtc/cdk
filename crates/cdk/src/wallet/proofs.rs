@@ -422,6 +422,20 @@ mod tests {
     }
 
     #[test]
+    fn test_select_proofs_v2_empty() {
+        let proofs = vec![];
+        let selected_proofs = Wallet::select_proofs_v2(0.into(), proofs).unwrap();
+        assert_eq!(selected_proofs.len(), 0);
+    }
+
+    #[test]
+    fn test_select_proofs_v2_insufficient() {
+        let proofs = vec![proof(1), proof(2), proof(4)];
+        let selected_proofs = Wallet::select_proofs_v2(8.into(), proofs);
+        assert!(selected_proofs.is_err());
+    }
+
+    #[test]
     fn test_select_proofs_v2_exact() {
         let proofs = vec![
             proof(1),
