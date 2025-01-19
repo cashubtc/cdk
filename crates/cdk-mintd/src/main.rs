@@ -24,6 +24,8 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
 use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
 use cdk::types::LnKey;
 use cdk_axum::cache::HttpCache;
+#[cfg(feature = "management-rpc")]
+use cdk_mint_rpc::MintRPCServer;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
@@ -46,10 +48,11 @@ async fn main() -> anyhow::Result<()> {
 
     let sqlx_filter = "sqlx=warn";
     let hyper_filter = "hyper=warn";
+    let h2_filter = "h2=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
+        "{},{},{},{}",
+        default_filter, sqlx_filter, hyper_filter, h2_filter
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -303,7 +306,6 @@ async fn main() -> anyhow::Result<()> {
         .with_name(settings.mint_info.name)
         .with_version(mint_version)
         .with_description(settings.mint_info.description)
-        .with_quote_ttl(10000, 10000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
     let cached_endpoints = vec![
@@ -358,11 +360,50 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let shutdown = Arc::new(Notify::new());
-
+    let mint_clone = Arc::clone(&mint);
     tokio::spawn({
         let shutdown = Arc::clone(&shutdown);
-        async move { mint.wait_for_paid_invoices(shutdown).await }
+        async move { mint_clone.wait_for_paid_invoices(shutdown).await }
     });
+
+    #[cfg(feature = "management-rpc")]
+    let mut rpc_enabled = false;
+    #[cfg(not(feature = "management-rpc"))]
+    let rpc_enabled = false;
+
+    #[cfg(feature = "management-rpc")]
+    let mut rpc_server: Option<cdk_mint_rpc::MintRPCServer> = None;
+
+    #[cfg(feature = "management-rpc")]
+    {
+        if let Some(rpc_settings) = settings.mint_management_rpc {
+            if rpc_settings.enabled {
+                let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
+                let port = rpc_settings.port.unwrap_or(8086);
+                let mut mint_rpc = MintRPCServer::new(&addr, port, mint.clone())?;
+
+                let tls_dir = rpc_settings.tls_dir_path.unwrap_or(work_dir.join("tls"));
+
+                mint_rpc.start(Some(tls_dir)).await?;
+
+                rpc_server = Some(mint_rpc);
+
+                rpc_enabled = true;
+            }
+        }
+    }
+
+    if rpc_enabled {
+        if mint.mint_info().await.is_err() {
+            tracing::info!("Mint info not set on mint, setting.");
+            mint.set_mint_info(mint_builder.mint_info).await?;
+        } else {
+            tracing::info!("Mint info already set, not using config file settings.");
+        }
+    } else {
+        tracing::warn!("RPC not enabled, using mint info from config.");
+        mint.set_mint_info(mint_builder.mint_info).await?;
+    }
 
     let axum_result = axum::Server::bind(
         &format!("{}:{}", listen_addr, listen_port)
@@ -373,6 +414,13 @@ async fn main() -> anyhow::Result<()> {
     .await;
 
     shutdown.notify_waiters();
+
+    #[cfg(feature = "management-rpc")]
+    {
+        if let Some(rpc_server) = rpc_server {
+            rpc_server.stop().await?;
+        }
+    }
 
     match axum_result {
         Ok(_) => {

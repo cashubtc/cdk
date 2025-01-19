@@ -244,6 +244,13 @@
               cargo update -p async-compression --precise 0.4.3
               cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
 
+              cargo update -p clap_lex --precise 0.3.0
+              cargo update -p regex --precise 1.9.6
+              cargo update -p petgraph  --precise 0.6.2
+              cargo update -p hashbrown@0.15.2  --precise 0.15.0
+              cargo update -p async-stream --precise 0.3.5
+              cargo update -p home --precise 0.5.5
+
               # For wasm32-unknown-unknown target
               cargo update -p bumpalo --precise 3.12.0
               cargo update -p moka --precise 0.11.1
@@ -291,6 +298,7 @@
                 export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
                   pkgs.zlib
                   ]}:$LD_LIBRARY_PATH
+                export RUST_SRC_PATH=${nightly_toolchain}/lib/rustlib/src/rust/library
               '';
               buildInputs = buildInputs ++ [ nightly_toolchain ];
               inherit nativeBuildInputs;

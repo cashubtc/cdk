@@ -26,6 +26,12 @@ impl MintVersion {
     }
 }
 
+impl std::fmt::Display for MintVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.name, self.version)
+    }
+}
+
 impl Serialize for MintVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

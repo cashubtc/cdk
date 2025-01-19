@@ -17,7 +17,7 @@ bip39 = "2.0"
 cdk = { path = "../cdk", version = "0.6.0", default-features = false, features = ["wallet"]}
 cdk-redb = { path = "../cdk-redb", version = "0.6.0", default-features = false, features = ["wallet"] }
 cdk-sqlite = { path = "../cdk-sqlite", version = "0.6.0", default-features = false, features = ["wallet"] }
-clap = { version = "4.4.8", features = ["derive", "env", "default"] }
+clap = { version = "~4.0.32", features = ["derive"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", default-features = false }
