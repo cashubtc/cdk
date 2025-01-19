@@ -26,7 +26,7 @@ pub async fn start_mint(addr: &str, port: u16, mint: Mint) -> Result<()> {
         async move { mint.wait_for_paid_invoices(shutdown).await }
     });
 
-    println!("Staring Axum server");
+    tracing::info!("Staring Axum server");
     axum::Server::bind(&format!("{}:{}", addr, port).as_str().parse().unwrap())
         .serve(mint_service.into_make_service())
         .await?;
