@@ -5,7 +5,7 @@ use cdk_common::kvac::{BootstrapRequest, BootstrapResponse};
 use tracing::instrument;
 use crate::Error;
 
-use super::Mint;
+use super::super::Mint;
 
 impl Mint {
     /// Processes a [`BootstrapRequest`].
@@ -35,13 +35,13 @@ impl Mint {
         let mut keysets = vec![];
         let mut keyset_units = HashSet::with_capacity(outputs.len());
         for input in outputs.iter() {
-            match self.localstore.get_keyset_info(&input.keyset_id).await? {
+            match self.localstore.get_kvac_keyset_info(&input.keyset_id).await? {
                 Some(keyset) => {
                     keyset_units.insert(keyset.unit.clone());
                     keysets.push(keyset);
                 }
                 None => {
-                    tracing::info!("Bootstrap request with unknown keyset in outputs");
+                    tracing::error!("Bootstrap request with unknown keyset in outputs");
                     return Err(Error::UnknownKeySet);
                 }
             }

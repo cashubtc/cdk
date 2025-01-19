@@ -93,7 +93,6 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn get_active_mint_kvac_keyset(&self) -> Result<KeySetInfo, Error> {
         let active_keysets = self.get_active_mint_kvac_keysets().await?;
-
         let keyset_with_lowest_fee = active_keysets
             .into_iter()
             .min_by_key(|key| key.input_fee_ppk)

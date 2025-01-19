@@ -179,7 +179,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)
     })?;
-
+    tracing::info!("keysets: {}", serde_json::to_string(&keysets).unwrap());
     Ok(Json(keysets))
 }
 
@@ -197,10 +197,8 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
 pub async fn get_kvac_keysets(State(state): State<MintState>) -> Result<Json<KvacKeysetResponse>, Response> {
     let keysets = state.mint.kvac_keysets().await.map_err(|err| {
-        tracing::error!("Could not get keysets: {}", err);
         into_response(err)
     })?;
-
     Ok(Json(keysets))
 }
 
@@ -467,7 +465,7 @@ pub async fn post_bootstrap(
         .process_bootstrap_request(payload)
         .await
         .map_err(|err| {
-            tracing::error!("Could not process swap request: {}", err);
+            tracing::error!("Could not process bootstrap request: {}", err);
             into_response(err)
         })?;
     Ok(Json(bootstrap_response))
