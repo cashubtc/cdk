@@ -22,15 +22,21 @@ pub trait Database {
     /// Add Active Keyset
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
     /// Add Active KVAC Keyset
-    async fn set_active_kvac_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
+    async fn set_active_kvac_keyset(&self, _unit: CurrencyUnit, _id: Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get Active Keyset
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
     /// Get Active KVAC Keyset
-    async fn get_active_kvac_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
+    async fn get_active_kvac_keyset_id(&self, _unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get all Active Keyset
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err>;
     /// Get all Active KVAC Keysets
-    async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err>;
+    async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add [`MintMintQuote`]
     async fn add_mint_quote(&self, quote: MintMintQuote) -> Result<(), Self::Err>;
@@ -87,15 +93,21 @@ pub trait Database {
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
     /// Add KVAC [`MintKeySetInfo`]
-    async fn add_kvac_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
+    async fn add_kvac_keyset_info(&self, _keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`MintKeySetInfo`]
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
     /// Get KVAC [`MintKeySetInfo`]
-    async fn get_kvac_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
+    async fn get_kvac_keyset_info(&self, _id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
     /// Get KVAC [`MintKeySetInfo`]s
-    async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+    async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add spent [`Proofs`]
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
