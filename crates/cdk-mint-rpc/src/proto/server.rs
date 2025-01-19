@@ -1,0 +1,586 @@
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
+
+use cdk::mint::Mint;
+use cdk::nuts::nut04::MintMethodSettings;
+use cdk::nuts::nut05::MeltMethodSettings;
+use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+use cdk::types::QuoteTTL;
+use cdk::Amount;
+use thiserror::Error;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
+use tokio::time::Duration;
+use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
+use tonic::{Request, Response, Status};
+
+use crate::cdk_mint_server::{CdkMint, CdkMintServer};
+use crate::{
+    ContactInfo, GetInfoRequest, GetInfoResponse, RotateNextKeysetRequest,
+    RotateNextKeysetResponse, UpdateContactRequest, UpdateDescriptionRequest, UpdateIconUrlRequest,
+    UpdateMotdRequest, UpdateNameRequest, UpdateNut04QuoteRequest, UpdateNut04Request,
+    UpdateNut05Request, UpdateQuoteTtlRequest, UpdateResponse, UpdateUrlRequest,
+};
+
+/// Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Parse error
+    #[error(transparent)]
+    Parse(#[from] std::net::AddrParseError),
+    /// Transport error
+    #[error(transparent)]
+    Transport(#[from] tonic::transport::Error),
+    /// Io error
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// CDK Mint RPC Server
+#[derive(Clone)]
+pub struct MintRPCServer {
+    socket_addr: SocketAddr,
+    mint: Arc<Mint>,
+    shutdown: Arc<Notify>,
+    handle: Option<Arc<JoinHandle<Result<(), Error>>>>,
+}
+
+impl MintRPCServer {
+    pub fn new(addr: &str, port: u16, mint: Arc<Mint>) -> Result<Self, Error> {
+        Ok(Self {
+            socket_addr: format!("{addr}:{port}").parse()?,
+            mint,
+            shutdown: Arc::new(Notify::new()),
+            handle: None,
+        })
+    }
+
+    pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> Result<(), Error> {
+        tracing::info!("Starting RPC server {}", self.socket_addr);
+
+        let server = match tls_dir {
+            Some(tls_dir) => {
+                tracing::info!("TLS configuration found, starting secure server");
+                let cert = std::fs::read_to_string(tls_dir.join("server.pem"))?;
+                let key = std::fs::read_to_string(tls_dir.join("server.key"))?;
+                let client_ca_cert = std::fs::read_to_string(tls_dir.join("ca.pem"))?;
+                let client_ca_cert = Certificate::from_pem(client_ca_cert);
+                let server_identity = Identity::from_pem(cert, key);
+                let tls_config = ServerTlsConfig::new()
+                    .identity(server_identity)
+                    .client_ca_root(client_ca_cert);
+
+                Server::builder()
+                    .tls_config(tls_config)?
+                    .add_service(CdkMintServer::new(self.clone()))
+            }
+            None => {
+                tracing::warn!("No valid TLS configuration found, starting insecure server");
+                Server::builder().add_service(CdkMintServer::new(self.clone()))
+            }
+        };
+
+        let shutdown = self.shutdown.clone();
+        let addr = self.socket_addr;
+
+        self.handle = Some(Arc::new(tokio::spawn(async move {
+            let server = server.serve_with_shutdown(addr, async {
+                shutdown.notified().await;
+            });
+
+            server.await?;
+            Ok(())
+        })));
+
+        Ok(())
+    }
+
+    pub async fn stop(&self) -> Result<(), Error> {
+        self.shutdown.notify_one();
+        if let Some(handle) = &self.handle {
+            while !handle.is_finished() {
+                tracing::info!("Waitning for mint rpc server to stop");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+
+        tracing::info!("Mint rpc server stopped");
+        Ok(())
+    }
+}
+
+impl Drop for MintRPCServer {
+    fn drop(&mut self) {
+        tracing::debug!("Dropping mint rpc server");
+        self.shutdown.notify_one();
+    }
+}
+
+#[tonic::async_trait]
+impl CdkMint for MintRPCServer {
+    async fn get_info(
+        &self,
+        _request: Request<GetInfoRequest>,
+    ) -> Result<Response<GetInfoResponse>, Status> {
+        let info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let total_issued = self
+            .mint
+            .total_issued()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let total_issued: Amount = Amount::try_sum(total_issued.values().cloned())
+            .map_err(|_| Status::internal("Overflow".to_string()))?;
+
+        let total_redeemed = self
+            .mint
+            .total_redeemed()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let total_redeemed: Amount = Amount::try_sum(total_redeemed.values().cloned())
+            .map_err(|_| Status::internal("Overflow".to_string()))?;
+
+        let contact = info
+            .contact
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| ContactInfo {
+                method: c.method,
+                info: c.info,
+            })
+            .collect();
+
+        Ok(Response::new(GetInfoResponse {
+            name: info.name,
+            description: info.description,
+            long_description: info.description_long,
+            version: info.version.map(|v| v.to_string()),
+            contact,
+            motd: info.motd,
+            icon_url: info.icon_url,
+            urls: info.urls.unwrap_or_default(),
+            total_issued: total_issued.into(),
+            total_redeemed: total_redeemed.into(),
+        }))
+    }
+
+    async fn update_motd(
+        &self,
+        request: Request<UpdateMotdRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let motd = request.into_inner().motd;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        info.motd = Some(motd);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_short_description(
+        &self,
+        request: Request<UpdateDescriptionRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let description = request.into_inner().description;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        info.description = Some(description);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_long_description(
+        &self,
+        request: Request<UpdateDescriptionRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let description = request.into_inner().description;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        info.description = Some(description);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_name(
+        &self,
+        request: Request<UpdateNameRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let name = request.into_inner().name;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        info.name = Some(name);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_icon_url(
+        &self,
+        request: Request<UpdateIconUrlRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let icon_url = request.into_inner().icon_url;
+
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        info.icon_url = Some(icon_url);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn add_url(
+        &self,
+        request: Request<UpdateUrlRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let url = request.into_inner().url;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        let urls = info.urls;
+        urls.clone().unwrap_or_default().push(url);
+
+        info.urls = urls;
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn remove_url(
+        &self,
+        request: Request<UpdateUrlRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let url = request.into_inner().url;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        let urls = info.urls;
+        urls.clone().unwrap_or_default().push(url);
+
+        info.urls = urls;
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn add_contact(
+        &self,
+        request: Request<UpdateContactRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let request_inner = request.into_inner();
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        info.contact
+            .get_or_insert_with(Vec::new)
+            .push(cdk::nuts::ContactInfo::new(
+                request_inner.method,
+                request_inner.info,
+            ));
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+    async fn remove_contact(
+        &self,
+        request: Request<UpdateContactRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let request_inner = request.into_inner();
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        if let Some(contact) = info.contact.as_mut() {
+            let contact_info =
+                cdk::nuts::ContactInfo::new(request_inner.method, request_inner.info);
+            contact.retain(|x| x != &contact_info);
+
+            self.mint
+                .set_mint_info(info)
+                .await
+                .map_err(|err| Status::internal(err.to_string()))?;
+        }
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_nut04(
+        &self,
+        request: Request<UpdateNut04Request>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let mut nut04_settings = info.nuts.nut04.clone();
+
+        let request_inner = request.into_inner();
+
+        let unit = CurrencyUnit::from_str(&request_inner.unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
+
+        let payment_method = PaymentMethod::from_str(&request_inner.method)
+            .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
+
+        let current_nut04_settings = nut04_settings.remove_settings(&unit, &payment_method);
+
+        let mut methods = nut04_settings.methods.clone();
+
+        let updated_method_settings = MintMethodSettings {
+            method: payment_method,
+            unit,
+            min_amount: request_inner
+                .min
+                .map(Amount::from)
+                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.min_amount)),
+            max_amount: request_inner
+                .max
+                .map(Amount::from)
+                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.max_amount)),
+            description: request_inner.description.unwrap_or(
+                current_nut04_settings
+                    .map(|c| c.description)
+                    .unwrap_or_default(),
+            ),
+        };
+
+        methods.push(updated_method_settings);
+
+        nut04_settings.methods = methods;
+
+        if let Some(disabled) = request_inner.disabled {
+            nut04_settings.disabled = disabled;
+        }
+
+        info.nuts.nut04 = nut04_settings;
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_nut05(
+        &self,
+        request: Request<UpdateNut05Request>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        let mut nut05_settings = info.nuts.nut05.clone();
+
+        let request_inner = request.into_inner();
+
+        let unit = CurrencyUnit::from_str(&request_inner.unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
+
+        let payment_method = PaymentMethod::from_str(&request_inner.method)
+            .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
+
+        let current_nut05_settings = nut05_settings.remove_settings(&unit, &payment_method);
+
+        let mut methods = nut05_settings.methods;
+
+        let updated_method_settings = MeltMethodSettings {
+            method: payment_method,
+            unit,
+            min_amount: request_inner
+                .min
+                .map(Amount::from)
+                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.min_amount)),
+            max_amount: request_inner
+                .max
+                .map(Amount::from)
+                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
+        };
+
+        methods.push(updated_method_settings);
+        nut05_settings.methods = methods;
+
+        if let Some(disabled) = request_inner.disabled {
+            nut05_settings.disabled = disabled;
+        }
+
+        info.nuts.nut05 = nut05_settings;
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_quote_ttl(
+        &self,
+        request: Request<UpdateQuoteTtlRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let current_ttl = self
+            .mint
+            .quote_ttl()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let request = request.into_inner();
+
+        let quote_ttl = QuoteTTL {
+            mint_ttl: request.mint_ttl.unwrap_or(current_ttl.mint_ttl),
+            melt_ttl: request.melt_ttl.unwrap_or(current_ttl.melt_ttl),
+        };
+
+        self.mint
+            .set_quote_ttl(quote_ttl)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    async fn update_nut04_quote(
+        &self,
+        request: Request<UpdateNut04QuoteRequest>,
+    ) -> Result<Response<UpdateNut04QuoteRequest>, Status> {
+        let request = request.into_inner();
+        let quote_id = request
+            .quote_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("Invalid quote id".to_string()))?;
+
+        let state = MintQuoteState::from_str(&request.state)
+            .map_err(|_| Status::invalid_argument("Invalid quote state".to_string()))?;
+
+        let mint_quote = self
+            .mint
+            .localstore
+            .get_mint_quote(&quote_id)
+            .await
+            .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
+            .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
+
+        match state {
+            MintQuoteState::Paid => {
+                self.mint
+                    .pay_mint_quote(&mint_quote)
+                    .await
+                    .map_err(|_| Status::internal("Could not find quote".to_string()))?;
+            }
+            _ => {
+                let mut mint_quote = mint_quote;
+
+                mint_quote.state = state;
+
+                self.mint
+                    .update_mint_quote(mint_quote)
+                    .await
+                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
+            }
+        }
+
+        let mint_quote = self
+            .mint
+            .localstore
+            .get_mint_quote(&quote_id)
+            .await
+            .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
+            .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
+
+        Ok(Response::new(UpdateNut04QuoteRequest {
+            state: mint_quote.state.to_string(),
+            quote_id: mint_quote.id.to_string(),
+        }))
+    }
+
+    async fn rotate_next_keyset(
+        &self,
+        request: Request<RotateNextKeysetRequest>,
+    ) -> Result<Response<RotateNextKeysetResponse>, Status> {
+        let request = request.into_inner();
+
+        let unit = CurrencyUnit::from_str(&request.unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
+
+        let keyset_info = self
+            .mint
+            .rotate_next_keyset(
+                unit,
+                request.max_order.map(|a| a as u8).unwrap_or(32),
+                request.input_fee_ppk.unwrap_or(0),
+            )
+            .await
+            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
+
+        Ok(Response::new(RotateNextKeysetResponse {
+            id: keyset_info.id.to_string(),
+            unit: keyset_info.unit.to_string(),
+            max_order: keyset_info.max_order.into(),
+            input_fee_ppk: keyset_info.input_fee_ppk,
+        }))
+    }
+}

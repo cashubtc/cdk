@@ -216,45 +216,45 @@ impl Mint {
             .get_mint_quote_by_request_lookup_id(request_lookup_id)
             .await
         {
-            tracing::debug!(
-                "Received payment notification for mint quote {}",
-                mint_quote.id
-            );
-            if mint_quote.state != MintQuoteState::Issued
-                && mint_quote.state != MintQuoteState::Paid
-            {
-                let unix_time = unix_time();
+            self.pay_mint_quote(&mint_quote).await?;
+        }
+        Ok(())
+    }
 
-                if mint_quote.expiry < unix_time {
-                    tracing::warn!(
-                        "Mint quote {} paid at {} expired at {}, leaving current state",
-                        mint_quote.id,
-                        mint_quote.expiry,
-                        unix_time,
-                    );
-                    return Err(Error::ExpiredQuote(mint_quote.expiry, unix_time));
-                }
+    /// Mark mint quote as paid
+    #[instrument(skip_all)]
+    pub async fn pay_mint_quote(&self, mint_quote: &MintQuote) -> Result<(), Error> {
+        tracing::debug!(
+            "Received payment notification for mint quote {}",
+            mint_quote.id
+        );
+        if mint_quote.state != MintQuoteState::Issued && mint_quote.state != MintQuoteState::Paid {
+            let unix_time = unix_time();
 
-                tracing::debug!(
-                    "Marking quote {} paid by lookup id {}",
+            if mint_quote.expiry < unix_time {
+                tracing::warn!(
+                    "Mint quote {} paid at {} expired at {}, leaving current state",
                     mint_quote.id,
-                    request_lookup_id
+                    mint_quote.expiry,
+                    unix_time,
                 );
-
-                self.localstore
-                    .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
-                    .await?;
-            } else {
-                tracing::debug!(
-                    "{} Quote already {} continuing",
-                    mint_quote.id,
-                    mint_quote.state
-                );
+                return Err(Error::ExpiredQuote(mint_quote.expiry, unix_time));
             }
 
-            self.pubsub_manager
-                .mint_quote_bolt11_status(mint_quote, MintQuoteState::Paid);
+            self.localstore
+                .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
+                .await?;
+        } else {
+            tracing::debug!(
+                "{} Quote already {} continuing",
+                mint_quote.id,
+                mint_quote.state
+            );
         }
+
+        self.pubsub_manager
+            .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+
         Ok(())
     }
 

@@ -89,7 +89,7 @@ impl Mint {
 
     /// Add current keyset to inactive keysets
     /// Generate new keyset
-    #[instrument(skip(self))]
+    #[instrument(skip(self, custom_paths))]
     pub async fn rotate_keyset(
         &self,
         unit: CurrencyUnit,
@@ -115,10 +115,12 @@ impl Mint {
         );
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info.clone()).await?;
-        self.localstore.set_active_keyset(unit, id).await?;
+        self.localstore.set_active_keyset(unit.clone(), id).await?;
 
         let mut keysets = self.keysets.write().await;
         keysets.insert(id, keyset);
+
+        tracing::info!("Rotated to new keyset {} for {}", id, unit);
 
         Ok(keyset_info)
     }

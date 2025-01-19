@@ -6,6 +6,12 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+[mint_management_rpc]
+enabled = true
+# address = "127.0.0.1"
+# port = 8086
+
+
 [info.http_cache]
 # memory or redis
 backend = "memory"
@@ -15,7 +21,8 @@ tti = 60
 # key_prefix = "mintd"
 # connection_string = "redis://localhost"
 
-
+# NOTE: If [mint_management_rpc] is enabled these values will only be used on first start up.
+# Further changes must be made through the rpc.
 [mint_info]
 # name = "cdk-mintd mutiney net mint"
 # Hex pubkey of mint

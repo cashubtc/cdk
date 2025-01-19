@@ -187,6 +187,8 @@ pub struct Settings {
     pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
+    #[cfg(feature = "management-rpc")]
+    pub mint_management_rpc: Option<MintManagementRpc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -207,6 +209,17 @@ pub struct MintInfo {
     pub contact_nostr_public_key: Option<String>,
     /// Contact email
     pub contact_email: Option<String>,
+}
+
+#[cfg(feature = "management-rpc")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MintManagementRpc {
+    /// When this is set to `true` the mint use the config file for the initial set up on first start.
+    /// Changes to the `[mint_info]` after this **MUST** be made via the RPC changes to the config file or env vars will be ignored.
+    pub enabled: bool,
+    pub address: Option<String>,
+    pub port: Option<u16>,
+    pub tls_dir_path: Option<PathBuf>,
 }
 
 impl Settings {
