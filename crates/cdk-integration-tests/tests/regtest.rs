@@ -15,11 +15,11 @@ use cdk::nuts::{
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
-    get_mint_url, get_mint_ws_url, init_cln_client, init_lnd_client,
+    get_cln_dir, get_mint_url, get_mint_ws_url, init_lnd_client,
 };
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
-use ln_regtest_rs::ln_client::LightningClient;
+use ln_regtest_rs::ln_client::{ClnClient, LightningClient};
 use ln_regtest_rs::InvoiceStatus;
 use serde_json::json;
 use tokio::time::timeout;
@@ -328,7 +328,9 @@ async fn test_internal_payment() -> Result<()> {
         .await
         .unwrap();
 
-    let cln_client = init_cln_client().await?;
+    let cln_one_dir = get_cln_dir("one");
+    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+
     let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
     let check_paid = cln_client
         .check_incoming_payment_status(&payment_hash.payment_hash().to_string())

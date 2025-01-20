@@ -10,23 +10,20 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk_cln::Cln as CdkCln;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
-use ln_regtest_rs::cln::Clnd;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
 
 use crate::init_mint::start_mint;
 
-const BITCOIND_ADDR: &str = "127.0.0.1:18443";
-const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
-const ZMQ_RAW_TX: &str = "tcp://127.0.0.1:28333";
-const BITCOIN_RPC_USER: &str = "testuser";
-const BITCOIN_RPC_PASS: &str = "testpass";
-const CLN_ADDR: &str = "127.0.0.1:19846";
+pub const BITCOIND_ADDR: &str = "127.0.0.1:18443";
+pub const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
+pub const ZMQ_RAW_TX: &str = "tcp://127.0.0.1:28333";
+pub const BITCOIN_RPC_USER: &str = "testuser";
+pub const BITCOIN_RPC_PASS: &str = "testpass";
 const LND_ADDR: &str = "0.0.0.0:18449";
 const LND_RPC_ADDR: &str = "localhost:10009";
 
 const BITCOIN_DIR: &str = "bitcoin";
-const CLN_DIR: &str = "cln";
 const LND_DIR: &str = "lnd";
 
 pub fn get_mint_addr() -> String {
@@ -79,24 +76,10 @@ pub fn init_bitcoin_client() -> Result<BitcoinClient> {
     )
 }
 
-pub fn get_cln_dir() -> PathBuf {
-    let dir = get_temp_dir().join(CLN_DIR);
+pub fn get_cln_dir(name: &str) -> PathBuf {
+    let dir = get_temp_dir().join(name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-pub fn init_cln() -> Clnd {
-    Clnd::new(
-        get_bitcoin_dir(),
-        get_cln_dir(),
-        CLN_ADDR.to_string().parse().unwrap(),
-        BITCOIN_RPC_USER.to_string(),
-        BITCOIN_RPC_PASS.to_string(),
-    )
-}
-
-pub async fn init_cln_client() -> Result<ClnClient> {
-    ClnClient::new(get_cln_dir(), None).await
 }
 
 pub fn get_lnd_dir() -> PathBuf {
@@ -141,11 +124,11 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
     Ok(CdkCln::new(rpc_path, fee_reserve).await?)
 }
 
-pub async fn start_cln_mint<D>(addr: &str, port: u16, database: D) -> Result<()>
+pub async fn start_cln_mint<D>(addr: &str, port: u16, database: D, dir: PathBuf) -> Result<()>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
 {
-    let cln_client = init_cln_client().await?;
+    let cln_client = ClnClient::new(dir.clone(), None).await?;
 
     let cln_backend = create_cln_backend(&cln_client).await?;
 
@@ -176,37 +159,38 @@ where
     Ok(())
 }
 
-pub async fn fund_ln(
-    bitcoin_client: &BitcoinClient,
-    cln_client: &ClnClient,
-    lnd_client: &LndClient,
-) -> Result<()> {
-    let lnd_address = lnd_client.get_new_onchain_address().await?;
+pub async fn fund_ln<C>(bitcoin_client: &BitcoinClient, ln_client: &C) -> Result<()>
+where
+    C: LightningClient,
+{
+    let ln_address = ln_client.get_new_onchain_address().await?;
 
-    bitcoin_client.send_to_address(&lnd_address, 2_000_000)?;
+    bitcoin_client.send_to_address(&ln_address, 2_000_000)?;
 
-    let cln_address = cln_client.get_new_onchain_address().await?;
-    bitcoin_client.send_to_address(&cln_address, 2_000_000)?;
+    ln_client.wait_chain_sync().await?;
 
-    let mining_address = bitcoin_client.get_new_address()?;
-    bitcoin_client.generate_blocks(&mining_address, 200)?;
+    let mine_to_address = bitcoin_client.get_new_address()?;
+    bitcoin_client.generate_blocks(&mine_to_address, 10)?;
 
-    cln_client.wait_chain_sync().await?;
-    lnd_client.wait_chain_sync().await?;
+    ln_client.wait_chain_sync().await?;
 
     Ok(())
 }
 
-pub async fn open_channel(
+pub async fn open_channel<C1, C2>(
     bitcoin_client: &BitcoinClient,
-    cln_client: &ClnClient,
-    lnd_client: &LndClient,
-) -> Result<()> {
-    let cln_info = cln_client.get_info().await?;
+    cln_client: &C1,
+    lnd_client: &C2,
+) -> Result<()>
+where
+    C1: LightningClient,
+    C2: LightningClient,
+{
+    let cln_info = cln_client.get_connect_info().await?;
 
-    let cln_pubkey = cln_info.id;
-    let cln_address = "127.0.0.1";
-    let cln_port = 19846;
+    let cln_pubkey = cln_info.pubkey;
+    let cln_address = cln_info.address;
+    let cln_port = cln_info.port;
 
     lnd_client
         .connect_peer(cln_pubkey.to_string(), cln_address.to_string(), cln_port)
