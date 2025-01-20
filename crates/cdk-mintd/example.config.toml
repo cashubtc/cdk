@@ -36,31 +36,39 @@ tti = 60
 [ln]
 # Required ln backend `cln`, `lnd`, `strike`, `fakewallet`, 'lnbits', 'phoenixd'
 ln_backend = "cln"
-# For 'phoenixd' backend, also specify fee_percent (% fee of the ln payment that mint will put in the melt quote) and reserve_fee_min (absolute amount-higher of fee_percent or reserve_fee_min is the fee reserve). 
-# fee_percent=0.04
-# reserve_fee_min=4
+# min_mint=1
+# max_mint=500000
+# min_melt=1
+# max_melt=500000
 
 [cln]
 #Required if using cln backend path to rpc
 cln_path = ""
 rpc_path = ""
-fee_percent = 0.02
-reserve_fee_min = 1
+# fee_percent=0.04
+# reserve_fee_min=4
 
 # [strike]
 # For the Webhook subscription, the url under [info] must be a valid, absolute, non-local, https url 
 # api_key=""
 # Optional default sats
 # supported_units=[""]
+# fee_percent=0.04
+# reserve_fee_min=4
 
 # [lnbits]
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
+# fee_percent=0.04
+# reserve_fee_min=4
 
 # [phoenixd]
+# For 'phoenixd' backend, also specify fee_percent (% fee of the ln payment that mint will put in the melt quote) and reserve_fee_min (absolute amount-higher of fee_percent or reserve_fee_min is the fee reserve). 
 # api_password = ""
 # api_url = ""
+# fee_percent=0.05
+# reserve_fee_min=4
 
 # [lnd]
 # address = ""
