@@ -331,7 +331,7 @@ impl MintLightning for Lnd {
                     total_spent: total_amt.into(),
                     unit: CurrencyUnit::Sat,
                 })
-            },
+            }
             None => {
                 let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
                     payment_request,
