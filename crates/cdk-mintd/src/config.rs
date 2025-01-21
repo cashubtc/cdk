@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
+use cdk_database::DatabaseEngine;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -147,26 +148,6 @@ fn default_min_delay_time() -> u64 {
 
 fn default_max_delay_time() -> u64 {
     3
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum DatabaseEngine {
-    #[default]
-    Sqlite,
-    Redb,
-}
-
-impl std::str::FromStr for DatabaseEngine {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "sqlite" => Ok(DatabaseEngine::Sqlite),
-            "redb" => Ok(DatabaseEngine::Redb),
-            _ => Err(format!("Unknown database engine: {}", s)),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

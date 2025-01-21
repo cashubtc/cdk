@@ -65,6 +65,7 @@ jobs:
             -p cdk --no-default-features --features mint,
             -p cdk --no-default-features --features "mint swagger",
             -p cdk-redb,
+            -p cdk-database,
             -p cdk-sqlite,
             -p cdk-axum --no-default-features,
             -p cdk-axum --no-default-features --features swagger,

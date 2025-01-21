@@ -15,7 +15,6 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::{middleware, Router};
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -25,11 +24,9 @@ use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
 use cdk::types::LnKey;
 use cdk_axum::cache::HttpCache;
 use cdk_mintd::cli::CLIArgs;
-use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
+use cdk_mintd::config::{self, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
-use cdk_redb::MintRedbDatabase;
-use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
 use tower_http::compression::CompressionLayer;
@@ -76,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut mint_builder = MintBuilder::new();
 
-    let mut settings = if config_file_arg.exists() {
+    let settings = if config_file_arg.exists() {
         config::Settings::new(Some(config_file_arg))
     } else {
         tracing::info!("Config file does not exist. Attempting to read env vars");
@@ -86,22 +83,7 @@ async fn main() -> anyhow::Result<()> {
     // This check for any settings defined in ENV VARs
     // ENV VARS will take **priority** over those in the config
     let settings = settings.from_env()?;
-
-    let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
-        match settings.database.engine {
-            DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd.sqlite");
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
-
-                sqlite_db.migrate().await;
-
-                Arc::new(sqlite_db)
-            }
-            DatabaseEngine::Redb => {
-                let redb_path = work_dir.join("cdk-mintd.redb");
-                Arc::new(MintRedbDatabase::new(&redb_path)?)
-            }
-        };
+    let localstore = settings.database.engine.clone().mint(&work_dir).await?;
 
     mint_builder = mint_builder.with_localstore(localstore);
 

@@ -1,0 +1,16 @@
+[package]
+name = "cdk-database"
+version = "0.6.1"
+edition = "2021"
+description = "CDK database engine selection crate"
+
+[features]
+mint = ["cdk-sqlite/mint", "cdk-redb/mint"]
+wallet = ["cdk-sqlite/wallet", "cdk-redb/wallet"]
+default = ["mint", "wallet"]
+
+[dependencies]
+cdk-common = { path = "../cdk-common" }
+cdk-sqlite = { path = "../cdk-sqlite", default-features = false }
+cdk-redb = { path = "../cdk-redb", default-features = false }
+serde = { version = "1.0.217", features = ["derive"] }

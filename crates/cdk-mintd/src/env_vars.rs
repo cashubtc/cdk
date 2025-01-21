@@ -4,10 +4,11 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Result};
 use cdk::nuts::CurrencyUnit;
+use cdk_database::DatabaseEngine;
 
 use crate::config::{
-    Cln, Database, DatabaseEngine, FakeWallet, Info, LNbits, Ln, LnBackend, Lnd, MintInfo,
-    Phoenixd, Settings, Strike,
+    Cln, Database, FakeWallet, Info, LNbits, Ln, LnBackend, Lnd, MintInfo, Phoenixd, Settings,
+    Strike,
 };
 
 pub const ENV_WORK_DIR: &str = "CDK_MINTD_WORK_DIR";
@@ -72,15 +73,15 @@ pub const ENV_FAKE_WALLET_MIN_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MIN_DELAY";
 pub const ENV_FAKE_WALLET_MAX_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MAX_DELAY";
 
 impl Settings {
-    pub fn from_env(&mut self) -> Result<Self> {
+    pub fn from_env(mut self) -> Result<Self> {
         if let Ok(database) = env::var(DATABASE_ENV_VAR) {
             let engine = DatabaseEngine::from_str(&database).map_err(|err| anyhow!(err))?;
             self.database = Database { engine };
         }
 
-        self.info = self.info.clone().from_env();
-        self.mint_info = self.mint_info.clone().from_env();
-        self.ln = self.ln.clone().from_env();
+        self.info = self.info.from_env();
+        self.mint_info = self.mint_info.from_env();
+        self.ln = self.ln.from_env();
 
         match self.ln.ln_backend {
             LnBackend::Cln => {
@@ -104,7 +105,7 @@ impl Settings {
             LnBackend::None => bail!("Ln backend must be set"),
         }
 
-        Ok(self.clone())
+        Ok(self)
     }
 }
 
