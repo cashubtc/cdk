@@ -221,7 +221,9 @@ impl Settings {
         match from_file {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!("Error reading config file ({:?})", e);
+                tracing::error!(
+                    "Error reading config file, falling back to defaults. Error: {e:?}"
+                );
                 default_settings
             }
         }
