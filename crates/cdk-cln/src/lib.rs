@@ -418,6 +418,9 @@ impl MintLightning for Cln {
                 payment_hash: Some(payment_hash.parse().map_err(|_| Error::InvalidHash)?),
                 bolt11: None,
                 status: None,
+                start: None,
+                index: None,
+                limit: None,
             }))
             .await
             .map_err(Error::from)?;
