@@ -108,7 +108,10 @@ impl MintLightning for Lnd {
             .lightning()
             .subscribe_invoices(stream_req)
             .await
-            .unwrap()
+            .map_err(|_err| {
+                tracing::error!("Could not subscribe to invoice");
+                Error::Connection
+            })?
             .into_inner();
 
         let cancel_token = self.wait_invoice_cancel_token.clone();
