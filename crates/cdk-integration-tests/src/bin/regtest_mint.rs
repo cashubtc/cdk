@@ -3,8 +3,9 @@ use std::env;
 use anyhow::Result;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk_integration_tests::init_regtest::{
-    fund_ln, get_bitcoin_dir, get_cln_dir, get_temp_dir, init_bitcoin_client, init_bitcoind,
-    init_lnd, init_lnd_client, open_channel, start_cln_mint, BITCOIN_RPC_PASS, BITCOIN_RPC_USER,
+    create_cln_backend, create_mint, fund_ln, get_bitcoin_dir, get_cln_dir, get_temp_dir,
+    init_bitcoin_client, init_bitcoind, init_lnd, init_lnd_client, open_channel, BITCOIN_RPC_PASS,
+    BITCOIN_RPC_USER,
 };
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -96,18 +97,22 @@ async fn main() -> Result<()> {
     let db_path = get_temp_dir().join("mint");
     let cln_path = temp_dir_path.join("one");
 
+    let cln_client = ClnClient::new(cln_path, None).await?;
+
+    let cln_backend = create_cln_backend(&cln_client).await?;
+
     match mint_db_kind.as_str() {
         "MEMORY" => {
-            start_cln_mint(addr, port, MintMemoryDatabase::default(), cln_path).await?;
+            create_mint(addr, port, MintMemoryDatabase::default(), cln_backend).await?;
         }
         "SQLITE" => {
             let sqlite_db = MintSqliteDatabase::new(&db_path).await?;
             sqlite_db.migrate().await;
-            start_cln_mint(addr, port, sqlite_db, cln_path).await?;
+            create_mint(addr, port, sqlite_db, cln_backend).await?;
         }
         "REDB" => {
             let redb_db = MintRedbDatabase::new(&db_path).unwrap();
-            start_cln_mint(addr, port, redb_db, cln_path).await?;
+            create_mint(addr, port, redb_db, cln_backend).await?;
         }
         _ => panic!("Unknown mint db type: {}", mint_db_kind),
     };
