@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
+use cdk::cdk_lightning::{self, MintLightning};
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk_cln::Cln as CdkCln;
@@ -124,14 +125,11 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
     Ok(CdkCln::new(rpc_path, fee_reserve).await?)
 }
 
-pub async fn start_cln_mint<D>(addr: &str, port: u16, database: D, dir: PathBuf) -> Result<()>
+pub async fn create_mint<D, L>(addr: &str, port: u16, database: D, lighting: L) -> Result<()>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+    L: MintLightning<Err = cdk_lightning::Error> + Send + Sync + 'static,
 {
-    let cln_client = ClnClient::new(dir.clone(), None).await?;
-
-    let cln_backend = create_cln_backend(&cln_client).await?;
-
     let mut mint_builder = MintBuilder::new();
 
     mint_builder = mint_builder.with_localstore(Arc::new(database));
@@ -140,7 +138,7 @@ where
         CurrencyUnit::Sat,
         PaymentMethod::Bolt11,
         MintMeltLimits::new(1, 5_000),
-        Arc::new(cln_backend),
+        Arc::new(lighting),
     );
 
     let mnemonic = Mnemonic::generate(12)?;
