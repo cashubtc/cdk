@@ -3,10 +3,10 @@ use std::env;
 use anyhow::Result;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk_integration_tests::init_regtest::{
-    create_cln_backend, create_mint, fund_ln, generate_block, get_bitcoin_dir, get_cln_dir,
-    get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_temp_dir, init_bitcoin_client,
-    init_bitcoind, init_lnd, open_channel, BITCOIN_RPC_PASS, BITCOIN_RPC_USER, LND_ADDR,
-    LND_RPC_ADDR, LND_TWO_ADDR, LND_TWO_RPC_ADDR,
+    create_cln_backend, create_lnd_backend, create_mint, fund_ln, generate_block, get_bitcoin_dir,
+    get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_temp_dir,
+    init_bitcoin_client, init_bitcoind, init_lnd, open_channel, BITCOIN_RPC_PASS, BITCOIN_RPC_USER,
+    LND_ADDR, LND_RPC_ADDR, LND_TWO_ADDR, LND_TWO_RPC_ADDR,
 };
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -24,10 +24,11 @@ async fn main() -> Result<()> {
     let sqlx_filter = "sqlx=warn";
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
+    let rustls_filter = "rustls=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{},{}",
-        default_filter, sqlx_filter, hyper_filter, h2_filter
+        "{},{},{},{},{}",
+        default_filter, sqlx_filter, hyper_filter, h2_filter, rustls_filter
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -141,27 +142,66 @@ async fn main() -> Result<()> {
         lnd_two_client.wait_channels_active().await?;
     }
 
-    let addr = "127.0.0.1";
-    let port = 8085;
+    let mint_addr = "127.0.0.1";
+    let cln_mint_port = 8085;
 
     let mint_db_kind = env::var("MINT_DATABASE")?;
 
-    let db_path = get_temp_dir().join("mint");
+    let lnd_mint_db_path = get_temp_dir().join("lnd_mint");
+    let cln_mint_db_path = get_temp_dir().join("cln_mint");
 
     let cln_backend = create_cln_backend(&cln_client).await?;
+    let lnd_mint_port = 8087;
+
+    let lnd_backend = create_lnd_backend(&lnd_two_client).await?;
 
     match mint_db_kind.as_str() {
         "MEMORY" => {
-            create_mint(addr, port, MintMemoryDatabase::default(), cln_backend).await?;
+            tokio::spawn(async move {
+                create_mint(
+                    mint_addr,
+                    cln_mint_port,
+                    MintMemoryDatabase::default(),
+                    cln_backend,
+                )
+                .await
+                .expect("Could not start cln mint");
+            });
+
+            create_mint(
+                mint_addr,
+                lnd_mint_port,
+                MintMemoryDatabase::default(),
+                lnd_backend,
+            )
+            .await?;
         }
         "SQLITE" => {
-            let sqlite_db = MintSqliteDatabase::new(&db_path).await?;
+            tokio::spawn(async move {
+                let sqlite_db = MintSqliteDatabase::new(&cln_mint_db_path)
+                    .await
+                    .expect("Could not create mint db");
+                sqlite_db.migrate().await;
+                create_mint(mint_addr, cln_mint_port, sqlite_db, cln_backend)
+                    .await
+                    .expect("Could not start cln mint");
+            });
+
+            let sqlite_db = MintSqliteDatabase::new(&lnd_mint_db_path).await?;
             sqlite_db.migrate().await;
-            create_mint(addr, port, sqlite_db, cln_backend).await?;
+            create_mint(mint_addr, lnd_mint_port, sqlite_db, lnd_backend).await?;
         }
         "REDB" => {
-            let redb_db = MintRedbDatabase::new(&db_path).unwrap();
-            create_mint(addr, port, redb_db, cln_backend).await?;
+            tokio::spawn(async move {
+                let redb_db = MintRedbDatabase::new(&cln_mint_db_path).unwrap();
+                create_mint(mint_addr, cln_mint_port, redb_db, cln_backend)
+                    .await
+                    .expect("Could not start cln mint");
+            });
+
+            let redb_db = MintRedbDatabase::new(&lnd_mint_db_path).unwrap();
+
+            create_mint(mint_addr, lnd_mint_port, redb_db, lnd_backend).await?;
         }
         _ => panic!("Unknown mint db type: {}", mint_db_kind),
     };
