@@ -281,8 +281,8 @@ async fn test_pay_invoice_twice() -> Result<()> {
     match melt_two {
         Err(err) => match err {
             cdk::Error::RequestAlreadyPaid => (),
-            _ => {
-                bail!("Wrong invoice already paid");
+            err => {
+                bail!("Wrong invoice already paid: {}", err.to_string());
             }
         },
         Ok(_) => {

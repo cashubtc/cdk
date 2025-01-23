@@ -29,6 +29,7 @@ use fedimint_tonic_lnd::Client;
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 
 pub mod error;
 
@@ -189,6 +190,7 @@ impl MintLightning for Lnd {
         })
     }
 
+    #[instrument(skip_all)]
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
@@ -225,7 +227,10 @@ impl MintLightning for Lnd {
             .lightning()
             .send_payment_sync(fedimint_tonic_lnd::tonic::Request::new(pay_req))
             .await
-            .map_err(|_| Error::PaymentFailed)?
+            .map_err(|err| {
+                tracing::warn!("Lightning payment failed: {}", err);
+                Error::PaymentFailed
+            })?
             .into_inner();
 
         let total_amount = payment_response

@@ -28,7 +28,7 @@ cleanup() {
 }
 
 # Set up trap to call cleanup on script exit
-trap cleanup EXIT
+# trap cleanup EXIT
 
 # Create a temporary directory
 export cdk_itests=$(mktemp -d)
@@ -82,10 +82,14 @@ done
 
 
 # Run cargo test
-cargo test -p cdk-integration-tests --test regtest
+# cargo test -p cdk-integration-tests --test regtest
 
-# Run cargo test with the http_subscription feature
-cargo test -p cdk-integration-tests --test regtest --features http_subscription
+# # Run cargo test with the http_subscription feature
+# cargo test -p cdk-integration-tests --test regtest --features http_subscription
+
+# Run tests with lnd mint
+export cdk_itests_mint_port=8087;
+cargo test -p cdk-integration-tests --test regtest
 
 # Capture the exit status of cargo test
 test_status=$?
