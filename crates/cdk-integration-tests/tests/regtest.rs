@@ -15,16 +15,30 @@ use cdk::nuts::{
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
-    get_cln_dir, get_mint_url, get_mint_ws_url, init_lnd_client,
+    get_cln_dir, get_lnd_dir, get_mint_url, get_mint_ws_url, LND_RPC_ADDR,
 };
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
-use ln_regtest_rs::ln_client::{ClnClient, LightningClient};
+use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::InvoiceStatus;
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
+
+// This is the ln wallet we use to send/receive ln payements as the wallet
+async fn init_lnd_client() -> LndClient {
+    let lnd_dir = get_lnd_dir("one");
+    let cert_file = lnd_dir.join("tls.cert");
+    let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
+    LndClient::new(
+        format!("https://{}", LND_RPC_ADDR),
+        cert_file,
+        macaroon_file,
+    )
+    .await
+    .unwrap()
+}
 
 async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
@@ -60,7 +74,7 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
-    let lnd_client = init_lnd_client().await.unwrap();
+    let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url(),
@@ -143,7 +157,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url(),
@@ -174,7 +188,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_restore() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
@@ -231,7 +245,8 @@ async fn test_restore() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_pay_invoice_twice() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
+
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url(),
@@ -284,7 +299,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
@@ -356,7 +371,7 @@ async fn test_internal_payment() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cached_mint() -> Result<()> {
-    let lnd_client = init_lnd_client().await.unwrap();
+    let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url(),
