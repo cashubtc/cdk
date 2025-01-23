@@ -12,11 +12,11 @@ cleanup() {
     wait $CDK_ITEST_MINT_BIN_PID
 
     echo "Mint binary terminated"
-    
     # Kill processes
-    lncli --lnddir="$cdk_itests/lnd" --network=regtest stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/one/" stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/two/" stop
+    lncli --lnddir="$cdk_itests/lnd/one" --network=regtest stop
+    lncli --lnddir="$cdk_itests/lnd/two" --network=regtest --rpcserver=localhost:10010 stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/one/" stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/two/" stop
     bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
 
     # Remove the temporary directory

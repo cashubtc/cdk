@@ -3,14 +3,15 @@ use std::env;
 use anyhow::Result;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk_integration_tests::init_regtest::{
-    create_cln_backend, create_mint, fund_ln, get_bitcoin_dir, get_cln_dir, get_temp_dir,
-    init_bitcoin_client, init_bitcoind, init_lnd, init_lnd_client, open_channel, BITCOIN_RPC_PASS,
-    BITCOIN_RPC_USER,
+    create_cln_backend, create_mint, fund_ln, generate_block, get_bitcoin_dir, get_cln_dir,
+    get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_temp_dir, init_bitcoin_client,
+    init_bitcoind, init_lnd, open_channel, BITCOIN_RPC_PASS, BITCOIN_RPC_USER, LND_ADDR,
+    LND_RPC_ADDR, LND_TWO_ADDR, LND_TWO_RPC_ADDR,
 };
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use ln_regtest_rs::cln::Clnd;
-use ln_regtest_rs::ln_client::{ClnClient, LightningClient};
+use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use tracing_subscriber::EnvFilter;
 
 const CLN_ADDR: &str = "127.0.0.1:19846";
@@ -70,34 +71,82 @@ async fn main() -> Result<()> {
 
     let cln_two_client = ClnClient::new(cln_two_dir.clone(), None).await?;
 
-    cln_client.wait_chain_sync().await.unwrap();
+    cln_two_client.wait_chain_sync().await.unwrap();
 
     fund_ln(&bitcoin_client, &cln_two_client).await.unwrap();
 
-    let mut lnd = init_lnd().await;
+    let lnd_dir = get_lnd_dir("one");
+    println!("{}", lnd_dir.display());
+
+    let mut lnd = init_lnd(lnd_dir.clone(), LND_ADDR, LND_RPC_ADDR).await;
     lnd.start_lnd().unwrap();
     tracing::info!("Started lnd node");
 
-    let lnd_client = init_lnd_client().await.unwrap();
+    let lnd_client = LndClient::new(
+        format!("https://{}", LND_RPC_ADDR),
+        get_lnd_cert_file_path(&lnd_dir),
+        get_lnd_macaroon_path(&lnd_dir),
+    )
+    .await?;
 
     lnd_client.wait_chain_sync().await.unwrap();
 
     fund_ln(&bitcoin_client, &lnd_client).await.unwrap();
 
-    open_channel(&bitcoin_client, &cln_client, &lnd_client)
-        .await
-        .unwrap();
+    // create second lnd node
+    let lnd_two_dir = get_lnd_dir("two");
+    let mut lnd_two = init_lnd(lnd_two_dir.clone(), LND_TWO_ADDR, LND_TWO_RPC_ADDR).await;
+    lnd_two.start_lnd().unwrap();
+    tracing::info!("Started second lnd node");
+
+    let lnd_two_client = LndClient::new(
+        format!("https://{}", LND_TWO_RPC_ADDR),
+        get_lnd_cert_file_path(&lnd_two_dir),
+        get_lnd_macaroon_path(&lnd_two_dir),
+    )
+    .await?;
+
+    lnd_two_client.wait_chain_sync().await.unwrap();
+
+    fund_ln(&bitcoin_client, &lnd_two_client).await.unwrap();
+
+    // Open channels concurrently
+    // Open channels
+    {
+        open_channel(&cln_client, &lnd_client).await.unwrap();
+        tracing::info!("Opened channel between cln and lnd one");
+        generate_block(&bitcoin_client)?;
+        // open_channel(&bitcoin_client, &cln_client, &cln_two_client)
+        //     .await
+        //     .unwrap();
+        // tracing::info!("Opened channel between cln and cln two");
+
+        open_channel(&lnd_client, &lnd_two_client).await.unwrap();
+        tracing::info!("Opened channel between lnd and lnd two");
+        generate_block(&bitcoin_client)?;
+
+        // open_channel(&cln_client, &lnd_two_client).await.unwrap();
+        // tracing::info!("Opened channel between cln and lnd two");
+        open_channel(&cln_two_client, &lnd_client).await.unwrap();
+        tracing::info!("Opened channel between cln two and lnd");
+        generate_block(&bitcoin_client)?;
+
+        open_channel(&cln_client, &lnd_two_client).await.unwrap();
+        tracing::info!("Opened channel between cln and lnd two");
+        generate_block(&bitcoin_client)?;
+
+        cln_client.wait_channels_active().await?;
+        cln_two_client.wait_channels_active().await?;
+        lnd_client.wait_channels_active().await?;
+        lnd_two_client.wait_channels_active().await?;
+    }
 
     let addr = "127.0.0.1";
     let port = 8085;
 
     let mint_db_kind = env::var("MINT_DATABASE")?;
 
-    let temp_dir_path = get_temp_dir();
     let db_path = get_temp_dir().join("mint");
-    let cln_path = temp_dir_path.join("one");
-
-    let cln_client = ClnClient::new(cln_path, None).await?;
 
     let cln_backend = create_cln_backend(&cln_client).await?;
 
