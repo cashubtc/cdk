@@ -32,6 +32,7 @@
 * `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
 
 ### Fixed
+* Multimint unit check when wallet receiving token ([thesimplekid])
 
 ### Removed
 
