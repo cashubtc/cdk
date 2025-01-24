@@ -161,8 +161,11 @@ impl Wallet {
         proofs: Proofs,
         include_fees: bool,
     ) -> Result<Proofs, Error> {
-        // TODO: Check all proofs are same unit
-
+        tracing::debug!(
+            "Selecting proofs to send {} from {}",
+            amount,
+            proofs.total_amount()?
+        );
         if proofs.total_amount()? < amount {
             return Err(Error::InsufficientFunds);
         }
@@ -228,6 +231,11 @@ impl Wallet {
         amount: Amount,
         proofs: Proofs,
     ) -> Result<Proofs, Error> {
+        tracing::debug!(
+            "Selecting proofs to swap {} from {}",
+            amount,
+            proofs.total_amount()?
+        );
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         let (mut active_proofs, mut inactive_proofs): (Proofs, Proofs) = proofs
@@ -258,6 +266,11 @@ impl Wallet {
                 return Ok(selected_proofs);
             }
         }
+
+        tracing::debug!(
+            "Could not select proofs to swap: total selected: {}",
+            selected_proofs.total_amount()?
+        );
 
         Err(Error::InsufficientFunds)
     }
