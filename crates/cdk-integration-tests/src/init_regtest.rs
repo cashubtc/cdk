@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -14,6 +14,7 @@ use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
+use tracing::instrument;
 
 use crate::init_mint::start_mint;
 
@@ -93,11 +94,11 @@ pub fn get_lnd_dir(name: &str) -> PathBuf {
     dir
 }
 
-pub fn get_lnd_cert_file_path(lnd_dir: &PathBuf) -> PathBuf {
+pub fn get_lnd_cert_file_path(lnd_dir: &Path) -> PathBuf {
     lnd_dir.join("tls.cert")
 }
 
-pub fn get_lnd_macaroon_path(lnd_dir: &PathBuf) -> PathBuf {
+pub fn get_lnd_macaroon_path(lnd_dir: &Path) -> PathBuf {
     lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon")
 }
 
@@ -147,6 +148,7 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
     .await?)
 }
 
+#[instrument(skip_all)]
 pub async fn create_mint<D, L>(addr: &str, port: u16, database: D, lighting: L) -> Result<()>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,

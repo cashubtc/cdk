@@ -21,6 +21,7 @@ use crate::util::unix_time;
 use crate::{cdk_lightning, Amount, Error};
 
 impl Mint {
+    #[instrument(skip_all)]
     fn check_melt_request_acceptable(
         &self,
         amount: Amount,
