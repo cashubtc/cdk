@@ -5,17 +5,21 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1;
-use cashu_kvac::models::AmountAttribute;
-use cashu_kvac::models::Coin;
-use cashu_kvac::models::MintPrivateKey;
-use cashu_kvac::models::MintPublicKey;
-use cashu_kvac::models::ScriptAttribute;
-use cashu_kvac::models::ZKP;
-use cashu_kvac::models::MAC;
-use cashu_kvac::secp::GroupElement;
-use cashu_kvac::secp::Scalar;
+use cashu_kvac::models::{
+    AmountAttribute,
+    ScriptAttribute,
+    Coin,
+    RandomizedCoin,
+    MintPrivateKey,
+    MintPublicKey,
+    ZKP,
+    MAC,
+    RangeZKP,
+};
+use cashu_kvac::secp::{GroupElement, Scalar};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use uuid::Uuid;
 use crate::util::hex;
 use crate::Amount;
 use crate::SECP256K1;
@@ -23,6 +27,7 @@ use super::nut02::KeySetVersion;
 use super::CurrencyUnit;
 use super::Id;
 use super::KeySetInfo;
+use super::State;
 use thiserror::Error;
 use serde_with::VecSkipError;
 
@@ -334,6 +339,71 @@ pub struct KvacCoin {
     pub coin: Coin,
 }
 
+/// Kvac Coin
+/// 
+/// A KVAC coin as intended to be saved in the wallet.
+#[cfg(feature = "wallet")]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacRandomizedCoin {
+    /// Keyset ID
+    ///
+    /// [`ID`] from which we expect a signature.
+    pub keyset_id: Id,
+    /// Script
+    /// 
+    /// Script encoded in ScriptAttribute **IF** the client intends to reveal it
+    pub script: Option<String>,
+    /// Unit
+    /// 
+    /// Unit of the coin
+    pub unit: CurrencyUnit,
+    /// Randomized Coin
+    /// 
+    /// [`RandomizedCoin`] version of a [`Coin`]
+    pub randomized_coin: RandomizedCoin,
+}
+
+pub struct KvacNullifier {
+    pub nullifier: GroupElement,
+    pub keyset_id: Id,
+    pub quote_id: Option<Uuid>,
+    pub state: State,
+}
+
+impl KvacNullifier {
+    pub fn set_quote_id(self, quote_id: Uuid) -> Self {
+        Self {
+            quote_id: Some(quote_id),
+            ..self
+        }
+    }
+
+    pub fn set_state(self, state: State) -> Self {
+        Self {
+            state,
+            ..self
+        }
+    }
+}
+
+impl From<&KvacRandomizedCoin> for KvacNullifier {
+    fn from(coin: &KvacRandomizedCoin) -> Self {
+        Self {
+            keyset_id: coin.keyset_id.clone(),
+            nullifier: coin.randomized_coin.Ca.clone(),
+            quote_id: None,
+            state: State::Unspent,
+        }
+    }
+}
+
+pub struct KvacIssuedMac {
+    pub mac: MAC,
+    pub keyset_id: String,
+    pub quote_id: Uuid,
+}
+
 // --- Helpers ---
 
 fn derive_path_from_kvac_keyset_id(id: Id) -> Result<DerivationPath, Error> {
@@ -365,6 +435,43 @@ pub struct BootstrapRequest {
     pub proofs: Vec<ZKP>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScriptData {
+    Revealed(String),
+    Hidden(Vec<ZKP>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacSwapRequest {
+    /// Inputs
+    /// 
+    /// [`Vec<KvacRandomizedCoin>`] Where each element is the randomized version of a [`KvacCoin`] for
+    /// which a [`MAC`] was issued. In other words, the outputs of a previous request but randomized.
+    pub inputs: Vec<KvacRandomizedCoin>,
+    /// Outputs
+    /// 
+    /// [`Vec<KvacCoinMessage>`] Where elements are new coins awaiting their [`MAC`]
+    pub outputs: Vec<KvacCoinMessage>,
+    /// Balance Proofs
+    /// 
+    /// [`ZKP`] Proving that inputs - outputs == delta_amount
+    pub balance_proof: ZKP,
+    /// MAC Proofs
+    /// 
+    /// [`Vec<ZKP>`] Proofs that inputs where issued a MAC previously
+    pub mac_proofs: Vec<ZKP>,
+    /// Script Data
+    /// 
+    /// Either holds a [`String`] if the client is revealing the script or a
+    /// [`Vec<ZKP>`] proving that inputs and outputs encode the same secret script.
+    pub script_data: ScriptData,
+    /// Range Proof
+    /// 
+    /// A single [`RangeProof`] proving the outputs are all within range
+    pub range_proof: RangeZKP,
+}
+
 // --- Responses ---
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,10 +494,20 @@ pub struct KvacKeysetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct BootstrapResponse {
-    /// Input coins for which a MAC was issued
+    /// MACs
     /// 
-    /// [`Vec<KvacCoinMessage>`]
-    pub coins: Vec<KvacCoinMessage>,
+    /// [`Vec<MAC>`] Approval stamp of the Mint
+    pub macs: Vec<MAC>,
+    /// IParams Proofs
+    /// 
+    /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
+    pub proofs: Vec<ZKP>,
+}
+
+/// Swap Response
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacSwapResponse {
     /// MACs
     /// 
     /// [`Vec<MAC>`] Approval stamp of the Mint

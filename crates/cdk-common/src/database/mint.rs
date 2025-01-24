@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::kvac::{KvacIssuedMac, KvacNullifier, KvacRandomizedCoin};
+use cashu_kvac::secp::{GroupElement, Scalar};
 use uuid::Uuid;
 
 use super::Error;
@@ -111,23 +113,54 @@ pub trait Database {
 
     /// Add spent [`Proofs`]
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
+    /// Add kvac nullifiers
+    async fn add_kvac_nullifiers(&self, _nullifiers: &[KvacNullifier]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get kvac nullifiers
+    async fn get_kvac_nullifiers(&self, _nullifiers: &[GroupElement]) -> Result<Vec<Option<KvacNullifier>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err>;
+    /// Get nullifiers by quote id 
+    async fn get_kvac_nullifiers_by_quote_id(&self, _quote_id: &Uuid) -> Result<Vec<KvacNullifier>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get kvac nullifiers state
+    async fn get_kvac_nullifiers_states(&self, _nullifiers: &[GroupElement]) -> Result<Vec<Option<State>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] state
     async fn update_proofs_states(
         &self,
         ys: &[PublicKey],
         proofs_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get [`KvacNullifier`] state
+    async fn update_kvac_nullifiers_states(
+        &self,
+        _nullifiers: &[GroupElement],
+        _state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] by state
     async fn get_proofs_by_keyset_id(
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
+    /// Get [`KvacNullifier`] by state
+    async fn get_kvac_nullifiers_by_keyset_id(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<(Vec<KvacNullifier>, Vec<Option<State>>), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add [`BlindSignature`]
     async fn add_blind_signatures(
@@ -136,19 +169,48 @@ pub trait Database {
         blind_signatures: &[BlindSignature],
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err>;
+    /// Add [`KvacIssuedMac`]
+    async fn add_kvac_issued_macs(
+        &self,
+        _mac: Vec<KvacIssuedMac>,
+        _quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
+    /// Get [`KvacIssuedMac`]
+    async fn get_kvac_issued_macs_by_tags(
+        &self,
+        _tags: &[Scalar],
+    ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`BlindSignature`]s for keyset_id
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+    /// Get [`KvacIssuedMac`] for keyset_id
+    async fn get_kvac_issued_macs_for_keyset(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
         quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+    /// Get [`KvacIssuedMac`]s for quote
+    async fn get_kvac_issued_macs_for_quote(
+        &self,
+        _quote_id: &Uuid,
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 }

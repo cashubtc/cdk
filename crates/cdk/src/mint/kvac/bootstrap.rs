@@ -74,7 +74,6 @@ impl Mint {
         }
 
         Ok(BootstrapResponse {
-            coins: outputs,
             macs,
             proofs,
         })

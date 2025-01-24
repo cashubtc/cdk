@@ -11,7 +11,7 @@ use cashu_kvac::models::{MAC, ZKP};
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
-use cdk_common::kvac::{KvacCoinMessage, MintKvacKeySet};
+use cdk_common::kvac::{KvacCoinMessage, KvacRandomizedCoin, MintKvacKeySet};
 use cdk_common::mint::MintKeySetInfo;
 use config::SwappableConfig;
 use futures::StreamExt;
@@ -390,6 +390,11 @@ impl Mint {
         let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
         Ok(fee)
+    }
+
+    pub async fn get_kvac_inputs_fee(&self, _inputs: &Vec<KvacRandomizedCoin>) -> Result<Amount, Error> {
+        // TODO: implement the fees
+        Ok(Amount { 0: 0 })
     }
 
     /// Blind Sign

@@ -715,7 +715,7 @@ dependencies = [
 [[package]]
 name = "cashu_kvac"
 version = "0.0.1-alpha"
-source = "git+https://github.com/lollerfirst/cashu-kvac.git#1e14922664307762f87de6f2edf5ce2ec159275a"
+source = "git+https://github.com/lollerfirst/cashu-kvac.git?rev=cca5f9caafda6bcd16e12de35b28dbea20c40fc7#cca5f9caafda6bcd16e12de35b28dbea20c40fc7"
 dependencies = [
  "bitcoin 0.32.5",
  "hex",

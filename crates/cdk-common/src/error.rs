@@ -113,9 +113,12 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
-    /// KVAC Request Minimum Length
+    /// KVAC Request Invalid Length
     #[error("Invalid input length for this request")]
     RequestInvalidInputLength,
+    /// KVAC Request Invalid Length
+    #[error("Invalid output length for this request")]
+    RequestInvalidOutputLength,
     /// KVAC Proofs and inputs mismatch
     #[error("Number of length does not match number of proofs provided")]
     InputsToProofsLengthMismatch,
@@ -125,8 +128,16 @@ pub enum Error {
     /// KVAC IParams proofs failed to verify
     #[error("Failed to verify one of the provided proofs")]
     IParamsVerificationError,
+    /// Out of bounds
     #[error("Out of bounds")]
     OutOfBounds,
+    /// KVAC Mac was already issued for outputs
+    #[error("MAC was already issued for these outputs")]
+    MacAlreadyIssued,
+    /// KVAC BalanceProof failed to verify
+    #[error("Balance proof failed to verify with fee `{0}`")]
+    BalanceVerificationError(Amount),
+
 
     // Implementation Status
     /// Not yet implemented
