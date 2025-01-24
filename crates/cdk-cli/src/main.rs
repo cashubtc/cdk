@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
+use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
@@ -12,7 +13,6 @@ use cdk::wallet::{MultiMintWallet, Wallet};
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
-use rand::Rng;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
             Mnemonic::from_str(&contents)?
         }
         Err(_e) => {
-            let mut rng = rand::thread_rng();
+            let mut rng = thread_rng();
             let random_bytes: [u8; 32] = rng.gen();
 
             let mnemonic = Mnemonic::from_entropy(&random_bytes)?;
