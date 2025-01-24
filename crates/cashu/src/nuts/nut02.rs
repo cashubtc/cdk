@@ -375,7 +375,7 @@ impl From<&MintKeys> for Id {
 mod test {
     use std::str::FromStr;
 
-    use rand::RngCore;
+    use bitcoin::secp256k1::rand::{self, RngCore};
 
     use super::{KeySetInfo, Keys, KeysetResponse};
     use crate::nuts::nut02::{Error, Id};
