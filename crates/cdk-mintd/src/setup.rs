@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use axum::{async_trait, Router};
+use bip39::rand::{thread_rng, Rng};
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::FeeReserve;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use rand::Rng;
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -217,7 +217,7 @@ impl LnBackendSetup for config::FakeWallet {
         };
 
         // calculate random delay time
-        let mut rng = rand::thread_rng();
+        let mut rng = thread_rng();
         let delay_time = rng.gen_range(self.min_delay_time..=self.max_delay_time);
 
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
