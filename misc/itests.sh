@@ -28,7 +28,7 @@ cleanup() {
 }
 
 # Set up trap to call cleanup on script exit
-# trap cleanup EXIT
+trap cleanup EXIT
 
 # Create a temporary directory
 export cdk_itests=$(mktemp -d)
@@ -47,7 +47,10 @@ export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
 cargo build --bin regtest_mint 
+# cargo run --bin regtest_mint > "$cdk_itests/mint.log" 2>&1 &
 cargo run --bin regtest_mint &
+
+echo $cdk_itests
 # Capture its PID
 CDK_ITEST_MINT_BIN_PID=$!
 
@@ -82,10 +85,10 @@ done
 
 
 # Run cargo test
-# cargo test -p cdk-integration-tests --test regtest
+cargo test -p cdk-integration-tests --test regtest
 
 # # Run cargo test with the http_subscription feature
-# cargo test -p cdk-integration-tests --test regtest --features http_subscription
+cargo test -p cdk-integration-tests --test regtest --features http_subscription
 
 # Run tests with lnd mint
 export cdk_itests_mint_port=8087;

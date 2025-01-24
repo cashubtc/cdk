@@ -5,7 +5,9 @@ use axum::Router;
 use cdk::mint::Mint;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
+use tracing::instrument;
 
+#[instrument(skip_all)]
 pub async fn start_mint(addr: &str, port: u16, mint: Mint) -> Result<()> {
     let mint_arc = Arc::new(mint);
 

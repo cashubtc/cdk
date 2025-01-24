@@ -15,7 +15,8 @@ use cdk::nuts::{
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
-    get_cln_dir, get_lnd_dir, get_mint_url, get_mint_ws_url, LND_RPC_ADDR,
+    get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
+    get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
@@ -258,7 +259,10 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    lnd_client.pay_invoice(mint_quote.request).await?;
+    lnd_client
+        .pay_invoice(mint_quote.request)
+        .await
+        .expect("Could not pay invoice");
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -343,13 +347,33 @@ async fn test_internal_payment() -> Result<()> {
         .await
         .unwrap();
 
-    let cln_one_dir = get_cln_dir("one");
-    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+    let check_paid = match get_mint_port() {
+        8085 => {
+            let cln_one_dir = get_cln_dir("one");
+            let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
 
-    let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
-    let check_paid = cln_client
-        .check_incoming_payment_status(&payment_hash.payment_hash().to_string())
-        .await?;
+            let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
+            cln_client
+                .check_incoming_payment_status(&payment_hash.payment_hash().to_string())
+                .await
+                .expect("Could not check invoice")
+        }
+        8087 => {
+            let lnd_two_dir = get_lnd_dir("two");
+            let lnd_client = LndClient::new(
+                format!("https://{}", LND_TWO_RPC_ADDR),
+                get_lnd_cert_file_path(&lnd_two_dir),
+                get_lnd_macaroon_path(&lnd_two_dir),
+            )
+            .await?;
+            let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
+            lnd_client
+                .check_incoming_payment_status(&payment_hash.payment_hash().to_string())
+                .await
+                .expect("Could not check invoice")
+        }
+        _ => panic!("Unknown mint port"),
+    };
 
     match check_paid {
         InvoiceStatus::Unpaid => (),

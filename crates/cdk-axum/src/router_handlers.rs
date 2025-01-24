@@ -12,6 +12,7 @@ use cdk::nuts::{
 };
 use cdk::util::unix_time;
 use paste::paste;
+use tracing::instrument;
 use uuid::Uuid;
 
 use crate::ws::main_websocket;
@@ -232,6 +233,7 @@ pub async fn post_mint_bolt11(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[instrument(skip_all)]
 /// Request a quote for melting tokens
 pub async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
@@ -261,6 +263,7 @@ pub async fn post_melt_bolt11_quote(
 /// Get melt quote by ID
 ///
 /// Get melt quote state.
+#[instrument(skip_all)]
 pub async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
@@ -290,6 +293,7 @@ pub async fn get_check_melt_bolt11_quote(
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
+#[instrument(skip_all)]
 pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
