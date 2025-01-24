@@ -190,20 +190,23 @@ impl Wallet {
         p2pk_signing_keys: &[SecretKey],
         preimages: &[String],
     ) -> Result<Amount, Error> {
-        let token_data = Token::from_str(encoded_token)?;
+        let token = Token::from_str(encoded_token)?;
 
-        let unit = token_data.unit().unwrap_or_default();
+        let unit = token.unit().unwrap_or_default();
 
         if unit != self.unit {
             return Err(Error::UnitUnsupported);
         }
 
-        let proofs = token_data.proofs();
-        if proofs.len() != 1 {
-            return Err(Error::MultiMintTokenNotSupported);
+        let proofs = token.proofs();
+
+        if let Token::TokenV3(token) = &token {
+            if token.is_multi_mint() {
+                return Err(Error::MultiMintTokenNotSupported);
+            }
         }
 
-        if self.mint_url != token_data.mint_url()? {
+        if self.mint_url != token.mint_url()? {
             return Err(Error::IncorrectMint);
         }
 

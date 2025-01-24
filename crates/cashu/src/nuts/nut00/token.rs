@@ -272,6 +272,10 @@ impl TokenV3 {
 
         mint_urls
     }
+
+    pub fn is_multi_mint(&self) -> bool {
+        self.token.len() > 1
+    }
 }
 
 impl FromStr for TokenV3 {
