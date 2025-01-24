@@ -40,7 +40,31 @@ jobs:
             cargo fmt --check
           '
       - name: typos
-        run: nix develop -i -L .#nightly --command typos    
+        run: nix develop -i -L .#nightly --command typos
+  
+  examples:
+    name: "Run examples"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build-args:
+          [
+            mint-token,
+            p2pk,
+            proof-selection,
+            wallet
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run example
+        run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
 
   clippy:
     name: "Stable build, clippy and test"

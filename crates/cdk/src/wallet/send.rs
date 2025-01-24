@@ -52,19 +52,13 @@ impl Wallet {
             )
             .await?;
 
-        let (available_proofs, proofs_sum) = available_proofs.into_iter().fold(
-            (Vec::new(), Amount::ZERO),
-            |(mut acc1, mut acc2), p| {
-                acc2 += p.amount;
-                acc1.push(p);
-                (acc1, acc2)
-            },
-        );
+        let proofs_sum = available_proofs.total_amount()?;
+
         let available_proofs = if proofs_sum < amount {
             match &conditions {
                 Some(conditions) => {
+                    tracing::debug!("Insufficient prrofs matching conditions attempting swap");
                     let unspent_proofs = self.get_unspent_proofs().await?;
-
                     let proofs_to_swap = self.select_proofs_to_swap(amount, unspent_proofs).await?;
 
                     let proofs_with_conditions = self
