@@ -40,7 +40,6 @@ impl Mint {
             .get_kvac_issued_macs_by_tags(&outputs_tags)
             .await?
             .iter()
-            .flatten()
             .next()
             .is_some()
         {

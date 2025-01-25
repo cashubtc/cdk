@@ -7,7 +7,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use cashu_kvac::models::MintPublicKey;
 use cashu_kvac::secp::GroupElement;
-use cdk_common::common::{KvacCoinInfo, ProofInfo};
+use cdk_common::common::ProofInfo;
 use cdk_common::database::WalletDatabase;
 use cdk_common::kvac::KvacKeys;
 use cdk_common::mint_url::MintUrl;

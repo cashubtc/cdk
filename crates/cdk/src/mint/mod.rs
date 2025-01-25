@@ -392,6 +392,7 @@ impl Mint {
         Ok(fee)
     }
 
+    /// Fee required for kvac inputs
     pub async fn get_kvac_inputs_fee(&self, _inputs: &Vec<KvacRandomizedCoin>) -> Result<Amount, Error> {
         // TODO: implement the fees
         Ok(Amount { 0: 0 })

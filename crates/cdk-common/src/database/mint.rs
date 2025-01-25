@@ -120,7 +120,7 @@ pub trait Database {
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get kvac nullifiers
-    async fn get_kvac_nullifiers(&self, _nullifiers: &[GroupElement]) -> Result<Vec<Option<KvacNullifier>>, Self::Err> {
+    async fn get_kvac_nullifiers(&self, _nullifiers: &[GroupElement]) -> Result<Vec<KvacNullifier>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get ys by quote id
@@ -186,7 +186,7 @@ pub trait Database {
     async fn get_kvac_issued_macs_by_tags(
         &self,
         _tags: &[Scalar],
-    ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get [`BlindSignature`]s for keyset_id
@@ -198,7 +198,7 @@ pub trait Database {
     async fn get_kvac_issued_macs_for_keyset(
         &self,
         _keyset_id: &Id,
-    ) -> Result<Vec<BlindSignature>, Self::Err> {
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get [`BlindSignature`]s for quote
