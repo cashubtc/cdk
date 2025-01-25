@@ -342,7 +342,6 @@ pub struct KvacCoin {
 /// Kvac Coin
 /// 
 /// A KVAC coin as intended to be saved in the wallet.
-#[cfg(feature = "wallet")]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacRandomizedCoin {
@@ -398,10 +397,12 @@ impl From<&KvacRandomizedCoin> for KvacNullifier {
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacIssuedMac {
     pub mac: MAC,
-    pub keyset_id: String,
-    pub quote_id: Uuid,
+    pub keyset_id: Id,
+    pub quote_id: Option<Uuid>,
 }
 
 // --- Helpers ---
@@ -436,12 +437,6 @@ pub struct BootstrapRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ScriptData {
-    Revealed(String),
-    Hidden(Vec<ZKP>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacSwapRequest {
     /// Inputs
@@ -461,11 +456,10 @@ pub struct KvacSwapRequest {
     /// 
     /// [`Vec<ZKP>`] Proofs that inputs where issued a MAC previously
     pub mac_proofs: Vec<ZKP>,
-    /// Script Data
+    /// Script
     /// 
-    /// Either holds a [`String`] if the client is revealing the script or a
-    /// [`Vec<ZKP>`] proving that inputs and outputs encode the same secret script.
-    pub script_data: ScriptData,
+    /// [`String`] revealing the script to unlock the inputs
+    pub script: String,
     /// Range Proof
     /// 
     /// A single [`RangeProof`] proving the outputs are all within range

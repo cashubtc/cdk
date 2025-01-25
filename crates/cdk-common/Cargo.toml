@@ -13,7 +13,7 @@ wallet = ["cashu/wallet"]
 mint = ["cashu/mint", "dep:uuid"]
 
 [dependencies]
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "cca5f9caafda6bcd16e12de35b28dbea20c40fc7" }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "1b349e26be56c9d8d19c02f3f65f33bfd9afae57" }
 async-trait = "0.1"
 bitcoin = { version = "0.32.2", features = [
     "base64",

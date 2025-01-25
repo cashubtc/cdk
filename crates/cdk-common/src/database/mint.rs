@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use cashu::kvac::{KvacIssuedMac, KvacNullifier, KvacRandomizedCoin};
+use cashu::kvac::{KvacIssuedMac, KvacNullifier};
 use cashu_kvac::secp::{GroupElement, Scalar};
 use uuid::Uuid;
 
@@ -172,7 +172,7 @@ pub trait Database {
     /// Add [`KvacIssuedMac`]
     async fn add_kvac_issued_macs(
         &self,
-        _mac: Vec<KvacIssuedMac>,
+        _mac: &[KvacIssuedMac],
         _quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))

@@ -120,7 +120,7 @@ pub enum Error {
     #[error("Invalid output length for this request")]
     RequestInvalidOutputLength,
     /// KVAC Proofs and inputs mismatch
-    #[error("Number of length does not match number of proofs provided")]
+    #[error("Number of inputs does not match number of proofs provided")]
     InputsToProofsLengthMismatch,
     /// KVAC Bootstrap proofs failed to verify
     #[error("Failed to verify one of the provided proofs")]
@@ -137,6 +137,12 @@ pub enum Error {
     /// KVAC BalanceProof failed to verify
     #[error("Balance proof failed to verify with fee `{0}`")]
     BalanceVerificationError(Amount),
+    /// KVAC MacProof failed to verify
+    #[error("Mac proof failed to verify")]
+    MacVerificationError,
+    /// KVAC RangeProof failed to verify
+    #[error("Range proof failed to verify. One of the outputs is not within range")]
+    RangeProofVerificationError,
 
 
     // Implementation Status

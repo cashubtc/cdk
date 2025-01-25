@@ -65,6 +65,7 @@ impl Mint {
         Ok(())
     }
 
+    /// Check KVAC nullifiers are not spent or pending
     pub async fn check_nullifiers_spendable(
         &self,
         nullifiers: &[KvacNullifier],

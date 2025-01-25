@@ -1,11 +1,11 @@
 use std::collections::HashSet;
-use std::mem::swap;
-
 use cashu_kvac::kvac::BalanceProof;
+use cashu_kvac::kvac::RangeProof;
 use cashu_kvac::models::RandomizedCoin;
 use cashu_kvac::secp::GroupElement;
 use cashu_kvac::secp::Scalar;
 use cashu_kvac::transcript::CashuTranscript;
+use cdk_common::kvac::KvacIssuedMac;
 use cdk_common::kvac::KvacNullifier;
 use cdk_common::kvac::{KvacSwapRequest, KvacSwapResponse};
 use cdk_common::State;
@@ -32,7 +32,7 @@ impl Mint {
 
         let outputs_tags: Vec<Scalar> = swap_request.outputs
             .iter()
-            .map(|output| output.t_tag)
+            .map(|output| output.t_tag.clone())
             .collect();
 
         if self
@@ -84,19 +84,92 @@ impl Mint {
         self.check_nullifiers_spendable(&nullifiers, State::Pending).await?;
 
         // Check that there are no duplicate proofs in request
-        if nullifiers
+        let nullifiers_inner = nullifiers
             .iter()
-            .map(|n| &n.nullifier)
+            .map(|n| n.nullifier.clone())
+            .collect::<Vec<GroupElement>>();
+        if nullifiers_inner
+            .iter()
             .collect::<HashSet<&GroupElement>>()
             .len()
             .ne(&inputs_len)
         {
             self.localstore
-                .update_kvac_nullifiers_states(&nullifiers, State::Unspent)
+                .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
             return Err(Error::DuplicateProofs);
         }
 
-        Ok(())
+        // Check the MAC proofs for valid MAC issuance on the inputs
+        let script = swap_request.script;
+        if swap_request.inputs.len() != swap_request.mac_proofs.len() {
+            self.localstore
+                .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                .await?;
+            return Err(Error::InputsToProofsLengthMismatch)
+        }
+        for (input, proof) in swap_request.inputs.iter().zip(swap_request.mac_proofs.into_iter()) {
+            let result = self.verify_mac(input, &script, proof, &mut verify_transcript).await;
+            if let Err(e) = result {
+                self.localstore
+                    .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                    .await?;
+                return Err(e);
+            }
+        }
+        
+        // Verify the outputs are within range
+        let commitments = swap_request.outputs
+            .iter()
+            .map(|o| (o.commitments.0.clone(), None))
+            .collect::<Vec<(GroupElement, Option<GroupElement>)>>();
+        if !RangeProof::verify(&mut verify_transcript, &commitments, swap_request.range_proof) {
+            self.localstore
+                .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                .await?;
+            return Err(Error::RangeProofVerificationError)
+        }
+
+        // TODO: Script validation and execution
+
+        // Issue MACs
+        let mut issued_macs = vec![];
+        let mut iparams_proofs = vec![];
+        let mut proving_transcript = CashuTranscript::new();
+        for output in swap_request.outputs.iter() {
+            let result = self.issue_mac(output, &mut proving_transcript).await;
+            // Set nullifiers unspent in case of error
+            match result {
+                Err(e) => {
+                    self.localstore
+                        .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                        .await?;
+                    return Err(e)
+                },
+                Ok((mac, proof)) => {
+                    issued_macs.push(KvacIssuedMac {
+                        mac,
+                        keyset_id: output.keyset_id,
+                        quote_id: None,
+                    });
+                    iparams_proofs.push(proof);
+                }
+            }
+        }
+
+        // Add issued macs
+        self.localstore
+            .add_kvac_issued_macs(&issued_macs, None)
+            .await?;
+
+        // Set nullifiers as spent
+        self.localstore
+            .update_kvac_nullifiers_states(&nullifiers_inner, State::Spent)
+            .await?;
+
+        Ok(KvacSwapResponse {
+            macs: issued_macs.into_iter().map(|m| m.mac).collect(),
+            proofs: iparams_proofs,
+        })
     }
 }
