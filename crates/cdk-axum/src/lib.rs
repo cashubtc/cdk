@@ -173,7 +173,8 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/kvac/keys", get(get_kvac_keys))
         .route("/kvac/keysets", get(get_kvac_keysets))
         .route("/kvac/keys/:keyset_id", get(get_kvac_keyset_pubkeys))
-        .route("/kvac/bootstrap", post(cache_post_bootstrap));
+        .route("/kvac/bootstrap", post(cache_post_bootstrap))
+        .route("/kvac/swap", post(cache_post_kvac_swap));
 
 
     let mint_router = Router::new()

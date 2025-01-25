@@ -10,7 +10,10 @@ use cdk::nuts::{
     MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
-use cdk::nuts::kvac::{KvacKeysResponse, KvacKeysetResponse, BootstrapRequest, BootstrapResponse};
+use cdk::nuts::kvac::{
+    KvacKeysResponse, KvacKeysetResponse, BootstrapRequest, BootstrapResponse,
+    KvacSwapRequest, KvacSwapResponse,
+};
 use cdk::util::unix_time;
 use paste::paste;
 use uuid::Uuid;
@@ -66,6 +69,11 @@ post_cache_wrapper!(
     post_bootstrap,
     BootstrapRequest,
     BootstrapResponse
+);
+post_cache_wrapper!(
+    post_kvac_swap,
+    KvacSwapRequest,
+    KvacSwapResponse
 );
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -438,6 +446,36 @@ pub async fn post_swap(
         .await
         .map_err(|err| {
             tracing::error!("Could not process swap request: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(swap_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/swap",
+    request_body(content = KvacSwapRequest, description = "Swap params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacSwapResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Swap inputs for outputs of the same value
+///
+/// Requests a set of coins to be swapped for another set of coins.
+///
+/// This endpoint can be used by Alice to swap a set of coins before making a payment to Carol. It can then used by Carol to redeem the tokens for new coins.
+pub async fn post_kvac_swap(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacSwapRequest>,
+) -> Result<Json<KvacSwapResponse>, Response> {
+    let swap_response = state
+        .mint
+        .process_kvac_swap_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process kvac swap request: {}", err);
             into_response(err)
         })?;
     Ok(Json(swap_response))
