@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS kvac_issued_macs (
     amount_commitment BLOB NOT NULL,
     script_commitment BLOB NOT NULL,
     keyset_id TEXT NOT NULL,
-    quote_id TEXT DEFAULT NULL,
+    quote_id TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS kvac_keyset (

@@ -21,6 +21,7 @@ impl Mint {
         &self,
         swap_request: KvacSwapRequest,
     ) -> Result<KvacSwapResponse, Error> {
+        tracing::debug!("KVAC swap has been called");
         let inputs_len = swap_request.inputs.len();
 
         if swap_request.outputs.len() != 2 {
@@ -166,6 +167,7 @@ impl Mint {
             .update_kvac_nullifiers_states(&nullifiers_inner, State::Spent)
             .await?;
 
+        tracing::debug!("KVAC swap request successful");
         Ok(KvacSwapResponse {
             macs: issued_macs.into_iter().map(|m| m.mac).collect(),
             proofs: iparams_proofs,
