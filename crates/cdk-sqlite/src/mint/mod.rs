@@ -1386,6 +1386,43 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         Ok(())
     }
 
+    async fn add_kvac_issued_macs(
+        &self,
+        macs: &[KvacIssuedMac],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for issued in macs.iter() {
+            let res = sqlx::query(
+                r#"
+INSERT INTO kvac_issued_macs
+(t, V, amount_commitment, script_commitment, keyset_id, quote_id)
+VALUES (?, ?, ?, ?, ?, ?);
+        "#,
+            )
+            .bind(Vec::<u8>::from(&issued.mac.t))
+            .bind(issued.mac.V.to_bytes())
+            .bind(issued.commitments.0.to_bytes())
+            .bind(issued.commitments.1.to_bytes())
+            .bind(issued.keyset_id.to_string())
+            .bind(quote_id.map(|q| q.hyphenated()))
+            .execute(&mut transaction)
+            .await;
+
+            if let Err(err) = res {
+                tracing::error!("SQLite could not add blind signature");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                return Err(Error::SQLX(err).into());
+            }
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
@@ -1906,6 +1943,8 @@ fn sqlite_row_to_kvac_nullifier(row: SqliteRow) -> Result<KvacNullifier, Error> 
 fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error> {
     let row_t: Vec<u8> = row.try_get("t").map_err(Error::from)?;
     let row_v: Vec<u8> = row.try_get("V").map_err(Error::from)?;
+    let row_amount_commitment: Vec<u8> = row.try_get("amount_commitment").map_err(Error::from)?;
+    let row_script_commitment: Vec<u8> = row.try_get("script_commitment").map_err(Error::from)?;
     let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
     let quote_id: Option<Uuid> = row.try_get("quote_id").map_err(Error::from)?;
     
@@ -1913,8 +1952,11 @@ fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error>
         t: Scalar::new(&row_t),
         V: GroupElement::new(&row_v),
     };
+    let com_a = GroupElement::new(&row_amount_commitment);
+    let com_s = GroupElement::new(&row_script_commitment);
     let keyset_id = Id::from_str(&keyset_id)?;
     Ok(KvacIssuedMac {
+        commitments: (com_a, com_s),
         mac,
         keyset_id,
         quote_id

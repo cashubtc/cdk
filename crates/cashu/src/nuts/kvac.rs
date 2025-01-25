@@ -401,6 +401,7 @@ impl From<&KvacRandomizedCoin> for KvacNullifier {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacIssuedMac {
     pub mac: MAC,
+    pub commitments: (GroupElement, GroupElement),
     pub keyset_id: Id,
     pub quote_id: Option<Uuid>,
 }

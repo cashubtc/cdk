@@ -148,6 +148,7 @@ impl Mint {
                 },
                 Ok((mac, proof)) => {
                     issued_macs.push(KvacIssuedMac {
+                        commitments: output.commitments.clone(),
                         mac,
                         keyset_id: output.keyset_id,
                         quote_id: None,
