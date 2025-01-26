@@ -360,6 +360,18 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn set_pending_kvac_coins(&self, ts: &[Scalar]) -> Result<(), Self::Err> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for t in ts.iter() {
+            if let Some(kvac_coin_info) = all_coins.get_mut(&t) {
+                kvac_coin_info.state = State::Pending;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
         let mut all_proofs = self.proofs.write().await;
 

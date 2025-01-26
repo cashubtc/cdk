@@ -7,6 +7,7 @@ use std::sync::Arc;
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
 use cdk_common::database::{self, WalletDatabase};
+use cdk_common::kvac::KvacCoin;
 use cdk_common::subscription::Params;
 use client::MintConnector;
 use getrandom::getrandom;
@@ -197,12 +198,56 @@ impl Wallet {
         Ok(fee)
     }
 
+    /// Fee required for a kvac swap
+    #[instrument(skip_all)]
+    pub async fn get_kvac_coins_fee(&self, coins: &[KvacCoin]) -> Result<Amount, Error> {
+        let mut coins_per_keyset = HashMap::new();
+        let mut fee_per_keyset = HashMap::new();
+
+        for coin in coins {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                fee_per_keyset.entry(coin.keyset_id)
+            {
+                let mint_keyset_info = self
+                    .localstore
+                    .get_kvac_keyset_by_id(&coin.keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?;
+                e.insert(mint_keyset_info.input_fee_ppk);
+            }
+
+            coins_per_keyset
+                .entry(coin.keyset_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+
+        let fee = calculate_fee(&coins_per_keyset, &fee_per_keyset)?;
+
+        Ok(fee)
+    }
+
     /// Get fee for count of proofs in a keyset
     #[instrument(skip_all)]
     pub async fn get_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
         let input_fee_ppk = self
             .localstore
             .get_keyset_by_id(keyset_id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?
+            .input_fee_ppk;
+
+        let fee = (input_fee_ppk * count + 999) / 1000;
+
+        Ok(Amount::from(fee))
+    }
+
+    /// Get fee for count of coins in a keyset
+    #[instrument(skip_all)]
+    pub async fn get_kvac_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
+        let input_fee_ppk = self
+            .localstore
+            .get_kvac_keyset_by_id(keyset_id)
             .await?
             .ok_or(Error::UnknownKeySet)?
             .input_fee_ppk;

@@ -128,6 +128,11 @@ pub trait Database: Debug {
     /// Set proofs as pending in storage. Proofs are identified by their Y
     /// value.
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Set coins as pending in storage. Coins are identified by their `t`
+    /// value.
+    async fn set_pending_kvac_coins(&self, _ts: &[Scalar]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Reserve proofs in storage. Proofs are identified by their Y value.
     async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Set proofs as unspent in storage. Proofs are identified by their Y

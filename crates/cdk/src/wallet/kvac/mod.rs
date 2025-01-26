@@ -2,3 +2,4 @@
 
 pub mod bootstrap;
 pub mod keysets;
+pub mod swap;

@@ -8,6 +8,7 @@ use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::KvacIssuedMac;
 use cdk_common::kvac::KvacNullifier;
 use cdk_common::kvac::{KvacSwapRequest, KvacSwapResponse};
+use cdk_common::Id;
 use cdk_common::State;
 use tracing::instrument;
 
@@ -100,8 +101,14 @@ impl Mint {
             return Err(Error::DuplicateProofs);
         }
 
+        // Extract script if present
+        let script = if let Some(scr) = swap_request.script {
+            scr
+        } else { 
+            String::new()
+        };
+
         // Check the MAC proofs for valid MAC issuance on the inputs
-        let script = swap_request.script;
         if swap_request.inputs.len() != swap_request.mac_proofs.len() {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
@@ -128,6 +135,53 @@ impl Mint {
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
             return Err(Error::RangeProofVerificationError)
+        }
+
+        let input_keyset_ids: HashSet<Id> =
+            swap_request.inputs.iter().map(|p| p.keyset_id).collect();
+
+        let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
+
+        for id in input_keyset_ids {
+            match self.localstore.get_keyset_info(&id).await? {
+                Some(keyset) => {
+                    keyset_units.insert(keyset.unit);
+                }
+                None => {
+                    tracing::info!("Swap request with unknown keyset in inputs");
+                    self.localstore
+                        .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                        .await?;
+                }
+            }
+        }
+
+        let output_keyset_ids: HashSet<Id> =
+            swap_request.outputs.iter().map(|p| p.keyset_id).collect();
+
+        for id in &output_keyset_ids {
+            match self.localstore.get_kvac_keyset_info(id).await? {
+                Some(keyset) => {
+                    keyset_units.insert(keyset.unit);
+                }
+                None => {
+                    tracing::info!("Swap request with unknown keyset in outputs");
+                    self.localstore
+                        .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                        .await?;
+                }
+            }
+        }
+
+        // Check that all proofs are the same unit
+        // in the future it maybe possible to support multiple units but unsupported for
+        // now
+        if keyset_units.len().gt(&1) {
+            tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
+            self.localstore
+                .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                .await?;
+            return Err(Error::MultipleUnits);
         }
 
         // TODO: Script validation and execution

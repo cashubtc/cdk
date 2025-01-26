@@ -143,6 +143,9 @@ pub enum Error {
     /// KVAC RangeProof failed to verify
     #[error("Range proof failed to verify. One of the outputs is not within range")]
     RangeProofVerificationError,
+    /// KVAC Script is not the same for all coins
+    #[error("Script is not the same across all coins")]
+    DifferentScriptsError,
 
 
     // Implementation Status

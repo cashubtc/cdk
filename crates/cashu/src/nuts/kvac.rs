@@ -363,6 +363,17 @@ pub struct KvacRandomizedCoin {
     pub randomized_coin: RandomizedCoin,
 }
 
+impl From<&KvacCoin> for KvacRandomizedCoin {
+    fn from(coin: &KvacCoin) -> Self {
+        Self {
+            randomized_coin: RandomizedCoin::from_coin(&coin.coin, true).expect(""),
+            keyset_id: coin.keyset_id,
+            script: coin.script.clone(),
+            unit: coin.unit.clone(),
+        }
+    }
+}
+
 pub struct KvacNullifier {
     pub nullifier: GroupElement,
     pub keyset_id: Id,
@@ -460,7 +471,7 @@ pub struct KvacSwapRequest {
     /// Script
     /// 
     /// [`String`] revealing the script to unlock the inputs
-    pub script: String,
+    pub script: Option<String>,
     /// Range Proof
     /// 
     /// A single [`RangeProof`] proving the outputs are all within range

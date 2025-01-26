@@ -3,7 +3,7 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use cdk_common::kvac::{BootstrapRequest, BootstrapResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse};
+use cdk_common::kvac::{BootstrapRequest, BootstrapResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse, KvacSwapRequest, KvacSwapResponse};
 use reqwest::{Client, IntoUrl};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -257,6 +257,13 @@ impl MintConnector for HttpClient {
         self.http_post(url, &swap_request).await
     }
 
+    /// Swap Token [NUT-03]
+    #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
+    async fn post_kvac_swap(&self, swap_request: KvacSwapRequest) -> Result<KvacSwapResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "swap"])?;
+        self.http_post(url, &swap_request).await
+    }
+
     /// Get Mint Info [NUT-06]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
@@ -343,6 +350,10 @@ pub trait MintConnector: Debug {
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
     /// Split Token [NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
+    /// Swap KVAC Coins 
+    async fn post_kvac_swap(&self, _request: KvacSwapRequest) -> Result<KvacSwapResponse, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Get Mint Info [NUT-06]
     async fn get_mint_info(&self) -> Result<MintInfo, Error>;
     /// Spendable check [NUT-07]
