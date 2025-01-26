@@ -471,11 +471,11 @@ async fn test_multimint_melt() -> Result<()> {
     // Fund the wallets
     let quote = wallet1.mint_quote(mint_amount, None).await?;
     lnd_client.pay_invoice(quote.request.clone()).await?;
-    wallet1.mint(&quote.request, SplitTarget::None, None).await?;
-    
+    wallet1.mint(&quote.id, SplitTarget::default(), None).await?;
+
     let quote = wallet2.mint_quote(mint_amount, None).await?;
     lnd_client.pay_invoice(quote.request.clone()).await?;
-    wallet2.mint(&quote.request, SplitTarget::None, None).await?;
+    wallet2.mint(&quote.id, SplitTarget::default(), None).await?;
 
     // Get an invoice
     let invoice = lnd_client.create_invoice(Some(50)).await?;
@@ -494,8 +494,8 @@ async fn test_multimint_melt() -> Result<()> {
         .await?;
 
     // Multimint pay invoice
-    let result1 = wallet1.melt(&quote_1.request);
-    let result2 = wallet2.melt(&quote_2.request);
+    let result1 = wallet1.melt(&quote_1.id);
+    let result2 = wallet2.melt(&quote_2.id);
     let result = join!(result1, result2);
 
     // Unpack results
