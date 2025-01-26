@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use cashu::{CurrencyUnit, PaymentMethod};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
@@ -51,6 +52,12 @@ pub enum Error {
     /// Amountless Invoice Not supported
     #[error("Amount Less Invoice is not allowed")]
     AmountLessNotAllowed,
+    /// Multi-Part Internal Melt Quotes are not supported
+    #[error("Multi-Part Internal Melt Quotes are not supported")]
+    InternalMultiPartMeltQuote,
+    /// Multi-Part Payment not supported for unit and method
+    #[error("Multi-Part payment is not supported for unit `{0}` and method `{1}`")]
+    MppUnitMethodNotSupported(CurrencyUnit, PaymentMethod),
 
     // Mint Errors
     /// Minting is disabled

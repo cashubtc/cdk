@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use anyhow::bail;
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::MeltOptions;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 use uuid::Uuid;
@@ -22,14 +23,17 @@ use crate::{cdk_lightning, Amount, Error};
 
 impl Mint {
     #[instrument(skip_all)]
-    fn check_melt_request_acceptable(
+    async fn check_melt_request_acceptable(
         &self,
         amount: Amount,
         unit: CurrencyUnit,
         method: PaymentMethod,
+        request: String,
+        options: Option<MeltOptions>,
     ) -> Result<(), Error> {
         let mint_info = self.mint_info();
         let nut05 = mint_info.nuts.nut05;
+        let nut15 = mint_info.nuts.nut15;
 
         if nut05.disabled {
             return Err(Error::MeltingDisabled);
@@ -39,6 +43,22 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnitUnsupported)?;
 
+        if matches!(options, Some(MeltOptions::Mpp { mpp: _ })) {
+            // Verify there is no corresponding mint quote.
+            // Otherwise a wallet is trying to pay someone internally, but
+            // with a multi-part quote. And that's just not possible.
+            if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
+                return Err(Error::InternalMultiPartMeltQuote);
+            }
+            // Verify MPP is enabled for unit and method
+            if !nut15
+                .methods
+                .into_iter()
+                .any(|m| m.method == method && m.unit == unit)
+            {
+                return Err(Error::MppUnitMethodNotSupported(unit, method));
+            }
+        }
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
@@ -68,7 +88,14 @@ impl Mint {
 
         let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
 
-        self.check_melt_request_acceptable(amount_quote_unit, unit.clone(), PaymentMethod::Bolt11)?;
+        self.check_melt_request_acceptable(
+            amount_quote_unit,
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            request.to_string(),
+            *options,
+        )
+        .await?;
 
         let ln = self
             .ln
