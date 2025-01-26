@@ -43,22 +43,27 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnitUnsupported)?;
 
-        if matches!(options, Some(MeltOptions::Mpp { mpp: _ })) {
-            // Verify there is no corresponding mint quote.
-            // Otherwise a wallet is trying to pay someone internally, but
-            // with a multi-part quote. And that's just not possible.
-            if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
-                return Err(Error::InternalMultiPartMeltQuote);
+        let amount = match options {
+            Some(MeltOptions::Mpp { mpp }) => {
+                // Verify there is no corresponding mint quote.
+                // Otherwise a wallet is trying to pay someone internally, but
+                // with a multi-part quote. And that's just not possible.
+                if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
+                    return Err(Error::InternalMultiPartMeltQuote);
+                }
+                // Verify MPP is enabled for unit and method
+                if !nut15
+                    .methods
+                    .into_iter()
+                    .any(|m| m.method == method && m.unit == unit)
+                {
+                    return Err(Error::MppUnitMethodNotSupported(unit, method));
+                }
+                mpp.amount
             }
-            // Verify MPP is enabled for unit and method
-            if !nut15
-                .methods
-                .into_iter()
-                .any(|m| m.method == method && m.unit == unit)
-            {
-                return Err(Error::MppUnitMethodNotSupported(unit, method));
-            }
-        }
+            None => amount,
+        };
+
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {

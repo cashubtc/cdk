@@ -492,10 +492,12 @@ async fn test_multimint_melt() -> Result<()> {
     };
     let quote_1 = wallet1
         .melt_quote(invoice.clone(), Some(melt_options.clone()))
-        .await?;
+        .await
+        .expect("Could not get melt quote");
     let quote_2 = wallet2
         .melt_quote(invoice.clone(), Some(melt_options.clone()))
-        .await?;
+        .await
+        .expect("Could not get melt quote");
 
     // Multimint pay invoice
     let result1 = wallet1.melt(&quote_1.id);
