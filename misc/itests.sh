@@ -33,9 +33,10 @@ trap cleanup EXIT
 # Create a temporary directory
 export cdk_itests=$(mktemp -d)
 export cdk_itests_mint_addr="127.0.0.1";
-export cdk_itests_mint_port=8085;
+export cdk_itests_mint_port_0=8085;
+export cdk_itests_mint_port_1=8087;
 
-URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port/v1/info"
+URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0/v1/info"
 # Check if the temporary directory was created successfully
 if [[ ! -d "$cdk_itests" ]]; then
     echo "Failed to create temp directory"
@@ -90,8 +91,9 @@ cargo test -p cdk-integration-tests --test regtest
 # # Run cargo test with the http_subscription feature
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
 
-# Run tests with lnd mint
-export cdk_itests_mint_port=8087;
+# Switch Mints: Run tests with LND mint
+export cdk_itests_mint_port_0=8087;
+export cdk_itests_mint_port_1=8085;
 cargo test -p cdk-integration-tests --test regtest
 
 # Capture the exit status of cargo test

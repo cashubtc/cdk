@@ -19,6 +19,7 @@ axum = "0.6.20"
 rand = "0.8.5"
 bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
+cashu = { path = "../cashu", features = ["mint", "wallet"] }
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-cln = { path = "../cdk-cln" }
 cdk-lnd = { path = "../cdk-lnd" }
