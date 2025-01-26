@@ -481,10 +481,14 @@ async fn test_multimint_melt() -> Result<()> {
     let melt_options = MeltOptions::Mpp {
         mpp: Mpp {
             amount: Amount::from(25),
-        }
+        },
     };
-    let quote_1 = wallet1.melt_quote(invoice.clone(), Some(melt_options.clone())).await?;
-    let quote_2 = wallet2.melt_quote(invoice.clone(), Some(melt_options.clone())).await?;
+    let quote_1 = wallet1
+        .melt_quote(invoice.clone(), Some(melt_options.clone()))
+        .await?;
+    let quote_2 = wallet2
+        .melt_quote(invoice.clone(), Some(melt_options.clone()))
+        .await?;
 
     // Multimint pay invoice
     let result1 = wallet1.melt(&quote_1.request);
