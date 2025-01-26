@@ -354,8 +354,8 @@ impl MintLightning for Lnd {
                     .map_err(|err| {
                         tracing::warn!("Lightning payment failed: {}", err);
                         Error::PaymentFailed
-                })?
-                .into_inner();
+                    })?
+                    .into_inner();
 
                 let total_amount = payment_response
                     .payment_route
