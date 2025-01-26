@@ -32,7 +32,8 @@ impl Wallet {
         let delta_amount = inputs.iter().fold(0, |acc, i| acc + i.amount.0)
             - outputs.iter().fold(0, |acc, o| acc + o.amount.0);
         */
-            
+        
+        // Create balance proof
         let balance_proof = BalanceProof::create(&input_attributes, &output_attributes, &mut proving_transcript);
 
         let mut mac_proofs = vec![];
@@ -63,8 +64,10 @@ impl Wallet {
             return Err(Error::DifferentScriptsError);
         }
 
+        // Create range proof
         let range_proof = RangeProof::create_bulletproof(&mut proving_transcript, &input_attributes);
         
+        // Assemble Swap Request
         let request  = KvacSwapRequest {
             inputs: input_randomized_coins,
             outputs: output_coin_messages,
@@ -76,6 +79,7 @@ impl Wallet {
 
         let response = self.client.post_kvac_swap(request).await?;
 
+        // Assemble new coins
         let mut new_coins = vec![];
         for (mac, coin) in response.macs.into_iter().zip(outputs.iter()) {
             let coin = KvacCoin {
