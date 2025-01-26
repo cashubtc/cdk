@@ -81,7 +81,7 @@ impl MintLightning for Lnd {
     #[instrument(skip_all)]
     fn get_settings(&self) -> Settings {
         Settings {
-            mpp: false,
+            mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
         }
