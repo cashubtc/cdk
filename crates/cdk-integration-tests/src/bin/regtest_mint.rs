@@ -178,30 +178,29 @@ async fn main() -> Result<()> {
         }
         "SQLITE" => {
             tokio::spawn(async move {
-                let sqlite_db = MintSqliteDatabase::new(&cln_mint_db_path)
+                let cln_sqlite_db = MintSqliteDatabase::new(&cln_mint_db_path)
                     .await
-                    .expect("Could not create mint db");
-                sqlite_db.migrate().await;
-                create_mint(mint_addr, cln_mint_port, sqlite_db, cln_backend)
+                    .expect("Could not create CLN mint db");
+                cln_sqlite_db.migrate().await;
+                create_mint(mint_addr, cln_mint_port, cln_sqlite_db, cln_backend)
                     .await
                     .expect("Could not start cln mint");
             });
 
-            let sqlite_db = MintSqliteDatabase::new(&lnd_mint_db_path).await?;
-            sqlite_db.migrate().await;
-            create_mint(mint_addr, lnd_mint_port, sqlite_db, lnd_backend).await?;
+            let lnd_sqlite_db = MintSqliteDatabase::new(&lnd_mint_db_path).await?;
+            lnd_sqlite_db.migrate().await;
+            create_mint(mint_addr, lnd_mint_port, lnd_sqlite_db, lnd_backend).await?;
         }
         "REDB" => {
             tokio::spawn(async move {
-                let redb_db = MintRedbDatabase::new(&cln_mint_db_path).unwrap();
-                create_mint(mint_addr, cln_mint_port, redb_db, cln_backend)
+                let cln_redb_db = MintRedbDatabase::new(&cln_mint_db_path).unwrap();
+                create_mint(mint_addr, cln_mint_port, cln_redb_db, cln_backend)
                     .await
                     .expect("Could not start cln mint");
             });
 
-            let redb_db = MintRedbDatabase::new(&lnd_mint_db_path).unwrap();
-
-            create_mint(mint_addr, lnd_mint_port, redb_db, lnd_backend).await?;
+            let lnd_redb_db = MintRedbDatabase::new(&lnd_mint_db_path).unwrap();
+            create_mint(mint_addr, lnd_mint_port, lnd_redb_db, lnd_backend).await?;
         }
         _ => panic!("Unknown mint db type: {}", mint_db_kind),
     };
