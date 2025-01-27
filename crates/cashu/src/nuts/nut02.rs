@@ -90,13 +90,13 @@ impl fmt::Display for KeySetVersion {
 #[serde(into = "String", try_from = "String")]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = String))]
 pub struct Id {
-    version: KeySetVersion,
-    id: [u8; Self::BYTELEN],
+    pub version: KeySetVersion,
+    pub id: [u8; Self::BYTELEN],
 }
 
 impl Id {
-    const STRLEN: usize = 14;
-    const BYTELEN: usize = 7;
+    pub const STRLEN: usize = 14;
+    pub const BYTELEN: usize = 7;
 
     /// [`Id`] to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
