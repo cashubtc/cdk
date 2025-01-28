@@ -242,8 +242,8 @@ impl MintBuilder {
     }
 }
 
-/// Mint Melt Limits
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// Mint and Melt Limits
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MintMeltLimits {
     /// Min mint amount
     pub mint_min: Amount,
@@ -256,7 +256,7 @@ pub struct MintMeltLimits {
 }
 
 impl MintMeltLimits {
-    /// Create new [`MintMeltLimits`]
+    /// Create new [`MintMeltLimits`]. The `min` and `max` limits apply to both minting and melting.
     pub fn new(min: u64, max: u64) -> Self {
         Self {
             mint_min: min.into(),
