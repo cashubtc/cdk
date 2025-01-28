@@ -494,7 +494,7 @@ async fn test_multimint_melt() -> Result<()> {
     wallet1
         .mint(&quote.id, SplitTarget::default(), None)
         .await?;
-    
+
     let quote = wallet2.mint_quote(mint_amount, None).await?;
     lnd_client.pay_invoice(quote.request.clone()).await?;
     loop {
