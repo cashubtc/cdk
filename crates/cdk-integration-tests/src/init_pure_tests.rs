@@ -167,7 +167,7 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
     mint_builder = mint_builder.add_ln_backend(
         CurrencyUnit::Sat,
         PaymentMethod::Bolt11,
-        MintMeltLimits::default(),
+        MintMeltLimits::new(1, 1_000),
         ln_fake_backend,
     );
 
