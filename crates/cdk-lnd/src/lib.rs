@@ -25,7 +25,7 @@ use cdk::{mint, Bolt11Invoice};
 use error::Error;
 use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
 use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
-use fedimint_tonic_lnd::lnrpc::{FeeLimit, HtlcAttempt};
+use fedimint_tonic_lnd::lnrpc::{FeeLimit, Hop, HtlcAttempt, MppRecord};
 use fedimint_tonic_lnd::tonic::Code;
 use fedimint_tonic_lnd::Client;
 use futures::{Stream, StreamExt};
@@ -261,9 +261,9 @@ impl MintLightning for Lnd {
                     .lock()
                     .await
                     .lightning()
-                    .query_routes(fedimint_tonic_lnd::tonic::Request::new(route_req))
+                    .query_routes(route_req)
                     .await
-                    .map_err(|_| Error::PaymentFailed)?
+                    .map_err(|e| Error::LndError(e))?
                     .into_inner();
 
                 let mut payment_response: HtlcAttempt = HtlcAttempt {
@@ -274,14 +274,12 @@ impl MintLightning for Lnd {
                 // update its MPP record,
                 // attempt it and check the result
                 for mut route in routes_response.routes.into_iter() {
-                    let last_hop = route.hops.last_mut().ok_or(Error::MissingLastHop)?;
-                    let mpp_record = last_hop
-                        .mpp_record
-                        .as_mut()
-                        .ok_or(Error::MissingMppRecord)?;
-
-                    mpp_record.payment_addr = payer_addr.clone();
-                    mpp_record.total_amt_msat = amount_msat as i64;
+                    let last_hop: &mut Hop = route.hops.last_mut().ok_or(Error::MissingLastHop)?;
+                    let mpp_record = MppRecord {
+                        payment_addr: payer_addr.clone(),
+                        total_amt_msat: amount_msat as i64,
+                    };
+                    last_hop.mpp_record = Some(mpp_record);
 
                     payment_response = self
                         .client
@@ -294,7 +292,7 @@ impl MintLightning for Lnd {
                             ..Default::default()
                         })
                         .await
-                        .map_err(|_| Error::PaymentFailed)?
+                        .map_err(|e| Error::LndError(e))?
                         .into_inner();
 
                     if let Some(failure) = payment_response.failure {

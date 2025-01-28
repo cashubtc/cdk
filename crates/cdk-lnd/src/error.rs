@@ -1,5 +1,6 @@
 //! LND Errors
 
+use fedimint_tonic_lnd::tonic::Status;
 use thiserror::Error;
 
 /// LND Error
@@ -26,9 +27,9 @@ pub enum Error {
     /// Missing last hop in route
     #[error("LND missing last hop in route")]
     MissingLastHop,
-    /// No MPP record in last hop
-    #[error("LND missing MPP record in last hop")]
-    MissingMppRecord,
+    /// Errors coming from the backend
+    #[error("LND error: `{0}`")]
+    LndError(Status),
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {
