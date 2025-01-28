@@ -214,7 +214,7 @@ pub async fn fund_wallet(wallet: Arc<Wallet>, amount: u64) -> anyhow::Result<Amo
     let desired_amount = Amount::from(amount);
     let quote = wallet.mint_quote(desired_amount, None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     Ok(wallet
         .mint(&quote.id, SplitTarget::default(), None)
