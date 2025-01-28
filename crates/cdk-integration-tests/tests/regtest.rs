@@ -18,6 +18,7 @@ use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
+use cdk_integration_tests::wait_for_mint_to_be_paid;
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
@@ -93,6 +94,8 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await.unwrap();
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -176,6 +179,8 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
@@ -203,6 +208,8 @@ async fn test_restore() -> Result<()> {
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -264,6 +271,8 @@ async fn test_pay_invoice_twice() -> Result<()> {
         .await
         .expect("Could not pay invoice");
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
@@ -318,6 +327,8 @@ async fn test_internal_payment() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
@@ -341,6 +352,8 @@ async fn test_internal_payment() -> Result<()> {
     assert_eq!(melt.amount, 10.into());
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
 
     let _wallet_2_mint = wallet_2
         .mint(&mint_quote.id, SplitTarget::default(), None)
