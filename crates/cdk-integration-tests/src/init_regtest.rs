@@ -169,7 +169,6 @@ where
 
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())
-        .with_mint_url(format!("http://{addr}:{port}"))
         .with_description("regtest mint".to_string())
         .with_quote_ttl(10000, 10000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());

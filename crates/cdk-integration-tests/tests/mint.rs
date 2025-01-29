@@ -46,7 +46,6 @@ async fn new_mint(fee: u64) -> Mint {
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
     Mint::new(
-        MINT_URL,
         &mnemonic.to_seed_normalized(""),
         mint_info,
         quote_ttl,
@@ -72,7 +71,6 @@ async fn mint_proofs(
     let request_lookup = uuid::Uuid::new_v4().to_string();
 
     let quote = MintQuote::new(
-        mint.config.mint_url(),
         "".to_string(),
         CurrencyUnit::Sat,
         amount,

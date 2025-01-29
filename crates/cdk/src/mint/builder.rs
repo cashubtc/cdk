@@ -21,8 +21,6 @@ use crate::types::{LnKey, QuoteTTL};
 /// Cashu Mint
 #[derive(Default)]
 pub struct MintBuilder {
-    /// Mint Url
-    mint_url: Option<String>,
     /// Mint Info
     mint_info: MintInfo,
     /// Mint Storage backend
@@ -60,12 +58,6 @@ impl MintBuilder {
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
-        self
-    }
-
-    /// Set mint url
-    pub fn with_mint_url(mut self, mint_url: String) -> Self {
-        self.mint_url = Some(mint_url);
         self
     }
 
@@ -227,7 +219,6 @@ impl MintBuilder {
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
         Ok(Mint::new(
-            self.mint_url.as_ref().ok_or(anyhow!("Mint url not set"))?,
             self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
             self.mint_info.clone(),
             self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,

@@ -175,7 +175,6 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
 
     mint_builder = mint_builder
         .with_name("pure test mint".to_string())
-        .with_mint_url("http://aa".to_string())
         .with_description("pure test mint".to_string())
         .with_quote_ttl(10000, 10000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
@@ -198,7 +197,7 @@ pub fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<Wallet
     let connector = DirectMintConnection::new(mint);
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    let mint_url = connector.mint.config.mint_url().to_string();
+    let mint_url = "http://aa".to_string();
     let unit = CurrencyUnit::Sat;
     let localstore = WalletMemoryDatabase::default();
     let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None)?;
