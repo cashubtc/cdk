@@ -7,14 +7,11 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use super::{Id, MintKeySet};
-use crate::types::QuoteTTL;
 
 /// Mint Inner configuration
 pub struct Config {
     /// Active Mint Keysets
     pub keysets: HashMap<Id, MintKeySet>,
-    /// Quotes ttl
-    pub quote_ttl: QuoteTTL,
 }
 
 /// Mint configuration
@@ -31,8 +28,8 @@ pub struct SwappableConfig {
 
 impl SwappableConfig {
     /// Creates a new configuration instance
-    pub fn new(quote_ttl: QuoteTTL, keysets: HashMap<Id, MintKeySet>) -> Self {
-        let inner = Config { keysets, quote_ttl };
+    pub fn new(keysets: HashMap<Id, MintKeySet>) -> Self {
+        let inner = Config { keysets };
 
         Self {
             config: Arc::new(ArcSwap::from_pointee(inner)),
@@ -44,29 +41,9 @@ impl SwappableConfig {
         self.config.load().clone()
     }
 
-    /// Gets a copy of the quote ttl
-    pub fn quote_ttl(&self) -> QuoteTTL {
-        self.load().quote_ttl
-    }
-
-    /// Replaces the current quote ttl with a new one
-    pub fn set_quote_ttl(&self, quote_ttl: QuoteTTL) {
-        let current_inner = self.load();
-        let new_inner = Config {
-            quote_ttl,
-            keysets: current_inner.keysets.clone(),
-        };
-
-        self.config.store(Arc::new(new_inner));
-    }
-
     /// Replaces the current keysets with a new one
     pub fn set_keysets(&self, keysets: HashMap<Id, MintKeySet>) {
-        let current_inner = self.load();
-        let new_inner = Config {
-            quote_ttl: current_inner.quote_ttl,
-            keysets,
-        };
+        let new_inner = Config { keysets };
 
         self.config.store(Arc::new(new_inner));
     }

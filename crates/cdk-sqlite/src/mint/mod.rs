@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::LnKey;
+use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
@@ -1279,6 +1279,77 @@ WHERE id=?;
                 sqlx::Error::RowNotFound => {
                     transaction.commit().await.map_err(Error::from)?;
                     return Err(Error::UnknownMintInfo.into());
+                }
+                _ => {
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
+                    }
+                }
+            },
+        }
+    }
+
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO config
+(id, value)
+VALUES (?, ?);
+        "#,
+        )
+        .bind("quote_ttl")
+        .bind(serde_json::to_string(&quote_ttl)?)
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite Could not update mint info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM config
+WHERE id=?;
+        "#,
+        )
+        .bind("quote_ttl")
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let value: String = rec.try_get("value").map_err(Error::from)?;
+
+                let quote_ttl = serde_json::from_str(&value)?;
+
+                Ok(quote_ttl)
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Err(Error::UnknownQuoteTTL.into());
                 }
                 _ => {
                     return {

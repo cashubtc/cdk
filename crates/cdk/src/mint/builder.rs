@@ -224,9 +224,12 @@ impl MintBuilder {
             .ok_or(anyhow!("Localstore not set"))?;
         localstore.set_mint_info(self.mint_info.clone()).await?;
 
+        localstore
+            .set_quote_ttl(self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?)
+            .await?;
+
         Ok(Mint::new(
             self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
-            self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,
             localstore,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
             self.supported_units.clone(),

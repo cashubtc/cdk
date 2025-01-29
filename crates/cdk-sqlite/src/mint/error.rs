@@ -47,6 +47,9 @@ pub enum Error {
     /// Unknown Mint Info
     #[error("Unknown mint info")]
     UnknownMintInfo,
+    /// Unknown quote TTL
+    #[error("Unknown quote TTL")]
+    UnknownQuoteTTL,
 }
 
 impl From<Error> for cdk_common::database::Error {

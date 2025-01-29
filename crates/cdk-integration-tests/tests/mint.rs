@@ -54,7 +54,6 @@ async fn new_mint(fee: u64) -> Mint {
 
     Mint::new(
         &mnemonic.to_seed_normalized(""),
-        quote_ttl,
         Arc::new(localstore),
         HashMap::new(),
         supported_units,
