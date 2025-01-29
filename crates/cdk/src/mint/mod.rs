@@ -28,7 +28,6 @@ use crate::Amount;
 mod builder;
 mod check_spendable;
 pub mod config;
-mod info;
 mod keysets;
 mod melt;
 mod mint_nut04;
@@ -59,7 +58,6 @@ impl Mint {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         seed: &[u8],
-        mint_info: MintInfo,
         quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
@@ -180,13 +178,18 @@ impl Mint {
         }
 
         Ok(Self {
-            config: SwappableConfig::new(quote_ttl, mint_info, active_keysets),
+            config: SwappableConfig::new(quote_ttl, active_keysets),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
             xpriv,
             localstore,
             ln,
         })
+    }
+
+    /// Get mint info
+    pub async fn mint_info(&self) -> Result<MintInfo, Error> {
+        Ok(self.localstore.get_mint_info().await?)
     }
 
     /// Wait for any invoice to be paid
@@ -683,13 +686,13 @@ mod tests {
                 config.blinded_signatures,
                 config.quote_signatures,
                 config.melt_requests,
+                config.mint_info,
             )
             .unwrap(),
         );
 
         Mint::new(
             config.seed,
-            config.mint_info,
             config.quote_ttl,
             localstore,
             HashMap::new(),
@@ -706,9 +709,6 @@ mod tests {
         };
         let mint = create_mint(config).await?;
 
-        let info = mint.mint_info();
-        assert!(info.name.is_none());
-        assert!(info.pubkey.is_none());
         assert_eq!(
             mint.pubkeys().await.unwrap(),
             KeysResponse {

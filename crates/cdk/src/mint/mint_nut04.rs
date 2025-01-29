@@ -12,12 +12,12 @@ use crate::{Amount, Error};
 
 impl Mint {
     /// Checks that minting is enabled, request is supported unit and within range
-    fn check_mint_request_acceptable(
+    async fn check_mint_request_acceptable(
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
     ) -> Result<(), Error> {
-        let mint_info = self.mint_info();
+        let mint_info = self.localstore.get_mint_info().await?;
         let nut04 = &mint_info.nuts.nut04;
 
         if nut04.disabled {
@@ -69,7 +69,7 @@ impl Mint {
             pubkey,
         } = mint_quote_request;
 
-        self.check_mint_request_acceptable(amount, &unit)?;
+        self.check_mint_request_acceptable(amount, &unit).await?;
 
         let ln = self
             .ln

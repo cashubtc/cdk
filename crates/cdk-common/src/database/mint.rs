@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::MintInfo;
 use uuid::Uuid;
 
 use super::Error;
@@ -127,4 +128,9 @@ pub trait Database {
         &self,
         quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+
+    /// Set [`MintInfo`]
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err>;
+    /// Get [`MintInfo`]
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err>;
 }

@@ -218,13 +218,16 @@ impl MintBuilder {
 
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
+        let localstore = self
+            .localstore
+            .clone()
+            .ok_or(anyhow!("Localstore not set"))?;
+        localstore.set_mint_info(self.mint_info.clone()).await?;
+
         Ok(Mint::new(
             self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
-            self.mint_info.clone(),
             self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,
-            self.localstore
-                .clone()
-                .ok_or(anyhow!("Localstore not set"))?,
+            localstore,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
             self.supported_units.clone(),
             HashMap::new(),

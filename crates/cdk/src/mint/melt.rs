@@ -31,7 +31,7 @@ impl Mint {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<(), Error> {
-        let mint_info = self.mint_info();
+        let mint_info = self.localstore.get_mint_info().await?;
         let nut05 = mint_info.nuts.nut05;
         let nut15 = mint_info.nuts.nut15;
 
