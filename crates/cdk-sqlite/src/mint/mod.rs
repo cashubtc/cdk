@@ -15,7 +15,8 @@ use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
-    MeltQuoteState, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
+    State,
 };
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
@@ -1217,6 +1218,77 @@ WHERE quote_id=?;
                 }
                 Err(Error::from(err).into())
             }
+        }
+    }
+
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO config
+(id, value)
+VALUES (?, ?);
+        "#,
+        )
+        .bind("mint_info")
+        .bind(serde_json::to_string(&mint_info)?)
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite Could not update mint info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM config
+WHERE id=?;
+        "#,
+        )
+        .bind("mint_info")
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let value: String = rec.try_get("value").map_err(Error::from)?;
+
+                let mint_info = serde_json::from_str(&value)?;
+
+                Ok(mint_info)
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Err(Error::UnknownMintInfo.into());
+                }
+                _ => {
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
+                    }
+                }
+            },
         }
     }
 }

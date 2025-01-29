@@ -38,11 +38,7 @@ impl DirectMintConnection {
 
 impl Debug for DirectMintConnection {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "DirectMintConnection {{ mint_info: {:?} }}",
-            self.mint.config.mint_info()
-        )
+        write!(f, "DirectMintConnection",)
     }
 }
 
@@ -130,7 +126,7 @@ impl MintConnector for DirectMintConnection {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.mint.mint_info().clone().time(unix_time()))
+        Ok(self.mint.mint_info().await?.clone().time(unix_time()))
     }
 
     async fn post_check_state(
