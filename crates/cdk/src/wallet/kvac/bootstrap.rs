@@ -18,6 +18,7 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn bootstrap(
         &self,
+        n: usize,
         script: Option<String>,
     ) -> Result<Vec<KvacCoin>, Error> {
         // Check that mint is in store of mints
@@ -36,7 +37,7 @@ impl Wallet {
         let mut coin_messages = vec![];
         let mut bootstrap_proofs = vec![];
         let mut proving_transcript = CashuTranscript::new();
-        for _ in 0..2 {
+        for _ in 0..n {
             let pre_coin = KvacPreCoin::new(active_keyset_id.clone(), Amount::from(0), self.unit.clone(), script.clone());
             bootstrap_proofs.push(BootstrapProof::create(&pre_coin.attributes.0, &mut proving_transcript));
             coin_messages.push(KvacCoinMessage::from(&pre_coin));

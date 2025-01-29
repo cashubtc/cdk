@@ -120,7 +120,7 @@ impl Wallet {
         let keyset = self.get_active_mint_kvac_keyset().await?;
         let unit = keyset.unit;
         let id = keyset.id;
-        let counter = self.localstore.get_kvac_keyset_counter(&id).await?.ok_or(Error::UnknownKeySet)?;
+        let counter = self.localstore.get_kvac_keyset_counter(&id).await?.unwrap_or(0);
 
         let pre_coins = amounts
             .into_iter()

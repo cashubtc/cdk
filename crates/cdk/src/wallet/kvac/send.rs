@@ -10,10 +10,9 @@ impl Wallet {
     pub async fn kvac_send(
         &self,
         send_amount: Amount,
-    ) -> Result<KvacCoin, Error> {
+    ) -> Result<(KvacCoin, KvacCoin), Error> {
         let mint_url = &self.mint_url;
         let active_keyset_id = self.get_active_mint_kvac_keyset().await?.id;
-
         let coins = self.get_unspent_kvac_coins().await?;
 
         // Find a coin >= amount
@@ -66,7 +65,6 @@ impl Wallet {
 
         // Create outputs
         let outputs = self.create_kvac_outputs(vec![send_amount, keep_amount]).await?;
-
         // Set selected inputs as pending
         let ts: Vec<Scalar> = inputs[..1].iter().map(|i| i.coin.mac.t.clone()).collect();
         self.localstore.set_pending_kvac_coins(&ts).await?;
@@ -87,7 +85,7 @@ impl Wallet {
                 // Store the coin encoding the kept balance
                 self.localstore.update_kvac_coins(
                     vec![KvacCoinInfo{
-                        coin: kept,
+                        coin: kept.clone(),
                         mint_url: mint_url.clone(),
                         state: State::Unspent,
                     }],
@@ -98,7 +96,7 @@ impl Wallet {
                 self.localstore.increment_kvac_keyset_counter(&active_keyset_id, outputs.len() as u32).await?;
 
                 tracing::info!("Send succeeded");
-                Ok(sent)
+                Ok((sent, kept))
             }
         }
         

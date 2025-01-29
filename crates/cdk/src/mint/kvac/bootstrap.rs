@@ -23,7 +23,7 @@ impl Mint {
         // further privacy hardening
         // (if enforced at a protocol level)
         let outputs = bootstrap_request.outputs;
-        if outputs.len() != 2 {
+        if outputs.len() < 2 {
             return Err(Error::RequestInvalidInputLength);
         }
 
