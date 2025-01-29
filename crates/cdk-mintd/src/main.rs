@@ -301,7 +301,6 @@ async fn main() -> anyhow::Result<()> {
 
     mint_builder = mint_builder
         .with_name(settings.mint_info.name)
-        .with_mint_url(settings.info.url)
         .with_version(mint_version)
         .with_description(settings.mint_info.description)
         .with_quote_ttl(10000, 10000)

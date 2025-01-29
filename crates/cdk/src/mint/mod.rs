@@ -1,7 +1,6 @@
 //! Cashu Mint
 
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
@@ -22,7 +21,6 @@ use crate::cdk_lightning::{self, MintLightning};
 use crate::dhke::{sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
-use crate::mint_url::MintUrl;
 use crate::nuts::*;
 use crate::util::unix_time;
 use crate::Amount;
@@ -60,7 +58,6 @@ impl Mint {
     /// Create new [`Mint`]
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
-        mint_url: &str,
         seed: &[u8],
         mint_info: MintInfo,
         quote_ttl: QuoteTTL,
@@ -183,12 +180,7 @@ impl Mint {
         }
 
         Ok(Self {
-            config: SwappableConfig::new(
-                MintUrl::from_str(mint_url)?,
-                quote_ttl,
-                mint_info,
-                active_keysets,
-            ),
+            config: SwappableConfig::new(quote_ttl, mint_info, active_keysets),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
             xpriv,
@@ -564,6 +556,7 @@ fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<Derivatio
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::str::FromStr;
 
     use bitcoin::Network;
     use cdk_common::common::{LnKey, QuoteTTL};
@@ -571,6 +564,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::cdk_database::mint_memory::MintMemoryDatabase;
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
@@ -658,8 +652,6 @@ mod tests {
         assert_eq!(amounts_and_pubkeys, expected_amounts_and_pubkeys);
     }
 
-    use crate::cdk_database::mint_memory::MintMemoryDatabase;
-
     #[derive(Default)]
     struct MintConfig<'a> {
         active_keysets: HashMap<CurrencyUnit, Id>,
@@ -671,7 +663,6 @@ mod tests {
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
         quote_proofs: HashMap<Uuid, Vec<PublicKey>>,
         quote_signatures: HashMap<Uuid, Vec<BlindSignature>>,
-        mint_url: &'a str,
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
@@ -697,7 +688,6 @@ mod tests {
         );
 
         Mint::new(
-            config.mint_url,
             config.seed,
             config.mint_info,
             config.quote_ttl,
@@ -712,12 +702,10 @@ mod tests {
     #[tokio::test]
     async fn mint_mod_new_mint() -> Result<(), Error> {
         let config = MintConfig::<'_> {
-            mint_url: "http://example.com",
             ..Default::default()
         };
         let mint = create_mint(config).await?;
 
-        assert_eq!(mint.get_mint_url().to_string(), "http://example.com");
         let info = mint.mint_info();
         assert!(info.name.is_none());
         assert!(info.pubkey.is_none());
@@ -751,7 +739,6 @@ mod tests {
     #[tokio::test]
     async fn mint_mod_rotate_keyset() -> Result<(), Error> {
         let config = MintConfig::<'_> {
-            mint_url: "http://example.com",
             ..Default::default()
         };
         let mint = create_mint(config).await?;
@@ -796,7 +783,6 @@ mod tests {
         println!("{}", seed);
 
         let config = MintConfig::<'_> {
-            mint_url: "http://example.com",
             seed: &seed.to_seed_normalized(""),
             ..Default::default()
         };

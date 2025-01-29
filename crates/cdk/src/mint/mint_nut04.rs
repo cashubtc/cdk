@@ -101,7 +101,6 @@ impl Mint {
             })?;
 
         let quote = MintQuote::new(
-            self.config.mint_url(),
             create_invoice_response.request.to_string(),
             unit.clone(),
             amount,

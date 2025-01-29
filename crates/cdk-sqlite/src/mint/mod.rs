@@ -10,7 +10,6 @@ use bitcoin::bip32::DerivationPath;
 use cdk_common::common::LnKey;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
-use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
@@ -206,12 +205,11 @@ WHERE active = 1
         let res = sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, request_lookup_id, pubkey)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+(id, amount, unit, request, state, expiry, request_lookup_id, pubkey)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
-        .bind(quote.mint_url.to_string())
         .bind(u64::from(quote.amount) as i64)
         .bind(quote.unit.to_string())
         .bind(quote.request)
@@ -1250,7 +1248,6 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
 
 fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
-    let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
@@ -1274,7 +1271,6 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
 
     Ok(MintQuote {
         id: row_id.into_uuid(),
-        mint_url: MintUrl::from_str(&row_mint_url)?,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
