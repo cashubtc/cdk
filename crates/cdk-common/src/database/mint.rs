@@ -7,7 +7,7 @@ use cashu::MintInfo;
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::LnKey;
+use crate::common::{LnKey, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
@@ -133,4 +133,9 @@ pub trait Database {
     async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err>;
     /// Get [`MintInfo`]
     async fn get_mint_info(&self) -> Result<MintInfo, Self::Err>;
+
+    /// Set [`QuoteTTL`]
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err>;
+    /// Get [`QuoteTTL`]
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err>;
 }

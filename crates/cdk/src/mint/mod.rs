@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::common::{LnKey, QuoteTTL};
+use cdk_common::common::LnKey;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use config::SwappableConfig;
@@ -58,7 +58,6 @@ impl Mint {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         seed: &[u8],
-        quote_ttl: QuoteTTL,
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
@@ -178,7 +177,7 @@ impl Mint {
         }
 
         Ok(Self {
-            config: SwappableConfig::new(quote_ttl, active_keysets),
+            config: SwappableConfig::new(active_keysets),
             pubsub_manager: Arc::new(localstore.clone().into()),
             secp_ctx,
             xpriv,
@@ -687,13 +686,13 @@ mod tests {
                 config.quote_signatures,
                 config.melt_requests,
                 config.mint_info,
+                config.quote_ttl,
             )
             .unwrap(),
         );
 
         Mint::new(
             config.seed,
-            config.quote_ttl,
             localstore,
             HashMap::new(),
             config.supported_units,
