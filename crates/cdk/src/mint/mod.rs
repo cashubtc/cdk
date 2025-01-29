@@ -393,9 +393,31 @@ impl Mint {
     }
 
     /// Fee required for kvac inputs
-    pub async fn get_kvac_inputs_fee(&self, _inputs: &Vec<KvacRandomizedCoin>) -> Result<Amount, Error> {
-        // TODO: implement the fees
-        Ok(Amount { 0: 0 })
+    pub async fn get_kvac_inputs_fee(&self, inputs: &Vec<KvacRandomizedCoin>) -> Result<Amount, Error> {
+        let mut coins_per_keyset = HashMap::new();
+        let mut fee_per_keyset = HashMap::new();
+
+        for coin in inputs {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                fee_per_keyset.entry(coin.keyset_id)
+            {
+                let mint_keyset_info = self
+                    .localstore
+                    .get_kvac_keyset_info(&coin.keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?;
+                e.insert(mint_keyset_info.input_fee_ppk);
+            }
+
+            coins_per_keyset
+                .entry(coin.keyset_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+
+        let fee = calculate_fee(&coins_per_keyset, &fee_per_keyset)?;
+
+        Ok(fee)
     }
 
     /// Blind Sign

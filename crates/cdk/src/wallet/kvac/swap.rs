@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 
 use cashu_kvac::{kvac::{BalanceProof, IParamsProof, MacProof, RangeProof}, models::{AmountAttribute, Coin}, transcript::CashuTranscript};
-use cdk_common::kvac::{KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest};
+use cdk_common::{kvac::{KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest}, Amount};
 use tracing::instrument;
 
 use crate::{Wallet, Error};
@@ -109,5 +109,32 @@ impl Wallet {
         }
         
         Ok(new_coins)
+    }
+
+    /// Create outputs with deterministic secrets for KVAC requests
+    #[instrument(skip(self, amounts))]
+    pub async fn create_kvac_outputs(
+        &self,
+        amounts: Vec<Amount>
+    ) -> Result<Vec<KvacPreCoin>, Error> {
+        let keyset = self.get_active_mint_kvac_keyset().await?;
+        let unit = keyset.unit;
+        let id = keyset.id;
+        let counter = self.localstore.get_kvac_keyset_counter(&id).await?.ok_or(Error::UnknownKeySet)?;
+
+        let pre_coins = amounts
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| KvacPreCoin::from_xpriv(
+                    id,
+                    a,
+                    unit.clone(),
+                    None,
+                    counter+(i as u32),
+                    self.xpriv,
+                ).map_err(Error::from)
+            ).collect::<Result<Vec<KvacPreCoin>, Error>>()?;
+        
+        Ok(pre_coins)
     }
 }

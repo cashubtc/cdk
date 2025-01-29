@@ -338,7 +338,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         let mut all_coins = self.kvac_coins.write().await;
 
         for coin_info in added.into_iter() {
-            all_coins.insert(coin_info.coin.mac.t.clone(), coin_info);
+            all_coins.insert(coin_info.coin.coin.mac.t.clone(), coin_info);
         }
 
         for t in removed_ts.into_iter() {
@@ -384,12 +384,36 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn reserve_kvac_coins(&self, ts: &[Scalar]) -> Result<(), Error> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for t in ts.iter() {
+            if let Some(coin_info) = all_coins.get_mut(t) {
+                coin_info.state = State::Reserved;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
         let mut all_proofs = self.proofs.write().await;
 
         for y in ys.into_iter() {
             if let Some(proof_info) = all_proofs.get_mut(&y) {
                 proof_info.state = State::Unspent;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_unspent_kvac_coins(&self, ts: &[Scalar]) -> Result<(), Error> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for t in ts.iter() {
+            if let Some(coin_info) = all_coins.get_mut(t) {
+                coin_info.state = State::Unspent;
             }
         }
 
@@ -418,6 +442,30 @@ impl WalletDatabase for WalletMemoryDatabase {
             .collect();
 
         Ok(proofs)
+    }
+
+    async fn get_kvac_coins(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+        script: Option<String>,
+    ) -> Result<Vec<KvacCoinInfo>, Error> {
+        let coins = self.kvac_coins.read().await;
+
+        let coins: Vec<KvacCoinInfo> = coins
+            .clone()
+            .into_values()
+            .filter_map(|coin_info| {
+                match coin_info.matches_conditions(&mint_url, &unit, &state, &script)
+                {
+                    true => Some(coin_info),
+                    false => None,
+                }
+            })
+            .collect();
+
+        Ok(coins)
     }
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error> {

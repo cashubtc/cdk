@@ -207,6 +207,9 @@ pub enum Error {
     /// Invoice Description not supported
     #[error("Invoice Description not supported")]
     InvoiceDescriptionUnsupported,
+    /// KVAC No zero-value coins available
+    #[error("No zero valued coins available: mint some with a bootstrap request")]
+    NoZeroValueCoins,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

@@ -76,12 +76,9 @@ impl Wallet {
         let coins_infos: Vec<KvacCoinInfo> = coins
             .iter()
             .map(|coin| KvacCoinInfo {
-                    coin: coin.coin.clone(),
-                    amount: coin.amount,
+                    coin: coin.clone(),
                     mint_url: self.mint_url.clone(),
                     state: State::Unspent,
-                    script: coin.script.clone(),
-                    unit: coin.unit.clone(),
                 }
             )
             .collect::<Vec<KvacCoinInfo>>();

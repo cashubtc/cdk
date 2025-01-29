@@ -135,9 +135,17 @@ pub trait Database: Debug {
     }
     /// Reserve proofs in storage. Proofs are identified by their Y value.
     async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Reserve kvac coins in storage. Coins are identified by their tag `t`.
+    async fn reserve_kvac_coins(&self, _ts: &[Scalar]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Set proofs as unspent in storage. Proofs are identified by their Y
     /// value.
     async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Set kvac coins as unspent in storage. Coins are identified by their tag `t`
+    async fn set_unspent_kvac_coins(&self, _ts: &[Scalar]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get proofs from storage
     async fn get_proofs(
         &self,
@@ -146,6 +154,16 @@ pub trait Database: Debug {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err>;
+    /// Get kvac coins from storage
+    async fn get_kvac_coins(
+        &self,
+        _mint_url: Option<MintUrl>,
+        _unit: Option<CurrencyUnit>,
+        _state: Option<Vec<State>>,
+        _script: Option<String>
+    ) -> Result<Vec<KvacCoinInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;

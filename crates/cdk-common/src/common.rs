@@ -1,6 +1,6 @@
 //! Types
 
-use cashu_kvac::models::Coin;
+use cashu::kvac::KvacCoin;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -64,18 +64,43 @@ impl Melted {
 /// KvacCoininfo
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvacCoinInfo {
-    /// Coin
-    pub coin: Coin,
-    /// Amount
-    pub amount: Amount,
+    /// Inner coin
+    pub coin: KvacCoin,
     /// Mint Url
     pub mint_url: MintUrl,
     /// Coin State
     pub state: State,
-    /// Coin Script
-    pub script: Option<String>,
-    /// Unit
-    pub unit: CurrencyUnit,
+}
+
+impl KvacCoinInfo {
+    ///! Check if [`KvacCoinInfo`] matches conditions
+    pub fn matches_conditions(
+        &self,
+        mint_url: &Option<MintUrl>,
+        unit: &Option<CurrencyUnit>,
+        state: &Option<Vec<State>>,
+        _script: &Option<String>,
+    ) -> bool {
+        if let Some(mint_url) = mint_url {
+            if mint_url.ne(&self.mint_url) {
+                return false;
+            }
+        }
+
+        if let Some(unit) = unit {
+            if unit.ne(&self.coin.unit) {
+                return false;
+            }
+        }
+
+        if let Some(state) = state {
+            if !state.contains(&self.state) {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 /// Prooinfo
