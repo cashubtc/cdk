@@ -16,9 +16,9 @@ impl Mint {
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         self.ensure_keyset_loaded(keyset_id).await?;
         let keyset = self
-            .config
-            .load()
             .keysets
+            .read()
+            .await
             .get(keyset_id)
             .ok_or(Error::UnknownKeySet)?
             .clone();
@@ -41,9 +41,9 @@ impl Mint {
 
         Ok(KeysResponse {
             keysets: self
-                .config
-                .load()
                 .keysets
+                .read()
+                .await
                 .values()
                 .filter_map(|k| match active_keysets.contains(&k.id) {
                     true => Some(k.clone().into()),
@@ -82,8 +82,7 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
         self.ensure_keyset_loaded(id).await?;
-        let config = self.config.load();
-        let keysets = &config.keysets;
+        let keysets = self.keysets.read().await;
         let keyset = keysets.get(id).map(|k| k.clone().into());
         Ok(keyset)
     }
@@ -118,9 +117,8 @@ impl Mint {
         self.localstore.add_keyset_info(keyset_info).await?;
         self.localstore.set_active_keyset(unit, id).await?;
 
-        let mut keysets = self.config.load().keysets.clone();
+        let mut keysets = self.keysets.write().await;
         keysets.insert(id, keyset);
-        self.config.set_keysets(keysets);
 
         Ok(())
     }
@@ -128,11 +126,14 @@ impl Mint {
     /// Ensure Keyset is loaded in mint
     #[instrument(skip(self))]
     pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
-        if self.config.load().keysets.contains_key(id) {
-            return Ok(());
+        {
+            let keysets = self.keysets.read().await;
+            if keysets.contains_key(id) {
+                return Ok(());
+            }
         }
 
-        let mut keysets = self.config.load().keysets.clone();
+        let mut keysets = self.keysets.write().await;
         let keyset_info = self
             .localstore
             .get_keyset_info(id)
@@ -140,7 +141,6 @@ impl Mint {
             .ok_or(Error::UnknownKeySet)?;
         let id = keyset_info.id;
         keysets.insert(id, self.generate_keyset(keyset_info));
-        self.config.set_keysets(keysets);
 
         Ok(())
     }
