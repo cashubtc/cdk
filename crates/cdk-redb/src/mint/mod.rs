@@ -7,14 +7,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::common::LnKey;
+use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::{
-    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
-    Proofs, PublicKey, State,
+    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintInfo, MintQuoteState,
+    Proof, Proofs, PublicKey, State,
 };
 use migrations::{migrate_01_to_02, migrate_04_to_05};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
@@ -811,5 +811,57 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         Ok(signatures)
+    }
+
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
+            table
+                .insert("mint_info", serde_json::to_string(&mint_info)?.as_str())
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
+
+        if let Some(mint_info) = table.get("mint_info").map_err(Error::from)? {
+            let mint_info = serde_json::from_str(mint_info.value())?;
+
+            return Ok(mint_info);
+        }
+
+        Err(Error::UnknownMintInfo.into())
+    }
+
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
+            table
+                .insert("quote_ttl", serde_json::to_string(&quote_ttl)?.as_str())
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
+
+        if let Some(quote_ttl) = table.get("quote_ttl").map_err(Error::from)? {
+            let quote_ttl = serde_json::from_str(quote_ttl.value())?;
+
+            return Ok(quote_ttl);
+        }
+
+        Err(Error::UnknownQuoteTTL.into())
     }
 }

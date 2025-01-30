@@ -12,12 +12,12 @@ use crate::{Amount, Error};
 
 impl Mint {
     /// Checks that minting is enabled, request is supported unit and within range
-    fn check_mint_request_acceptable(
+    async fn check_mint_request_acceptable(
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
     ) -> Result<(), Error> {
-        let mint_info = self.mint_info();
+        let mint_info = self.localstore.get_mint_info().await?;
         let nut04 = &mint_info.nuts.nut04;
 
         if nut04.disabled {
@@ -69,7 +69,7 @@ impl Mint {
             pubkey,
         } = mint_quote_request;
 
-        self.check_mint_request_acceptable(amount, &unit)?;
+        self.check_mint_request_acceptable(amount, &unit).await?;
 
         let ln = self
             .ln
@@ -80,7 +80,9 @@ impl Mint {
                 Error::UnitUnsupported
             })?;
 
-        let quote_expiry = unix_time() + self.config.quote_ttl().mint_ttl;
+        let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
+
+        let quote_expiry = unix_time() + mint_ttl;
 
         if description.is_some() && !ln.get_settings().invoice_description {
             tracing::error!("Backend does not support invoice description");
@@ -101,7 +103,6 @@ impl Mint {
             })?;
 
         let quote = MintQuote::new(
-            self.config.mint_url(),
             create_invoice_response.request.to_string(),
             unit.clone(),
             amount,

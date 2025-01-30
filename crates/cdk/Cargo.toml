@@ -23,7 +23,6 @@ http_subscription = []
 [dependencies]
 cdk-common = { path = "../cdk-common", version = "0.6.0" }
 cbor-diag = "0.1.12"
-arc-swap = "1.7.1"
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
 bitcoin = { version = "0.32.2", features = [
