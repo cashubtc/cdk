@@ -444,6 +444,6 @@ impl MintDatabase for MintMemoryDatabase {
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
         let quote_ttl = self.quote_ttl.read().await;
 
-        Ok(quote_ttl.clone())
+        Ok(*quote_ttl)
     }
 }
