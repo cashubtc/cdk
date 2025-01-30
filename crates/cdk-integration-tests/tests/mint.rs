@@ -17,7 +17,6 @@ use cdk::nuts::{
     ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::subscription::{IndexableParams, Params};
-use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
 use tokio::sync::OnceCell;
@@ -49,8 +48,6 @@ async fn new_mint(fee: u64) -> Mint {
         .await
         .expect("Could not set mint info");
     let mnemonic = Mnemonic::generate(12).unwrap();
-
-    let quote_ttl = QuoteTTL::new(10000, 10000);
 
     Mint::new(
         &mnemonic.to_seed_normalized(""),
