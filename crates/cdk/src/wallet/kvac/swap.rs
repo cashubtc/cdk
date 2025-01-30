@@ -64,8 +64,12 @@ impl Wallet {
             return Err(Error::DifferentScriptsError);
         }
 
+        // Debug: print the state of the transcript
+        //let test = proving_transcript.get_challenge(b"test");
+        //println!("test challenge: {}", String::from(&test));
+
         // Create range proof
-        let range_proof = RangeProof::create_bulletproof(&mut proving_transcript, &input_attributes);
+        let range_proof = RangeProof::create_bulletproof(&mut proving_transcript, &output_attributes);
         
         // Assemble Swap Request
         let request  = KvacSwapRequest {
@@ -101,8 +105,8 @@ impl Wallet {
             let keys = self
                 .get_kvac_keyset_keys(new_coin.keyset_id).await?;
             if !IParamsProof::verify(&keys.0, &new_coin.coin, proof, &mut verifying_transcript) {
-                tracing::warn!("couldn't verify MAC issuance! the mint is probably tagging!");
-                tracing::warn!("suspected MAC:\nt = {}\nV = {}",
+                println!("couldn't verify MAC issuance! the mint is probably tagging!");
+                println!("suspected MAC:\nt = {}\nV = {}",
                     serde_json::to_string(&new_coin.coin.mac.t).unwrap(),
                     serde_json::to_string(&new_coin.coin.mac.V).unwrap());
             }

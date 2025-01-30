@@ -13,37 +13,23 @@ impl Wallet {
     ) -> Result<(KvacCoin, KvacCoin), Error> {
         let mint_url = &self.mint_url;
         let active_keyset_id = self.get_active_mint_kvac_keyset().await?.id;
-        let coins = self.get_unspent_kvac_coins().await?;
+        let mut coins = self.get_unspent_kvac_coins().await?;
 
-        // Find a coin >= amount
-        let mut coin: KvacCoin = coins
+        // Find a coin >= amount and move it out
+        let index = coins
             .iter()
-            .filter_map(|c| {
-                if c.amount >= send_amount {
-                    Some(c.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .first()
-            .ok_or(Error::InsufficientFunds)?
-            .clone();
+            .position(|c| c.amount >= send_amount)
+            .ok_or(Error::InsufficientFunds)?;
 
-        // Find a zero-valued coin
-        let zero_coin: KvacCoin = coins
+        let mut coin = coins.swap_remove(index);
+
+        // Find a zero-valued coin and move it out
+        let index = coins
             .iter()
-            .filter_map(|c| {
-                if c.amount == Amount::from(0) {
-                    Some(c.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .first()
-            .ok_or(Error::NoZeroValueCoins)?
-            .clone();
+            .position(|c| c.amount == Amount::from(0))
+            .ok_or(Error::NoZeroValueCoins)?;
+
+        let zero_coin = coins.swap_remove(index);
 
         // Create outputs [balance, 0]
         let inputs = vec![coin.clone(), zero_coin.clone()];
@@ -52,19 +38,18 @@ impl Wallet {
         let fee = self.get_kvac_coins_fee(&inputs).await?;
         if coin.amount < send_amount + fee {
             // Try and look for some other coin >= send_mount + fee
-            coin = coins
-                .into_iter()
-                .filter(|c| c.amount >= send_amount + fee)
-                .collect::<Vec<_>>()
-                .first()
-                .cloned()
+            let index = coins
+                .iter()
+                .position(|c| c.amount >= send_amount + fee)
                 .ok_or(Error::InsufficientFunds)?;
+            coin = coins.swap_remove(index);
         }
         // Calculate change
         let keep_amount = coin.amount - send_amount - fee;
 
         // Create outputs
         let outputs = self.create_kvac_outputs(vec![send_amount, keep_amount]).await?;
+        //println!("swap outputs: {}", serde_json::to_string_pretty(&outputs).unwrap());
         // Set selected inputs as pending
         let ts: Vec<Scalar> = inputs[..1].iter().map(|i| i.coin.mac.t.clone()).collect();
         self.localstore.set_pending_kvac_coins(&ts).await?;

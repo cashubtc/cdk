@@ -374,6 +374,7 @@ impl From<&KvacCoin> for KvacRandomizedCoin {
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvacNullifier {
     pub nullifier: GroupElement,
     pub keyset_id: Id,

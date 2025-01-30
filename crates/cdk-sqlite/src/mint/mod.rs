@@ -1030,7 +1030,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 r#"
 INSERT INTO kvac_nullifiers
 (nullifier, keyset_id, quote_id, state)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?);
         "#,
             )
             .bind(nullifier.nullifier.to_bytes().to_vec())
@@ -1041,7 +1041,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .await;
 
             if let Err(err) = res {
-                tracing::error!("SQLite could not add blind signature");
+                tracing::error!("SQLite could not add kvac nullifiers");
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -1299,7 +1299,7 @@ WHERE keyset_id=?;
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let sql = format!(
-            "SELECT state FROM kvac_nullifiers WHERE nullifier IN ({})",
+            "SELECT nullifier, state FROM kvac_nullifiers WHERE nullifier IN ({})",
             "?,".repeat(nullifiers.len()).trim_end_matches(',')
         );
 
@@ -1410,7 +1410,7 @@ VALUES (?, ?, ?, ?, ?, ?);
             .await;
 
             if let Err(err) = res {
-                tracing::error!("SQLite could not add blind signature");
+                tracing::error!("SQLite could not add issued macs");
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -1473,7 +1473,7 @@ VALUES (?, ?, ?, ?, ?, ?);
         let issued_macs: Vec<KvacIssuedMac> = tags
             .iter()
             .fold(sqlx::query(&sql), |query, t| {
-                query.bind(Vec::from(t))
+                query.bind(Vec::<u8>::from(t))
             })
             .fetch_all(&mut transaction)
             .await

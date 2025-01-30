@@ -32,6 +32,8 @@ impl Mint {
             return Err(Error::RequestInvalidInputLength)
         }
 
+        tracing::debug!("swap request outputs: {}", serde_json::to_string_pretty(&swap_request.outputs).unwrap());
+
         let outputs_tags: Vec<Scalar> = swap_request.outputs
             .iter()
             .map(|output| output.t_tag.clone())
@@ -124,6 +126,10 @@ impl Mint {
                 return Err(e);
             }
         }
+
+        // Debug: print the state of the transcript
+        //let test = verify_transcript.get_challenge(b"test");
+        //tracing::debug!("test challenge: {}", String::from(&test));
         
         // Verify the outputs are within range
         let commitments = swap_request.outputs
@@ -143,7 +149,7 @@ impl Mint {
         let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
 
         for id in input_keyset_ids {
-            match self.localstore.get_keyset_info(&id).await? {
+            match self.localstore.get_kvac_keyset_info(&id).await? {
                 Some(keyset) => {
                     keyset_units.insert(keyset.unit);
                 }
