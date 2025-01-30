@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
+use cdk::cdk_database::MintDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint::MintQuote;
 use cdk::nuts::nut00::ProofsMethods;
@@ -16,7 +17,6 @@ use cdk::nuts::{
     ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::subscription::{IndexableParams, Params};
-use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
 use tokio::sync::OnceCell;
@@ -41,16 +41,17 @@ async fn new_mint(fee: u64) -> Mint {
 
     let mint_info = MintInfo::new().nuts(nuts);
 
+    let localstore = MintMemoryDatabase::default();
+
+    localstore
+        .set_mint_info(mint_info)
+        .await
+        .expect("Could not set mint info");
     let mnemonic = Mnemonic::generate(12).unwrap();
 
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-
     Mint::new(
-        MINT_URL,
         &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        Arc::new(MintMemoryDatabase::default()),
+        Arc::new(localstore),
         HashMap::new(),
         supported_units,
         HashMap::new(),
@@ -72,7 +73,6 @@ async fn mint_proofs(
     let request_lookup = uuid::Uuid::new_v4().to_string();
 
     let quote = MintQuote::new(
-        mint.config.mint_url(),
         "".to_string(),
         CurrencyUnit::Sat,
         amount,

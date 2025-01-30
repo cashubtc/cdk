@@ -44,6 +44,12 @@ pub enum Error {
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    /// Unknown Mint Info
+    #[error("Unknown mint info")]
+    UnknownMintInfo,
+    /// Unknown quote TTL
+    #[error("Unknown quote TTL")]
+    UnknownQuoteTTL,
 }
 
 impl From<Error> for cdk_common::database::Error {
