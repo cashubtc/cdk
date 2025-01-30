@@ -29,7 +29,7 @@ async fn test_fake_tokens_pending() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -69,7 +69,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -132,7 +132,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -177,7 +177,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -237,7 +237,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -298,7 +298,7 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -336,7 +336,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -388,7 +388,7 @@ async fn test_fake_mint_with_witness() -> Result<()> {
     )?;
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -413,7 +413,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let http_client = HttpClient::new(MINT_URL.parse()?);
 
@@ -437,7 +437,6 @@ async fn test_fake_mint_without_witness() -> Result<()> {
     }
 }
 
-// TODO: Rewrite this test to include witness wrong
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_wrong_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -450,7 +449,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let http_client = HttpClient::new(MINT_URL.parse()?);
 
