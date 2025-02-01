@@ -695,7 +695,7 @@ version = "0.6.0"
 dependencies = [
  "bip39",
  "bitcoin 0.32.5",
- "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=b59f7e652b6e174476119b9ea343251ead307019)",
+ "cashu_kvac",
  "cbor-diag",
  "ciborium",
  "instant",
@@ -710,22 +710,6 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
-]
-
-[[package]]
-name = "cashu_kvac"
-version = "0.0.1-alpha"
-source = "git+https://github.com/lollerfirst/cashu-kvac.git?rev=8e5c80953d2370dba82ee38337bacf152e0fd8d6#8e5c80953d2370dba82ee38337bacf152e0fd8d6"
-dependencies = [
- "bitcoin 0.32.5",
- "hex",
- "itertools 0.13.0",
- "merlin",
- "once_cell",
- "rug",
- "serde",
- "serde_json",
- "thiserror 2.0.11",
 ]
 
 [[package]]
@@ -799,7 +783,7 @@ dependencies = [
  "bech32 0.9.1",
  "bip39",
  "bitcoin 0.32.5",
- "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=b59f7e652b6e174476119b9ea343251ead307019)",
+ "cashu_kvac",
  "cbor-diag",
  "cdk-common",
  "ciborium",
@@ -891,7 +875,7 @@ dependencies = [
  "bip39",
  "bitcoin 0.32.5",
  "cashu",
- "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=8e5c80953d2370dba82ee38337bacf152e0fd8d6)",
+ "cashu_kvac",
  "cbor-diag",
  "ciborium",
  "futures",
@@ -1078,7 +1062,7 @@ version = "0.6.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
- "cashu_kvac 0.0.1-alpha (git+https://github.com/lollerfirst/cashu-kvac.git?rev=8e5c80953d2370dba82ee38337bacf152e0fd8d6)",
+ "cashu_kvac",
  "cdk-common",
  "lightning-invoice",
  "serde_json",
