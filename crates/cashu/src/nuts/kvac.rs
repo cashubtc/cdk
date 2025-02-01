@@ -96,21 +96,24 @@ impl MintKvacKeySet {
         derivation_path_index: u32,
     ) -> Self {
         xpriv = xpriv.derive_priv(secp, &derivation_path).expect("RNG busted");
-        let mut scalars = Vec::with_capacity(6);
-        for i in 0..6 {
-            let secret_key = xpriv
-                .derive_priv(
-                    secp,
-                    &[ChildNumber::from_hardened_idx(i as u32).expect("order is valid index")],
-                )
-                .expect("RNG busted")
-                .private_key
-                .secret_bytes();
-            scalars.push(Scalar::new(&secret_key));
-        }
-        let private_key = cashu_kvac::models::MintPrivateKey::from_scalars(&scalars)
-            .expect("couldn't generate KVAC privkey")
-            .tweak_epoch(derivation_path_index as u64);
+        xpriv = xpriv.derive_priv(
+            secp, 
+            &[ChildNumber::from_hardened_idx(derivation_path_index).expect("derivation_path_index is a valid index")]
+        ).expect("RNG busted");
+        let scalars: Vec<Scalar> = (0..6).map(|i| 
+            Scalar::new(
+            &xpriv
+                    .derive_priv(
+                        secp,
+                        &[ChildNumber::from_hardened_idx(i as u32).expect("order is valid index")],
+                    )
+                    .expect("RNG busted")
+                    .private_key
+                    .secret_bytes()
+            )
+        ).collect();
+        let private_key = MintPrivateKey::from_scalars(&scalars)
+            .expect("couldn't generate KVAC privkey");
         let kvac_keys = MintKvacKeys {
             private_key: private_key.clone(),
             public_key: private_key.public_key
