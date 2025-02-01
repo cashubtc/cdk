@@ -3,7 +3,10 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use cdk_common::kvac::{BootstrapRequest, BootstrapResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse, KvacSwapRequest, KvacSwapResponse};
+use cdk_common::kvac::{
+    BootstrapRequest, BootstrapResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse,
+    KvacSwapRequest, KvacSwapResponse,
+};
 use reqwest::{Client, IntoUrl};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -134,7 +137,10 @@ impl MintConnector for HttpClient {
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_kvac_keys(&self) -> Result<Vec<KvacKeySet>, Error> {
         let url = self.mint_url.join_paths(&["v2", "kvac", "keys"])?;
-        Ok(self.http_get::<_, KvacKeysResponse>(url).await?.kvac_keysets)
+        Ok(self
+            .http_get::<_, KvacKeysResponse>(url)
+            .await?
+            .kvac_keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
@@ -150,7 +156,7 @@ impl MintConnector for HttpClient {
             .next()
             .ok_or_else(|| Error::UnknownKeySet)
     }
-    
+
     /// Get Keyset Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_kvac_keyset(&self, keyset_id: Id) -> Result<KvacKeySet, Error> {
@@ -259,7 +265,10 @@ impl MintConnector for HttpClient {
 
     /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
-    async fn post_kvac_swap(&self, swap_request: KvacSwapRequest) -> Result<KvacSwapResponse, Error> {
+    async fn post_kvac_swap(
+        &self,
+        swap_request: KvacSwapRequest,
+    ) -> Result<KvacSwapResponse, Error> {
         let url = self.mint_url.join_paths(&["v2", "kvac", "swap"])?;
         self.http_post(url, &swap_request).await
     }
@@ -309,7 +318,7 @@ pub trait MintConnector: Debug {
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error>;
     /// Get Keyset Kvac Keys
     async fn get_mint_kvac_keyset(&self, _keyset_id: Id) -> Result<KvacKeySet, Error> {
-       Err(Error::NotImplemented)
+        Err(Error::NotImplemented)
     }
     /// Get Keysets [NUT-02]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error>;
@@ -350,7 +359,7 @@ pub trait MintConnector: Debug {
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
     /// Split Token [NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
-    /// Swap KVAC Coins 
+    /// Swap KVAC Coins
     async fn post_kvac_swap(&self, _request: KvacSwapRequest) -> Result<KvacSwapResponse, Error> {
         Err(Error::NotImplemented)
     }

@@ -36,12 +36,12 @@ mod check_spendable;
 pub mod config;
 mod info;
 mod keysets;
+mod kvac;
 mod melt;
 mod mint_nut04;
 mod start_up_check;
 pub mod subscription;
 mod swap;
-mod kvac;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintQuote};
@@ -174,8 +174,9 @@ impl Mint {
                 localstore.add_kvac_keyset_info(keyset).await?;
             }
 
-            let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
-                kvac_keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
+            let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> = kvac_keysets_infos
+                .iter()
+                .fold(HashMap::new(), |mut acc, ks| {
                     acc.entry(ks.unit.clone()).or_default().push(ks.clone());
                     acc
                 });
@@ -206,7 +207,7 @@ impl Mint {
                             xpriv,
                             highest_index_keyset.unit.clone(),
                             highest_index_keyset.derivation_path.clone(),
-                            highest_index_keyset.derivation_path_index.unwrap_or(0)
+                            highest_index_keyset.derivation_path_index.unwrap_or(0),
                         );
                         active_kvac_keysets.insert(id, keyset);
                         let mut keyset_info = highest_index_keyset;
@@ -219,7 +220,7 @@ impl Mint {
                     };
 
                     let derivation_path = kvac_derivation_path_from_unit(unit.clone())
-                            .ok_or(Error::UnsupportedUnit)?;
+                        .ok_or(Error::UnsupportedUnit)?;
 
                     let (keyset, keyset_info) = create_new_kvac_keyset(
                         &secp_ctx,
@@ -271,7 +272,8 @@ impl Mint {
         for (unit, (fee, _max_order)) in supported_units {
             if !active_kvac_keyset_units.contains(&unit) {
                 tracing::debug!("Creating new kvac keyset");
-                let derivation_path = kvac_derivation_path_from_unit(unit.clone()).ok_or(Error::UnsupportedUnit)?;
+                let derivation_path =
+                    kvac_derivation_path_from_unit(unit.clone()).ok_or(Error::UnsupportedUnit)?;
 
                 let (keyset, keyset_info) = create_new_kvac_keyset(
                     &secp_ctx,
@@ -393,7 +395,10 @@ impl Mint {
     }
 
     /// Fee required for kvac inputs
-    pub async fn get_kvac_inputs_fee(&self, inputs: &Vec<KvacRandomizedCoin>) -> Result<Amount, Error> {
+    pub async fn get_kvac_inputs_fee(
+        &self,
+        inputs: &Vec<KvacRandomizedCoin>,
+    ) -> Result<Amount, Error> {
         let mut coins_per_keyset = HashMap::new();
         let mut fee_per_keyset = HashMap::new();
 
@@ -483,7 +488,7 @@ impl Mint {
         let KvacCoinMessage {
             commitments,
             keyset_id,
-            t_tag
+            t_tag,
         } = input;
         self.ensure_kvac_keyset_loaded(keyset_id).await?;
 
@@ -510,8 +515,20 @@ impl Mint {
 
         let key_pair = &keyset.kvac_keys;
 
-        let c = MAC::generate(&key_pair.private_key, &commitments.0, Some(&commitments.1), Some(&t_tag)).expect("MAC generate");
-        let iparams_proof = IParamsProof::create(&key_pair.private_key, &c, &commitments.0, Some(&commitments.1), proving_transcript);
+        let c = MAC::generate(
+            &key_pair.private_key,
+            &commitments.0,
+            Some(&commitments.1),
+            Some(&t_tag),
+        )
+        .expect("MAC generate");
+        let iparams_proof = IParamsProof::create(
+            &key_pair.private_key,
+            &c,
+            &commitments.0,
+            Some(&commitments.1),
+            proving_transcript,
+        );
 
         Ok((c, iparams_proof))
     }
@@ -539,7 +556,7 @@ impl Mint {
             proof,
             verifying_transcript,
         ) {
-            return Err(Error::MacVerificationError)
+            return Err(Error::MacVerificationError);
         }
 
         Ok(())

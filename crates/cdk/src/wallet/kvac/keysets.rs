@@ -20,7 +20,9 @@ impl Wallet {
 
             keys.verify_id()?;
 
-            self.localstore.add_kvac_keys(keys.kvac_keys.clone()).await?;
+            self.localstore
+                .add_kvac_keys(keys.kvac_keys.clone())
+                .await?;
 
             keys.kvac_keys
         };

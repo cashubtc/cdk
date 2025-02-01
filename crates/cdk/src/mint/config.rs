@@ -77,7 +77,7 @@ impl SwappableConfig {
             quote_ttl: current_inner.quote_ttl,
             mint_info: current_inner.mint_info.clone(),
             keysets: current_inner.keysets.clone(),
-            kvac_keysets: current_inner.kvac_keysets.clone()
+            kvac_keysets: current_inner.kvac_keysets.clone(),
         };
 
         self.config.store(Arc::new(new_inner));

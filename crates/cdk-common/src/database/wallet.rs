@@ -71,7 +71,10 @@ pub trait Database: Debug {
     /// Get mint keyset by id
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
     /// Get mint kvac keyset by id
-    async fn get_kvac_keyset_by_id(&self, _keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+    async fn get_kvac_keyset_by_id(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
 
@@ -160,7 +163,7 @@ pub trait Database: Debug {
         _mint_url: Option<MintUrl>,
         _unit: Option<CurrencyUnit>,
         _state: Option<Vec<State>>,
-        _script: Option<String>
+        _script: Option<String>,
     ) -> Result<Vec<KvacCoinInfo>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
@@ -168,7 +171,11 @@ pub trait Database: Debug {
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     /// Increment Kvac Keyset counter
-    async fn increment_kvac_keyset_counter(&self, _keyset_id: &Id, _count: u32) -> Result<(), Self::Err> {
+    async fn increment_kvac_keyset_counter(
+        &self,
+        _keyset_id: &Id,
+        _count: u32,
+    ) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get current Keyset counter

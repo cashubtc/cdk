@@ -108,7 +108,10 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.active_keysets.read().await.get(unit).cloned())
     }
 
-    async fn get_active_kvac_keyset_id(&self, _unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+    async fn get_active_kvac_keyset_id(
+        &self,
+        _unit: &CurrencyUnit,
+    ) -> Result<Option<Id>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
 
@@ -133,7 +136,10 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.keysets.read().await.get(keyset_id).cloned())
     }
 
-    async fn get_kvac_keyset_info(&self, _keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+    async fn get_kvac_keyset_info(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<Option<MintKeySetInfo>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
 

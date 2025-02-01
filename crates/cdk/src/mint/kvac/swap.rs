@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use cashu_kvac::kvac::BalanceProof;
 use cashu_kvac::kvac::RangeProof;
 use cashu_kvac::models::RandomizedCoin;
@@ -10,10 +9,11 @@ use cdk_common::kvac::KvacNullifier;
 use cdk_common::kvac::{KvacSwapRequest, KvacSwapResponse};
 use cdk_common::Id;
 use cdk_common::State;
+use std::collections::HashSet;
 use tracing::instrument;
 
-use crate::Mint;
 use crate::Error;
+use crate::Mint;
 
 impl Mint {
     /// Process Swap
@@ -22,19 +22,18 @@ impl Mint {
         &self,
         swap_request: KvacSwapRequest,
     ) -> Result<KvacSwapResponse, Error> {
-        tracing::debug!("KVAC swap has been called");
+        tracing::info!("KVAC swap has been called");
         let inputs_len = swap_request.inputs.len();
 
         if swap_request.outputs.len() != 2 {
-            return Err(Error::RequestInvalidOutputLength)
+            return Err(Error::RequestInvalidOutputLength);
         }
         if inputs_len < 2 {
-            return Err(Error::RequestInvalidInputLength)
+            return Err(Error::RequestInvalidInputLength);
         }
 
-        tracing::debug!("swap request outputs: {}", serde_json::to_string_pretty(&swap_request.outputs).unwrap());
-
-        let outputs_tags: Vec<Scalar> = swap_request.outputs
+        let outputs_tags: Vec<Scalar> = swap_request
+            .outputs
             .iter()
             .map(|output| output.t_tag.clone())
             .collect();
@@ -47,7 +46,7 @@ impl Mint {
             .next()
             .is_some()
         {
-            tracing::info!("Outputs have already been issued a MAC",);
+            tracing::error!("Outputs have already been issued a MAC",);
 
             return Err(Error::MacAlreadyIssued);
         }
@@ -55,11 +54,13 @@ impl Mint {
         let fee = self.get_kvac_inputs_fee(&swap_request.inputs).await?;
 
         // Verify Balance Proof with fee as the difference amount
-        let input_coins = swap_request.inputs
+        let input_coins = swap_request
+            .inputs
             .iter()
             .map(|i| i.randomized_coin.clone())
             .collect::<Vec<RandomizedCoin>>();
-        let output_coins = swap_request.outputs
+        let output_coins = swap_request
+            .outputs
             .iter()
             .map(|i| i.commitments.0.clone())
             .collect::<Vec<GroupElement>>();
@@ -71,9 +72,9 @@ impl Mint {
             swap_request.balance_proof,
             &mut verify_transcript,
         ) {
-            tracing::info!("Swap request is unbalanced for fee {}", fee);
+            tracing::error!("Swap request is unbalanced for fee {}", fee);
 
-            return Err(Error::BalanceVerificationError(fee))
+            return Err(Error::BalanceVerificationError(fee));
         }
 
         let nullifiers = swap_request
@@ -81,10 +82,9 @@ impl Mint {
             .iter()
             .map(|i| KvacNullifier::from(i))
             .collect::<Vec<KvacNullifier>>();
-        self.localstore
-            .add_kvac_nullifiers(&nullifiers)
+        self.localstore.add_kvac_nullifiers(&nullifiers).await?;
+        self.check_nullifiers_spendable(&nullifiers, State::Pending)
             .await?;
-        self.check_nullifiers_spendable(&nullifiers, State::Pending).await?;
 
         // Check that there are no duplicate proofs in request
         let nullifiers_inner = nullifiers
@@ -106,7 +106,7 @@ impl Mint {
         // Extract script if present
         let script = if let Some(scr) = swap_request.script {
             scr
-        } else { 
+        } else {
             String::new()
         };
 
@@ -115,10 +115,16 @@ impl Mint {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
-            return Err(Error::InputsToProofsLengthMismatch)
+            return Err(Error::InputsToProofsLengthMismatch);
         }
-        for (input, proof) in swap_request.inputs.iter().zip(swap_request.mac_proofs.into_iter()) {
-            let result = self.verify_mac(input, &script, proof, &mut verify_transcript).await;
+        for (input, proof) in swap_request
+            .inputs
+            .iter()
+            .zip(swap_request.mac_proofs.into_iter())
+        {
+            let result = self
+                .verify_mac(input, &script, proof, &mut verify_transcript)
+                .await;
             if let Err(e) = result {
                 self.localstore
                     .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
@@ -130,17 +136,22 @@ impl Mint {
         // Debug: print the state of the transcript
         //let test = verify_transcript.get_challenge(b"test");
         //tracing::debug!("test challenge: {}", String::from(&test));
-        
+
         // Verify the outputs are within range
-        let commitments = swap_request.outputs
+        let commitments = swap_request
+            .outputs
             .iter()
             .map(|o| (o.commitments.0.clone(), None))
             .collect::<Vec<(GroupElement, Option<GroupElement>)>>();
-        if !RangeProof::verify(&mut verify_transcript, &commitments, swap_request.range_proof) {
+        if !RangeProof::verify(
+            &mut verify_transcript,
+            &commitments,
+            swap_request.range_proof,
+        ) {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
-            return Err(Error::RangeProofVerificationError)
+            return Err(Error::RangeProofVerificationError);
         }
 
         let input_keyset_ids: HashSet<Id> =
@@ -204,8 +215,8 @@ impl Mint {
                     self.localstore
                         .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                         .await?;
-                    return Err(e)
-                },
+                    return Err(e);
+                }
                 Ok((mac, proof)) => {
                     issued_macs.push(KvacIssuedMac {
                         commitments: output.commitments.clone(),

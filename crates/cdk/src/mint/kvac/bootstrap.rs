@@ -1,24 +1,24 @@
 use std::collections::HashSet;
 
+use crate::Error;
 use cashu_kvac::{kvac::BootstrapProof, transcript::CashuTranscript};
 use cdk_common::kvac::{BootstrapRequest, BootstrapResponse};
 use tracing::instrument;
-use crate::Error;
 
 use super::super::Mint;
 
 impl Mint {
     /// Processes a [`BootstrapRequest`].
-    /// 
+    ///
     /// Issues MACs for zero-valued attributes
     /// so that the client might use these as inputs in further (swap/mint/melt) requests.
     #[instrument(skip_all)]
     pub async fn process_bootstrap_request(
         &self,
-        bootstrap_request: BootstrapRequest
+        bootstrap_request: BootstrapRequest,
     ) -> Result<BootstrapResponse, Error> {
         tracing::info!("Bootstrap has been called");
-        
+
         // Length of the input vector must be 2
         // further privacy hardening
         // (if enforced at a protocol level)
@@ -35,7 +35,11 @@ impl Mint {
         let mut keysets = vec![];
         let mut keyset_units = HashSet::with_capacity(outputs.len());
         for input in outputs.iter() {
-            match self.localstore.get_kvac_keyset_info(&input.keyset_id).await? {
+            match self
+                .localstore
+                .get_kvac_keyset_info(&input.keyset_id)
+                .await?
+            {
                 Some(keyset) => {
                     keyset_units.insert(keyset.unit.clone());
                     keysets.push(keyset);
@@ -58,7 +62,7 @@ impl Mint {
         let mut transcript = CashuTranscript::new();
         for (input, proof) in outputs.iter().zip(proofs) {
             if !BootstrapProof::verify(&input.commitments.0, proof, &mut transcript) {
-                return Err(Error::BootstrapVerificationError)
+                return Err(Error::BootstrapVerificationError);
             }
         }
 
@@ -73,9 +77,6 @@ impl Mint {
             proofs.push(proof);
         }
 
-        Ok(BootstrapResponse {
-            macs,
-            proofs,
-        })
+        Ok(BootstrapResponse { macs, proofs })
     }
 }

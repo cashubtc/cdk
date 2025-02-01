@@ -81,8 +81,11 @@ impl Mint {
             .update_kvac_nullifiers_states(&nullifiers_inner, state)
             .await?;
 
-        let nullifiers_states = nullifiers_states.iter().flatten().collect::<HashSet<&State>>();
-        
+        let nullifiers_states = nullifiers_states
+            .iter()
+            .flatten()
+            .collect::<HashSet<&State>>();
+
         if nullifiers_states.contains(&State::Pending) {
             return Err(Error::TokenPending);
         }

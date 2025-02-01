@@ -65,7 +65,10 @@ impl WalletMemoryDatabase {
                 mint_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
             )),
             mint_kvac_keys: Arc::new(RwLock::new(
-                mint_kvac_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
+                mint_kvac_keys
+                    .into_iter()
+                    .map(|k| (Id::from(&k), k))
+                    .collect(),
             )),
             proofs: Arc::new(RwLock::new(HashMap::new())),
             kvac_coins: Arc::new(RwLock::new(HashMap::new())),
@@ -216,7 +219,10 @@ impl WalletDatabase for WalletMemoryDatabase {
         }
     }
 
-    async fn get_mint_kvac_keysets(&self, mint_url: MintUrl) -> Result<Option<Vec<KeySetInfo>>, Error> {
+    async fn get_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Error> {
         match self.mint_kvac_keysets.read().await.get(&mint_url) {
             Some(keyset_ids) => {
                 let mut keysets = vec![];
@@ -290,7 +296,10 @@ impl WalletDatabase for WalletMemoryDatabase {
     }
 
     async fn add_kvac_keys(&self, keys: KvacKeys) -> Result<(), Error> {
-        self.mint_kvac_keys.write().await.insert(Id::from(&keys), keys);
+        self.mint_kvac_keys
+            .write()
+            .await
+            .insert(Id::from(&keys), keys);
         Ok(())
     }
 
@@ -457,8 +466,7 @@ impl WalletDatabase for WalletMemoryDatabase {
             .clone()
             .into_values()
             .filter_map(|coin_info| {
-                match coin_info.matches_conditions(&mint_url, &unit, &state, &script)
-                {
+                match coin_info.matches_conditions(&mint_url, &unit, &state, &script) {
                     true => Some(coin_info),
                     false => None,
                 }

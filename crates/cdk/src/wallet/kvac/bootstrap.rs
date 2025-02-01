@@ -4,8 +4,8 @@ use cashu_kvac::kvac::{BootstrapProof, IParamsProof};
 use cashu_kvac::models::Coin;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
-use cdk_common::kvac::{BootstrapRequest, KvacCoin, KvacCoinMessage, KvacPreCoin};
 use cdk_common::error::Error;
+use cdk_common::kvac::{BootstrapRequest, KvacCoin, KvacCoinMessage, KvacPreCoin};
 use cdk_common::{Amount, State};
 use tracing::instrument;
 
@@ -13,7 +13,7 @@ use crate::Wallet;
 
 impl Wallet {
     /// Request the Mint for a MAC on zero-valued coins
-    /// 
+    ///
     /// Use this to obtain initial inputs for further KVAC requests
     #[instrument(skip(self))]
     pub async fn bootstrap(
@@ -38,8 +38,16 @@ impl Wallet {
         let mut bootstrap_proofs = vec![];
         let mut proving_transcript = CashuTranscript::new();
         for _ in 0..n {
-            let pre_coin = KvacPreCoin::new(active_keyset_id.clone(), Amount::from(0), self.unit.clone(), script.clone());
-            bootstrap_proofs.push(BootstrapProof::create(&pre_coin.attributes.0, &mut proving_transcript));
+            let pre_coin = KvacPreCoin::new(
+                active_keyset_id.clone(),
+                Amount::from(0),
+                self.unit.clone(),
+                script.clone(),
+            );
+            bootstrap_proofs.push(BootstrapProof::create(
+                &pre_coin.attributes.0,
+                &mut proving_transcript,
+            ));
             coin_messages.push(KvacCoinMessage::from(&pre_coin));
             pre_coins.push(pre_coin);
         }
@@ -58,10 +66,19 @@ impl Wallet {
         for (i, pre_coin) in pre_coins.into_iter().enumerate() {
             let proof = response.proofs.get(i).ok_or(Error::OutOfBounds)?;
             let mac = response.macs.get(i).ok_or(Error::OutOfBounds)?;
-            let inner_coin = Coin::new(pre_coin.attributes.0, Some(pre_coin.attributes.1), mac.clone());
-            
-            if !IParamsProof::verify(&mint_keys.0, &inner_coin, proof.clone(), &mut verifying_transcript) {
-                return Err(Error::IParamsVerificationError)
+            let inner_coin = Coin::new(
+                pre_coin.attributes.0,
+                Some(pre_coin.attributes.1),
+                mac.clone(),
+            );
+
+            if !IParamsProof::verify(
+                &mint_keys.0,
+                &inner_coin,
+                proof.clone(),
+                &mut verifying_transcript,
+            ) {
+                return Err(Error::IParamsVerificationError);
             }
 
             // Construct coin
@@ -77,15 +94,16 @@ impl Wallet {
         let coins_infos: Vec<KvacCoinInfo> = coins
             .iter()
             .map(|coin| KvacCoinInfo {
-                    coin: coin.clone(),
-                    mint_url: self.mint_url.clone(),
-                    state: State::Unspent,
-                }
-            )
+                coin: coin.clone(),
+                mint_url: self.mint_url.clone(),
+                state: State::Unspent,
+            })
             .collect::<Vec<KvacCoinInfo>>();
 
         // Add new proofs to store
-        self.localstore.update_kvac_coins(coins_infos, vec![]).await?;
+        self.localstore
+            .update_kvac_coins(coins_infos, vec![])
+            .await?;
 
         Ok(coins)
     }

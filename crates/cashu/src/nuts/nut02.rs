@@ -219,7 +219,7 @@ pub struct KeySet {
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
     /// Keyset [`Keys`]
-    pub keys: Keys, 
+    pub keys: Keys,
 }
 
 impl KeySet {

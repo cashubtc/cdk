@@ -220,7 +220,10 @@ AND unit IS ?
         ))
     }
 
-    async fn get_active_kvac_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+    async fn get_active_kvac_keyset_id(
+        &self,
+        unit: &CurrencyUnit,
+    ) -> Result<Option<Id>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(
@@ -1020,10 +1023,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         Ok(())
     }
 
-    async fn add_kvac_nullifiers(
-        &self,
-        nullifiers: &[KvacNullifier],
-    ) -> Result<(), Self::Err> {
+    async fn add_kvac_nullifiers(&self, nullifiers: &[KvacNullifier]) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for nullifier in nullifiers.iter() {
             let res = sqlx::query(
@@ -1085,7 +1085,10 @@ VALUES (?, ?, ?, ?);
     }
 
     /// Get kvac nullifiers
-    async fn get_kvac_nullifiers(&self, nullifiers: &[GroupElement]) -> Result<Vec<KvacNullifier>, Self::Err> {
+    async fn get_kvac_nullifiers(
+        &self,
+        nullifiers: &[GroupElement],
+    ) -> Result<Vec<KvacNullifier>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let sql = format!(
@@ -1330,7 +1333,8 @@ WHERE keyset_id=?;
             "?,".repeat(nullifiers.len()).trim_end_matches(',')
         );
 
-        nullifiers.iter()
+        nullifiers
+            .iter()
             .fold(
                 sqlx::query(&update_sql)
                     .bind(state.to_string())
@@ -1344,7 +1348,10 @@ WHERE keyset_id=?;
                 Error::SQLX(err)
             })?;
 
-        Ok(nullifiers.iter().map(|n| current_states.remove(n)).collect())
+        Ok(nullifiers
+            .iter()
+            .map(|n| current_states.remove(n))
+            .collect())
     }
 
     async fn add_blind_signatures(
@@ -1472,9 +1479,7 @@ VALUES (?, ?, ?, ?, ?, ?);
 
         let issued_macs: Vec<KvacIssuedMac> = tags
             .iter()
-            .fold(sqlx::query(&sql), |query, t| {
-                query.bind(Vec::<u8>::from(t))
-            })
+            .fold(sqlx::query(&sql), |query, t| query.bind(Vec::<u8>::from(t)))
             .fetch_all(&mut transaction)
             .await
             .map_err(|err| {
@@ -1482,9 +1487,7 @@ VALUES (?, ?, ?, ?, ?, ?);
                 Error::SQLX(err)
             })?
             .into_iter()
-            .map(|row|
-                sqlite_row_to_kvac_issued_mac(row).map_err(Error::from)
-            )
+            .map(|row| sqlite_row_to_kvac_issued_mac(row).map_err(Error::from))
             .collect::<Result<Vec<KvacIssuedMac>, Error>>()?;
 
         Ok(issued_macs)
@@ -1936,7 +1939,7 @@ fn sqlite_row_to_kvac_nullifier(row: SqliteRow) -> Result<KvacNullifier, Error> 
         nullifier: GroupElement::new(&nullifier),
         keyset_id: Id::from_str(&keyset_id)?,
         quote_id,
-        state
+        state,
     })
 }
 
@@ -1947,7 +1950,7 @@ fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error>
     let row_script_commitment: Vec<u8> = row.try_get("script_commitment").map_err(Error::from)?;
     let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
     let quote_id: Option<Uuid> = row.try_get("quote_id").map_err(Error::from)?;
-    
+
     let mac = MAC {
         t: Scalar::new(&row_t),
         V: GroupElement::new(&row_v),
@@ -1959,6 +1962,6 @@ fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error>
         commitments: (com_a, com_s),
         mac,
         keyset_id,
-        quote_id
+        quote_id,
     })
 }

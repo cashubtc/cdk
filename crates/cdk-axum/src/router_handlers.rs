@@ -4,15 +4,15 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
+use cdk::nuts::kvac::{
+    BootstrapRequest, BootstrapResponse, KvacKeysResponse, KvacKeysetResponse, KvacSwapRequest,
+    KvacSwapResponse,
+};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
     MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
-};
-use cdk::nuts::kvac::{
-    KvacKeysResponse, KvacKeysetResponse, BootstrapRequest, BootstrapResponse,
-    KvacSwapRequest, KvacSwapResponse,
 };
 use cdk::util::unix_time;
 use paste::paste;
@@ -65,16 +65,8 @@ post_cache_wrapper!(
     MeltBolt11Request<Uuid>,
     MeltQuoteBolt11Response<Uuid>
 );
-post_cache_wrapper!(
-    post_bootstrap,
-    BootstrapRequest,
-    BootstrapResponse
-);
-post_cache_wrapper!(
-    post_kvac_swap,
-    KvacSwapRequest,
-    KvacSwapResponse
-);
+post_cache_wrapper!(post_bootstrap, BootstrapRequest, BootstrapResponse);
+post_cache_wrapper!(post_kvac_swap, KvacSwapRequest, KvacSwapResponse);
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -107,7 +99,9 @@ pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysRespons
 /// Get the public keys of the newest mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
-pub async fn get_kvac_keys(State(state): State<MintState>) -> Result<Json<KvacKeysResponse>, Response> {
+pub async fn get_kvac_keys(
+    State(state): State<MintState>,
+) -> Result<Json<KvacKeysResponse>, Response> {
     let pubkeys = state.mint.kvac_pubkeys().await.map_err(|err| {
         tracing::error!("Could not get keys: {}", err);
         into_response(err)
@@ -162,10 +156,14 @@ pub async fn get_kvac_keyset_pubkeys(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
 ) -> Result<Json<KvacKeysResponse>, Response> {
-    let pubkeys = state.mint.kvac_keyset_pubkeys(&keyset_id).await.map_err(|err| {
-        tracing::error!("Could not get keyset pubkeys: {}", err);
-        into_response(err)
-    })?;
+    let pubkeys = state
+        .mint
+        .kvac_keyset_pubkeys(&keyset_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not get keyset pubkeys: {}", err);
+            into_response(err)
+        })?;
 
     Ok(Json(pubkeys))
 }
@@ -203,10 +201,14 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
-pub async fn get_kvac_keysets(State(state): State<MintState>) -> Result<Json<KvacKeysetResponse>, Response> {
-    let keysets = state.mint.kvac_keysets().await.map_err(|err| {
-        into_response(err)
-    })?;
+pub async fn get_kvac_keysets(
+    State(state): State<MintState>,
+) -> Result<Json<KvacKeysetResponse>, Response> {
+    let keysets = state
+        .mint
+        .kvac_keysets()
+        .await
+        .map_err(|err| into_response(err))?;
     Ok(Json(keysets))
 }
 

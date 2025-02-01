@@ -30,7 +30,10 @@ pub trait Database {
     /// Get Active Keyset
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
     /// Get Active KVAC Keyset
-    async fn get_active_kvac_keyset_id(&self, _unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+    async fn get_active_kvac_keyset_id(
+        &self,
+        _unit: &CurrencyUnit,
+    ) -> Result<Option<Id>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get all Active Keyset
@@ -120,19 +123,28 @@ pub trait Database {
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get kvac nullifiers
-    async fn get_kvac_nullifiers(&self, _nullifiers: &[GroupElement]) -> Result<Vec<KvacNullifier>, Self::Err> {
+    async fn get_kvac_nullifiers(
+        &self,
+        _nullifiers: &[GroupElement],
+    ) -> Result<Vec<KvacNullifier>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err>;
-    /// Get nullifiers by quote id 
-    async fn get_kvac_nullifiers_by_quote_id(&self, _quote_id: &Uuid) -> Result<Vec<KvacNullifier>, Self::Err> {
+    /// Get nullifiers by quote id
+    async fn get_kvac_nullifiers_by_quote_id(
+        &self,
+        _quote_id: &Uuid,
+    ) -> Result<Vec<KvacNullifier>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get kvac nullifiers state
-    async fn get_kvac_nullifiers_states(&self, _nullifiers: &[GroupElement]) -> Result<Vec<Option<State>>, Self::Err> {
+    async fn get_kvac_nullifiers_states(
+        &self,
+        _nullifiers: &[GroupElement],
+    ) -> Result<Vec<Option<State>>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get [`Proofs`] state

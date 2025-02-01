@@ -317,7 +317,6 @@ FROM mint
         Ok(())
     }
 
-
     #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
@@ -666,15 +665,15 @@ WHERE id=?;
                 _ => return Err(Error::SQLX(err).into()),
             },
         };
-    
+
         let cw: Vec<u8> = rec.try_get("Cw").map_err(Error::from)?;
         let i: Vec<u8> = rec.try_get("I").map_err(Error::from)?;
 
-        let mint_key = KvacKeys { 
-            0: MintPublicKey { 
+        let mint_key = KvacKeys {
+            0: MintPublicKey {
                 Cw: GroupElement::new(&cw),
                 I: GroupElement::new(&i),
-            }
+            },
         };
 
         Ok(Some(mint_key))
@@ -865,7 +864,11 @@ WHERE id=?;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_kvac_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+    async fn increment_kvac_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        count: u32,
+    ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         sqlx::query(

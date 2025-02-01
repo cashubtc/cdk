@@ -147,7 +147,6 @@ pub enum Error {
     #[error("Script is not the same across all coins")]
     DifferentScriptsError,
 
-
     // Implementation Status
     /// Not yet implemented
     #[error("This is not yet implemented")]
@@ -300,7 +299,7 @@ pub enum Error {
     /// KVAC Error
     #[error(transparent)]
     #[cfg(feature = "wallet")]
-    Kvac(#[from] crate::nuts::kvac::Error)
+    Kvac(#[from] crate::nuts::kvac::Error),
 }
 
 /// CDK Error Response

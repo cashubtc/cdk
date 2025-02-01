@@ -1,11 +1,18 @@
 //! KVAC Swap request
 use std::collections::HashSet;
 
-use cashu_kvac::{kvac::{BalanceProof, IParamsProof, MacProof, RangeProof}, models::{AmountAttribute, Coin}, transcript::CashuTranscript};
-use cdk_common::{kvac::{KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest}, Amount};
+use cashu_kvac::{
+    kvac::{BalanceProof, IParamsProof, MacProof, RangeProof},
+    models::{AmountAttribute, Coin},
+    transcript::CashuTranscript,
+};
+use cdk_common::{
+    kvac::{KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest},
+    Amount,
+};
 use tracing::instrument;
 
-use crate::{Wallet, Error};
+use crate::{Error, Wallet};
 
 impl Wallet {
     /// Compute the necessary proofs and perform a KVAC swap
@@ -23,18 +30,20 @@ impl Wallet {
             .iter()
             .map(|i| i.coin.amount_attribute.clone())
             .collect();
-        let output_attributes: Vec<AmountAttribute> = outputs
-            .iter()
-            .map(|o| o.attributes.0.clone())
-            .collect();
+        let output_attributes: Vec<AmountAttribute> =
+            outputs.iter().map(|o| o.attributes.0.clone()).collect();
 
         /*
         let delta_amount = inputs.iter().fold(0, |acc, i| acc + i.amount.0)
             - outputs.iter().fold(0, |acc, o| acc + o.amount.0);
         */
-        
+
         // Create balance proof
-        let balance_proof = BalanceProof::create(&input_attributes, &output_attributes, &mut proving_transcript);
+        let balance_proof = BalanceProof::create(
+            &input_attributes,
+            &output_attributes,
+            &mut proving_transcript,
+        );
 
         let mut mac_proofs = vec![];
         let mut input_randomized_coins = vec![];
@@ -42,8 +51,7 @@ impl Wallet {
         let mut scripts_set = HashSet::new();
         for input in inputs.iter() {
             let randomized_coin = KvacRandomizedCoin::from(input);
-            let keys = self
-                .get_kvac_keyset_keys(input.keyset_id).await?;
+            let keys = self.get_kvac_keyset_keys(input.keyset_id).await?;
             let proof = MacProof::create(
                 &keys.0,
                 &input.coin,
@@ -69,10 +77,11 @@ impl Wallet {
         //println!("test challenge: {}", String::from(&test));
 
         // Create range proof
-        let range_proof = RangeProof::create_bulletproof(&mut proving_transcript, &output_attributes);
-        
+        let range_proof =
+            RangeProof::create_bulletproof(&mut proving_transcript, &output_attributes);
+
         // Assemble Swap Request
-        let request  = KvacSwapRequest {
+        let request = KvacSwapRequest {
             inputs: input_randomized_coins,
             outputs: output_coin_messages,
             balance_proof,
@@ -94,24 +103,25 @@ impl Wallet {
                 coin: Coin::new(
                     coin.attributes.0.clone(),
                     Some(coin.attributes.1.clone()),
-                    mac
-                )
+                    mac,
+                ),
             };
             new_coins.push(coin);
         }
 
         // Verify each MAC issuance
         for (new_coin, proof) in new_coins.iter().zip(response.proofs.into_iter()) {
-            let keys = self
-                .get_kvac_keyset_keys(new_coin.keyset_id).await?;
+            let keys = self.get_kvac_keyset_keys(new_coin.keyset_id).await?;
             if !IParamsProof::verify(&keys.0, &new_coin.coin, proof, &mut verifying_transcript) {
                 println!("couldn't verify MAC issuance! the mint is probably tagging!");
-                println!("suspected MAC:\nt = {}\nV = {}",
+                println!(
+                    "suspected MAC:\nt = {}\nV = {}",
                     serde_json::to_string(&new_coin.coin.mac.t).unwrap(),
-                    serde_json::to_string(&new_coin.coin.mac.V).unwrap());
+                    serde_json::to_string(&new_coin.coin.mac.V).unwrap()
+                );
             }
         }
-        
+
         Ok(new_coins)
     }
 
@@ -119,26 +129,26 @@ impl Wallet {
     #[instrument(skip(self, amounts))]
     pub async fn create_kvac_outputs(
         &self,
-        amounts: Vec<Amount>
+        amounts: Vec<Amount>,
     ) -> Result<Vec<KvacPreCoin>, Error> {
         let keyset = self.get_active_mint_kvac_keyset().await?;
         let unit = keyset.unit;
         let id = keyset.id;
-        let counter = self.localstore.get_kvac_keyset_counter(&id).await?.unwrap_or(0);
+        let counter = self
+            .localstore
+            .get_kvac_keyset_counter(&id)
+            .await?
+            .unwrap_or(0);
 
         let pre_coins = amounts
             .into_iter()
             .enumerate()
-            .map(|(i, a)| KvacPreCoin::from_xpriv(
-                    id,
-                    a,
-                    unit.clone(),
-                    None,
-                    counter+(i as u32),
-                    self.xpriv,
-                ).map_err(Error::from)
-            ).collect::<Result<Vec<KvacPreCoin>, Error>>()?;
-        
+            .map(|(i, a)| {
+                KvacPreCoin::from_xpriv(id, a, unit.clone(), None, counter + (i as u32), self.xpriv)
+                    .map_err(Error::from)
+            })
+            .collect::<Result<Vec<KvacPreCoin>, Error>>()?;
+
         Ok(pre_coins)
     }
 }

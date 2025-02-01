@@ -33,6 +33,7 @@ use crate::{Amount, HttpClient};
 mod balance;
 pub mod client;
 mod keysets;
+pub mod kvac;
 mod melt;
 mod mint;
 pub mod multi_mint_wallet;
@@ -41,7 +42,6 @@ mod receive;
 mod send;
 pub mod subscription;
 mod swap;
-pub mod kvac;
 pub mod util;
 
 pub use cdk_common::wallet as types;
@@ -244,7 +244,11 @@ impl Wallet {
 
     /// Get fee for count of coins in a keyset
     #[instrument(skip_all)]
-    pub async fn get_kvac_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
+    pub async fn get_kvac_keyset_count_fee(
+        &self,
+        keyset_id: &Id,
+        count: u64,
+    ) -> Result<Amount, Error> {
         let input_fee_ppk = self
             .localstore
             .get_kvac_keyset_by_id(keyset_id)
