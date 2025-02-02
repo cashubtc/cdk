@@ -180,6 +180,21 @@ jobs:
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
+                
+  pure-itest:
+    name: "Integration fake wallet tests"
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Test fake mint
+        run: nix develop -i -L .#stable --command just test
 
   msrv-build:
     name: "MSRV build"

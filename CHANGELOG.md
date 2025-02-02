@@ -32,7 +32,8 @@
 * `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
 
 ### Fixed
-* Multimint unit check when wallet receiving token ([thesimplekid])
+* Multimint unit check when wallet receiving token ([thesimplekid]).
+* Mint start up with most recent keyset after a rotation ([thesimplekid]).
 
 ### Removed
 
