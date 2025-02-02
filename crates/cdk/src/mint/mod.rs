@@ -104,6 +104,7 @@ impl Mint {
                     } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
                         && &highest_index_keyset.max_order == max_order
                     {
+                        tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
                         let id = highest_index_keyset.id;
                         let keyset = MintKeySet::generate_from_xpriv(
                             &secp_ctx,
@@ -116,6 +117,7 @@ impl Mint {
                         let mut keyset_info = highest_index_keyset;
                         keyset_info.active = true;
                         localstore.add_keyset_info(keyset_info).await?;
+                        active_keyset_units.push(unit.clone());
                         localstore.set_active_keyset(unit, id).await?;
                         continue;
                     } else {
