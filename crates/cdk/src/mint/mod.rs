@@ -48,6 +48,7 @@ pub struct Mint {
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: Xpriv,
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
+    custom_paths: HashMap<CurrencyUnit, DerivationPath>,
 }
 
 impl Mint {
@@ -104,6 +105,7 @@ impl Mint {
                     } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
                         && &highest_index_keyset.max_order == max_order
                     {
+                        tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
                         let id = highest_index_keyset.id;
                         let keyset = MintKeySet::generate_from_xpriv(
                             &secp_ctx,
@@ -116,6 +118,7 @@ impl Mint {
                         let mut keyset_info = highest_index_keyset;
                         keyset_info.active = true;
                         localstore.add_keyset_info(keyset_info).await?;
+                        active_keyset_units.push(unit.clone());
                         localstore.set_active_keyset(unit, id).await?;
                         continue;
                     } else {
@@ -182,6 +185,7 @@ impl Mint {
             localstore,
             ln,
             keysets,
+            custom_paths,
         })
     }
 
@@ -743,7 +747,7 @@ mod tests {
         assert!(keysets.keysets.is_empty());
 
         // generate the first keyset and set it to active
-        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1, HashMap::new())
+        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1, &HashMap::new())
             .await?;
 
         let keysets = mint.keysets().await.unwrap();
@@ -752,7 +756,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1, HashMap::new())
+        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1, &HashMap::new())
             .await?;
 
         let keysets = mint.keysets().await.unwrap();
@@ -784,7 +788,7 @@ mod tests {
         };
         let mint = create_mint(config).await?;
 
-        mint.rotate_keyset(CurrencyUnit::default(), 0, 32, 1, HashMap::new())
+        mint.rotate_keyset(CurrencyUnit::default(), 0, 32, 1, &HashMap::new())
             .await?;
 
         let keys = mint.keysets.read().await.clone();
