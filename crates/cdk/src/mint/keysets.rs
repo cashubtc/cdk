@@ -96,8 +96,8 @@ impl Mint {
         derivation_path_index: u32,
         max_order: u8,
         input_fee_ppk: u64,
-        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
-    ) -> Result<(), Error> {
+        custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
+    ) -> Result<MintKeySetInfo, Error> {
         let derivation_path = match custom_paths.get(&unit) {
             Some(path) => path.clone(),
             None => derivation_path_from_unit(unit.clone(), derivation_path_index)
@@ -114,13 +114,52 @@ impl Mint {
             input_fee_ppk,
         );
         let id = keyset_info.id;
-        self.localstore.add_keyset_info(keyset_info).await?;
+        self.localstore.add_keyset_info(keyset_info.clone()).await?;
         self.localstore.set_active_keyset(unit, id).await?;
 
         let mut keysets = self.keysets.write().await;
         keysets.insert(id, keyset);
 
-        Ok(())
+        Ok(keyset_info)
+    }
+
+    /// Rotate to next keyset for unit
+    #[instrument(skip(self))]
+    pub async fn rotate_next_keyset(
+        &self,
+        unit: CurrencyUnit,
+        max_order: u8,
+        input_fee_ppk: u64,
+    ) -> Result<MintKeySetInfo, Error> {
+        let current_keyset_id = self
+            .localstore
+            .get_active_keyset_id(&unit)
+            .await?
+            .ok_or(Error::UnsupportedUnit)?;
+
+        let keyset_info = self
+            .localstore
+            .get_keyset_info(&current_keyset_id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
+
+        tracing::debug!(
+            "Current active keyset {} path index {:?}",
+            keyset_info.id,
+            keyset_info.derivation_path_index
+        );
+
+        let keyset_info = self
+            .rotate_keyset(
+                unit,
+                keyset_info.derivation_path_index.unwrap_or(1) + 1,
+                max_order,
+                input_fee_ppk,
+                &self.custom_paths,
+            )
+            .await?;
+
+        Ok(keyset_info)
     }
 
     /// Ensure Keyset is loaded in mint
