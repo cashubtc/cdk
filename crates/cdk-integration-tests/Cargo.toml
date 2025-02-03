@@ -17,7 +17,7 @@ http_subscription = ["cdk/http_subscription"]
 async-trait = "0.1"
 axum = "0.6.20"
 rand = "0.8.5"
-bip39 = { version = "2.0", features = ["rand"] }
+bip39 = { version = "2.1", features = ["rand"] }
 anyhow = "1"
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-cln = { path = "../cdk-cln" }
@@ -59,7 +59,7 @@ getrandom = { version = "0.2", features = ["js"] }
 instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
-bip39 = { version = "2.0", features = ["rand"] }
+bip39 = { version = "2.1", features = ["rand"] }
 anyhow = "1"
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-axum = { path = "../cdk-axum" }

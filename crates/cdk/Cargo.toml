@@ -98,7 +98,7 @@ required-features = ["wallet"]
 
 [dev-dependencies]
 rand = "0.8.5"
-bip39 = "2.0"
+bip39 = "2.1"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 criterion = "0.5.1"
 

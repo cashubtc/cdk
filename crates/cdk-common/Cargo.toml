@@ -40,4 +40,4 @@ instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
 rand = "0.8.5"
-bip39 = "2.0"
+bip39 = "2.1"
