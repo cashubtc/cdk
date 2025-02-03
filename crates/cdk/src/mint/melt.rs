@@ -70,7 +70,8 @@ impl Mint {
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
             true => {
-                tracing::error!("Melt amount out of range: {} is not within {} and {}",
+                tracing::error!(
+                    "Melt amount out of range: {} is not within {} and {}",
                     amount,
                     settings.min_amount.unwrap_or_default(),
                     settings.max_amount.unwrap_or_default(),
@@ -80,7 +81,7 @@ impl Mint {
                     settings.max_amount.unwrap_or_default(),
                     amount,
                 ))
-            },
+            }
             false => Ok(()),
         }
     }
