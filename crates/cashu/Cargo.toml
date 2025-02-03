@@ -24,7 +24,7 @@ cbor-diag = "0.1.12"
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 once_cell = "1.20.2"
 serde = { version = "1", features = ["derive"] }
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+lightning-invoice = { version = "0.33.1", features = ["serde", "std"] }
 thiserror = "2"
 tracing = "0.1"
 url = "2.3"

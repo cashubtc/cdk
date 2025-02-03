@@ -33,5 +33,5 @@ tracing = { version = "0.1", default-features = false, features = [
     "log",
 ] }
 serde_json = "1"
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+lightning-invoice = { version = "0.33.1", features = ["serde", "std"] }
 uuid = { version = "1", features = ["v4", "serde"] }
