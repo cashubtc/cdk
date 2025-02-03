@@ -27,7 +27,7 @@ serde = { version = "1", features = ["derive"] }
 lightning-invoice = { version = "0.33.1", features = ["serde", "std"] }
 thiserror = "2"
 tracing = "0.1"
-url = "2.3"
+url = "2.5"
 utoipa = { version = "4", optional = true }
 serde_json = "1"
 serde_with = "3"

@@ -42,7 +42,7 @@ bip39 = "2.0"
 tower-http = { version = "0.4.4", features = ["cors", "compression-full"] }
 lightning-invoice = { version = "0.33.1", features = ["serde", "std"] }
 home = "0.5.5"
-url = "2.3"
+url = "2.5"
 utoipa = { version = "4", optional = true }
 utoipa-swagger-ui = { version = "4", features = ["axum"], optional = true }
 

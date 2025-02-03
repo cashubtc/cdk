@@ -55,7 +55,7 @@ thiserror = "1"
 futures = { version = "0.3.28", default-features = false, optional = true, features = [
     "alloc",
 ] }
-url = "2.3"
+url = "2.5"
 utoipa = { version = "4", optional = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 
