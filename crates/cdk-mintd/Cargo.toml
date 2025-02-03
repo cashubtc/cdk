@@ -35,7 +35,7 @@ tracing = { version = "0.1", default-features = false, features = [
     "attributes",
     "log",
 ] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 futures = { version = "0.3.28", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 bip39 = "2.1"

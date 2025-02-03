@@ -41,7 +41,7 @@ tracing = { version = "0.1", default-features = false, features = [
     "attributes",
     "log",
 ] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tower-service = "0.3.3"
 tokio-tungstenite = "0.24.0"
 
