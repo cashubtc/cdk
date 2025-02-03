@@ -263,7 +263,7 @@ impl MintLightning for Lnd {
                     .lightning()
                     .query_routes(route_req)
                     .await
-                    .map_err(|e| Error::LndError(e))?
+                    .map_err(Error::LndError)?
                     .into_inner();
 
                 let mut payment_response: HtlcAttempt = HtlcAttempt {
@@ -292,7 +292,7 @@ impl MintLightning for Lnd {
                             ..Default::default()
                         })
                         .await
-                        .map_err(|e| Error::LndError(e))?
+                        .map_err(Error::LndError)?
                         .into_inner();
 
                     if let Some(failure) = payment_response.failure {
