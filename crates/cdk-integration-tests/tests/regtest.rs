@@ -96,7 +96,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -180,7 +180,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -210,7 +210,7 @@ async fn test_restore() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -272,7 +272,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
         .await
         .expect("Could not pay invoice");
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -328,7 +328,7 @@ async fn test_internal_payment() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -354,7 +354,7 @@ async fn test_internal_payment() -> Result<()> {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _wallet_2_mint = wallet_2
         .mint(&mint_quote.id, SplitTarget::default(), None)

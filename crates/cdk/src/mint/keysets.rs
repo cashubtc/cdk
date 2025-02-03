@@ -16,9 +16,9 @@ impl Mint {
     pub async fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         self.ensure_keyset_loaded(keyset_id).await?;
         let keyset = self
-            .config
-            .load()
             .keysets
+            .read()
+            .await
             .get(keyset_id)
             .ok_or(Error::UnknownKeySet)?
             .clone();
@@ -41,9 +41,9 @@ impl Mint {
 
         Ok(KeysResponse {
             keysets: self
-                .config
-                .load()
                 .keysets
+                .read()
+                .await
                 .values()
                 .filter_map(|k| match active_keysets.contains(&k.id) {
                     true => Some(k.clone().into()),
@@ -82,8 +82,7 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn keyset(&self, id: &Id) -> Result<Option<KeySet>, Error> {
         self.ensure_keyset_loaded(id).await?;
-        let config = self.config.load();
-        let keysets = &config.keysets;
+        let keysets = self.keysets.read().await;
         let keyset = keysets.get(id).map(|k| k.clone().into());
         Ok(keyset)
     }
@@ -97,8 +96,8 @@ impl Mint {
         derivation_path_index: u32,
         max_order: u8,
         input_fee_ppk: u64,
-        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
-    ) -> Result<(), Error> {
+        custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
+    ) -> Result<MintKeySetInfo, Error> {
         let derivation_path = match custom_paths.get(&unit) {
             Some(path) => path.clone(),
             None => derivation_path_from_unit(unit.clone(), derivation_path_index)
@@ -115,24 +114,65 @@ impl Mint {
             input_fee_ppk,
         );
         let id = keyset_info.id;
-        self.localstore.add_keyset_info(keyset_info).await?;
+        self.localstore.add_keyset_info(keyset_info.clone()).await?;
         self.localstore.set_active_keyset(unit, id).await?;
 
-        let mut keysets = self.config.load().keysets.clone();
+        let mut keysets = self.keysets.write().await;
         keysets.insert(id, keyset);
-        self.config.set_keysets(keysets);
 
-        Ok(())
+        Ok(keyset_info)
+    }
+
+    /// Rotate to next keyset for unit
+    #[instrument(skip(self))]
+    pub async fn rotate_next_keyset(
+        &self,
+        unit: CurrencyUnit,
+        max_order: u8,
+        input_fee_ppk: u64,
+    ) -> Result<MintKeySetInfo, Error> {
+        let current_keyset_id = self
+            .localstore
+            .get_active_keyset_id(&unit)
+            .await?
+            .ok_or(Error::UnsupportedUnit)?;
+
+        let keyset_info = self
+            .localstore
+            .get_keyset_info(&current_keyset_id)
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
+
+        tracing::debug!(
+            "Current active keyset {} path index {:?}",
+            keyset_info.id,
+            keyset_info.derivation_path_index
+        );
+
+        let keyset_info = self
+            .rotate_keyset(
+                unit,
+                keyset_info.derivation_path_index.unwrap_or(1) + 1,
+                max_order,
+                input_fee_ppk,
+                &self.custom_paths,
+            )
+            .await?;
+
+        Ok(keyset_info)
     }
 
     /// Ensure Keyset is loaded in mint
     #[instrument(skip(self))]
     pub async fn ensure_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
-        if self.config.load().keysets.contains_key(id) {
-            return Ok(());
+        {
+            let keysets = self.keysets.read().await;
+            if keysets.contains_key(id) {
+                return Ok(());
+            }
         }
 
-        let mut keysets = self.config.load().keysets.clone();
+        let mut keysets = self.keysets.write().await;
         let keyset_info = self
             .localstore
             .get_keyset_info(id)
@@ -140,7 +180,6 @@ impl Mint {
             .ok_or(Error::UnknownKeySet)?;
         let id = keyset_info.id;
         keysets.insert(id, self.generate_keyset(keyset_info));
-        self.config.set_keysets(keysets);
 
         Ok(())
     }

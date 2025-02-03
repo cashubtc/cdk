@@ -31,7 +31,7 @@ impl Mint {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<(), Error> {
-        let mint_info = self.mint_info();
+        let mint_info = self.localstore.get_mint_info().await?;
         let nut05 = mint_info.nuts.nut05;
         let nut15 = mint_info.nuts.nut15;
 
@@ -125,12 +125,14 @@ impl Mint {
         // or we want to ignore the amount and do an mpp payment
         let msats_to_pay = options.map(|opt| opt.amount_msat());
 
+        let melt_ttl = self.localstore.get_quote_ttl().await?.melt_ttl;
+
         let quote = MeltQuote::new(
             request.to_string(),
             unit.clone(),
             payment_quote.amount,
             payment_quote.fee,
-            unix_time() + self.config.quote_ttl().melt_ttl,
+            unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             msats_to_pay,
         );

@@ -342,7 +342,18 @@ pub async fn post_check(
 ))]
 /// Mint information, operator contact information, and other info
 pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
-    Ok(Json(state.mint.mint_info().clone().time(unix_time())))
+    Ok(Json(
+        state
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| {
+                tracing::error!("Could not get mint info: {}", err);
+                into_response(err)
+            })?
+            .clone()
+            .time(unix_time()),
+    ))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(

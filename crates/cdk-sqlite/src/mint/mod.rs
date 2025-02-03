@@ -7,16 +7,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::LnKey;
+use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
-use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
-    MeltQuoteState, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
+    State,
 };
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
@@ -206,12 +206,11 @@ WHERE active = 1
         let res = sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, request_lookup_id, pubkey)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+(id, amount, unit, request, state, expiry, request_lookup_id, pubkey)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
-        .bind(quote.mint_url.to_string())
         .bind(u64::from(quote.amount) as i64)
         .bind(quote.unit.to_string())
         .bind(quote.request)
@@ -1221,6 +1220,148 @@ WHERE quote_id=?;
             }
         }
     }
+
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO config
+(id, value)
+VALUES (?, ?);
+        "#,
+        )
+        .bind("mint_info")
+        .bind(serde_json::to_string(&mint_info)?)
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite Could not update mint info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM config
+WHERE id=?;
+        "#,
+        )
+        .bind("mint_info")
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let value: String = rec.try_get("value").map_err(Error::from)?;
+
+                let mint_info = serde_json::from_str(&value)?;
+
+                Ok(mint_info)
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Err(Error::UnknownMintInfo.into());
+                }
+                _ => {
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
+                    }
+                }
+            },
+        }
+    }
+
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO config
+(id, value)
+VALUES (?, ?);
+        "#,
+        )
+        .bind("quote_ttl")
+        .bind(serde_json::to_string(&quote_ttl)?)
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite Could not update mint info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM config
+WHERE id=?;
+        "#,
+        )
+        .bind("quote_ttl")
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let value: String = rec.try_get("value").map_err(Error::from)?;
+
+                let quote_ttl = serde_json::from_str(&value)?;
+
+                Ok(quote_ttl)
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Err(Error::UnknownQuoteTTL.into());
+                }
+                _ => {
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
+                    }
+                }
+            },
+        }
+    }
 }
 
 fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
@@ -1250,7 +1391,6 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
 
 fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
-    let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
@@ -1274,7 +1414,6 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
 
     Ok(MintQuote {
         id: row_id.into_uuid(),
-        mint_url: MintUrl::from_str(&row_mint_url)?,
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
