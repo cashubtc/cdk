@@ -25,7 +25,7 @@ cdk-common = { path = "../cdk-common", version = "0.6.0" }
 cbor-diag = "0.1.12"
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
-bitcoin = { version = "0.32.2", features = [
+bitcoin = { version = "0.32.5", features = [
     "base64",
     "serde",
     "rand",

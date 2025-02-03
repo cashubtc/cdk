@@ -14,7 +14,7 @@ bench = []
 
 [dependencies]
 uuid = { version = "1", features = ["v4", "serde"], optional = true }
-bitcoin = { version = "0.32.2", features = [
+bitcoin = { version = "0.32.5", features = [
     "base64",
     "serde",
     "rand",

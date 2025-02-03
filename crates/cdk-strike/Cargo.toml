@@ -13,7 +13,7 @@ description = "CDK ln backend for Strike api"
 async-trait = "0.1"
 anyhow = "1"
 axum = "0.6.20"
-bitcoin = { version = "0.32.2", default-features = false }
+bitcoin = { version = "0.32.5", default-features = false }
 cdk = { path = "../cdk", version = "0.6.0", default-features = false, features = ["mint"] }
 futures = { version = "0.3.28", default-features = false }
 tokio = { version = "1", default-features = false }
