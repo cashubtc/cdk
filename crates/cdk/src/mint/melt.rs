@@ -44,7 +44,7 @@ impl Mint {
             .ok_or(Error::UnitUnsupported)?;
 
         let amount = match options {
-            Some(MeltOptions::Mpp { mpp }) => {
+            Some(MeltOptions::Mpp { mpp: _ }) => {
                 // Verify there is no corresponding mint quote.
                 // Otherwise a wallet is trying to pay someone internally, but
                 // with a multi-part quote. And that's just not possible.
@@ -59,7 +59,9 @@ impl Mint {
                 {
                     return Err(Error::MppUnitMethodNotSupported(unit, method));
                 }
-                mpp.amount
+                // Assign `amount`
+                // because should have already been converted to the partial amount
+                amount
             }
             None => amount,
         };
@@ -67,11 +69,18 @@ impl Mint {
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
-            true => Err(Error::AmountOutofLimitRange(
-                settings.min_amount.unwrap_or_default(),
-                settings.max_amount.unwrap_or_default(),
-                amount,
-            )),
+            true => {
+                tracing::error!("Melt amount out of range: {} is not within {} and {}",
+                    amount,
+                    settings.min_amount.unwrap_or_default(),
+                    settings.max_amount.unwrap_or_default(),
+                );
+                Err(Error::AmountOutofLimitRange(
+                    settings.min_amount.unwrap_or_default(),
+                    settings.max_amount.unwrap_or_default(),
+                    amount,
+                ))
+            },
             false => Ok(()),
         }
     }
@@ -123,7 +132,7 @@ impl Mint {
 
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
         // or we want to ignore the amount and do an mpp payment
-        let msats_to_pay = options.map(|opt| opt.amount_msat());
+        // let msats_to_pay = options.map(|opt| opt.amount_msat());
 
         let melt_ttl = self.localstore.get_quote_ttl().await?.melt_ttl;
 
@@ -134,7 +143,7 @@ impl Mint {
             payment_quote.fee,
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
-            msats_to_pay,
+            None,
         );
 
         tracing::debug!(

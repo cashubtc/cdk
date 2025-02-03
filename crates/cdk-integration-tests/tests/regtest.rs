@@ -514,7 +514,7 @@ async fn test_multimint_melt() -> Result<()> {
     // Get multi-part melt quotes
     let melt_options = MeltOptions::Mpp {
         mpp: Mpp {
-            amount: Amount::from(25),
+            amount: Amount::from(25000),
         },
     };
     let quote_1 = wallet1
