@@ -226,7 +226,10 @@ impl MintLightning for Lnd {
         let bolt11 = Bolt11Invoice::from_str(&payment_request)?;
         let amount_msat: u64 = match bolt11.amount_milli_satoshis() {
             Some(amount_msat) => amount_msat,
-            None => melt_quote.msat_to_pay.ok_or(Error::UnknownInvoiceAmount)?.into()
+            None => melt_quote
+                .msat_to_pay
+                .ok_or(Error::UnknownInvoiceAmount)?
+                .into(),
         };
 
         // Detect partial payments

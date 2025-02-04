@@ -227,7 +227,8 @@ impl Mint {
 
         let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
             Some(amt) => amt.into(),
-            None => melt_quote.msat_to_pay
+            None => melt_quote
+                .msat_to_pay
                 .ok_or(Error::InvoiceAmountUndefined)?
                 .into(),
         };
