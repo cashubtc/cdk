@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::kvac::{
     BootstrapRequest, BootstrapResponse, KvacKeysResponse, KvacKeysetResponse, KvacSwapRequest,
-    KvacSwapResponse,
+    KvacSwapResponse, KvacMintBolt11Request, KvacMintBolt11Response,
 };
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
@@ -68,6 +68,11 @@ post_cache_wrapper!(
 );
 post_cache_wrapper!(post_bootstrap, BootstrapRequest, BootstrapResponse);
 post_cache_wrapper!(post_kvac_swap, KvacSwapRequest, KvacSwapResponse);
+post_cache_wrapper!(
+    post_kvac_mint_bolt11,
+    KvacMintBolt11Request<Uuid>,
+    KvacMintBolt11Response
+);
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -299,6 +304,37 @@ pub async fn post_mint_bolt11(
         .await
         .map_err(|err| {
             tracing::error!("Could not process mint: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(res))
+}
+
+/// Mint coins by paying a BOLT11 Lightning invoice.
+///
+/// Requests the minting of tokens belonging to a paid payment request.
+///
+/// Call this endpoint after `POST /v1/mint/quote`.
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/mint/bolt11",
+    request_body(content = KvacMintBolt11Request, description = "Request params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacMintBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+pub async fn post_kvac_mint_bolt11(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacMintBolt11Request<Uuid>>,
+) -> Result<Json<KvacMintBolt11Response>, Response> {
+    let res = state
+        .mint
+        .process_kvac_mint_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process kvac mint: {}", err);
             into_response(err)
         })?;
 

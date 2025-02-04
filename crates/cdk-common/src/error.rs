@@ -142,8 +142,8 @@ pub enum Error {
     #[error("MAC was already issued for these outputs")]
     MacAlreadyIssued,
     /// KVAC BalanceProof failed to verify
-    #[error("Balance proof failed to verify with fee `{0}`")]
-    BalanceVerificationError(Amount),
+    #[error("Balance proof failed to verify with delta = `{0}` and fee `{1}`")]
+    BalanceVerificationError(i64, i64),
     /// KVAC MacProof failed to verify
     #[error("Mac proof failed to verify")]
     MacVerificationError,

@@ -21,6 +21,7 @@ use cashu_kvac::secp::{GroupElement, Scalar};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::VecSkipError;
+use serde::de::DeserializeOwned;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -456,6 +457,42 @@ pub struct KvacSwapRequest {
     /// Script
     ///
     /// [`String`] revealing the script to unlock the inputs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    /// Range Proof
+    ///
+    /// A single [`RangeProof`] proving the outputs are all within range
+    pub range_proof: RangeZKP,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+#[serde(bound = "Q: Serialize + DeserializeOwned")]
+pub struct KvacMintBolt11Request<Q> {
+    /// Quote id
+    #[cfg_attr(feature = "swagger", schema(max_length = 1_000))]
+    pub quote: Q,
+    /// Inputs
+    ///
+    /// [`Vec<KvacRandomizedCoin>`] Where each element is the randomized version of a [`KvacCoin`] for
+    /// which a [`MAC`] was issued. In other words, the outputs of a previous request but randomized.
+    pub inputs: Vec<KvacRandomizedCoin>,
+    /// Outputs
+    ///
+    /// [`Vec<KvacCoinMessage>`] Where elements are new coins awaiting their [`MAC`]
+    pub outputs: Vec<KvacCoinMessage>,
+    /// Balance Proofs
+    ///
+    /// [`ZKP`] Proving that inputs - outputs == delta_amount
+    pub balance_proof: ZKP,
+    /// MAC Proofs
+    ///
+    /// [`Vec<ZKP>`] Proofs that inputs where issued a MAC previously
+    pub mac_proofs: Vec<ZKP>,
+    /// Script
+    ///
+    /// [`String`] revealing the script to unlock the inputs
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
     /// Range Proof
     ///
@@ -498,7 +535,7 @@ pub struct BootstrapResponse {
 /// Swap Response
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct KvacSwapResponse {
+pub struct KvacResponse {
     /// MACs
     ///
     /// [`Vec<MAC>`] Approval stamp of the Mint
@@ -508,3 +545,12 @@ pub struct KvacSwapResponse {
     /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
     pub proofs: Vec<ZKP>,
 }
+
+/// Swap Response
+pub type KvacSwapResponse = KvacResponse;
+
+// Mint Bolt11 Response
+pub type KvacMintBolt11Response = KvacResponse;
+
+// Melt Bolt11 Response
+pub type KvacMeltBolt11Response = KvacResponse;
