@@ -37,6 +37,10 @@
 
 ### Removed
 
+#[0.6.2]
+### Fixed
+cdk: Missing check on mint that outputs equals the quote amount ([thesimplekid]).
+
 #[0.6.1]
 ### Added
 cdk-mintd: Get work-dir from env var ([thesimplekid])
