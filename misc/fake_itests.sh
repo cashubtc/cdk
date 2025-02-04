@@ -76,7 +76,7 @@ done
 
 
 # Run cargo test
-cargo test -p cdk-integration-tests --test fake_wallet
+cargo test -p cdk-integration-tests --test fake_wallet test_fake_mint_multiple_unit_swap
 # cargo test -p cdk-integration-tests --test mint
 
 # Capture the exit status of cargo test

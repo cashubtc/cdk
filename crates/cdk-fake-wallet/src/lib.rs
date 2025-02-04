@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::rand::{thread_rng, Rng};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk::amount::{Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
@@ -199,14 +199,15 @@ impl MintLightning for FakeWallet {
     async fn create_invoice(
         &self,
         amount: Amount,
-        unit: &CurrencyUnit,
+        _unit: &CurrencyUnit,
         description: String,
         unix_expiry: u64,
     ) -> Result<CreateInvoiceResponse, Self::Err> {
         let time_now = unix_time();
         assert!(unix_expiry > time_now);
 
-        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+        // Since this is fake we just use the amount no matter the unit to create an invoice
+        let amount_msat = amount;
 
         let invoice = create_fake_invoice(amount_msat.into(), description);
 
