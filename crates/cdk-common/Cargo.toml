@@ -1,6 +1,6 @@
 [package]
 name = "cdk-common"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "CDK common types and traits"
 rust-version = "1.63.0"                     # MSRV
