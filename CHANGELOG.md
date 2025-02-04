@@ -32,8 +32,15 @@
 * `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
 
 ### Fixed
+* Multimint unit check when wallet receiving token ([thesimplekid]).
+* Mint start up with most recent keyset after a rotation ([thesimplekid]).
 
 ### Removed
+
+#[cdk:v0.6.1,cdk-mintd:v0.6.2]
+### Fixed
+cdk: Missing check on mint that outputs equals the quote amount ([thesimplekid]).
+cdk: Reset mint quote status if in state that cannot continue ([thesimeokid]).
 
 #[0.6.1]
 ### Added

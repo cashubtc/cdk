@@ -15,16 +15,32 @@ use cdk::nuts::{
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
-    get_mint_url, get_mint_ws_url, init_cln_client, init_lnd_client,
+    get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
+    get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
+use cdk_integration_tests::wait_for_mint_to_be_paid;
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
-use ln_regtest_rs::ln_client::LightningClient;
+use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::InvoiceStatus;
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
+
+// This is the ln wallet we use to send/receive ln payements as the wallet
+async fn init_lnd_client() -> LndClient {
+    let lnd_dir = get_lnd_dir("one");
+    let cert_file = lnd_dir.join("tls.cert");
+    let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
+    LndClient::new(
+        format!("https://{}", LND_RPC_ADDR),
+        cert_file,
+        macaroon_file,
+    )
+    .await
+    .unwrap()
+}
 
 async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
@@ -60,7 +76,7 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
-    let lnd_client = init_lnd_client().await.unwrap();
+    let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url(),
@@ -78,6 +94,8 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await.unwrap();
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -143,7 +161,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url(),
@@ -161,6 +179,8 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
@@ -174,7 +194,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_restore() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
@@ -188,6 +208,8 @@ async fn test_restore() -> Result<()> {
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -231,7 +253,8 @@ async fn test_restore() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_pay_invoice_twice() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
+
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url(),
@@ -243,7 +266,12 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    lnd_client.pay_invoice(mint_quote.request).await?;
+    lnd_client
+        .pay_invoice(mint_quote.request)
+        .await
+        .expect("Could not pay invoice");
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -266,8 +294,8 @@ async fn test_pay_invoice_twice() -> Result<()> {
     match melt_two {
         Err(err) => match err {
             cdk::Error::RequestAlreadyPaid => (),
-            _ => {
-                bail!("Wrong invoice already paid");
+            err => {
+                bail!("Wrong invoice already paid: {}", err.to_string());
             }
         },
         Ok(_) => {
@@ -284,7 +312,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() -> Result<()> {
-    let lnd_client = init_lnd_client().await?;
+    let lnd_client = init_lnd_client().await;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
@@ -298,6 +326,8 @@ async fn test_internal_payment() -> Result<()> {
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     lnd_client.pay_invoice(mint_quote.request).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -323,16 +353,40 @@ async fn test_internal_payment() -> Result<()> {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
     let _wallet_2_mint = wallet_2
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await
         .unwrap();
 
-    let cln_client = init_cln_client().await?;
-    let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
-    let check_paid = cln_client
-        .check_incoming_payment_status(&payment_hash.payment_hash().to_string())
-        .await?;
+    let check_paid = match get_mint_port() {
+        8085 => {
+            let cln_one_dir = get_cln_dir("one");
+            let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+
+            let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
+            cln_client
+                .check_incoming_payment_status(&payment_hash.payment_hash().to_string())
+                .await
+                .expect("Could not check invoice")
+        }
+        8087 => {
+            let lnd_two_dir = get_lnd_dir("two");
+            let lnd_client = LndClient::new(
+                format!("https://{}", LND_TWO_RPC_ADDR),
+                get_lnd_cert_file_path(&lnd_two_dir),
+                get_lnd_macaroon_path(&lnd_two_dir),
+            )
+            .await?;
+            let payment_hash = Bolt11Invoice::from_str(&mint_quote.request)?;
+            lnd_client
+                .check_incoming_payment_status(&payment_hash.payment_hash().to_string())
+                .await
+                .expect("Could not check invoice")
+        }
+        _ => panic!("Unknown mint port"),
+    };
 
     match check_paid {
         InvoiceStatus::Unpaid => (),
@@ -354,7 +408,7 @@ async fn test_internal_payment() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cached_mint() -> Result<()> {
-    let lnd_client = init_lnd_client().await.unwrap();
+    let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url(),
@@ -386,7 +440,7 @@ async fn test_cached_mint() -> Result<()> {
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
     let http_client = HttpClient::new(get_mint_url().as_str().parse()?);
     let premint_secrets =
-        PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
     let mut request = MintBolt11Request {
         quote: quote.id,

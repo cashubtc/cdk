@@ -1,37 +1,36 @@
-use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning::MintLightning;
-use cdk::mint::{FeeReserve, Mint};
-use cdk::nuts::{CurrencyUnit, MintInfo};
-use cdk::types::{LnKey, QuoteTTL};
+use cdk::cdk_lightning::{self, MintLightning};
+use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk_cln::Cln as CdkCln;
+use cdk_lnd::Lnd as CdkLnd;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
-use ln_regtest_rs::cln::Clnd;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
-use tokio::sync::Notify;
-use tower_http::cors::CorsLayer;
+use tracing::instrument;
 
-const BITCOIND_ADDR: &str = "127.0.0.1:18443";
-const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
-const ZMQ_RAW_TX: &str = "tcp://127.0.0.1:28333";
-const BITCOIN_RPC_USER: &str = "testuser";
-const BITCOIN_RPC_PASS: &str = "testpass";
-const CLN_ADDR: &str = "127.0.0.1:19846";
-const LND_ADDR: &str = "0.0.0.0:18449";
-const LND_RPC_ADDR: &str = "localhost:10009";
+use crate::init_mint::start_mint;
+
+pub const BITCOIND_ADDR: &str = "127.0.0.1:18443";
+pub const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
+pub const ZMQ_RAW_TX: &str = "tcp://127.0.0.1:28333";
+pub const BITCOIN_RPC_USER: &str = "testuser";
+pub const BITCOIN_RPC_PASS: &str = "testpass";
 
 const BITCOIN_DIR: &str = "bitcoin";
-const CLN_DIR: &str = "cln";
-const LND_DIR: &str = "lnd";
+
+pub const LND_ADDR: &str = "0.0.0.0:18449";
+pub const LND_RPC_ADDR: &str = "localhost:10009";
+
+pub const LND_TWO_ADDR: &str = "0.0.0.0:18410";
+pub const LND_TWO_RPC_ADDR: &str = "localhost:10010";
 
 pub fn get_mint_addr() -> String {
     env::var("cdk_itests_mint_addr").expect("Temp dir set")
@@ -83,38 +82,32 @@ pub fn init_bitcoin_client() -> Result<BitcoinClient> {
     )
 }
 
-pub fn get_cln_dir() -> PathBuf {
-    let dir = get_temp_dir().join(CLN_DIR);
+pub fn get_cln_dir(name: &str) -> PathBuf {
+    let dir = get_temp_dir().join("cln").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-pub fn init_cln() -> Clnd {
-    Clnd::new(
-        get_bitcoin_dir(),
-        get_cln_dir(),
-        CLN_ADDR.to_string().parse().unwrap(),
-        BITCOIN_RPC_USER.to_string(),
-        BITCOIN_RPC_PASS.to_string(),
-    )
-}
-
-pub async fn init_cln_client() -> Result<ClnClient> {
-    ClnClient::new(get_cln_dir(), None).await
-}
-
-pub fn get_lnd_dir() -> PathBuf {
-    let dir = get_temp_dir().join(LND_DIR);
+pub fn get_lnd_dir(name: &str) -> PathBuf {
+    let dir = get_temp_dir().join("lnd").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-pub async fn init_lnd() -> Lnd {
+pub fn get_lnd_cert_file_path(lnd_dir: &Path) -> PathBuf {
+    lnd_dir.join("tls.cert")
+}
+
+pub fn get_lnd_macaroon_path(lnd_dir: &Path) -> PathBuf {
+    lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon")
+}
+
+pub async fn init_lnd(lnd_dir: PathBuf, lnd_addr: &str, lnd_rpc_addr: &str) -> Lnd {
     Lnd::new(
         get_bitcoin_dir(),
-        get_lnd_dir(),
-        LND_ADDR.parse().unwrap(),
-        LND_RPC_ADDR.to_string(),
+        lnd_dir,
+        lnd_addr.parse().unwrap(),
+        lnd_rpc_addr.to_string(),
         BITCOIN_RPC_USER.to_string(),
         BITCOIN_RPC_PASS.to_string(),
         ZMQ_RAW_BLOCK.to_string(),
@@ -122,16 +115,11 @@ pub async fn init_lnd() -> Lnd {
     )
 }
 
-pub async fn init_lnd_client() -> Result<LndClient> {
-    let lnd_dir = get_lnd_dir();
-    let cert_file = lnd_dir.join("tls.cert");
-    let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
-    LndClient::new(
-        format!("https://{}", LND_RPC_ADDR).parse().unwrap(),
-        cert_file,
-        macaroon_file,
-    )
-    .await
+pub fn generate_block(bitcoin_client: &BitcoinClient) -> Result<()> {
+    let mine_to_address = bitcoin_client.get_new_address()?;
+    bitcoin_client.generate_blocks(&mine_to_address, 10)?;
+
+    Ok(())
 }
 
 pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
@@ -145,145 +133,94 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
     Ok(CdkCln::new(rpc_path, fee_reserve).await?)
 }
 
-pub async fn create_mint<D>(
-    database: D,
-    ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
-    >,
-) -> Result<Mint>
+pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    Ok(CdkLnd::new(
+        lnd_client.address.clone(),
+        lnd_client.cert_file.clone(),
+        lnd_client.macaroon_file.clone(),
+        fee_reserve,
+    )
+    .await?)
+}
+
+#[instrument(skip_all)]
+pub async fn create_mint<D, L>(addr: &str, port: u16, database: D, lighting: L) -> Result<()>
 where
     D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+    L: MintLightning<Err = cdk_lightning::Error> + Send + Sync + 'static,
 {
-    let nuts = cdk::nuts::Nuts::new()
-        .nut07(true)
-        .nut08(true)
-        .nut09(true)
-        .nut10(true)
-        .nut11(true)
-        .nut12(true)
-        .nut14(true);
+    let mut mint_builder = MintBuilder::new();
 
-    let mint_info = MintInfo::new().nuts(nuts);
+    mint_builder = mint_builder.with_localstore(Arc::new(database));
+
+    mint_builder = mint_builder.add_ln_backend(
+        CurrencyUnit::Sat,
+        PaymentMethod::Bolt11,
+        MintMeltLimits::new(1, 5_000),
+        Arc::new(lighting),
+    );
 
     let mnemonic = Mnemonic::generate(12)?;
 
-    let mut supported_units: HashMap<CurrencyUnit, (u64, u8)> = HashMap::new();
-    supported_units.insert(CurrencyUnit::Sat, (0, 32));
+    mint_builder = mint_builder
+        .with_name("regtest mint".to_string())
+        .with_description("regtest mint".to_string())
+        .with_quote_ttl(10000, 10000)
+        .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    let quote_ttl = QuoteTTL::new(10000, 10000);
+    let mint = mint_builder.build().await?;
 
-    let mint = Mint::new(
-        &get_mint_url(),
-        &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        Arc::new(database),
-        ln_backends,
-        supported_units,
-        HashMap::new(),
-    )
-    .await?;
+    start_mint(addr, port, mint).await?;
 
-    Ok(mint)
+    Ok(())
 }
 
-pub async fn start_cln_mint<D>(addr: &str, port: u16, database: D) -> Result<()>
+pub async fn fund_ln<C>(bitcoin_client: &BitcoinClient, ln_client: &C) -> Result<()>
 where
-    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+    C: LightningClient,
 {
-    let cln_client = init_cln_client().await?;
+    let ln_address = ln_client.get_new_onchain_address().await?;
 
-    let cln_backend = create_cln_backend(&cln_client).await?;
+    bitcoin_client.send_to_address(&ln_address, 5_000_000)?;
 
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk::cdk_lightning::Error> + Sync + Send>,
-    > = HashMap::new();
+    ln_client.wait_chain_sync().await?;
 
-    ln_backends.insert(
-        LnKey::new(CurrencyUnit::Sat, cdk::nuts::PaymentMethod::Bolt11),
-        Arc::new(cln_backend),
-    );
+    let mine_to_address = bitcoin_client.get_new_address()?;
+    bitcoin_client.generate_blocks(&mine_to_address, 10)?;
 
-    let mint = create_mint(database, ln_backends.clone()).await?;
-    let mint_arc = Arc::new(mint);
-
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint_arc))
-        .await
-        .unwrap();
-
-    let mint_service = Router::new()
-        .merge(v1_service)
-        .layer(CorsLayer::permissive());
-
-    let mint = Arc::clone(&mint_arc);
-
-    let shutdown = Arc::new(Notify::new());
-
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        async move { mint.wait_for_paid_invoices(shutdown).await }
-    });
-
-    println!("Staring Axum server");
-    axum::Server::bind(&format!("{}:{}", addr, port).as_str().parse().unwrap())
-        .serve(mint_service.into_make_service())
-        .await?;
+    ln_client.wait_chain_sync().await?;
 
     Ok(())
 }
 
-pub async fn fund_ln(
-    bitcoin_client: &BitcoinClient,
-    cln_client: &ClnClient,
-    lnd_client: &LndClient,
-) -> Result<()> {
-    let lnd_address = lnd_client.get_new_onchain_address().await?;
+pub async fn open_channel<C1, C2>(cln_client: &C1, lnd_client: &C2) -> Result<()>
+where
+    C1: LightningClient,
+    C2: LightningClient,
+{
+    let cln_info = cln_client.get_connect_info().await?;
 
-    bitcoin_client.send_to_address(&lnd_address, 2_000_000)?;
-
-    let cln_address = cln_client.get_new_onchain_address().await?;
-    bitcoin_client.send_to_address(&cln_address, 2_000_000)?;
-
-    let mining_address = bitcoin_client.get_new_address()?;
-    bitcoin_client.generate_blocks(&mining_address, 200)?;
-
-    cln_client.wait_chain_sync().await?;
-    lnd_client.wait_chain_sync().await?;
-
-    Ok(())
-}
-
-pub async fn open_channel(
-    bitcoin_client: &BitcoinClient,
-    cln_client: &ClnClient,
-    lnd_client: &LndClient,
-) -> Result<()> {
-    let cln_info = cln_client.get_info().await?;
-
-    let cln_pubkey = cln_info.id;
-    let cln_address = "127.0.0.1";
-    let cln_port = 19846;
+    let cln_pubkey = cln_info.pubkey;
+    let cln_address = cln_info.address;
+    let cln_port = cln_info.port;
 
     lnd_client
         .connect_peer(cln_pubkey.to_string(), cln_address.to_string(), cln_port)
         .await
         .unwrap();
 
+    cln_client.wait_chain_sync().await?;
+    lnd_client.wait_chain_sync().await?;
+
     lnd_client
         .open_channel(1_500_000, &cln_pubkey.to_string(), Some(750_000))
         .await
         .unwrap();
-
-    let mine_to_address = bitcoin_client.get_new_address()?;
-    bitcoin_client.generate_blocks(&mine_to_address, 10)?;
-
-    cln_client.wait_chain_sync().await?;
-    lnd_client.wait_chain_sync().await?;
-
-    cln_client.wait_channels_active().await?;
-    lnd_client.wait_channels_active().await?;
 
     Ok(())
 }

@@ -12,10 +12,11 @@ cleanup() {
     wait $CDK_ITEST_MINT_BIN_PID
 
     echo "Mint binary terminated"
-    
     # Kill processes
-    lncli --lnddir="$cdk_itests/lnd" --network=regtest stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/" stop
+    lncli --lnddir="$cdk_itests/lnd/one" --network=regtest stop
+    lncli --lnddir="$cdk_itests/lnd/two" --network=regtest --rpcserver=localhost:10010 stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/one/" stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/two/" stop
     bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
 
     # Remove the temporary directory
@@ -45,8 +46,11 @@ echo "Temp directory created: $cdk_itests"
 export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
-cargo build --bin cdk-integration-tests 
-cargo run --bin cdk-integration-tests &
+cargo build --bin regtest_mint 
+# cargo run --bin regtest_mint > "$cdk_itests/mint.log" 2>&1 &
+cargo run --bin regtest_mint &
+
+echo $cdk_itests
 # Capture its PID
 CDK_ITEST_MINT_BIN_PID=$!
 
@@ -83,8 +87,12 @@ done
 # Run cargo test
 cargo test -p cdk-integration-tests --test regtest
 
-# Run cargo test with the http_subscription feature
+# # Run cargo test with the http_subscription feature
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
+
+# Run tests with lnd mint
+export cdk_itests_mint_port=8087;
+cargo test -p cdk-integration-tests --test regtest
 
 # Capture the exit status of cargo test
 test_status=$?

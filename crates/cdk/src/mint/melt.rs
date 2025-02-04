@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use anyhow::bail;
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::MeltOptions;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 use uuid::Uuid;
@@ -21,14 +22,18 @@ use crate::util::unix_time;
 use crate::{cdk_lightning, Amount, Error};
 
 impl Mint {
-    fn check_melt_request_acceptable(
+    #[instrument(skip_all)]
+    async fn check_melt_request_acceptable(
         &self,
         amount: Amount,
         unit: CurrencyUnit,
         method: PaymentMethod,
+        request: String,
+        options: Option<MeltOptions>,
     ) -> Result<(), Error> {
-        let mint_info = self.mint_info();
+        let mint_info = self.localstore.get_mint_info().await?;
         let nut05 = mint_info.nuts.nut05;
+        let nut15 = mint_info.nuts.nut15;
 
         if nut05.disabled {
             return Err(Error::MeltingDisabled);
@@ -36,8 +41,24 @@ impl Mint {
 
         let settings = nut05
             .get_settings(&unit, &method)
-            .ok_or(Error::UnitUnsupported)?;
+            .ok_or(Error::UnsupportedUnit)?;
 
+        if matches!(options, Some(MeltOptions::Mpp { mpp: _ })) {
+            // Verify there is no corresponding mint quote.
+            // Otherwise a wallet is trying to pay someone internally, but
+            // with a multi-part quote. And that's just not possible.
+            if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
+                return Err(Error::InternalMultiPartMeltQuote);
+            }
+            // Verify MPP is enabled for unit and method
+            if !nut15
+                .methods
+                .into_iter()
+                .any(|m| m.method == method && m.unit == unit)
+            {
+                return Err(Error::MppUnitMethodNotSupported(unit, method));
+            }
+        }
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
@@ -67,7 +88,14 @@ impl Mint {
 
         let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
 
-        self.check_melt_request_acceptable(amount_quote_unit, unit.clone(), PaymentMethod::Bolt11)?;
+        self.check_melt_request_acceptable(
+            amount_quote_unit,
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            request.to_string(),
+            *options,
+        )
+        .await?;
 
         let ln = self
             .ln
@@ -75,7 +103,7 @@ impl Mint {
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
 
-                Error::UnitUnsupported
+                Error::UnsupportedUnit
             })?;
 
         let payment_quote = ln.get_payment_quote(melt_request).await.map_err(|err| {
@@ -85,19 +113,21 @@ impl Mint {
                 err
             );
 
-            Error::UnitUnsupported
+            Error::UnsupportedUnit
         })?;
 
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
         // or we want to ignore the amount and do an mpp payment
         let msats_to_pay = options.map(|opt| opt.amount_msat());
 
+        let melt_ttl = self.localstore.get_quote_ttl().await?.melt_ttl;
+
         let quote = MeltQuote::new(
             request.to_string(),
             unit.clone(),
             payment_quote.amount,
             payment_quote.fee,
-            unix_time() + self.config.quote_ttl().melt_ttl,
+            unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             msats_to_pay,
         );
@@ -194,7 +224,7 @@ impl Mint {
 
                 Some(
                     to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                        .map_err(|_| Error::UnitUnsupported)?,
+                        .map_err(|_| Error::UnsupportedUnit)?,
                 )
             }
             false => None,
@@ -203,7 +233,7 @@ impl Mint {
         let amount_to_pay = match partial_amount {
             Some(amount_to_pay) => amount_to_pay,
             None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                .map_err(|_| Error::UnitUnsupported)?,
+                .map_err(|_| Error::UnsupportedUnit)?,
         };
 
         let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
@@ -336,7 +366,7 @@ impl Mint {
 
         // Check that all input and output proofs are the same unit
         if keyset_units.len().gt(&1) {
-            return Err(Error::MultipleUnits);
+            return Err(Error::UnsupportedUnit);
         }
 
         tracing::debug!("Verified melt quote: {}", melt_request.quote);
@@ -472,7 +502,7 @@ impl Mint {
                             tracing::error!("Could not reset melt quote state: {}", err);
                         }
 
-                        return Err(Error::UnitUnsupported);
+                        return Err(Error::UnsupportedUnit);
                     }
                 };
 

@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::MintInfo;
 use cashu::kvac::{KvacIssuedMac, KvacNullifier};
 use cashu_kvac::secp::{GroupElement, Scalar};
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::LnKey;
+use crate::common::{LnKey, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
@@ -218,6 +219,16 @@ pub trait Database {
         &self,
         quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+
+    /// Set [`MintInfo`]
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err>;
+    /// Get [`MintInfo`]
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err>;
+
+    /// Set [`QuoteTTL`]
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err>;
+    /// Get [`QuoteTTL`]
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err>;
     /// Get [`KvacIssuedMac`]s for quote
     async fn get_kvac_issued_macs_for_quote(
         &self,

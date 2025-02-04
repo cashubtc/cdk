@@ -21,8 +21,6 @@ use crate::types::{LnKey, QuoteTTL};
 /// Cashu Mint
 #[derive(Default)]
 pub struct MintBuilder {
-    /// Mint Url
-    mint_url: Option<String>,
     /// Mint Info
     mint_info: MintInfo,
     /// Mint Storage backend
@@ -60,12 +58,6 @@ impl MintBuilder {
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
-        self
-    }
-
-    /// Set mint url
-    pub fn with_mint_url(mut self, mint_url: String) -> Self {
-        self.mint_url = Some(mint_url);
         self
     }
 
@@ -226,14 +218,19 @@ impl MintBuilder {
 
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
+        let localstore = self
+            .localstore
+            .clone()
+            .ok_or(anyhow!("Localstore not set"))?;
+        localstore.set_mint_info(self.mint_info.clone()).await?;
+
+        localstore
+            .set_quote_ttl(self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?)
+            .await?;
+
         Ok(Mint::new(
-            self.mint_url.as_ref().ok_or(anyhow!("Mint url not set"))?,
             self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
-            self.mint_info.clone(),
-            self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,
-            self.localstore
-                .clone()
-                .ok_or(anyhow!("Localstore not set"))?,
+            localstore,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
             self.supported_units.clone(),
             HashMap::new(),
@@ -242,8 +239,8 @@ impl MintBuilder {
     }
 }
 
-/// Mint Melt Limits
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// Mint and Melt Limits
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MintMeltLimits {
     /// Min mint amount
     pub mint_min: Amount,
@@ -253,4 +250,16 @@ pub struct MintMeltLimits {
     pub melt_min: Amount,
     /// Max melt amount
     pub melt_max: Amount,
+}
+
+impl MintMeltLimits {
+    /// Create new [`MintMeltLimits`]. The `min` and `max` limits apply to both minting and melting.
+    pub fn new(min: u64, max: u64) -> Self {
+        Self {
+            mint_min: min.into(),
+            mint_max: max.into(),
+            melt_min: min.into(),
+            melt_max: max.into(),
+        }
+    }
 }

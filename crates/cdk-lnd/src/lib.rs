@@ -25,10 +25,12 @@ use error::Error;
 use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
 use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
 use fedimint_tonic_lnd::lnrpc::FeeLimit;
+use fedimint_tonic_lnd::tonic::Code;
 use fedimint_tonic_lnd::Client;
 use futures::{Stream, StreamExt};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 
 pub mod error;
 
@@ -75,6 +77,7 @@ impl Lnd {
 impl MintLightning for Lnd {
     type Err = cdk_lightning::Error;
 
+    #[instrument(skip_all)]
     fn get_settings(&self) -> Settings {
         Settings {
             mpp: false,
@@ -83,14 +86,17 @@ impl MintLightning for Lnd {
         }
     }
 
+    #[instrument(skip_all)]
     fn is_wait_invoice_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
+    #[instrument(skip_all)]
     fn cancel_wait_invoice(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
+    #[instrument(skip_all)]
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
@@ -108,7 +114,10 @@ impl MintLightning for Lnd {
             .lightning()
             .subscribe_invoices(stream_req)
             .await
-            .unwrap()
+            .map_err(|_err| {
+                tracing::error!("Could not subscribe to invoice");
+                Error::Connection
+            })?
             .into_inner();
 
         let cancel_token = self.wait_invoice_cancel_token.clone();
@@ -160,6 +169,7 @@ impl MintLightning for Lnd {
         .boxed())
     }
 
+    #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
         melt_quote_request: &MeltQuoteBolt11Request,
@@ -186,6 +196,7 @@ impl MintLightning for Lnd {
         })
     }
 
+    #[instrument(skip_all)]
     async fn pay_invoice(
         &self,
         melt_quote: mint::MeltQuote,
@@ -193,6 +204,23 @@ impl MintLightning for Lnd {
         max_fee: Option<Amount>,
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let payment_request = melt_quote.request;
+        let bolt11 = Bolt11Invoice::from_str(&payment_request)?;
+
+        let pay_state = self
+            .check_outgoing_payment(&bolt11.payment_hash().to_string())
+            .await?;
+
+        match pay_state.status {
+            MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => (),
+            MeltQuoteState::Paid => {
+                tracing::debug!("Melt attempted on invoice already paid");
+                return Err(Self::Err::InvoiceAlreadyPaid);
+            }
+            MeltQuoteState::Pending => {
+                tracing::debug!("Melt attempted on invoice already pending");
+                return Err(Self::Err::InvoicePaymentPending);
+            }
+        }
 
         let amount_msat: u64 = match melt_quote.msat_to_pay {
             Some(amount_msat) => amount_msat.into(),
@@ -222,7 +250,10 @@ impl MintLightning for Lnd {
             .lightning()
             .send_payment_sync(fedimint_tonic_lnd::tonic::Request::new(pay_req))
             .await
-            .map_err(|_| Error::PaymentFailed)?
+            .map_err(|err| {
+                tracing::warn!("Lightning payment failed: {}", err);
+                Error::PaymentFailed
+            })?
             .into_inner();
 
         let total_amount = payment_response
@@ -247,6 +278,7 @@ impl MintLightning for Lnd {
         })
     }
 
+    #[instrument(skip(self, description))]
     async fn create_invoice(
         &self,
         amount: Amount,
@@ -284,6 +316,7 @@ impl MintLightning for Lnd {
         })
     }
 
+    #[instrument(skip(self))]
     async fn check_incoming_invoice_status(
         &self,
         request_lookup_id: &str,
@@ -316,6 +349,7 @@ impl MintLightning for Lnd {
         }
     }
 
+    #[instrument(skip(self))]
     async fn check_outgoing_payment(
         &self,
         payment_hash: &str,
@@ -324,15 +358,32 @@ impl MintLightning for Lnd {
             payment_hash: hex::decode(payment_hash).map_err(|_| Error::InvalidHash)?,
             no_inflight_updates: true,
         };
-        let mut payment_stream = self
+
+        let payment_response = self
             .client
             .lock()
             .await
             .router()
             .track_payment_v2(track_request)
-            .await
-            .unwrap()
-            .into_inner();
+            .await;
+
+        let mut payment_stream = match payment_response {
+            Ok(stream) => stream.into_inner(),
+            Err(err) => {
+                let err_code = err.code();
+                if err_code == Code::NotFound {
+                    return Ok(PayInvoiceResponse {
+                        payment_lookup_id: payment_hash.to_string(),
+                        payment_preimage: None,
+                        status: MeltQuoteState::Unknown,
+                        total_spent: Amount::ZERO,
+                        unit: self.get_settings().unit,
+                    });
+                } else {
+                    return Err(cdk_lightning::Error::UnknownPaymentState);
+                }
+            }
+        };
 
         while let Some(update_result) = payment_stream.next().await {
             match update_result {

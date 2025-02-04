@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+
+use cdk_common::Id;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -12,12 +15,12 @@ use crate::{Amount, Error};
 
 impl Mint {
     /// Checks that minting is enabled, request is supported unit and within range
-    fn check_mint_request_acceptable(
+    async fn check_mint_request_acceptable(
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
     ) -> Result<(), Error> {
-        let mint_info = self.mint_info();
+        let mint_info = self.localstore.get_mint_info().await?;
         let nut04 = &mint_info.nuts.nut04;
 
         if nut04.disabled {
@@ -49,7 +52,7 @@ impl Mint {
                 }
             }
             None => {
-                return Err(Error::UnitUnsupported);
+                return Err(Error::UnsupportedUnit);
             }
         }
 
@@ -69,7 +72,7 @@ impl Mint {
             pubkey,
         } = mint_quote_request;
 
-        self.check_mint_request_acceptable(amount, &unit)?;
+        self.check_mint_request_acceptable(amount, &unit).await?;
 
         let ln = self
             .ln
@@ -77,10 +80,12 @@ impl Mint {
             .ok_or_else(|| {
                 tracing::info!("Bolt11 mint request for unsupported unit");
 
-                Error::UnitUnsupported
+                Error::UnsupportedUnit
             })?;
 
-        let quote_expiry = unix_time() + self.config.quote_ttl().mint_ttl;
+        let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
+
+        let quote_expiry = unix_time() + mint_ttl;
 
         if description.is_some() && !ln.get_settings().invoice_description {
             tracing::error!("Backend does not support invoice description");
@@ -101,7 +106,6 @@ impl Mint {
             })?;
 
         let quote = MintQuote::new(
-            self.config.mint_url(),
             create_invoice_response.request.to_string(),
             unit.clone(),
             amount,
@@ -274,12 +278,20 @@ impl Mint {
 
         match state {
             MintQuoteState::Unpaid => {
+                let _state = self
+                    .localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Unpaid)
+                    .await?;
                 return Err(Error::UnpaidQuote);
             }
             MintQuoteState::Pending => {
                 return Err(Error::PendingQuote);
             }
             MintQuoteState::Issued => {
+                let _state = self
+                    .localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
+                    .await?;
                 return Err(Error::IssuedQuote);
             }
             MintQuoteState::Paid => (),
@@ -289,6 +301,35 @@ impl Mint {
         // verify the signature is provided for the mint request
         if let Some(pubkey) = mint_quote.pubkey {
             mint_request.verify_signature(pubkey)?;
+        }
+
+        // We check the the total value of blinded messages == mint quote
+        if mint_request.total_amount()? != mint_quote.amount {
+            return Err(Error::TransactionUnbalanced(
+                mint_quote.amount.into(),
+                mint_request.total_amount()?.into(),
+                0,
+            ));
+        }
+
+        let keyset_ids: HashSet<Id> = mint_request.outputs.iter().map(|b| b.keyset_id).collect();
+
+        let mut keyset_units = HashSet::new();
+
+        for keyset_id in keyset_ids {
+            let keyset = self.keyset(&keyset_id).await?.ok_or(Error::UnknownKeySet)?;
+
+            keyset_units.insert(keyset.unit);
+        }
+
+        if keyset_units.len() != 1 {
+            tracing::debug!("Client attempted to mint with outputs of multiple units");
+            return Err(Error::UnsupportedUnit);
+        }
+
+        if keyset_units.iter().next().expect("Checked len above") != &mint_quote.unit {
+            tracing::debug!("Client attempted to mint with unit not in quote");
+            return Err(Error::UnsupportedUnit);
         }
 
         let blinded_messages: Vec<PublicKey> = mint_request
@@ -314,8 +355,7 @@ impl Mint {
 
             self.localstore
                 .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                .await
-                .unwrap();
+                .await?;
 
             return Err(Error::BlindedMessageAlreadySigned);
         }

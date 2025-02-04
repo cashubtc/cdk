@@ -202,7 +202,6 @@ impl From<V1MintQuote> for MintQuote {
     fn from(quote: V1MintQuote) -> MintQuote {
         MintQuote {
             id: quote.id,
-            mint_url: quote.mint_url,
             amount: quote.amount,
             unit: quote.unit,
             request: quote.request.clone(),

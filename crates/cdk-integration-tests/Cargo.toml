@@ -14,12 +14,14 @@ rust-version = "1.63.0"                                                         
 http_subscription = ["cdk/http_subscription"]
 
 [dependencies]
+async-trait = "0.1"
 axum = "0.6.20"
 rand = "0.8.5"
 bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-cln = { path = "../cdk-cln" }
+cdk-lnd = { path = "../cdk-lnd" }
 cdk-axum = { path = "../cdk-axum" }
 cdk-sqlite = { path = "../cdk-sqlite" }
 cdk-redb = { path = "../cdk-redb" }
@@ -33,7 +35,7 @@ uuid = { version = "1", features = ["v4"] }
 serde = "1"
 serde_json = "1"
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
-ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "e0ac418675" }
+ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "f9e7bbbb" }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = [
     "attributes",
@@ -57,8 +59,6 @@ getrandom = { version = "0.2", features = ["js"] }
 instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
-async-trait = "0.1"
-rand = "0.8.5"
 bip39 = { version = "2.0", features = ["rand"] }
 anyhow = "1"
 cdk = { path = "../cdk", features = ["mint", "wallet"] }

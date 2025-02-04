@@ -1,6 +1,6 @@
 [package]
 name = "cdk"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
@@ -22,9 +22,8 @@ http_subscription = []
 
 [dependencies]
 cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "b59f7e652b6e174476119b9ea343251ead307019" }
-cdk-common = { path = "../cdk-common", version = "0.6.0" }
+cdk-common = { path = "../cdk-common", version = "0.6.1" }
 cbor-diag = "0.1.12"
-arc-swap = "1.7.1"
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
 bitcoin = { version = "0.32.2", features = [
@@ -101,6 +100,7 @@ required-features = ["wallet"]
 [dev-dependencies]
 rand = "0.8.5"
 bip39 = "2.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 criterion = "0.5.1"
 
 [[bench]]
