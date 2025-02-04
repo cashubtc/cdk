@@ -133,7 +133,7 @@ impl Mint {
 
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
         // or we want to ignore the amount and do an mpp payment
-        // let msats_to_pay = options.map(|opt| opt.amount_msat());
+        let msats_to_pay = options.map(|opt| opt.amount_msat());
 
         let melt_ttl = self.localstore.get_quote_ttl().await?.melt_ttl;
 
@@ -144,7 +144,7 @@ impl Mint {
             payment_quote.fee,
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
-            None,
+            msats_to_pay,
         );
 
         tracing::debug!(
@@ -225,6 +225,13 @@ impl Mint {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
 
+        let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
+            Some(amt) => amt.into(),
+            None => melt_quote.msat_to_pay
+                .ok_or(Error::InvoiceAmountUndefined)?
+                .into(),
+        };
+        /*
         let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
             Some(amount) => amount,
             None => invoice
@@ -232,11 +239,11 @@ impl Mint {
                 .ok_or(Error::InvoiceAmountUndefined)?
                 .into(),
         };
+        */
 
         let partial_amount = match invoice_amount_msats > quote_msats {
             true => {
                 let partial_msats = invoice_amount_msats - quote_msats;
-
                 Some(
                     to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
                         .map_err(|_| Error::UnitUnsupported)?,
@@ -506,6 +513,7 @@ impl Mint {
                     }
                     _ => None,
                 };
+                tracing::debug!("partial_amount: {:?}", partial_amount);
                 let ln = match self
                     .ln
                     .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt11))
