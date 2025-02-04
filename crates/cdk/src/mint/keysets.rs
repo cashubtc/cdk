@@ -34,9 +34,9 @@ impl Mint {
     pub async fn kvac_keyset_pubkeys(&self, keyset_id: &Id) -> Result<KvacKeysResponse, Error> {
         self.ensure_kvac_keyset_loaded(keyset_id).await?;
         let keyset = self
-            .config
-            .load()
             .kvac_keysets
+            .read()
+            .await
             .get(keyset_id)
             .ok_or(Error::UnknownKeySet)?
             .clone();
@@ -85,9 +85,9 @@ impl Mint {
 
         Ok(KvacKeysResponse {
             kvac_keysets: self
-                .config
-                .load()
                 .kvac_keysets
+                .read()
+                .await
                 .values()
                 .filter_map(|k| match active_keysets.contains(&k.id) {
                     true => Some(k.clone().into()),
@@ -256,19 +256,21 @@ impl Mint {
     /// Ensure Kvac Keyset is loaded in mint
     #[instrument(skip(self))]
     pub async fn ensure_kvac_keyset_loaded(&self, id: &Id) -> Result<(), Error> {
-        if self.config.load().kvac_keysets.contains_key(id) {
-            return Ok(());
+        {
+            let keysets = self.kvac_keysets.read().await;
+            if keysets.contains_key(id) {
+                return Ok(());
+            }
         }
 
-        let mut kvac_keysets = self.config.load().kvac_keysets.clone();
+        let mut keysets = self.kvac_keysets.write().await;
         let keyset_info = self
             .localstore
-            .get_kvac_keyset_info(id)
+            .get_keyset_info(id)
             .await?
             .ok_or(Error::UnknownKeySet)?;
         let id = keyset_info.id;
-        kvac_keysets.insert(id, self.generate_kvac_keyset(keyset_info));
-        self.config.set_kvac_keysets(kvac_keysets);
+        keysets.insert(id, self.generate_kvac_keyset(keyset_info));
 
         Ok(())
     }

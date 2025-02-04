@@ -10,7 +10,7 @@ use cashu_kvac::models::{MAC, ZKP};
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::LnKey;
 use cdk_common::database::{self, MintDatabase};
-use cdk_common::kvac::{KvacCoinMessage, KvacRandomizedCoin, MintKvacKeySet, MintKvacKeys};
+use cdk_common::kvac::{KvacCoinMessage, KvacRandomizedCoin, MintKvacKeySet};
 use cdk_common::mint::MintKeySetInfo;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
