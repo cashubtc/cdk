@@ -476,3 +476,125 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
         Ok(_) => bail!("Minting should not have succeed without a witness"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_inflated() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+
+    let pre_mint = PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None)?;
+
+    let quote_info = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await?
+        .expect("there is a quote");
+
+    let mut mint_request = MintBolt11Request {
+        quote: mint_quote.id,
+        outputs: pre_mint.blinded_messages(),
+        signature: None,
+    };
+
+    if let Some(secret_key) = quote_info.secret_key {
+        mint_request.sign(secret_key)?;
+    }
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+
+    let response = http_client.post_mint(mint_request.clone()).await;
+
+    match response {
+        Err(err) => match err {
+            cdk::Error::TransactionUnbalanced(_, _, _) => (),
+            err => {
+                bail!("Wrong mint error returned: {}", err.to_string());
+            }
+        },
+        Ok(_) => {
+            bail!("Should not have allowed second payment");
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_multiple_units() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+
+    let pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None)?;
+
+    let wallet_usd = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Usd,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
+
+    let usd_pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None)?;
+
+    let quote_info = wallet
+        .localstore
+        .get_mint_quote(&mint_quote.id)
+        .await?
+        .expect("there is a quote");
+
+    let mut sat_outputs = pre_mint.blinded_messages();
+
+    let mut usd_outputs = usd_pre_mint.blinded_messages();
+
+    sat_outputs.append(&mut usd_outputs);
+
+    let mut mint_request = MintBolt11Request {
+        quote: mint_quote.id,
+        outputs: sat_outputs,
+        signature: None,
+    };
+
+    if let Some(secret_key) = quote_info.secret_key {
+        mint_request.sign(secret_key)?;
+    }
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+
+    let response = http_client.post_mint(mint_request.clone()).await;
+
+    match response {
+        Err(err) => match err {
+            cdk::Error::UnsupportedUnit => (),
+            err => {
+                bail!("Wrong mint error returned: {}", err.to_string());
+            }
+        },
+        Ok(_) => {
+            bail!("Should not have allowed to mint with multiple units");
+        }
+    }
+
+    Ok(())
+}

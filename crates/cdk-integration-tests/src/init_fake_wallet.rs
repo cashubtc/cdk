@@ -46,6 +46,20 @@ where
         Arc::new(fake_wallet),
     );
 
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
+
+    mint_builder = mint_builder.add_ln_backend(
+        CurrencyUnit::Usd,
+        PaymentMethod::Bolt11,
+        MintMeltLimits::new(1, 5_000),
+        Arc::new(fake_wallet),
+    );
+
     let mnemonic = Mnemonic::generate(12)?;
 
     mint_builder = mint_builder
