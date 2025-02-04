@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+
+use cdk_common::Id;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -49,7 +52,7 @@ impl Mint {
                 }
             }
             None => {
-                return Err(Error::UnitUnsupported);
+                return Err(Error::UnsupportedUnit);
             }
         }
 
@@ -77,7 +80,7 @@ impl Mint {
             .ok_or_else(|| {
                 tracing::info!("Bolt11 mint request for unsupported unit");
 
-                Error::UnitUnsupported
+                Error::UnsupportedUnit
             })?;
 
         let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
@@ -275,12 +278,20 @@ impl Mint {
 
         match state {
             MintQuoteState::Unpaid => {
+                let _state = self
+                    .localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Unpaid)
+                    .await?;
                 return Err(Error::UnpaidQuote);
             }
             MintQuoteState::Pending => {
                 return Err(Error::PendingQuote);
             }
             MintQuoteState::Issued => {
+                let _state = self
+                    .localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
+                    .await?;
                 return Err(Error::IssuedQuote);
             }
             MintQuoteState::Paid => (),
@@ -290,6 +301,35 @@ impl Mint {
         // verify the signature is provided for the mint request
         if let Some(pubkey) = mint_quote.pubkey {
             mint_request.verify_signature(pubkey)?;
+        }
+
+        // We check the the total value of blinded messages == mint quote
+        if mint_request.total_amount()? != mint_quote.amount {
+            return Err(Error::TransactionUnbalanced(
+                mint_quote.amount.into(),
+                mint_request.total_amount()?.into(),
+                0,
+            ));
+        }
+
+        let keyset_ids: HashSet<Id> = mint_request.outputs.iter().map(|b| b.keyset_id).collect();
+
+        let mut keyset_units = HashSet::new();
+
+        for keyset_id in keyset_ids {
+            let keyset = self.keyset(&keyset_id).await?.ok_or(Error::UnknownKeySet)?;
+
+            keyset_units.insert(keyset.unit);
+        }
+
+        if keyset_units.len() != 1 {
+            tracing::debug!("Client attempted to mint with outputs of multiple units");
+            return Err(Error::UnsupportedUnit);
+        }
+
+        if keyset_units.iter().next().expect("Checked len above") != &mint_quote.unit {
+            tracing::debug!("Client attempted to mint with unit not in quote");
+            return Err(Error::UnsupportedUnit);
         }
 
         let blinded_messages: Vec<PublicKey> = mint_request
@@ -315,8 +355,7 @@ impl Mint {
 
             self.localstore
                 .update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                .await
-                .unwrap();
+                .await?;
 
             return Err(Error::BlindedMessageAlreadySigned);
         }

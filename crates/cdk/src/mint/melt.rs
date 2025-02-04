@@ -41,7 +41,7 @@ impl Mint {
 
         let settings = nut05
             .get_settings(&unit, &method)
-            .ok_or(Error::UnitUnsupported)?;
+            .ok_or(Error::UnsupportedUnit)?;
 
         if matches!(options, Some(MeltOptions::Mpp { mpp: _ })) {
             // Verify there is no corresponding mint quote.
@@ -103,7 +103,7 @@ impl Mint {
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
 
-                Error::UnitUnsupported
+                Error::UnsupportedUnit
             })?;
 
         let payment_quote = ln.get_payment_quote(melt_request).await.map_err(|err| {
@@ -113,7 +113,7 @@ impl Mint {
                 err
             );
 
-            Error::UnitUnsupported
+            Error::UnsupportedUnit
         })?;
 
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
@@ -224,7 +224,7 @@ impl Mint {
 
                 Some(
                     to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                        .map_err(|_| Error::UnitUnsupported)?,
+                        .map_err(|_| Error::UnsupportedUnit)?,
                 )
             }
             false => None,
@@ -233,7 +233,7 @@ impl Mint {
         let amount_to_pay = match partial_amount {
             Some(amount_to_pay) => amount_to_pay,
             None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                .map_err(|_| Error::UnitUnsupported)?,
+                .map_err(|_| Error::UnsupportedUnit)?,
         };
 
         let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
@@ -366,7 +366,7 @@ impl Mint {
 
         // Check that all input and output proofs are the same unit
         if keyset_units.len().gt(&1) {
-            return Err(Error::MultipleUnits);
+            return Err(Error::UnsupportedUnit);
         }
 
         tracing::debug!("Verified melt quote: {}", melt_request.quote);
@@ -502,7 +502,7 @@ impl Mint {
                             tracing::error!("Could not reset melt quote state: {}", err);
                         }
 
-                        return Err(Error::UnitUnsupported);
+                        return Err(Error::UnsupportedUnit);
                     }
                 };
 
