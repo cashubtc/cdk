@@ -229,8 +229,7 @@ impl Mint {
             Some(amt) => amt.into(),
             None => melt_quote
                 .msat_to_pay
-                .ok_or(Error::InvoiceAmountUndefined)?
-                .into(),
+                .ok_or(Error::InvoiceAmountUndefined)?,
         };
         /*
         let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
