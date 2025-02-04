@@ -144,9 +144,6 @@ pub enum Error {
     /// Receive can only be used with tokens from single mint
     #[error("Multiple mint tokens not supported by receive. Please deconstruct the token and use receive with_proof")]
     MultiMintTokenNotSupported,
-    /// Unit Not supported
-    #[error("Unit not supported for method")]
-    UnitUnsupported,
     /// Preimage not provided
     #[error("Preimage not provided")]
     PreimageNotProvided,
@@ -221,6 +218,9 @@ pub enum Error {
     /// NUT03 error
     #[error(transparent)]
     NUT03(#[from] crate::nuts::nut03::Error),
+    /// NUT04 error
+    #[error(transparent)]
+    NUT04(#[from] crate::nuts::nut04::Error),
     /// NUT05 error
     #[error(transparent)]
     NUT05(#[from] crate::nuts::nut05::Error),
@@ -314,7 +314,7 @@ impl From<Error> for ErrorResponse {
                 detail: None,
             },
             Error::UnsupportedUnit => ErrorResponse {
-                code: ErrorCode::UnitUnsupported,
+                code: ErrorCode::UnsupportedUnit,
                 error: Some(err.to_string()),
                 detail: None,
             },
@@ -392,7 +392,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::KeysetNotFound => Self::UnknownKeySet,
             ErrorCode::KeysetInactive => Self::InactiveKeyset,
             ErrorCode::BlindedMessageAlreadySigned => Self::BlindedMessageAlreadySigned,
-            ErrorCode::UnitUnsupported => Self::UnitUnsupported,
+            ErrorCode::UnsupportedUnit => Self::UnsupportedUnit,
             ErrorCode::TransactionUnbalanced => Self::TransactionUnbalanced(0, 0, 0),
             ErrorCode::MintingDisabled => Self::MintingDisabled,
             ErrorCode::InvoiceAlreadyPaid => Self::RequestAlreadyPaid,
@@ -428,7 +428,7 @@ pub enum ErrorCode {
     /// Blinded Message Already signed
     BlindedMessageAlreadySigned,
     /// Unsupported unit
-    UnitUnsupported,
+    UnsupportedUnit,
     /// Token already issed for quote
     TokensAlreadyIssued,
     /// Minting Disabled
@@ -455,7 +455,7 @@ impl ErrorCode {
             10003 => Self::TokenNotVerified,
             11001 => Self::TokenAlreadySpent,
             11002 => Self::TransactionUnbalanced,
-            11005 => Self::UnitUnsupported,
+            11005 => Self::UnsupportedUnit,
             11006 => Self::AmountOutofLimitRange,
             11007 => Self::TokenPending,
             12001 => Self::KeysetNotFound,
@@ -478,7 +478,7 @@ impl ErrorCode {
             Self::TokenNotVerified => 10003,
             Self::TokenAlreadySpent => 11001,
             Self::TransactionUnbalanced => 11002,
-            Self::UnitUnsupported => 11005,
+            Self::UnsupportedUnit => 11005,
             Self::AmountOutofLimitRange => 11006,
             Self::TokenPending => 11007,
             Self::KeysetNotFound => 12001,

@@ -54,7 +54,7 @@ impl Wallet {
         let amount = match self.unit {
             CurrencyUnit::Sat => Amount::from(request_amount / 1000),
             CurrencyUnit::Msat => Amount::from(request_amount),
-            _ => return Err(Error::UnitUnsupported),
+            _ => return Err(Error::UnsupportedUnit),
         };
 
         let options = mpp.map(|amount| Mpp { amount });

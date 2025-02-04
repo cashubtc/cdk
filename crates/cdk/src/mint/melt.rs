@@ -35,7 +35,7 @@ impl Mint {
 
         let settings = nut05
             .get_settings(&unit, &method)
-            .ok_or(Error::UnitUnsupported)?;
+            .ok_or(Error::UnsupportedUnit)?;
 
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
@@ -81,7 +81,7 @@ impl Mint {
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
 
-                Error::UnitUnsupported
+                Error::UnsupportedUnit
             })?;
 
         let payment_quote = ln.get_payment_quote(melt_request).await.map_err(|err| {
@@ -91,7 +91,7 @@ impl Mint {
                 err
             );
 
-            Error::UnitUnsupported
+            Error::UnsupportedUnit
         })?;
 
         let quote = MeltQuote::new(
@@ -192,7 +192,7 @@ impl Mint {
 
                 Some(
                     to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                        .map_err(|_| Error::UnitUnsupported)?,
+                        .map_err(|_| Error::UnsupportedUnit)?,
                 )
             }
             false => None,
@@ -201,7 +201,7 @@ impl Mint {
         let amount_to_pay = match partial_amount {
             Some(amount_to_pay) => amount_to_pay,
             None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                .map_err(|_| Error::UnitUnsupported)?,
+                .map_err(|_| Error::UnsupportedUnit)?,
         };
 
         let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
@@ -470,7 +470,7 @@ impl Mint {
                             tracing::error!("Could not reset melt quote state: {}", err);
                         }
 
-                        return Err(Error::UnitUnsupported);
+                        return Err(Error::UnsupportedUnit);
                     }
                 };
 

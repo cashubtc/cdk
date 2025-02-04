@@ -379,7 +379,7 @@ async fn test_cached_mint() -> Result<()> {
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
     let http_client = HttpClient::new(get_mint_url().as_str().parse()?);
     let premint_secrets =
-        PreMintSecrets::random(active_keyset_id, 31.into(), &SplitTarget::default()).unwrap();
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
     let request = MintBolt11Request {
         quote: quote.id,

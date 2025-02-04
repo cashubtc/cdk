@@ -195,7 +195,7 @@ impl Wallet {
         let unit = token_data.unit().unwrap_or_default();
 
         if unit != self.unit {
-            return Err(Error::UnitUnsupported);
+            return Err(Error::UnsupportedUnit);
         }
 
         let proofs = token_data.proofs();
