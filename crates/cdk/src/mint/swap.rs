@@ -132,7 +132,7 @@ impl Mint {
             self.localstore
                 .update_proofs_states(&input_ys, State::Unspent)
                 .await?;
-            return Err(Error::MultipleUnits);
+            return Err(Error::UnsupportedUnit);
         }
 
         let EnforceSigFlag {

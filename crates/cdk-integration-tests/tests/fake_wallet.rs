@@ -6,8 +6,8 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, SecretKey,
-    State,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, Proofs,
+    SecretKey, State, SwapRequest,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::Wallet;
@@ -595,6 +595,140 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
             bail!("Should not have allowed to mint with multiple units");
         }
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+
+    let wallet_usd = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Usd,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet_usd.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet_usd, &mint_quote.id, 60).await?;
+
+    let usd_proofs = wallet_usd
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await?;
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+
+    {
+        let inputs: Proofs = vec![
+            proofs.first().expect("There is a proof").clone(),
+            usd_proofs.first().expect("There is a proof").clone(),
+        ];
+
+        let pre_mint =
+            PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
+
+        let swap_request = SwapRequest {
+            inputs,
+            outputs: pre_mint.blinded_messages(),
+        };
+
+        let http_client = HttpClient::new(MINT_URL.parse()?);
+        let response = http_client.post_swap(swap_request.clone()).await;
+
+        match response {
+            Err(err) => match err {
+                cdk::Error::UnsupportedUnit => (),
+                err => {
+                    bail!("Wrong mint error returned: {}", err.to_string());
+                }
+            },
+            Ok(_) => {
+                bail!("Should not have allowed to mint with multiple units");
+            }
+        }
+    }
+
+    {
+        let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
+        let inputs: Proofs = proofs.into_iter().take(2).collect();
+
+        let total_inputs = inputs.total_amount()?;
+
+        let half = total_inputs / 2.into();
+        let usd_pre_mint = PreMintSecrets::random(usd_active_keyset_id, half, &SplitTarget::None)?;
+        let pre_mint =
+            PreMintSecrets::random(active_keyset_id, total_inputs - half, &SplitTarget::None)?;
+
+        let mut usd_outputs = usd_pre_mint.blinded_messages();
+        let mut sat_outputs = pre_mint.blinded_messages();
+
+        usd_outputs.append(&mut sat_outputs);
+
+        let swap_request = SwapRequest {
+            inputs,
+            outputs: usd_outputs,
+        };
+
+        let http_client = HttpClient::new(MINT_URL.parse()?);
+        let response = http_client.post_swap(swap_request.clone()).await;
+
+        match response {
+            Err(err) => match err {
+                cdk::Error::UnsupportedUnit => (),
+                err => {
+                    bail!("Wrong mint error returned: {}", err.to_string());
+                }
+            },
+            Ok(_) => {
+                bail!("Should not have allowed to mint with multiple units");
+            }
+        }
+    }
+
+    // let mut sat_outputs = pre_mint.blinded_messages();
+
+    // let mut usd_outputs = usd_pre_mint.blinded_messages();
+
+    // sat_outputs.append(&mut usd_outputs);
+
+    // let mut mint_request = MintBolt11Request {
+    //     quote: mint_quote.id,
+    //     outputs: sat_outputs,
+    //     signature: None,
+    // };
+
+    // if let Some(secret_key) = quote_info.secret_key {
+    //     mint_request.sign(secret_key)?;
+    // }
+
+    // let response = http_client.post_mint(mint_request.clone()).await;
+
+    // match response {
+    //     Err(err) => match err {
+    //         cdk::Error::UnsupportedUnit => (),
+    //         err => {
+    //             bail!("Wrong mint error returned: {}", err.to_string());
+    //         }
+    //     },
+    //     Ok(_) => {
+    //         bail!("Should not have allowed to mint with multiple units");
+    //     }
+    // }
 
     Ok(())
 }
