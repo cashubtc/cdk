@@ -366,7 +366,7 @@ impl Mint {
 
         // Check that all input and output proofs are the same unit
         if keyset_units.len().gt(&1) {
-            return Err(Error::MultipleUnits);
+            return Err(Error::UnsupportedUnit);
         }
 
         tracing::debug!("Verified melt quote: {}", melt_request.quote);

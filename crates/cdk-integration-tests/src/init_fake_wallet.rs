@@ -30,7 +30,7 @@ where
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
-        percent_fee_reserve: 1.0,
+        percent_fee_reserve: 0.0,
     };
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
@@ -48,7 +48,7 @@ where
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
-        percent_fee_reserve: 1.0,
+        percent_fee_reserve: 0.0,
     };
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
