@@ -278,12 +278,20 @@ impl Mint {
 
         match state {
             MintQuoteState::Unpaid => {
+                let _state = self
+                    .localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Unpaid)
+                    .await?;
                 return Err(Error::UnpaidQuote);
             }
             MintQuoteState::Pending => {
                 return Err(Error::PendingQuote);
             }
             MintQuoteState::Issued => {
+                let _state = self
+                    .localstore
+                    .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
+                    .await?;
                 return Err(Error::IssuedQuote);
             }
             MintQuoteState::Paid => (),
