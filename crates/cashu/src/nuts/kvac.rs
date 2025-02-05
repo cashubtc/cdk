@@ -500,6 +500,8 @@ pub struct KvacMintBolt11Request<Q> {
     pub range_proof: RangeZKP,
 }
 
+pub type KvacMeltBolt11Request<Q> = KvacMintBolt11Request<Q>;
+
 // --- Responses ---
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -542,15 +544,35 @@ pub struct KvacResponse {
     pub macs: Vec<MAC>,
     /// IParams Proofs
     ///
-    /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
+    /// [`Vec<ZKP>`] Proving that a specific [`MintPrivateKey`] was used to issue each [`MAC`]
     pub proofs: Vec<ZKP>,
 }
 
 /// Swap Response
 pub type KvacSwapResponse = KvacResponse;
 
-// Mint Bolt11 Response
+/// Mint Bolt11 Response
 pub type KvacMintBolt11Response = KvacResponse;
 
-// Melt Bolt11 Response
-pub type KvacMeltBolt11Response = KvacResponse;
+/// Melt Bolt11 Response
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacMeltBolt11Response {
+    /// Lightning fee return
+    /// 
+    /// [`Amount`] added to the first output as a lightning overpaid-fee return
+    pub fee_return: Amount,
+    /// Payment preimage
+    /// 
+    /// [`Option<String>`] holding the pre-image to the payment
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preimage: Option<String>,
+    /// MACs
+    ///
+    /// [`Vec<MAC>`] Approval stamp of the Mint
+    pub macs: Vec<MAC>,
+    /// IParams Proofs
+    ///
+    /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
+    pub proofs: Vec<ZKP>,
+}

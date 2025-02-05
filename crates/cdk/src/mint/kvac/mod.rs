@@ -9,6 +9,7 @@ use super::Mint;
 mod bootstrap;
 mod swap;
 mod mint;
+mod melt;
 
 impl Mint {
     /// Unified processing of a generic KVAC request

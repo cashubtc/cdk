@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::kvac::{
     BootstrapRequest, BootstrapResponse, KvacKeysResponse, KvacKeysetResponse, KvacSwapRequest,
-    KvacSwapResponse, KvacMintBolt11Request, KvacMintBolt11Response,
+    KvacSwapResponse, KvacMintBolt11Request, KvacMintBolt11Response, KvacMeltBolt11Request, KvacMeltBolt11Response,
 };
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
@@ -72,6 +72,11 @@ post_cache_wrapper!(
     post_kvac_mint_bolt11,
     KvacMintBolt11Request<Uuid>,
     KvacMintBolt11Response
+);
+post_cache_wrapper!(
+    post_kvac_melt_bolt11,
+    KvacMeltBolt11Request<Uuid>,
+    KvacMeltBolt11Response
 );
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -419,6 +424,33 @@ pub async fn post_melt_bolt11(
     let res = state
         .mint
         .melt_bolt11(&payload)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(res))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/melt/bolt11",
+    request_body(content = MeltBolt11Request, description = "Melt params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
+///
+/// Requests tokens to be destroyed and sent out via Lightning.
+#[instrument(skip_all)]
+pub async fn post_kvac_melt_bolt11(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacMeltBolt11Request<Uuid>>,
+) -> Result<Json<KvacMeltBolt11Response>, Response> {
+    let res = state
+        .mint
+        .process_kvac_melt_request(payload)
         .await
         .map_err(into_response)?;
 

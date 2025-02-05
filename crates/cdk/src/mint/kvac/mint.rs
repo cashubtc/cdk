@@ -1,6 +1,6 @@
 use crate::{Mint, Error};
 use cashu_kvac::{secp::GroupElement, transcript::CashuTranscript};
-use cdk_common::{kvac::{KvacIssuedMac, KvacMeltBolt11Response, KvacMintBolt11Request, KvacMintBolt11Response, KvacNullifier}, MintQuoteState, State};
+use cdk_common::{kvac::{KvacIssuedMac, KvacMintBolt11Request, KvacMintBolt11Response, KvacNullifier}, MintQuoteState, State};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -122,7 +122,7 @@ impl Mint {
 
         tracing::debug!("KVAC mint request successful");
 
-        Ok(KvacMeltBolt11Response {
+        Ok(KvacMintBolt11Response {
             macs: issued_macs.into_iter().map(|m| m.mac).collect(),
             proofs: iparams_proofs,
         })
