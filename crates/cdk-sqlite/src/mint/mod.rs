@@ -780,6 +780,33 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         Ok(())
     }
 
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        _quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let sql = format!(
+            "DELETE FROM proof WHERE y IN ({})",
+            std::iter::repeat("?")
+                .take(ys.len())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        ys.iter()
+            .fold(sqlx::query(&sql), |query, y| {
+                query.bind(y.to_bytes().to_vec())
+            })
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
+        Ok(())
+    }
+
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 

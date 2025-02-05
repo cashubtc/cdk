@@ -284,6 +284,35 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(())
     }
 
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        {
+            let mut db_proofs = self.proofs.write().await;
+
+            ys.iter().for_each(|y| {
+                db_proofs.remove(&y.to_bytes());
+            });
+        }
+
+        {
+            let mut db_proofs_state = self.proof_state.lock().await;
+
+            ys.iter().for_each(|y| {
+                db_proofs_state.remove(&y.to_bytes());
+            });
+        }
+
+        if let Some(quote_id) = quote_id {
+            let mut quote_proofs = self.quote_proofs.lock().await;
+            quote_proofs.remove(&quote_id);
+        }
+
+        Ok(())
+    }
+
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let spent_proofs = self.proofs.read().await;
 

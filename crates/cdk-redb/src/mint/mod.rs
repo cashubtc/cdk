@@ -534,6 +534,47 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut proofs_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+            for y in ys {
+                proofs_table.remove(&y.to_bytes()).map_err(Error::from)?;
+            }
+        }
+
+        {
+            let mut proof_state_table = write_txn
+                .open_table(PROOFS_STATE_TABLE)
+                .map_err(Error::from)?;
+            for y in ys {
+                proof_state_table
+                    .remove(&y.to_bytes())
+                    .map_err(Error::from)?;
+            }
+        }
+
+        if let Some(quote_id) = quote_id {
+            let mut quote_proofs_table = write_txn
+                .open_multimap_table(QUOTE_PROOFS_TABLE)
+                .map_err(Error::from)?;
+
+            quote_proofs_table
+                .remove_all(quote_id.as_bytes())
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
