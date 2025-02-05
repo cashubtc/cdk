@@ -385,7 +385,7 @@ impl Mint {
         let input_ys = melt_request.inputs.ys()?;
 
         self.localstore
-            .update_proofs_states(&input_ys, State::Unspent)
+            .remove_proofs(&input_ys, Some(melt_request.quote))
             .await?;
 
         self.localstore
