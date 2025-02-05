@@ -86,8 +86,14 @@ pub trait Database {
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
-    /// Add spent [`Proofs`]
+    /// Add  [`Proofs`]
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
+    /// Remove [`Proofs`]
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err>;
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get ys by quote id
