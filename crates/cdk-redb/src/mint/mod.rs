@@ -549,6 +549,17 @@ impl MintDatabase for MintRedbDatabase {
             }
         }
 
+        {
+            let mut proof_state_table = write_txn
+                .open_table(PROOFS_STATE_TABLE)
+                .map_err(Error::from)?;
+            for y in ys {
+                proof_state_table
+                    .remove(&y.to_bytes())
+                    .map_err(Error::from)?;
+            }
+        }
+
         if let Some(quote_id) = quote_id {
             let mut quote_proofs_table = write_txn
                 .open_multimap_table(QUOTE_PROOFS_TABLE)
