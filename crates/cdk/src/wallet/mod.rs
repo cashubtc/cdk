@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
-use cdk_common::database::{self, WalletDatabase};
+use cdk_common::database::{WalletProofDatabase, WalletTransactionDatabase};
 use cdk_common::subscription::Params;
 use client::MintConnector;
 use getrandom::getrandom;
@@ -16,6 +16,7 @@ use tracing::instrument;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::amount::SplitTarget;
+use crate::cdk_database::WalletMemoryDatabase;
 use crate::dhke::construct_proofs;
 use crate::error::Error;
 use crate::fees::calculate_fee;
@@ -57,8 +58,10 @@ pub struct Wallet {
     pub mint_url: MintUrl,
     /// Unit
     pub unit: CurrencyUnit,
-    /// Storage backend
-    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    /// Proof database
+    pub proof_db: Arc<dyn WalletProofDatabase + Send + Sync>,
+    /// Transaction database
+    pub transaction_db: Arc<dyn WalletTransactionDatabase + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     xpriv: Xpriv,
@@ -113,7 +116,99 @@ impl From<WalletSubscription> for Params {
     }
 }
 
+/// Builder for [`Wallet`]
+#[derive(Debug, Clone)]
+pub struct WalletBuilder {
+    /// Seed
+    pub seed: Vec<u8>,
+    /// Proof database
+    pub proof_db: Option<Arc<dyn WalletProofDatabase + Send + Sync>>,
+    /// Transaction database
+    pub transaction_db: Option<Arc<dyn WalletTransactionDatabase + Send + Sync>>,
+    /// Target proof count
+    pub target_proof_count: Option<usize>,
+    /// Mint client
+    pub client: Option<Arc<dyn MintConnector + Send + Sync>>,
+}
+
+impl WalletBuilder {
+    /// Create new [`WalletBuilder`]
+    pub fn new(seed: Vec<u8>) -> Self {
+        Self {
+            seed,
+            proof_db: None,
+            transaction_db: None,
+            target_proof_count: None,
+            client: None,
+        }
+    }
+
+    // /// Set database (Proof and Transaction) for [`Wallet`]
+    // pub fn database(self, db: Arc<dyn WalletDatabase + Send + Sync>) -> Self {
+    //     self.proof_db(db.clone()).transaction_db(db)
+    // }
+
+    /// Set proof database for [`Wallet`]
+    pub fn proof_db(mut self, proof_db: Arc<dyn WalletProofDatabase + Send + Sync>) -> Self {
+        self.proof_db = Some(proof_db);
+        self
+    }
+
+    /// Set transaction database for [`Wallet`]
+    pub fn transaction_db(
+        mut self,
+        transaction_db: Arc<dyn WalletTransactionDatabase + Send + Sync>,
+    ) -> Self {
+        self.transaction_db = Some(transaction_db);
+        self
+    }
+
+    /// Set target proof count for [`Wallet`]
+    pub fn target_proof_count(mut self, target_proof_count: usize) -> Self {
+        self.target_proof_count = Some(target_proof_count);
+        self
+    }
+
+    /// Set client for [`Wallet`]
+    pub fn client(mut self, client: Arc<dyn MintConnector + Send + Sync>) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    /// Build [`Wallet`]
+    pub fn build(self, mint_url: MintUrl, unit: CurrencyUnit) -> Result<Wallet, Error> {
+        let xpriv =
+            Xpriv::new_master(Network::Bitcoin, &self.seed).expect("Could not create master key");
+        let proof_db = self
+            .proof_db
+            .unwrap_or_else(|| Arc::new(WalletMemoryDatabase::default()));
+        let transaction_db = self
+            .transaction_db
+            .unwrap_or_else(|| Arc::new(WalletMemoryDatabase::default()));
+        let client = self
+            .client
+            .unwrap_or_else(|| Arc::new(HttpClient::new(mint_url.clone())));
+        let subscription = SubscriptionManager::new(client.clone());
+
+        Ok(Wallet {
+            mint_url,
+            unit,
+            proof_db,
+            transaction_db,
+            xpriv,
+            client,
+            subscription,
+            target_proof_count: self.target_proof_count.unwrap_or(3),
+        })
+    }
+}
+
 impl Wallet {
+    /// Create new [`Wallet`] using [`WalletBuilder`]
+    pub fn builder(seed: Vec<u8>) -> WalletBuilder {
+        WalletBuilder::new(seed)
+    }
+
     /// Create new [`Wallet`]
     /// # Synopsis
     /// ```rust
@@ -134,7 +229,8 @@ impl Wallet {
     pub fn new(
         mint_url: &str,
         unit: CurrencyUnit,
-        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        proof_db: Arc<dyn WalletProofDatabase + Send + Sync>,
+        transaction_db: Arc<dyn WalletTransactionDatabase + Send + Sync>,
         seed: &[u8],
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {
@@ -148,7 +244,8 @@ impl Wallet {
             unit,
             client: http_client.clone(),
             subscription: SubscriptionManager::new(http_client),
-            localstore,
+            proof_db,
+            transaction_db,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
         })
@@ -178,7 +275,7 @@ impl Wallet {
                 fee_per_keyset.entry(proof.keyset_id)
             {
                 let mint_keyset_info = self
-                    .localstore
+                    .proof_db
                     .get_keyset_by_id(&proof.keyset_id)
                     .await?
                     .ok_or(Error::UnknownKeySet)?;
@@ -200,7 +297,7 @@ impl Wallet {
     #[instrument(skip_all)]
     pub async fn get_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
         let input_fee_ppk = self
-            .localstore
+            .proof_db
             .get_keyset_by_id(keyset_id)
             .await?
             .ok_or(Error::UnknownKeySet)?
@@ -217,11 +314,11 @@ impl Wallet {
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
         self.mint_url = new_mint_url.clone();
         // Where the mint_url is in the database it must be updated
-        self.localstore
+        self.proof_db
             .update_mint_url(self.mint_url.clone(), new_mint_url)
             .await?;
 
-        self.localstore.remove_mint(self.mint_url.clone()).await?;
+        self.proof_db.remove_mint(self.mint_url.clone()).await?;
         Ok(())
     }
 
@@ -236,7 +333,7 @@ impl Wallet {
             }
         };
 
-        self.localstore
+        self.proof_db
             .add_mint(self.mint_url.clone(), mint_info.clone())
             .await?;
 
@@ -305,7 +402,7 @@ impl Wallet {
     pub async fn restore(&self) -> Result<Amount, Error> {
         // Check that mint is in store of mints
         if self
-            .localstore
+            .proof_db
             .get_mint(self.mint_url.clone())
             .await?
             .is_none()
@@ -374,7 +471,7 @@ impl Wallet {
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 
-                self.localstore
+                self.proof_db
                     .increment_keyset_counter(&keyset.id, proofs.len() as u32)
                     .await?;
 
@@ -402,9 +499,7 @@ impl Wallet {
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-                self.localstore
-                    .update_proofs(unspent_proofs, vec![])
-                    .await?;
+                self.proof_db.update_proofs(unspent_proofs, vec![]).await?;
 
                 empty_batch = 0;
                 start_counter += 100;

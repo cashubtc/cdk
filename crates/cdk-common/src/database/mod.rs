@@ -5,10 +5,14 @@ mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
+use cashu::util::hex;
 #[cfg(feature = "mint")]
 pub use mint::Database as MintDatabase;
 #[cfg(feature = "wallet")]
-pub use wallet::Database as WalletDatabase;
+pub use wallet::{
+    Database as WalletDatabase, ProofDatabase as WalletProofDatabase, Transaction,
+    TransactionDatabase as WalletTransactionDatabase, TransactionDirection, TransactionId,
+};
 
 /// CDK_database error
 #[derive(Debug, thiserror::Error)]
@@ -31,4 +35,7 @@ pub enum Error {
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,
+    /// Hex error
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
 }

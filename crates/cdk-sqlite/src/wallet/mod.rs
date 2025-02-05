@@ -6,7 +6,9 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::WalletDatabase;
+use cdk_common::database::{
+    Transaction, TransactionId, WalletDatabase, WalletProofDatabase, WalletTransactionDatabase,
+};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
@@ -72,15 +74,13 @@ impl WalletSqliteDatabase {
 }
 
 #[async_trait]
-impl WalletDatabase for WalletSqliteDatabase {
-    type Err = database::Error;
-
+impl WalletProofDatabase for WalletSqliteDatabase {
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &self,
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         let (
             name,
             pubkey,
@@ -155,7 +155,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 DELETE FROM mint
@@ -171,7 +171,7 @@ WHERE mint_url=?
     }
 
     #[instrument(skip(self))]
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -195,7 +195,7 @@ WHERE mint_url=?;
     }
 
     #[instrument(skip(self))]
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -228,7 +228,7 @@ FROM mint
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         let tables = ["mint_quote", "proof"];
         for table in &tables {
             let query = format!(
@@ -255,7 +255,7 @@ FROM mint
         &self,
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         for keyset in keysets {
             sqlx::query(
                 r#"
@@ -286,7 +286,7 @@ FROM mint
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
         let recs = sqlx::query(
             r#"
 SELECT *
@@ -318,7 +318,10 @@ WHERE mint_url=?
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+    async fn get_keyset_by_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -342,7 +345,7 @@ WHERE id=?
     }
 
     #[instrument(skip_all)]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO mint_quote
@@ -366,7 +369,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
     }
 
     #[instrument(skip(self))]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -390,7 +393,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self))]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -410,7 +413,7 @@ FROM mint_quote
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 DELETE FROM mint_quote
@@ -426,7 +429,7 @@ WHERE id=?
     }
 
     #[instrument(skip_all)]
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO melt_quote
@@ -449,7 +452,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
     }
 
     #[instrument(skip(self))]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -473,7 +479,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self))]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 DELETE FROM melt_quote
@@ -489,7 +495,7 @@ WHERE id=?
     }
 
     #[instrument(skip_all)]
-    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
+    async fn add_keys(&self, keys: Keys) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO key
@@ -507,7 +513,7 @@ VALUES (?, ?);
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -533,7 +539,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self))]
-    async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
+    async fn remove_keys(&self, id: &Id) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 DELETE FROM key
@@ -552,7 +558,7 @@ WHERE id=?
         &self,
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         for proof in added {
             sqlx::query(
                 r#"
@@ -602,7 +608,7 @@ WHERE id=?
         Ok(())
     }
 
-    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), database::Error> {
         for y in ys {
             self.set_proof_state(y, State::Pending).await?;
         }
@@ -610,7 +616,7 @@ WHERE id=?
         Ok(())
     }
 
-    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), database::Error> {
         for y in ys {
             self.set_proof_state(y, State::Reserved).await?;
         }
@@ -618,7 +624,7 @@ WHERE id=?
         Ok(())
     }
 
-    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), database::Error> {
         for y in ys {
             self.set_proof_state(y, State::Unspent).await?;
         }
@@ -633,7 +639,7 @@ WHERE id=?
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         let recs = sqlx::query(
             r#"
 SELECT *
@@ -679,7 +685,11 @@ FROM proof;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+    async fn increment_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        count: u32,
+    ) -> Result<(), database::Error> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         sqlx::query(
@@ -701,7 +711,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT counter
@@ -731,7 +741,7 @@ WHERE id=?;
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
+    ) -> Result<Option<u32>, database::Error> {
         let rec = sqlx::query(
             r#"
 SELECT last_check
@@ -762,7 +772,7 @@ WHERE key=?;
         &self,
         verifying_key: PublicKey,
         last_checked: u32,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         sqlx::query(
             r#"
 INSERT OR REPLACE INTO nostr_last_checked
@@ -907,3 +917,36 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
     })
 }
+
+#[async_trait]
+impl WalletTransactionDatabase for WalletSqliteDatabase {
+    async fn add_transaction(&self, _transaction: Transaction) -> Result<(), database::Error> {
+        unimplemented!()
+    }
+
+    async fn get_transaction(
+        &self,
+        _transaction_id: &TransactionId,
+    ) -> Result<Option<Transaction>, database::Error> {
+        unimplemented!()
+    }
+
+    async fn get_transactions(
+        &self,
+        _mint_url: Option<MintUrl>,
+        _unit: Option<CurrencyUnit>,
+        _start_timestamp: Option<u64>,
+        _end_timestamp: Option<u64>,
+    ) -> Result<Vec<Transaction>, database::Error> {
+        unimplemented!()
+    }
+
+    async fn remove_transaction(
+        &self,
+        _transaction_id: &TransactionId,
+    ) -> Result<(), database::Error> {
+        unimplemented!()
+    }
+}
+
+impl WalletDatabase for WalletSqliteDatabase {}

@@ -122,7 +122,7 @@ pub async fn mint_proofs(
 // Will return Ok if swap fails as expected
 pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     let pending = wallet
-        .localstore
+        .proof_db
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await?;
 

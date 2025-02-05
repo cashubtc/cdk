@@ -82,7 +82,7 @@ impl Wallet {
             payment_preimage: quote_res.payment_preimage,
         };
 
-        self.localstore.add_melt_quote(quote.clone()).await?;
+        self.proof_db.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -95,12 +95,12 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self.client.get_melt_quote_status(quote_id).await?;
 
-        match self.localstore.get_melt_quote(quote_id).await? {
+        match self.proof_db.get_melt_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                self.localstore.add_melt_quote(quote).await?;
+                self.proof_db.add_melt_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote melt {} unknown", quote_id);
@@ -113,7 +113,7 @@ impl Wallet {
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+        let quote_info = self.proof_db.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
                 return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
@@ -130,12 +130,12 @@ impl Wallet {
         }
 
         let ys = proofs.ys()?;
-        self.localstore.set_pending_proofs(ys).await?;
+        self.proof_db.set_pending_proofs(ys).await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         let count = self
-            .localstore
+            .proof_db
             .get_keyset_counter(&active_keyset_id)
             .await?;
 
@@ -169,7 +169,7 @@ impl Wallet {
         };
 
         let active_keys = self
-            .localstore
+            .proof_db
             .get_keys(&active_keyset_id)
             .await?
             .ok_or(Error::NoActiveKeyset)?;
@@ -215,7 +215,7 @@ impl Wallet {
                 );
 
                 // Update counter for keyset
-                self.localstore
+                self.proof_db
                     .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
                     .await?;
 
@@ -234,10 +234,10 @@ impl Wallet {
             None => Vec::new(),
         };
 
-        self.localstore.remove_melt_quote(&quote_info.id).await?;
+        self.proof_db.remove_melt_quote(&quote_info.id).await?;
 
         let deleted_ys = proofs.ys()?;
-        self.localstore
+        self.proof_db
             .update_proofs(change_proof_infos, deleted_ys)
             .await?;
 
@@ -272,7 +272,7 @@ impl Wallet {
     /// }
     #[instrument(skip(self))]
     pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+        let quote_info = self.proof_db.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {

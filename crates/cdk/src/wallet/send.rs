@@ -11,7 +11,7 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn send_proofs(&self, memo: Option<String>, proofs: Proofs) -> Result<Token, Error> {
         let ys = proofs.ys()?;
-        self.localstore.reserve_proofs(ys).await?;
+        self.proof_db.reserve_proofs(ys).await?;
 
         Ok(Token::new(
             self.mint_url.clone(),

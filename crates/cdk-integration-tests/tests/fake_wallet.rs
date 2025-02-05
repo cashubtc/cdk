@@ -1,16 +1,16 @@
-use std::sync::Arc;
+use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, Proofs,
     SecretKey, State, SwapRequest,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::Wallet;
+use cdk::wallet::WalletBuilder;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::{attempt_to_swap_pending, wait_for_mint_to_be_paid};
 
@@ -19,13 +19,8 @@ const MINT_URL: &str = "http://127.0.0.1:8086";
 // If both pay and check return pending input proofs should remain pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_tokens_pending() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -59,13 +54,8 @@ async fn test_fake_tokens_pending() -> Result<()> {
 // The inputs proofs should be unset as spending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -122,13 +112,8 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
 // the proofs should remain as pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -154,7 +139,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
     assert!(melt.is_err());
 
     let pending = wallet
-        .localstore
+        .proof_db
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await?;
 
@@ -167,13 +152,8 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
 // The mint should do a second check, then remove proofs from pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -214,7 +194,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
     assert!(melt.is_err());
 
     let pending = wallet
-        .localstore
+        .proof_db
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await?;
 
@@ -227,13 +207,8 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
 // The mint should do a second check, then remove proofs from pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_error_unknown() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -274,7 +249,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
     assert!(melt.is_err());
 
     let pending = wallet
-        .localstore
+        .proof_db
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await?;
 
@@ -288,13 +263,8 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 // Proofs should remain pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_err_paid() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -326,13 +296,8 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_change_in_quote() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -379,13 +344,8 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_witness() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
@@ -403,13 +363,8 @@ async fn test_fake_mint_with_witness() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_without_witness() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -439,13 +394,8 @@ async fn test_fake_mint_without_witness() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_wrong_witness() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -479,13 +429,8 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_inflated() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -496,7 +441,7 @@ async fn test_fake_mint_inflated() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None)?;
 
     let quote_info = wallet
-        .localstore
+        .proof_db
         .get_mint_quote(&mint_quote.id)
         .await?
         .expect("there is a quote");
@@ -531,13 +476,8 @@ async fn test_fake_mint_inflated() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_units() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -547,20 +487,15 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None)?;
 
-    let wallet_usd = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Usd,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet_usd = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Usd)?;
 
     let active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
 
     let usd_pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None)?;
 
     let quote_info = wallet
-        .localstore
+        .proof_db
         .get_mint_quote(&mint_quote.id)
         .await?
         .expect("there is a quote");
@@ -601,13 +536,8 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -615,13 +545,8 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
 
     let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
 
-    let wallet_usd = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Usd,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet_usd = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Usd)?;
 
     let mint_quote = wallet_usd.mint_quote(100.into(), None).await?;
 
@@ -705,13 +630,8 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
@@ -724,13 +644,8 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
 
     println!("Minted sat");
 
-    let wallet_usd = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Usd,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet_usd = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(MINT_URL)?, CurrencyUnit::Usd)?;
 
     let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
     println!("Minted quote usd");

@@ -1,19 +1,18 @@
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
     PreMintSecrets, State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::{WalletBuilder, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
@@ -78,13 +77,8 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let wallet = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     let (ws_stream, _) = connect_async(get_mint_ws_url())
         .await
@@ -163,13 +157,8 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 async fn test_regtest_mint_melt() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let wallet = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     let mint_amount = Amount::from(100);
 
@@ -197,13 +186,8 @@ async fn test_restore() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    let wallet = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &seed,
-        None,
-    )?;
+    let wallet = WalletBuilder::new(seed.to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -217,13 +201,8 @@ async fn test_restore() -> Result<()> {
 
     assert!(wallet.total_balance().await? == 100.into());
 
-    let wallet_2 = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &seed,
-        None,
-    )?;
+    let wallet_2 = WalletBuilder::new(seed.to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     assert!(wallet_2.total_balance().await? == 0.into());
 
@@ -256,13 +235,8 @@ async fn test_pay_invoice_twice() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    let wallet = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &seed,
-        None,
-    )?;
+    let wallet = WalletBuilder::new(seed.to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -315,13 +289,8 @@ async fn test_internal_payment() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    let wallet = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &seed,
-        None,
-    )?;
+    let wallet = WalletBuilder::new(seed.to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
@@ -337,13 +306,8 @@ async fn test_internal_payment() -> Result<()> {
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
 
-    let wallet_2 = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &seed,
-        None,
-    )?;
+    let wallet_2 = WalletBuilder::new(seed.to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     let mint_quote = wallet_2.mint_quote(10.into(), None).await?;
 
@@ -410,13 +374,8 @@ async fn test_internal_payment() -> Result<()> {
 async fn test_cached_mint() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let wallet = Wallet::new(
-        &get_mint_url(),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let wallet = WalletBuilder::new(Mnemonic::generate(12)?.to_seed_normalized("").to_vec())
+        .build(MintUrl::from_str(&get_mint_url())?, CurrencyUnit::Sat)?;
 
     let mint_amount = Amount::from(100);
 

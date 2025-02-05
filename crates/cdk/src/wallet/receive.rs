@@ -28,7 +28,7 @@ impl Wallet {
         let mint_url = &self.mint_url;
         // Add mint if it does not exist in the store
         if self
-            .localstore
+            .proof_db
             .get_mint(self.mint_url.clone())
             .await?
             .is_none()
@@ -112,7 +112,7 @@ impl Wallet {
             .into_iter()
             .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
-        self.localstore
+        self.proof_db
             .update_proofs(proofs_info.clone(), vec![])
             .await?;
 
@@ -138,7 +138,7 @@ impl Wallet {
             &keys,
         )?;
 
-        self.localstore
+        self.proof_db
             .increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
             .await?;
 
@@ -148,7 +148,7 @@ impl Wallet {
             .into_iter()
             .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
-        self.localstore
+        self.proof_db
             .update_proofs(
                 recv_proof_infos,
                 proofs_info.into_iter().map(|p| p.y).collect(),

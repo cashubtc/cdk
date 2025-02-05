@@ -51,7 +51,7 @@ impl Wallet {
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let mint_method_settings = self
-                .localstore
+                .proof_db
                 .get_mint(mint_url.clone())
                 .await?
                 .ok_or(Error::IncorrectMint)?
@@ -87,7 +87,7 @@ impl Wallet {
             secret_key: Some(secret_key),
         };
 
-        self.localstore.add_mint_quote(quote.clone()).await?;
+        self.proof_db.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -100,12 +100,12 @@ impl Wallet {
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let response = self.client.get_mint_quote_status(quote_id).await?;
 
-        match self.localstore.get_mint_quote(quote_id).await? {
+        match self.proof_db.get_mint_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                self.localstore.add_mint_quote(quote).await?;
+                self.proof_db.add_mint_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote mint {} unknown", quote_id);
@@ -118,7 +118,7 @@ impl Wallet {
     /// Check status of pending mint quotes
     #[instrument(skip(self))]
     pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
-        let mint_quotes = self.localstore.get_mint_quotes().await?;
+        let mint_quotes = self.proof_db.get_mint_quotes().await?;
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
@@ -131,7 +131,7 @@ impl Wallet {
                     .await?;
                 total_amount += proofs.total_amount()?;
             } else if mint_quote.expiry.le(&unix_time()) {
-                self.localstore.remove_mint_quote(&mint_quote.id).await?;
+                self.proof_db.remove_mint_quote(&mint_quote.id).await?;
             }
         }
         Ok(total_amount)
@@ -178,7 +178,7 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         // Check that mint is in store of mints
         if self
-            .localstore
+            .proof_db
             .get_mint(self.mint_url.clone())
             .await?
             .is_none()
@@ -186,7 +186,7 @@ impl Wallet {
             self.get_mint_info().await?;
         }
 
-        let quote_info = self.localstore.get_mint_quote(quote_id).await?;
+        let quote_info = self.proof_db.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
@@ -201,7 +201,7 @@ impl Wallet {
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         let count = self
-            .localstore
+            .proof_db
             .get_keyset_counter(&active_keyset_id)
             .await?;
 
@@ -257,7 +257,7 @@ impl Wallet {
         )?;
 
         // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        self.proof_db.remove_mint_quote(&quote_info.id).await?;
 
         if spending_conditions.is_none() {
             tracing::debug!(
@@ -267,7 +267,7 @@ impl Wallet {
             );
 
             // Update counter for keyset
-            self.localstore
+            self.proof_db
                 .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
                 .await?;
         }
@@ -285,7 +285,7 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        self.proof_db.update_proofs(proof_infos, vec![]).await?;
 
         Ok(proofs)
     }

@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
-use cdk_common::database::WalletDatabase;
+use cdk_common::database::{
+    Transaction, TransactionId, WalletDatabase, WalletProofDatabase, WalletTransactionDatabase,
+};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote};
@@ -190,15 +192,13 @@ impl WalletRedbDatabase {
 }
 
 #[async_trait]
-impl WalletDatabase for WalletRedbDatabase {
-    type Err = database::Error;
-
+impl WalletProofDatabase for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn add_mint(
         &self,
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -218,7 +218,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -233,7 +233,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
@@ -248,7 +248,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
         let mints = table
@@ -271,7 +271,7 @@ impl WalletDatabase for WalletRedbDatabase {
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         // Update proofs table
         {
             let proofs = self
@@ -325,7 +325,7 @@ impl WalletDatabase for WalletRedbDatabase {
         &self,
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -361,7 +361,7 @@ impl WalletDatabase for WalletRedbDatabase {
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_multimap_table(MINT_KEYSETS_TABLE)
@@ -396,7 +396,10 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+    async fn get_keyset_by_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
 
@@ -415,7 +418,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -436,7 +439,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
@@ -450,7 +453,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
@@ -465,7 +468,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -481,7 +484,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -502,7 +505,10 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
@@ -516,7 +522,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -532,7 +538,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
+    async fn add_keys(&self, keys: Keys) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -551,7 +557,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+    async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
@@ -566,7 +572,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn remove_keys(&self, keyset_id: &Id) -> Result<(), Self::Err> {
+    async fn remove_keys(&self, keyset_id: &Id) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -587,7 +593,7 @@ impl WalletDatabase for WalletRedbDatabase {
         &self,
         added: Vec<ProofInfo>,
         deleted_ys: Vec<PublicKey>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -614,17 +620,17 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self, ys))]
-    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), database::Error> {
         self.update_proof_states(ys, State::Pending).await
     }
 
     #[instrument(skip(self, ys))]
-    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), database::Error> {
         self.update_proof_states(ys, State::Reserved).await
     }
 
     #[instrument(skip(self, ys))]
-    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), database::Error> {
         self.update_proof_states(ys, State::Unspent).await
     }
 
@@ -635,7 +641,7 @@ impl WalletDatabase for WalletRedbDatabase {
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-    ) -> Result<Vec<ProofInfo>, Self::Err> {
+    ) -> Result<Vec<ProofInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
 
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
@@ -662,7 +668,11 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+    async fn increment_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        count: u32,
+    ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         let current_counter;
@@ -692,7 +702,7 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
 
@@ -707,7 +717,7 @@ impl WalletDatabase for WalletRedbDatabase {
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
+    ) -> Result<Option<u32>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(NOSTR_LAST_CHECKED)
@@ -725,7 +735,7 @@ impl WalletDatabase for WalletRedbDatabase {
         &self,
         verifying_key: PublicKey,
         last_checked: u32,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
             let mut table = write_txn
@@ -741,3 +751,36 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 }
+
+#[async_trait]
+impl WalletTransactionDatabase for WalletRedbDatabase {
+    async fn add_transaction(&self, _transaction: Transaction) -> Result<(), database::Error> {
+        unimplemented!()
+    }
+
+    async fn get_transaction(
+        &self,
+        _transaction_id: &TransactionId,
+    ) -> Result<Option<Transaction>, database::Error> {
+        unimplemented!()
+    }
+
+    async fn get_transactions(
+        &self,
+        _mint_url: Option<MintUrl>,
+        _unit: Option<CurrencyUnit>,
+        _start_timestamp: Option<u64>,
+        _end_timestamp: Option<u64>,
+    ) -> Result<Vec<Transaction>, database::Error> {
+        unimplemented!()
+    }
+
+    async fn remove_transaction(
+        &self,
+        _transaction_id: &TransactionId,
+    ) -> Result<(), database::Error> {
+        unimplemented!()
+    }
+}
+
+impl WalletDatabase for WalletRedbDatabase {}

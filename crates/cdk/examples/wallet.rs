@@ -1,13 +1,13 @@
-use std::sync::Arc;
+use std::str::FromStr;
 use std::time::Duration;
 
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::types::SendKind;
-use cdk::wallet::Wallet;
+use cdk::wallet::WalletBuilder;
 use cdk::Amount;
+use cdk_common::mint_url::MintUrl;
 use rand::Rng;
 use tokio::time::sleep;
 
@@ -21,11 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
-    // Initialize the memory store
-    let localstore = WalletMemoryDatabase::default();
-
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = WalletBuilder::new(seed.to_vec()).build(MintUrl::from_str(&mint_url)?, unit)?;
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;

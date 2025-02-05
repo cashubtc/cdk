@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::database::{Error, WalletDatabase};
+use cdk_common::database::{
+    self, Error, Transaction, TransactionId, WalletProofDatabase, WalletTransactionDatabase,
+};
 use tokio::sync::RwLock;
 
 use crate::mint_url::MintUrl;
@@ -28,6 +30,7 @@ pub struct WalletMemoryDatabase {
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
     nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
+    transactions: Arc<RwLock<Vec<Transaction>>>,
 }
 
 impl WalletMemoryDatabase {
@@ -55,32 +58,31 @@ impl WalletMemoryDatabase {
             proofs: Arc::new(RwLock::new(HashMap::new())),
             keyset_counter: Arc::new(RwLock::new(keyset_counter)),
             nostr_last_checked: Arc::new(RwLock::new(nostr_last_checked)),
+            transactions: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl WalletDatabase for WalletMemoryDatabase {
-    type Err = Error;
-
+impl WalletProofDatabase for WalletMemoryDatabase {
     async fn add_mint(
         &self,
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         self.mints.write().await.insert(mint_url, mint_info);
         Ok(())
     }
 
-    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
         let mut mints = self.mints.write().await;
         mints.remove(&mint_url);
 
         Ok(())
     }
 
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         Ok(self.mints.read().await.get(&mint_url).cloned().flatten())
     }
 
@@ -92,7 +94,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         let proofs = self
             .get_proofs(Some(old_mint_url), None, None, None)
             .await?;
@@ -333,7 +335,7 @@ impl WalletDatabase for WalletMemoryDatabase {
     async fn get_nostr_last_checked(
         &self,
         verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
+    ) -> Result<Option<u32>, database::Error> {
         Ok(self
             .nostr_last_checked
             .read()
@@ -345,11 +347,78 @@ impl WalletDatabase for WalletMemoryDatabase {
         &self,
         verifying_key: PublicKey,
         last_checked: u32,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), database::Error> {
         self.nostr_last_checked
             .write()
             .await
             .insert(verifying_key, last_checked);
+
+        Ok(())
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl WalletTransactionDatabase for WalletMemoryDatabase {
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
+        self.transactions.write().await.push(transaction);
+        Ok(())
+    }
+
+    async fn get_transaction(
+        &self,
+        id: &TransactionId,
+    ) -> Result<Option<Transaction>, database::Error> {
+        Ok(self
+            .transactions
+            .read()
+            .await
+            .iter()
+            .find(|t| t.id() == *id)
+            .cloned())
+    }
+
+    async fn get_transactions(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        start_timestamp: Option<u64>,
+        end_timestamp: Option<u64>,
+    ) -> Result<Vec<Transaction>, database::Error> {
+        let transactions = self.transactions.read().await;
+
+        let transactions: Vec<Transaction> = transactions
+            .clone()
+            .into_iter()
+            .filter(|t| {
+                let mut matches = true;
+
+                if let Some(mint_url) = &mint_url {
+                    matches &= t.mint_url == *mint_url;
+                }
+
+                if let Some(unit) = &unit {
+                    matches &= t.unit == *unit;
+                }
+
+                if let Some(start_timestamp) = start_timestamp {
+                    matches &= t.timestamp >= start_timestamp;
+                }
+
+                if let Some(end_timestamp) = end_timestamp {
+                    matches &= t.timestamp <= end_timestamp;
+                }
+
+                matches
+            })
+            .collect();
+
+        Ok(transactions)
+    }
+
+    async fn remove_transaction(&self, id: &TransactionId) -> Result<(), database::Error> {
+        let mut transactions = self.transactions.write().await;
+        transactions.retain(|t| t.id() != *id);
 
         Ok(())
     }

@@ -1,20 +1,17 @@
-use std::sync::Arc;
+use std::str::FromStr;
 
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::types::SendKind;
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::{WalletBuilder, WalletSubscription};
 use cdk::Amount;
+use cdk_common::mint_url::MintUrl;
 use rand::Rng;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // Initialize the memory store for the wallet
-    let localstore = WalletMemoryDatabase::default();
-
     // Generate a random seed for the wallet
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
@@ -24,7 +21,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(10);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = WalletBuilder::new(seed.to_vec()).build(MintUrl::from_str(&mint_url)?, unit)?;
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;
