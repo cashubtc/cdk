@@ -13,7 +13,7 @@ wallet = []
 bench = []
 
 [dependencies]
-uuid = { version = "1", features = ["v4", "serde"], optional = true }
+uuid = { version = "=1.12.1", features = ["v4", "serde"], optional = true }
 bitcoin = { version = "0.32.2", features = [
     "base64",
     "serde",
@@ -37,4 +37,4 @@ instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
 bip39 = "2.0"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "=1.12.1", features = ["v4", "serde"] }
