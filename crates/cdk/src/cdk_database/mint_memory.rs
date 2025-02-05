@@ -297,6 +297,14 @@ impl MintDatabase for MintMemoryDatabase {
             });
         }
 
+        {
+            let mut db_proofs_state = self.proof_state.lock().await;
+
+            ys.iter().for_each(|y| {
+                db_proofs_state.remove(&y.to_bytes());
+            });
+        }
+
         if let Some(quote_id) = quote_id {
             let mut quote_proofs = self.quote_proofs.lock().await;
             quote_proofs.remove(&quote_id);
