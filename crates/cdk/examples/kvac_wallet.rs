@@ -19,17 +19,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
 
-    println!("Bootstrapping to mint {}", mint_url);
+    println!("Bootstrapping to mint {}\n", mint_url);
 
     // Request bootstrap coins
     let bootstrap_coins = wallet.bootstrap(100, None).await?;
 
     println!(
-        "bootstrap coins: {}",
+        "bootstrap coins: {}\n",
         serde_json::to_string_pretty(&bootstrap_coins).unwrap()
     );
 
-    println!("Minting 1337 sats...");
+    println!("Minting 1337 sats...\n");
 
     // Mint Quote
     let mint_quote = wallet.mint_quote(Amount::from(1337), None).await?;
@@ -44,29 +44,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for coin in coins {
         println!(
-            "coin: {}",
+            "coin: {}\n",
             serde_json::to_string_pretty(&coin).unwrap(),
         );
     }
 
     // Send 19 sats
-    println!("Sending 19 sats...");
+    println!("Sending 19 sats...\n");
 
     let (sent, kept) = wallet.kvac_send(Amount::from(19)).await?;
     
-    println!("sent: {}", serde_json::to_string_pretty(&sent).unwrap());
-    println!("kept: {}", serde_json::to_string_pretty(&kept).unwrap());
+    println!("sent: {}\n", serde_json::to_string_pretty(&sent).unwrap());
+    println!("kept: {}\n", serde_json::to_string_pretty(&kept).unwrap());
 
     // Melt 986 sats
-    println!("Melting 986 sats...");
+    println!("Melting 986 sats...\n");
     let invoice = String::from("lnbc9860n1pn6892cpp54np6ukttc43sev95wtd6mxr2rld7k5rfgcsz2xnw0a6hjmr6a6fsdqqcqzzsxqyz5vqsp528cg50helvnlwgzt9dwsr86ma6eh6czup4c4ge4rs3grrshhzshs9p4gqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpqysgqqer3ddg2wzctu4emspeyngncnx06ne9rsltekd0ffnkmf69ax0estgh93jjyyvdlyh05mvng532tlj6phyzemf7evywuygu08a52augp09lm0f");
     let melt_quote = wallet.melt_quote(invoice, None).await?;
 
-    println!("melt_quote: {:?}", melt_quote);
+    println!("melt_quote: {:?}\n", melt_quote);
 
     let coins = wallet.kvac_melt(&melt_quote.id).await?;
 
-    println!("remaining: {}", serde_json::to_string_pretty(&coins).unwrap());
+    println!("remaining: {}\n", serde_json::to_string_pretty(&coins).unwrap());
 
     Ok(())
 }
