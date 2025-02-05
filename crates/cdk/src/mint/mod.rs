@@ -74,7 +74,7 @@ impl Mint {
         let mut active_keysets = HashMap::new();
         let mut active_kvac_keysets = HashMap::new();
         let keysets_infos = localstore.get_keyset_infos().await?;
-        let kvac_keysets_infos = localstore.get_keyset_infos().await?;
+        let kvac_keysets_infos = localstore.get_kvac_keyset_infos().await?;
 
         let mut active_keyset_units = vec![];
         let mut active_kvac_keyset_units = vec![];
@@ -190,21 +190,20 @@ impl Mint {
                     .filter(|ks| ks.derivation_path_index.is_some())
                     .collect();
 
-                if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
+                if let Some((input_fee_ppk, _max_order)) = supported_units.get(&unit) {
                     let derivation_path_index = if keysets.is_empty() {
                         1
-                    } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
-                        && &highest_index_keyset.max_order == max_order
-                    {
+                    } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk {
+                        tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
                         let id = highest_index_keyset.id;
                         let keyset = MintKvacKeySet::generate(
                             &secp_ctx,
                             xpriv,
                             highest_index_keyset.unit.clone(),
                             highest_index_keyset.derivation_path.clone(),
-                            highest_index_keyset.derivation_path_index.unwrap_or(0),
                         );
                         active_kvac_keysets.insert(id, keyset);
+                        active_kvac_keyset_units.push(unit.clone());
                         let mut keyset_info = highest_index_keyset;
                         keyset_info.active = true;
                         localstore.add_kvac_keyset_info(keyset_info).await?;
@@ -214,7 +213,7 @@ impl Mint {
                         highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
                     };
 
-                    let derivation_path = kvac_derivation_path_from_unit(unit.clone())
+                    let derivation_path = kvac_derivation_path_from_unit(unit.clone(), derivation_path_index)
                         .ok_or(Error::UnsupportedUnit)?;
 
                     let (keyset, keyset_info) = create_new_kvac_keyset(
@@ -268,7 +267,7 @@ impl Mint {
             if !active_kvac_keyset_units.contains(&unit) {
                 tracing::debug!("Creating new kvac keyset");
                 let derivation_path =
-                    kvac_derivation_path_from_unit(unit.clone()).ok_or(Error::UnsupportedUnit)?;
+                    kvac_derivation_path_from_unit(unit.clone(), 0).ok_or(Error::UnsupportedUnit)?;
 
                 let (keyset, keyset_info) = create_new_kvac_keyset(
                     &secp_ctx,
@@ -750,12 +749,9 @@ fn create_new_kvac_keyset<C: secp256k1::Signing>(
 ) -> (MintKvacKeySet, MintKeySetInfo) {
     let keyset = MintKvacKeySet::generate(
         secp,
-        xpriv
-            .derive_priv(secp, &derivation_path)
-            .expect("RNG busted"),
+        xpriv,
         unit,
         derivation_path.clone(),
-        derivation_path_index.unwrap_or(0),
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
@@ -804,12 +800,13 @@ fn create_new_keyset<C: secp256k1::Signing>(
     (keyset, keyset_info)
 }
 
-fn kvac_derivation_path_from_unit(unit: CurrencyUnit) -> Option<DerivationPath> {
+fn kvac_derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
     let unit_index = unit.derivation_index()?;
 
     Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(1).expect("1 is a valid index"),
         ChildNumber::from_hardened_idx(unit_index).expect("0 is a valid index"),
+        ChildNumber::from_hardened_idx(index).expect("0 is a valid index"),
     ]))
 }
 

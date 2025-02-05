@@ -295,7 +295,6 @@ impl Mint {
             self.xpriv,
             keyset_info.unit,
             keyset_info.derivation_path,
-            keyset_info.derivation_path_index.unwrap_or(0),
         )
     }
 }

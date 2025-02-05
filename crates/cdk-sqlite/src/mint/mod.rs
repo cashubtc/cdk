@@ -129,7 +129,7 @@ AND id IS ?;
         let update_res = sqlx::query(
             r#"
 UPDATE kvac_keyset
-SET active=FALSE
+SET active=TRUE
 WHERE unit IS ?;
         "#,
         )

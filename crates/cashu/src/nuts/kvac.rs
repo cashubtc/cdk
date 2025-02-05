@@ -79,23 +79,15 @@ impl From<&KvacKeys> for Id {
 
 #[cfg(feature = "mint")]
 impl MintKvacKeySet {
-    /// Generate new [`MintKeySet`]
+    /// Generate new [`MintKvacKeySet`]
     pub fn generate<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         mut xpriv: Xpriv,
         unit: CurrencyUnit,
-        derivation_path: DerivationPath,
-        derivation_path_index: u32,
+        derivation_path: DerivationPath
     ) -> Self {
         xpriv = xpriv
             .derive_priv(secp, &derivation_path)
-            .expect("RNG busted");
-        xpriv = xpriv
-            .derive_priv(
-                secp,
-                &[ChildNumber::from_hardened_idx(derivation_path_index)
-                    .expect("derivation_path_index is a valid index")],
-            )
             .expect("RNG busted");
         let scalars: Vec<Scalar> = (0..6)
             .map(|i| {

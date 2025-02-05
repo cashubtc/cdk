@@ -374,16 +374,21 @@ impl Mint {
         let amount_overpaid = (quote.amount + quote.fee_reserve) - amount_spent_quote_unit;
         let mut outputs = melt_request.outputs;
 
+        tracing::debug!("amount_overpaid: {:?}", amount_overpaid);
+
         if amount_overpaid > Amount::from(0) {
             // Do this to check underflow anyway
             let overpaid = i64::try_from(amount_overpaid)?;
 
             // Tweak first output to add the overpaid amount
-            let first_output = outputs.get_mut(1).expect("outputs have length == 2");
             let scalar_tweak = Scalar::from(overpaid as u64);
 
             // Ma' = Ma + o*G_amount
-            first_output.commitments.0.combine_add(&(cashu_kvac::generators::GENERATORS.G_amount.clone() * &scalar_tweak));
+            outputs
+                .get_mut(0)
+                .expect("outputs have length == 2")
+                .commitments.0
+                .combine_add(&(cashu_kvac::generators::GENERATORS.G_amount.clone() * &scalar_tweak));
         }
 
         // Collect nullifiers
