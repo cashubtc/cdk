@@ -18,9 +18,10 @@ impl Wallet {
     /// Melt Quote
     /// # Synopsis
     /// ```rust
+    ///  use std::str::FromStr;
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::mint_url::MintUrl;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use rand::Rng;
@@ -28,11 +29,10 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///     let quote = wallet.melt_quote(bolt11, None).await?;
     ///
@@ -134,10 +134,7 @@ impl Wallet {
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
-        let count = self
-            .proof_db
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
+        let count = self.proof_db.get_keyset_counter(&active_keyset_id).await?;
 
         let count = count.map_or(0, |c| c + 1);
 
@@ -247,9 +244,10 @@ impl Wallet {
     /// Melt
     /// # Synopsis
     /// ```rust, no_run
+    ///  use std::str::FromStr;
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::mint_url::MintUrl;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use rand::Rng;
@@ -257,11 +255,10 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///  let mint_url = "https://testnut.cashu.space";
+    ///  let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///  let unit = CurrencyUnit::Sat;
     ///
-    ///  let localstore = WalletMemoryDatabase::default();
-    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///  let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///  let quote = wallet.melt_quote(bolt11, None).await?;
     ///  let quote_id = quote.id;

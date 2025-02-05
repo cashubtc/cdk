@@ -17,10 +17,11 @@ impl Wallet {
     /// Mint Quote
     /// # Synopsis
     /// ```rust
+    /// use std::str::FromStr;
     /// use std::sync::Arc;
     ///
     /// use cdk::amount::Amount;
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::mint_url::MintUrl;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
     /// use rand::Rng;
@@ -28,11 +29,10 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    ///     let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -140,11 +140,12 @@ impl Wallet {
     /// Mint
     /// # Synopsis
     /// ```rust
+    /// use std::str::FromStr;
     /// use std::sync::Arc;
     ///
     /// use anyhow::Result;
     /// use cdk::amount::{Amount, SplitTarget};
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::mint_url::MintUrl;
     /// use cdk::nuts::nut00::ProofsMethods;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
@@ -153,11 +154,10 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -200,10 +200,7 @@ impl Wallet {
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
-        let count = self
-            .proof_db
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
+        let count = self.proof_db.get_keyset_counter(&active_keyset_id).await?;
 
         let count = count.map_or(0, |c| c + 1);
 

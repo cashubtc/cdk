@@ -205,27 +205,27 @@ impl WalletBuilder {
 
 impl Wallet {
     /// Create new [`Wallet`] using [`WalletBuilder`]
-    pub fn builder(seed: Vec<u8>) -> WalletBuilder {
-        WalletBuilder::new(seed)
-    }
-
-    /// Create new [`Wallet`]
     /// # Synopsis
     /// ```rust
+    /// use std::str::FromStr;
     /// use std::sync::Arc;
     ///
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::mint_url::MintUrl;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
     /// use rand::Rng;
     ///
     /// let seed = rand::thread_rng().gen::<[u8; 32]>();
-    /// let mint_url = "https://testnut.cashu.space";
+    /// let mint_url = MintUrl::from_str("https://testnut.cashu.space").unwrap();
     /// let unit = CurrencyUnit::Sat;
     ///
-    /// let localstore = WalletMemoryDatabase::default();
-    /// let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    /// let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit).unwrap();
     /// ```
+    pub fn builder(seed: Vec<u8>) -> WalletBuilder {
+        WalletBuilder::new(seed)
+    }
+
+    /// Create new [`Wallet`]
     pub fn new(
         mint_url: &str,
         unit: CurrencyUnit,

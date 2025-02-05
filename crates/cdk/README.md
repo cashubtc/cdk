@@ -23,11 +23,13 @@ See <https://github.com/cashubtc/cdk/blob/main/README.md>
 ```rust
 //! Wallet example with memory store
 
+use std:str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::Wallet;
 use cdk::Amount;
@@ -38,13 +40,13 @@ use tokio::time::sleep;
 async fn main() {
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
-    let mint_url = "https://testnut.cashu.space";
+    let mint_url = MintUrl.from_str("https://testnut.cashu.space").unwrap();
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
     let localstore = WalletMemoryDatabase::default();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed);
+    let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit).unwrap();
 
     let quote = wallet.mint_quote(amount).await.unwrap();
 
