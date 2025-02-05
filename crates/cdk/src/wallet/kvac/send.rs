@@ -50,7 +50,7 @@ impl Wallet {
             .await?;
         //println!("swap outputs: {}", serde_json::to_string_pretty(&outputs).unwrap());
         // Set selected inputs as pending
-        let ts: Vec<Scalar> = inputs[..1].iter().map(|i| i.coin.mac.t.clone()).collect();
+        let ts: Vec<Scalar> = inputs.iter().map(|i| i.coin.mac.t.clone()).collect();
         self.localstore.set_pending_kvac_coins(&ts).await?;
 
         let result = self.kvac_swap(&inputs, &outputs).await;

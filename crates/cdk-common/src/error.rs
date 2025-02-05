@@ -213,6 +213,9 @@ pub enum Error {
     /// KVAC No zero-value coins available
     #[error("No zero valued coins available: mint some with a bootstrap request")]
     NoZeroValueCoins,
+    /// KVAC Not enough coins available
+    #[error("Not enough coins available")]
+    NotEnoughCoins,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
