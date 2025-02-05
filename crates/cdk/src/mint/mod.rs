@@ -341,9 +341,10 @@ pub struct FeeReserve {
 mod tests {
     use std::str::FromStr;
 
-    use cdk_common::common::{LnKey, QuoteTTL};
+    use cdk_common::common::LnKey;
     use cdk_common::mint::MintKeySetInfo;
     use cdk_signatory::MemorySignatory;
+    use cdk_sqlite::mint::memory::new_with_state;
     use uuid::Uuid;
 
     use super::*;

@@ -50,7 +50,7 @@ async fn new_mint(fee: u64) -> Mint {
         .expect("Could not set mint info");
     let mnemonic = Mnemonic::generate(12).unwrap();
 
-    let localstore = Arc::new(MintMemoryDatabase::default());
+    let localstore = Arc::new(memory::empty().await.expect("valid db instance"));
     let seed = mnemonic.to_seed_normalized("");
     let signatory_manager = Arc::new(SignatoryManager::new(Arc::new(
         MemorySignatory::new(localstore.clone(), &seed, supported_units, HashMap::new())
@@ -66,10 +66,6 @@ async fn new_mint(fee: u64) -> Mint {
     )
     .await
     .unwrap()
-}
-
-async fn initialize() -> Mint {
-    new_mint(0).await
 }
 
 async fn mint_proofs(
@@ -116,7 +112,7 @@ async fn mint_proofs(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_double_spend() -> Result<()> {
-    let mint = initialize().await;
+    let mint = new_mint(0).await;
 
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
@@ -127,9 +123,7 @@ async fn test_mint_double_spend() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), preswap.blinded_messages());
 
-    let swap = mint.process_swap_request(swap_request).await;
-
-    assert!(swap.is_ok());
+    mint.process_swap_request(swap_request).await?;
 
     let preswap_two = PreMintSecrets::random(keyset_id, 100.into(), &SplitTarget::default())?;
 
@@ -150,7 +144,7 @@ async fn test_mint_double_spend() -> Result<()> {
 /// This will work if the mint does not check for outputs amounts overflowing
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
-    let mint = initialize().await;
+    let mint = new_mint(0).await;
 
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
@@ -189,7 +183,7 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_p2pk_swap() -> Result<()> {
-    let mint = initialize().await;
+    let mint = new_mint(0).await;
 
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
@@ -307,7 +301,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_swap_unbalanced() -> Result<()> {
-    let mint = initialize().await;
+    let mint = new_mint(0).await;
 
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
