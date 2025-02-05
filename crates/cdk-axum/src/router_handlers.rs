@@ -434,9 +434,9 @@ pub async fn post_melt_bolt11(
     post,
     context_path = "/v2",
     path = "/kvac/melt/bolt11",
-    request_body(content = MeltBolt11Request, description = "Melt params", content_type = "application/json"),
+    request_body(content = KvacMeltBolt11Request, description = "Melt params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = KvacMeltBolt11Response, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
