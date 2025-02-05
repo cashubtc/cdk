@@ -28,7 +28,7 @@ lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 thiserror = "2"
 tracing = "0.1"
 url = "2.3"
-uuid = { version = "1", features = ["v4", "serde"], optional = true }
+uuid = { version = "=1.12.1", features = ["v4", "serde"], optional = true }
 utoipa = { version = "4", optional = true }
 futures = "0.3.31"
 anyhow = "1.0"
