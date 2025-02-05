@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Mint Quote
-    let mint_quote = wallet.mint_quote(Amount::from(15), None).await?;
+    let mint_quote = wallet.mint_quote(Amount::from(1337), None).await?;
     let mut state = wallet.mint_quote_state(&mint_quote.id).await?;
     while state.state == MintQuoteState::Unpaid {
         sleep(Duration::new(3, 0));
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Send
-    let coins = wallet.kvac_mint(&mint_quote.id, Amount::from(15)).await?;
+    let coins = wallet.kvac_mint(&mint_quote.id, Amount::from(1337)).await?;
 
     for coin in coins {
         println!(
