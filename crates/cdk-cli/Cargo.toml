@@ -13,7 +13,7 @@ rust-version = "1.63.0" # MSRV
 
 [dependencies]
 anyhow = "1"
-bip39 = "2.0"
+bip39 = { version = "2.0", features = ["rand"] }
 cdk = { path = "../cdk", version = "0.7.0", default-features = false, features = ["wallet"]}
 cdk-redb = { path = "../cdk-redb", version = "0.7.0", default-features = false, features = ["wallet"] }
 cdk-sqlite = { path = "../cdk-sqlite", version = "0.7.0", default-features = false, features = ["wallet"] }
