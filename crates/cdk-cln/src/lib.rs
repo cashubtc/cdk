@@ -241,9 +241,14 @@ impl MintLightning for Cln {
             }
         }
 
-        let amount_msat = melt_quote
-            .msat_to_pay
-            .map(|a| CLN_Amount::from_msat(a.into()));
+        let amount_msat = partial_amount
+            .is_none()
+            .then(|| {
+                melt_quote
+                    .msat_to_pay
+                    .map(|a| CLN_Amount::from_msat(a.into()))
+            })
+            .flatten();
 
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client

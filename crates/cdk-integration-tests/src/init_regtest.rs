@@ -36,17 +36,17 @@ pub fn get_mint_addr() -> String {
     env::var("cdk_itests_mint_addr").expect("Temp dir set")
 }
 
-pub fn get_mint_port() -> u16 {
-    let dir = env::var("cdk_itests_mint_port").expect("Temp dir set");
+pub fn get_mint_port(which: &str) -> u16 {
+    let dir = env::var(format!("cdk_itests_mint_port_{}", which)).expect("Temp dir set");
     dir.parse().unwrap()
 }
 
-pub fn get_mint_url() -> String {
-    format!("http://{}:{}", get_mint_addr(), get_mint_port())
+pub fn get_mint_url(which: &str) -> String {
+    format!("http://{}:{}", get_mint_addr(), get_mint_port(which))
 }
 
-pub fn get_mint_ws_url() -> String {
-    format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port())
+pub fn get_mint_ws_url(which: &str) -> String {
+    format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port(which))
 }
 
 pub fn get_temp_dir() -> PathBuf {
