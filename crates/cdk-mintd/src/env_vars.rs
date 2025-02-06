@@ -5,6 +5,8 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail, Result};
 use cdk::nuts::CurrencyUnit;
 
+#[cfg(feature = "management-rpc")]
+use crate::config::MintManagementRpc;
 use crate::config::{
     Cln, Database, DatabaseEngine, FakeWallet, Info, LNbits, Ln, LnBackend, Lnd, MintInfo,
     Phoenixd, Settings, Strike,
@@ -70,6 +72,15 @@ pub const ENV_FAKE_WALLET_FEE_PERCENT: &str = "CDK_MINTD_FAKE_WALLET_FEE_PERCENT
 pub const ENV_FAKE_WALLET_RESERVE_FEE_MIN: &str = "CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN";
 pub const ENV_FAKE_WALLET_MIN_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MIN_DELAY";
 pub const ENV_FAKE_WALLET_MAX_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MAX_DELAY";
+// Mint RPC Server
+#[cfg(feature = "management-rpc")]
+pub const ENV_MINT_MANAGEMENT_ENABLED: &str = "CDK_MINTD_MINT_MANAGEMENT_ENABLED";
+#[cfg(feature = "management-rpc")]
+pub const ENV_MINT_MANAGEMENT_ADDRESS: &str = "CDK_MINTD_MANAGEMENT_ADDRESS";
+#[cfg(feature = "management-rpc")]
+pub const ENV_MINT_MANAGEMENT_PORT: &str = "CDK_MINTD_MANAGEMENT_PORT";
+#[cfg(feature = "management-rpc")]
+pub const ENV_MINT_MANAGEMENT_TLS_DIR_PATH: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR_PATH";
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -81,6 +92,16 @@ impl Settings {
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
         self.ln = self.ln.clone().from_env();
+
+        #[cfg(feature = "management-rpc")]
+        {
+            self.mint_management_rpc = Some(
+                self.mint_management_rpc
+                    .clone()
+                    .unwrap_or_default()
+                    .from_env(),
+            );
+        }
 
         match self.ln.ln_backend {
             LnBackend::Cln => {
@@ -425,6 +446,33 @@ impl FakeWallet {
             if let Ok(max_delay) = max_delay_str.parse() {
                 self.max_delay_time = max_delay;
             }
+        }
+
+        self
+    }
+}
+
+#[cfg(feature = "management-rpc")]
+impl MintManagementRpc {
+    pub fn from_env(mut self) -> Self {
+        if let Ok(enabled) = env::var(ENV_MINT_MANAGEMENT_ENABLED) {
+            if let Ok(enabled) = enabled.parse() {
+                self.enabled = enabled;
+            }
+        }
+
+        if let Ok(address) = env::var(ENV_MINT_MANAGEMENT_ADDRESS) {
+            self.address = Some(address);
+        }
+
+        if let Ok(port) = env::var(ENV_MINT_MANAGEMENT_PORT) {
+            if let Ok(port) = port.parse::<u16>() {
+                self.port = Some(port);
+            }
+        }
+
+        if let Ok(tls_path) = env::var(ENV_MINT_MANAGEMENT_TLS_DIR_PATH) {
+            self.tls_dir_path = Some(tls_path.into());
         }
 
         self

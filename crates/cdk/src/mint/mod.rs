@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::common::LnKey;
+use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use futures::StreamExt;
@@ -192,6 +192,21 @@ impl Mint {
     /// Get mint info
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
         Ok(self.localstore.get_mint_info().await?)
+    }
+
+    /// Set mint info
+    pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
+        Ok(self.localstore.set_mint_info(mint_info).await?)
+    }
+
+    /// Get quote ttl
+    pub async fn quote_ttl(&self) -> Result<QuoteTTL, Error> {
+        Ok(self.localstore.get_quote_ttl().await?)
+    }
+
+    /// Set quote ttl
+    pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
+        Ok(self.localstore.set_quote_ttl(quote_ttl).await?)
     }
 
     /// Wait for any invoice to be paid

@@ -6,8 +6,13 @@ authors = ["CDK Developers"]
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0"                            # MSRV
 description = "CDK mint binary"
+
+[features]
+default = ["management-rpc"]
+swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
+redis = ["cdk-axum/redis"]
+management-rpc = ["cdk-mint-rpc"]
 
 [dependencies]
 anyhow = "1"
@@ -28,8 +33,9 @@ cdk-lnd = { path = "../cdk-lnd", version = "0.6.0", default-features = false }
 cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.6.0", default-features = false }
 cdk-strike = { path = "../cdk-strike", version = "0.6.0" }
 cdk-axum = { path = "../cdk-axum", version = "0.6.0", default-features = false }
+cdk-mint-rpc = { path = "../cdk-mint-rpc", version = "0.6.0", default-features = false, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
-clap = { version = "4.4.8", features = ["derive", "env", "default"] }
+clap = { version = "~4.0.32", features = ["derive"] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = [
     "attributes",
@@ -38,14 +44,10 @@ tracing = { version = "0.1", default-features = false, features = [
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 futures = { version = "0.3.28", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
-bip39 = "2.0"
+bip39 = { version = "2.0", features = ["rand"] }
 tower-http = { version = "0.4.4", features = ["cors", "compression-full"] }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 home = "0.5.5"
 url = "2.3"
 utoipa = { version = "4", optional = true }
 utoipa-swagger-ui = { version = "4", features = ["axum"], optional = true }
-
-[features]
-swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
-redis = ["cdk-axum/redis"]

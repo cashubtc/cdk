@@ -240,4 +240,16 @@ impl Settings {
 
         None
     }
+
+    /// Remove [`MintMethodSettings`] for unit method pair
+    pub fn remove_settings(
+        &mut self,
+        unit: &CurrencyUnit,
+        method: &PaymentMethod,
+    ) -> Option<MintMethodSettings> {
+        self.methods
+            .iter()
+            .position(|settings| &settings.method == method && &settings.unit == unit)
+            .map(|index| self.methods.remove(index))
+    }
 }
