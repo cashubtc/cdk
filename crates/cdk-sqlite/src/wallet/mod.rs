@@ -345,156 +345,6 @@ WHERE id=?
     }
 
     #[instrument(skip_all)]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
-        sqlx::query(
-            r#"
-INSERT OR REPLACE INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, secret_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-        "#,
-        )
-        .bind(quote.id.to_string())
-        .bind(quote.mint_url.to_string())
-        .bind(u64::from(quote.amount) as i64)
-        .bind(quote.unit.to_string())
-        .bind(quote.request)
-        .bind(quote.state.to_string())
-        .bind(quote.expiry as i64)
-        .bind(quote.secret_key.map(|p| p.to_string()))
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM mint_quote
-WHERE id=?;
-        "#,
-        )
-        .bind(quote_id)
-        .fetch_one(&self.pool)
-        .await;
-
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(Some(sqlite_row_to_mint_quote(&rec)?))
-    }
-
-    #[instrument(skip(self))]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM mint_quote
-        "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        let mint_quotes = rec
-            .iter()
-            .map(sqlite_row_to_mint_quote)
-            .collect::<Result<_, _>>()?;
-
-        Ok(mint_quotes)
-    }
-
-    #[instrument(skip(self))]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
-        sqlx::query(
-            r#"
-DELETE FROM mint_quote
-WHERE id=?
-        "#,
-        )
-        .bind(quote_id)
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
-        sqlx::query(
-            r#"
-INSERT OR REPLACE INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
-        "#,
-        )
-        .bind(quote.id.to_string())
-        .bind(quote.unit.to_string())
-        .bind(u64::from(quote.amount) as i64)
-        .bind(quote.request)
-        .bind(u64::from(quote.fee_reserve) as i64)
-        .bind(quote.state.to_string())
-        .bind(quote.expiry as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn get_melt_quote(
-        &self,
-        quote_id: &str,
-    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM melt_quote
-WHERE id=?;
-        "#,
-        )
-        .bind(quote_id)
-        .fetch_one(&self.pool)
-        .await;
-
-        let rec = match rec {
-            Ok(rec) => rec,
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(Some(sqlite_row_to_melt_quote(&rec)?))
-    }
-
-    #[instrument(skip(self))]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
-        sqlx::query(
-            r#"
-DELETE FROM melt_quote
-WHERE id=?
-        "#,
-        )
-        .bind(quote_id)
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
     async fn add_keys(&self, keys: Keys) -> Result<(), database::Error> {
         sqlx::query(
             r#"
@@ -736,58 +586,6 @@ WHERE id=?;
 
         Ok(count)
     }
-
-    #[instrument(skip_all)]
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, database::Error> {
-        let rec = sqlx::query(
-            r#"
-SELECT last_check
-FROM nostr_last_checked
-WHERE key=?;
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let count = match rec {
-            Ok(rec) => {
-                let count: Option<u32> = rec.try_get("last_check").map_err(Error::from)?;
-                count
-            }
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(count)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), database::Error> {
-        sqlx::query(
-            r#"
-INSERT OR REPLACE INTO nostr_last_checked
-(key, last_check)
-VALUES (?, ?);
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .bind(last_checked)
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
 }
 
 fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
@@ -920,6 +718,155 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
 
 #[async_trait]
 impl WalletTransactionDatabase for WalletSqliteDatabase {
+    #[instrument(skip_all)]
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
+        sqlx::query(
+            r#"
+INSERT OR REPLACE INTO mint_quote
+(id, mint_url, amount, unit, request, state, expiry, secret_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        "#,
+        )
+        .bind(quote.id.to_string())
+        .bind(quote.mint_url.to_string())
+        .bind(u64::from(quote.amount) as i64)
+        .bind(quote.unit.to_string())
+        .bind(quote.request)
+        .bind(quote.state.to_string())
+        .bind(quote.expiry as i64)
+        .bind(quote.secret_key.map(|p| p.to_string()))
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM mint_quote
+WHERE id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(Some(sqlite_row_to_mint_quote(&rec)?))
+    }
+
+    #[instrument(skip(self))]
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM mint_quote
+        "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        let mint_quotes = rec
+            .iter()
+            .map(sqlite_row_to_mint_quote)
+            .collect::<Result<_, _>>()?;
+
+        Ok(mint_quotes)
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        sqlx::query(
+            r#"
+DELETE FROM mint_quote
+WHERE id=?
+        "#,
+        )
+        .bind(quote_id)
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
+        sqlx::query(
+            r#"
+INSERT OR REPLACE INTO melt_quote
+(id, unit, amount, request, fee_reserve, state, expiry)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+        "#,
+        )
+        .bind(quote.id.to_string())
+        .bind(quote.unit.to_string())
+        .bind(u64::from(quote.amount) as i64)
+        .bind(quote.request)
+        .bind(u64::from(quote.fee_reserve) as i64)
+        .bind(quote.state.to_string())
+        .bind(quote.expiry as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_melt_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM melt_quote
+WHERE id=?;
+        "#,
+        )
+        .bind(quote_id)
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(Some(sqlite_row_to_melt_quote(&rec)?))
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        sqlx::query(
+            r#"
+DELETE FROM melt_quote
+WHERE id=?
+        "#,
+        )
+        .bind(quote_id)
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
     async fn add_transaction(&self, _transaction: Transaction) -> Result<(), database::Error> {
         unimplemented!()
     }

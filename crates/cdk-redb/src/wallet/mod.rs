@@ -418,126 +418,6 @@ impl WalletProofDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn
-                .open_table(MINT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-            table
-                .insert(
-                    quote.id.as_str(),
-                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
-        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
-        let table = read_txn
-            .open_table(MINT_QUOTES_TABLE)
-            .map_err(Error::from)?;
-
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
-        }
-
-        Ok(None)
-    }
-
-    #[instrument(skip_all)]
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
-        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
-        let table = read_txn
-            .open_table(MINT_QUOTES_TABLE)
-            .map_err(Error::from)?;
-
-        Ok(table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .flat_map(|(_id, quote)| serde_json::from_str(quote.value()))
-            .collect())
-    }
-
-    #[instrument(skip_all)]
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn
-                .open_table(MINT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-            table.remove(quote_id).map_err(Error::from)?;
-        }
-
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn
-                .open_table(MELT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-            table
-                .insert(
-                    quote.id.as_str(),
-                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
-                )
-                .map_err(Error::from)?;
-        }
-
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn get_melt_quote(
-        &self,
-        quote_id: &str,
-    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(MELT_QUOTES_TABLE)
-            .map_err(Error::from)?;
-
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
-        }
-
-        Ok(None)
-    }
-
-    #[instrument(skip_all)]
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-
-        {
-            let mut table = write_txn
-                .open_table(MELT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-            table.remove(quote_id).map_err(Error::from)?;
-        }
-
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
     async fn add_keys(&self, keys: Keys) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
@@ -712,48 +592,130 @@ impl WalletProofDatabase for WalletRedbDatabase {
 
         Ok(counter.map(|c| c.value()))
     }
-
-    #[instrument(skip_all)]
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, database::Error> {
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(NOSTR_LAST_CHECKED)
-            .map_err(Error::from)?;
-
-        let last_checked = table
-            .get(verifying_key.to_string().as_str())
-            .map_err(Error::from)?;
-
-        Ok(last_checked.map(|c| c.value()))
-    }
-
-    #[instrument(skip(self, verifying_key))]
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), database::Error> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-        {
-            let mut table = write_txn
-                .open_table(NOSTR_LAST_CHECKED)
-                .map_err(Error::from)?;
-
-            table
-                .insert(verifying_key.to_string().as_str(), last_checked)
-                .map_err(Error::from)?;
-        }
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
-    }
 }
 
 #[async_trait]
 impl WalletTransactionDatabase for WalletRedbDatabase {
+    #[instrument(skip_all)]
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    quote.id.as_str(),
+                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let table = read_txn
+            .open_table(MINT_QUOTES_TABLE)
+            .map_err(Error::from)?;
+
+        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
+            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
+        }
+
+        Ok(None)
+    }
+
+    #[instrument(skip_all)]
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let table = read_txn
+            .open_table(MINT_QUOTES_TABLE)
+            .map_err(Error::from)?;
+
+        Ok(table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .flat_map(|(_id, quote)| serde_json::from_str(quote.value()))
+            .collect())
+    }
+
+    #[instrument(skip_all)]
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table.remove(quote_id).map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    quote.id.as_str(),
+                    serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn get_melt_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<wallet::MeltQuote>, database::Error> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(MELT_QUOTES_TABLE)
+            .map_err(Error::from)?;
+
+        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
+            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
+        }
+
+        Ok(None)
+    }
+
+    #[instrument(skip_all)]
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table.remove(quote_id).map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn add_transaction(&self, _transaction: Transaction) -> Result<(), database::Error> {
         unimplemented!()
     }

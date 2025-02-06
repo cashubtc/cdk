@@ -51,22 +51,6 @@ pub trait ProofDatabase: Debug {
     /// Get mint keyset by id
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error>;
 
-    /// Add mint quote to storage
-    async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Error>;
-    /// Get mint quote from storage
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Error>;
-    /// Get mint quotes from storage
-    async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Error>;
-    /// Remove mint quote from storage
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error>;
-
-    /// Add melt quote to storage
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Error>;
-    /// Get melt quote from storage
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error>;
-    /// Remove melt quote from storage
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error>;
-
     /// Add [`Keys`] to storage
     async fn add_keys(&self, keys: Keys) -> Result<(), Error>;
     /// Get [`Keys`] from storage
@@ -102,27 +86,31 @@ pub trait ProofDatabase: Debug {
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error>;
     /// Get current Keyset counter
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Error>;
-
-    /// Get when nostr key was last checked
-    async fn get_nostr_last_checked(&self, verifying_key: &PublicKey)
-        -> Result<Option<u32>, Error>;
-    /// Update last checked time
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), Error>;
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait TransactionDatabase: Debug {
+    /// Add mint quote to storage
+    async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Error>;
+    /// Get mint quote from storage
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Error>;
+    /// Get mint quotes from storage
+    async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Error>;
+    /// Remove mint quote from storage
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error>;
+
+    /// Add melt quote to storage
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Error>;
+    /// Get melt quote from storage
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error>;
+    /// Remove melt quote from storage
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error>;
+
     /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Error>;
-
     /// Get transaction from storage
     async fn get_transaction(&self, id: &TransactionId) -> Result<Option<Transaction>, Error>;
-
     /// Get all transactions from storage that match the given criteria
     async fn get_transactions(
         &self,
@@ -131,7 +119,6 @@ pub trait TransactionDatabase: Debug {
         start_timestamp: Option<u64>,
         end_timestamp: Option<u64>,
     ) -> Result<Vec<Transaction>, Error>;
-
     // Remove transaction from storage
     async fn remove_transaction(&self, id: &TransactionId) -> Result<(), Error>;
 }

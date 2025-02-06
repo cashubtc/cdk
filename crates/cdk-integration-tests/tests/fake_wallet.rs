@@ -441,7 +441,7 @@ async fn test_fake_mint_inflated() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None)?;
 
     let quote_info = wallet
-        .proof_db
+        .transaction_db
         .get_mint_quote(&mint_quote.id)
         .await?
         .expect("there is a quote");
@@ -495,7 +495,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
     let usd_pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None)?;
 
     let quote_info = wallet
-        .proof_db
+        .transaction_db
         .get_mint_quote(&mint_quote.id)
         .await?
         .expect("there is a quote");

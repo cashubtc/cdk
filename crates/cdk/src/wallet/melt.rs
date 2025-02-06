@@ -82,7 +82,7 @@ impl Wallet {
             payment_preimage: quote_res.payment_preimage,
         };
 
-        self.proof_db.add_melt_quote(quote.clone()).await?;
+        self.transaction_db.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -95,12 +95,12 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self.client.get_melt_quote_status(quote_id).await?;
 
-        match self.proof_db.get_melt_quote(quote_id).await? {
+        match self.transaction_db.get_melt_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                self.proof_db.add_melt_quote(quote).await?;
+                self.transaction_db.add_melt_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote melt {} unknown", quote_id);
@@ -113,7 +113,7 @@ impl Wallet {
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
-        let quote_info = self.proof_db.get_melt_quote(quote_id).await?;
+        let quote_info = self.transaction_db.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
                 return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
@@ -231,7 +231,9 @@ impl Wallet {
             None => Vec::new(),
         };
 
-        self.proof_db.remove_melt_quote(&quote_info.id).await?;
+        self.transaction_db
+            .remove_melt_quote(&quote_info.id)
+            .await?;
 
         let deleted_ys = proofs.ys()?;
         self.proof_db
@@ -269,7 +271,7 @@ impl Wallet {
     /// }
     #[instrument(skip(self))]
     pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
-        let quote_info = self.proof_db.get_melt_quote(quote_id).await?;
+        let quote_info = self.transaction_db.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {

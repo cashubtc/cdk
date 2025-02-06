@@ -3,7 +3,6 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use cdk::nuts::{SecretKey, Token};
-use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::types::WalletKey;
 use cdk::wallet::WalletBuilder;
@@ -69,10 +68,6 @@ pub async fn receive(
             .await?
         }
         None => {
-            let proof_db = builder
-                .proof_db
-                .clone()
-                .ok_or(anyhow!("Proof db required"))?;
             //wallet.add_p2pk_signing_key(nostr_signing_key).await;
             let nostr_key = match sub_command_args.nostr_key.as_ref() {
                 Some(nostr_key) => {
@@ -89,11 +84,8 @@ pub async fn receive(
             signing_keys.push(nostr_key.clone());
 
             let relays = sub_command_args.relay.clone();
-            let since = proof_db
-                .get_nostr_last_checked(&nostr_key.public_key())
-                .await?;
 
-            let tokens = nostr_receive(relays, nostr_key.clone(), since).await?;
+            let tokens = nostr_receive(relays, nostr_key.clone(), None).await?;
 
             let mut total_amount = Amount::ZERO;
             for token_str in &tokens {
@@ -114,10 +106,6 @@ pub async fn receive(
                     }
                 }
             }
-
-            proof_db
-                .add_nostr_last_checked(nostr_key.public_key(), unix_time() as u32)
-                .await?;
             total_amount
         }
     };

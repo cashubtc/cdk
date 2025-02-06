@@ -29,7 +29,6 @@ pub struct WalletMemoryDatabase {
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
-    nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
     transactions: Arc<RwLock<Vec<Transaction>>>,
 }
 
@@ -40,7 +39,6 @@ impl WalletMemoryDatabase {
         melt_quotes: Vec<wallet::MeltQuote>,
         mint_keys: Vec<Keys>,
         keyset_counter: HashMap<Id, u32>,
-        nostr_last_checked: HashMap<PublicKey, u32>,
     ) -> Self {
         Self {
             mints: Arc::new(RwLock::new(HashMap::new())),
@@ -57,7 +55,6 @@ impl WalletMemoryDatabase {
             )),
             proofs: Arc::new(RwLock::new(HashMap::new())),
             keyset_counter: Arc::new(RwLock::new(keyset_counter)),
-            nostr_last_checked: Arc::new(RwLock::new(nostr_last_checked)),
             transactions: Arc::new(RwLock::new(Vec::new())),
         }
     }
@@ -183,47 +180,6 @@ impl WalletProofDatabase for WalletMemoryDatabase {
         Ok(self.keysets.read().await.get(keyset_id).cloned())
     }
 
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
-        self.mint_quotes
-            .write()
-            .await
-            .insert(quote.id.clone(), quote);
-        Ok(())
-    }
-
-    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
-        Ok(self.mint_quotes.read().await.get(quote_id).cloned())
-    }
-
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
-        let quotes = self.mint_quotes.read().await;
-        Ok(quotes.values().cloned().collect())
-    }
-
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
-        self.mint_quotes.write().await.remove(quote_id);
-
-        Ok(())
-    }
-
-    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Error> {
-        self.melt_quotes
-            .write()
-            .await
-            .insert(quote.id.clone(), quote);
-        Ok(())
-    }
-
-    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error> {
-        Ok(self.melt_quotes.read().await.get(quote_id).cloned())
-    }
-
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
-        self.melt_quotes.write().await.remove(quote_id);
-
-        Ok(())
-    }
-
     async fn add_keys(&self, keys: Keys) -> Result<(), Error> {
         self.mint_keys.write().await.insert(Id::from(&keys), keys);
         Ok(())
@@ -331,35 +287,51 @@ impl WalletProofDatabase for WalletMemoryDatabase {
     async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u32>, Error> {
         Ok(self.keyset_counter.read().await.get(id).cloned())
     }
-
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, database::Error> {
-        Ok(self
-            .nostr_last_checked
-            .read()
-            .await
-            .get(verifying_key)
-            .cloned())
-    }
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), database::Error> {
-        self.nostr_last_checked
-            .write()
-            .await
-            .insert(verifying_key, last_checked);
-
-        Ok(())
-    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl WalletTransactionDatabase for WalletMemoryDatabase {
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
+        self.mint_quotes
+            .write()
+            .await
+            .insert(quote.id.clone(), quote);
+        Ok(())
+    }
+
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
+        Ok(self.mint_quotes.read().await.get(quote_id).cloned())
+    }
+
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let quotes = self.mint_quotes.read().await;
+        Ok(quotes.values().cloned().collect())
+    }
+
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Error> {
+        self.mint_quotes.write().await.remove(quote_id);
+
+        Ok(())
+    }
+
+    async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Error> {
+        self.melt_quotes
+            .write()
+            .await
+            .insert(quote.id.clone(), quote);
+        Ok(())
+    }
+
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error> {
+        Ok(self.melt_quotes.read().await.get(quote_id).cloned())
+    }
+
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Error> {
+        self.melt_quotes.write().await.remove(quote_id);
+
+        Ok(())
+    }
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
         self.transactions.write().await.push(transaction);
         Ok(())
