@@ -399,6 +399,18 @@ impl Settings {
 
         None
     }
+
+    /// Remove [`MeltMethodSettings`] for unit method pair
+    pub fn remove_settings(
+        &mut self,
+        unit: &CurrencyUnit,
+        method: &PaymentMethod,
+    ) -> Option<MeltMethodSettings> {
+        self.methods
+            .iter()
+            .position(|settings| settings.method.eq(method) && settings.unit.eq(unit))
+            .map(|index| self.methods.remove(index))
+    }
 }
 
 /// Melt Settings

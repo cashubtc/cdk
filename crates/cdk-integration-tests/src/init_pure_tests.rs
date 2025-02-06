@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
+use cdk::cdk_database::MintDatabase;
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
@@ -15,6 +16,7 @@ use cdk::nuts::{
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PaymentMethod,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
+use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::wallet::client::MintConnector;
 use cdk::wallet::{MintOptions, Wallet, WalletBuilder};
@@ -145,7 +147,8 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
 
     let database = MintMemoryDatabase::default();
 
-    mint_builder = mint_builder.with_localstore(Arc::new(database));
+    let localstore = Arc::new(database);
+    mint_builder = mint_builder.with_localstore(localstore.clone());
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
@@ -171,8 +174,13 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
     mint_builder = mint_builder
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
-        .with_quote_ttl(10000, 10000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
+
+    localstore
+        .set_mint_info(mint_builder.mint_info.clone())
+        .await?;
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+    localstore.set_quote_ttl(quote_ttl).await?;
 
     let mint = mint_builder.build().await?;
 

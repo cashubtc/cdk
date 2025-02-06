@@ -43,30 +43,45 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnsupportedUnit)?;
 
-        if matches!(options, Some(MeltQuoteOptions::Mpp { mpp: _ })) {
-            // Verify there is no corresponding mint quote.
-            // Otherwise a wallet is trying to pay someone internally, but
-            // with a multi-part quote. And that's just not possible.
-            if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
-                return Err(Error::InternalMultiPartMeltQuote);
+        let amount = match options {
+            Some(MeltQuoteOptions::Mpp { mpp: _ }) => {
+                // Verify there is no corresponding mint quote.
+                // Otherwise a wallet is trying to pay someone internally, but
+                // with a multi-part quote. And that's just not possible.
+                if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
+                    return Err(Error::InternalMultiPartMeltQuote);
+                }
+                // Verify MPP is enabled for unit and method
+                if !nut15
+                    .methods
+                    .into_iter()
+                    .any(|m| m.method == method && m.unit == unit)
+                {
+                    return Err(Error::MppUnitMethodNotSupported(unit, method));
+                }
+                // Assign `amount`
+                // because should have already been converted to the partial amount
+                amount
             }
-            // Verify MPP is enabled for unit and method
-            if !nut15
-                .methods
-                .into_iter()
-                .any(|m| m.method == method && m.unit == unit)
-            {
-                return Err(Error::MppUnitMethodNotSupported(unit, method));
-            }
-        }
+            None => amount,
+        };
+
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
-            true => Err(Error::AmountOutofLimitRange(
-                settings.min_amount.unwrap_or_default(),
-                settings.max_amount.unwrap_or_default(),
-                amount,
-            )),
+            true => {
+                tracing::error!(
+                    "Melt amount out of range: {} is not within {} and {}",
+                    amount,
+                    settings.min_amount.unwrap_or_default(),
+                    settings.max_amount.unwrap_or_default(),
+                );
+                Err(Error::AmountOutofLimitRange(
+                    settings.min_amount.unwrap_or_default(),
+                    settings.max_amount.unwrap_or_default(),
+                    amount,
+                ))
+            }
             false => Ok(()),
         }
     }
@@ -210,6 +225,13 @@ impl Mint {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
 
+        let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
+            Some(amt) => amt.into(),
+            None => melt_quote
+                .msat_to_pay
+                .ok_or(Error::InvoiceAmountUndefined)?,
+        };
+        /*
         let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
             Some(amount) => amount,
             None => invoice
@@ -217,11 +239,11 @@ impl Mint {
                 .ok_or(Error::InvoiceAmountUndefined)?
                 .into(),
         };
+        */
 
         let partial_amount = match invoice_amount_msats > quote_msats {
             true => {
                 let partial_msats = invoice_amount_msats - quote_msats;
-
                 Some(
                     to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
                         .map_err(|_| Error::UnsupportedUnit)?,
@@ -491,6 +513,7 @@ impl Mint {
                     }
                     _ => None,
                 };
+                tracing::debug!("partial_amount: {:?}", partial_amount);
                 let ln = match self
                     .ln
                     .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt11))

@@ -8,6 +8,7 @@ use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning::{self, MintLightning};
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::types::QuoteTTL;
 use cdk_cln::Cln as CdkCln;
 use cdk_lnd::Lnd as CdkLnd;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
@@ -36,17 +37,17 @@ pub fn get_mint_addr() -> String {
     env::var("cdk_itests_mint_addr").expect("Temp dir set")
 }
 
-pub fn get_mint_port() -> u16 {
-    let dir = env::var("cdk_itests_mint_port").expect("Temp dir set");
+pub fn get_mint_port(which: &str) -> u16 {
+    let dir = env::var(format!("cdk_itests_mint_port_{}", which)).expect("Temp dir set");
     dir.parse().unwrap()
 }
 
-pub fn get_mint_url() -> String {
-    format!("http://{}:{}", get_mint_addr(), get_mint_port())
+pub fn get_mint_url(which: &str) -> String {
+    format!("http://{}:{}", get_mint_addr(), get_mint_port(which))
 }
 
-pub fn get_mint_ws_url() -> String {
-    format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port())
+pub fn get_mint_ws_url(which: &str) -> String {
+    format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port(which))
 }
 
 pub fn get_temp_dir() -> PathBuf {
@@ -155,8 +156,8 @@ where
     L: MintLightning<Err = cdk_lightning::Error> + Send + Sync + 'static,
 {
     let mut mint_builder = MintBuilder::new();
-
-    mint_builder = mint_builder.with_localstore(Arc::new(database));
+    let localstore = Arc::new(database);
+    mint_builder = mint_builder.with_localstore(localstore.clone());
 
     mint_builder = mint_builder.add_ln_backend(
         CurrencyUnit::Sat,
@@ -170,10 +171,15 @@ where
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())
         .with_description("regtest mint".to_string())
-        .with_quote_ttl(10000, 10000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
     let mint = mint_builder.build().await?;
+
+    localstore
+        .set_mint_info(mint_builder.mint_info.clone())
+        .await?;
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+    localstore.set_quote_ttl(quote_ttl).await?;
 
     start_mint(addr, port, mint).await?;
 
