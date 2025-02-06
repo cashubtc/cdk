@@ -147,11 +147,11 @@ impl Wallet {
     /// use std::sync::Arc;
     ///
     /// use anyhow::Result;
-    /// use cdk::amount::{Amount, SplitTarget};
+    /// use cdk::amount::Amount;
     /// use cdk::mint_url::MintUrl;
     /// use cdk::nuts::nut00::ProofsMethods;
     /// use cdk::nuts::CurrencyUnit;
-    /// use cdk::wallet::Wallet;
+    /// use cdk::wallet::{MintOptions, Wallet};
     /// use rand::Rng;
     ///
     /// #[tokio::main]
@@ -166,7 +166,7 @@ impl Wallet {
     ///     let quote = wallet.mint_quote(amount, None).await?;
     ///     let quote_id = quote.id;
     ///     // To be called after quote request is paid
-    ///     let minted_proofs = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    ///     let minted_proofs = wallet.mint(&quote_id, MintOptions::default()).await?;
     ///     let minted_amount = minted_proofs.total_amount()?;
     ///
     ///     Ok(())

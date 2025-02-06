@@ -183,10 +183,9 @@ impl Wallet {
     ///  use std::str::FromStr;
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::amount::SplitTarget;
     ///  use cdk::mint_url::MintUrl;
     ///  use cdk::nuts::CurrencyUnit;
-    ///  use cdk::wallet::Wallet;
+    ///  use cdk::wallet::{ReceiveOptions, Wallet};
     ///  use rand::Rng;
     ///
     /// #[tokio::main]
@@ -197,7 +196,7 @@ impl Wallet {
     ///
     ///  let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///  let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjEsInNlY3JldCI6ImI0ZjVlNDAxMDJhMzhiYjg3NDNiOTkwMzU5MTU1MGYyZGEzZTQxNWEzMzU0OTUyN2M2MmM5ZDc5MGVmYjM3MDUiLCJDIjoiMDIzYmU1M2U4YzYwNTMwZWVhOWIzOTQzZmRhMWEyY2U3MWM3YjNmMGNmMGRjNmQ4NDZmYTc2NWFhZjc3OWZhODFkIiwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
-    ///  let amount_receive = wallet.receive(token, SplitTarget::default(), &[], &[]).await?;
+    ///  let amount_receive = wallet.receive(token, ReceiveOptions::default()).await?;
     ///  Ok(())
     /// }
     /// ```
@@ -238,10 +237,9 @@ impl Wallet {
     ///  use std::str::FromStr;
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::amount::SplitTarget;
     ///  use cdk::mint_url::MintUrl;
     ///  use cdk::nuts::CurrencyUnit;
-    ///  use cdk::wallet::Wallet;
+    ///  use cdk::wallet::{ReceiveOptions, Wallet};
     ///  use cdk::util::hex;
     ///  use rand::Rng;
     ///
@@ -253,7 +251,7 @@ impl Wallet {
     ///
     ///  let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///  let token_raw = hex::decode("6372617742a4617481a261694800ad268c4d1f5826617081a3616101617378403961366462623834376264323332626137366462306466313937323136623239643362386363313435353363643237383237666331636339343266656462346561635821038618543ffb6b8695df4ad4babcde92a34a96bdcd97dcee0d7ccf98d4721267926164695468616e6b20796f75616d75687474703a2f2f6c6f63616c686f73743a33333338617563736174").unwrap();
-    ///  let amount_receive = wallet.receive_raw(&token_raw, SplitTarget::default(), &[], &[]).await?;
+    ///  let amount_receive = wallet.receive_raw(&token_raw, ReceiveOptions::default()).await?;
     ///  Ok(())
     /// }
     /// ```

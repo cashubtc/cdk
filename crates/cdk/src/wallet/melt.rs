@@ -271,7 +271,7 @@ impl Wallet {
     ///
     ///  use cdk::mint_url::MintUrl;
     ///  use cdk::nuts::CurrencyUnit;
-    ///  use cdk::wallet::Wallet;
+    ///  use cdk::wallet::{MeltOptions, Wallet};
     ///  use rand::Rng;
     ///
     /// #[tokio::main]
@@ -285,7 +285,7 @@ impl Wallet {
     ///  let quote = wallet.melt_quote(bolt11, None).await?;
     ///  let quote_id = quote.id;
     ///
-    ///  let _ = wallet.melt(&quote_id).await?;
+    ///  let _ = wallet.melt(&quote_id, MeltOptions::default()).await?;
     ///
     ///  Ok(())
     /// }
