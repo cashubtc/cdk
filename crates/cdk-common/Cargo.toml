@@ -2,8 +2,12 @@
 name = "cdk-common"
 version = "0.7.0"
 edition = "2021"
+authors = ["CDK Developers"]
 description = "CDK common types and traits"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.63.0"                     # MSRV
+license = "MIT"
 
 [features]
 default = ["mint", "wallet"]
