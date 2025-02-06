@@ -1,6 +1,6 @@
 [package]
 name = "cdk-common"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 description = "CDK common types and traits"
 rust-version = "1.63.0"                     # MSRV
@@ -20,7 +20,7 @@ bitcoin = { version = "0.32.2", features = [
     "rand",
     "rand-std",
 ] }
-cashu = { path = "../cashu", default-features = false, version = "0.6.0" }
+cashu = { path = "../cashu", default-features = false, version = "0.7.0" }
 cbor-diag = "0.1.12"
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }

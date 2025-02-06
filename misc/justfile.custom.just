@@ -29,6 +29,12 @@ clippy-each:
   #!/usr/bin/env bash
   set -euo pipefail
   buildargs=(
+  "-p cashu --no-default-features"
+  "-p cashu --no-default-features --features wallet"
+  "-p cashu --no-default-features --features mint"
+  "-p cdk-common --no-default-features"
+  "-p cdk-common --no-default-features --features wallet"
+  "-p cdk-common --no-default-features --features mint"
   "-p cdk-integration-tests"
   "-p cdk"
   "-p cdk --no-default-features"
@@ -44,6 +50,7 @@ clippy-each:
   "-p cdk-fake-wallet"
   "-p cdk-strike"
   "-p cdk-lnd"
+  "-p cdk-mint-rpc"
   "--bin cdk-cli"
   "--bin cdk-mintd"
   )
@@ -60,11 +67,14 @@ release m="":
   set -euo pipefail
 
   args=(
+    "-p cashu"
+    "-p cdk-common"
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-rexie"
     "-p cdk-axum"
+    "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-strike"
@@ -86,6 +96,8 @@ check-docs:
   #!/usr/bin/env bash
   set -euo pipefail
   args=(
+    "-p cashu"
+    "-p cdk-common"
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
@@ -97,6 +109,7 @@ check-docs:
     "-p cdk-phoenixd"
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
+    "-p cdk-mint-rpc"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
