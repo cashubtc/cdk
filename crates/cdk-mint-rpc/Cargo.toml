@@ -1,6 +1,6 @@
 [package]
 name = "cdk-mint-rpc"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "CDK mintd mint managment RPC client and server"
@@ -15,7 +15,7 @@ path = "src/bin/mint_rpc_cli.rs"
 
 [dependencies]
 anyhow = "1"
-cdk = { path = "../cdk", version = "0.6.0", default-features = false, features = [
+cdk = { path = "../cdk", version = "0.7.0", default-features = false, features = [
     "mint",
 ] }
 clap = { version = "~4.0.32", features = ["derive"] }
