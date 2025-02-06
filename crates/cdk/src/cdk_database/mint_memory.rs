@@ -1,7 +1,6 @@
 //! Mint in memory database
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -103,10 +102,6 @@ impl MintMemoryDatabase {
 #[async_trait]
 impl MintDatabase for MintMemoryDatabase {
     type Err = Error;
-
-    async fn create_backup(&self, _backup_file_path: PathBuf) -> Result<(), Self::Err> {
-        Ok(())
-    }
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         self.active_keysets.write().await.insert(unit, id);

@@ -21,7 +21,7 @@ use cdk_common::{
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
-use sqlx::Row;
+use sqlx::{Pool, Row, Sqlite};
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
@@ -42,6 +42,34 @@ impl MintSqliteDatabase {
     /// * `backups_to_keep`: configured number of backups to keep
     pub async fn new(work_dir: &Path, backups_to_keep: u8) -> Result<Self, Error> {
         let db_file_path = work_dir.join("cdk-mintd.sqlite");
+
+        Self::backup(work_dir, &db_file_path, backups_to_keep).await?;
+
+        let pool = Self::connect_to_db(&db_file_path).await?;
+        let db = Self { pool: pool.clone() };
+
+        sqlx::migrate!("./src/mint/migrations").run(&pool).await?;
+
+        Ok(db)
+    }
+
+    async fn backup(
+        work_dir: &Path,
+        db_file_path: &Path,
+        backups_to_keep: u8,
+    ) -> Result<(), Error> {
+        if let Some(new_backup_file) = database::prepare_backup(work_dir, "sqlite", backups_to_keep)
+            .map_err(Error::DbBackup)?
+        {
+            Self::create_backup(db_file_path, new_backup_file)
+                .await
+                .map_err(Error::DbBackup)?;
+        }
+
+        Ok(())
+    }
+
+    async fn connect_to_db(db_file_path: &Path) -> Result<Pool<Sqlite>, Error> {
         let db_file_path_str = db_file_path.to_str().ok_or(Error::InvalidDbPath)?;
         let db_options = SqliteConnectOptions::from_str(db_file_path_str)?
             .busy_timeout(Duration::from_secs(5))
@@ -54,37 +82,23 @@ impl MintSqliteDatabase {
             .connect_with(db_options)
             .await?;
 
-        let db = Self { pool: pool.clone() };
-
-        if let Some(new_backup_file) = db
-            .prepare_backup(work_dir, backups_to_keep)
-            .await
-            .map_err(Error::DbBackup)?
-        {
-            db.create_backup(new_backup_file)
-                .await
-                .map_err(Error::DbBackup)?;
-        }
-
-        sqlx::migrate!("./src/mint/migrations").run(&pool).await?;
-
-        Ok(db)
+        Ok(pool)
     }
-}
 
-#[async_trait]
-impl MintDatabase for MintSqliteDatabase {
-    type Err = database::Error;
+    async fn create_backup(
+        db_file_path: &Path,
+        backup_file_path: PathBuf,
+    ) -> Result<(), database::Error> {
+        let pool = Self::connect_to_db(db_file_path).await?;
 
-    async fn create_backup(&self, backup_file_path: PathBuf) -> Result<(), Self::Err> {
         let backup_path_str = backup_file_path
             .to_str()
-            .ok_or_else(|| Self::Err::Database("Invalid backup path".into()))?;
+            .ok_or_else(|| database::Error::Database("Invalid backup path".into()))?;
 
         // Create a backup connection with the destination path
         let backup_options = SqliteConnectOptions::from_str(backup_path_str)
             .map_err(|e| {
-                Self::Err::Database(format!("Failed to create backup options: {e}").into())
+                database::Error::Database(format!("Failed to create backup options: {e}").into())
             })?
             .create_if_missing(true);
 
@@ -93,20 +107,27 @@ impl MintDatabase for MintSqliteDatabase {
             .connect_with(backup_options)
             .await
             .map_err(|e| {
-                Self::Err::Database(format!("Failed to create backup connection: {e}").into())
+                database::Error::Database(format!("Failed to create backup connection: {e}").into())
             })?;
 
         // Execute backup
         sqlx::query("VACUUM INTO ?")
             .bind(backup_path_str)
-            .execute(&self.pool)
+            .execute(&pool)
             .await
-            .map_err(|e| Self::Err::Database(format!("Failed to create backup: {e}").into()))?;
+            .map_err(|e| {
+                database::Error::Database(format!("Failed to create backup: {e}").into())
+            })?;
 
         backup_pool.close().await;
 
         Ok(())
     }
+}
+
+#[async_trait]
+impl MintDatabase for MintSqliteDatabase {
+    type Err = database::Error;
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;

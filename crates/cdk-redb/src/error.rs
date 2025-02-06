@@ -34,6 +34,9 @@ pub enum Error {
     /// CDK Database Error
     #[error(transparent)]
     CDKDatabase(#[from] cdk_common::database::Error),
+    /// Error while trying to prepare or executing a DB backup
+    #[error("Error while doing DB backup: {0}")]
+    DbBackup(cdk_common::database::Error),
     /// CDK Mint Url Error
     #[error(transparent)]
     CDKMintUrl(#[from] cdk_common::mint_url::Error),
