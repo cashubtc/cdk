@@ -1,12 +1,11 @@
 use std::str::FromStr;
 
 use anyhow::Result;
-use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::{MultiMintWallet, WalletBuilder, WalletSubscription};
+use cdk::wallet::{MintOptions, MultiMintWallet, WalletBuilder, WalletSubscription};
 use cdk::Amount;
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -69,7 +68,7 @@ pub async fn mint(
         }
     }
 
-    let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let proofs = wallet.mint(&quote.id, MintOptions::default()).await?;
 
     let receive_amount = proofs.total_amount()?;
 

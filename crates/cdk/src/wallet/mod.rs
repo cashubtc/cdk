@@ -44,6 +44,10 @@ mod swap;
 pub mod util;
 
 pub use cdk_common::wallet as types;
+pub use melt::MeltOptions;
+pub use mint::MintOptions;
+pub use receive::ReceiveOptions;
+pub use send::SendOptions;
 
 use crate::nuts::nut00::ProofsMethods;
 

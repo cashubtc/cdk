@@ -11,11 +11,12 @@ use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
-use super::types::SendKind;
-use super::Error;
-use crate::amount::SplitTarget;
+use super::melt::MeltOptions;
+use super::mint::MintOptions;
+use super::receive::ReceiveOptions;
+use super::{Error, SendOptions};
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SecretKey, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, MeltQuoteOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
@@ -116,26 +117,14 @@ impl MultiMintWallet {
         &self,
         wallet_key: &WalletKey,
         amount: Amount,
-        memo: Option<String>,
-        conditions: Option<SpendingConditions>,
-        send_kind: SendKind,
-        include_fees: bool,
+        opts: SendOptions,
     ) -> Result<Token, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        wallet
-            .send(
-                amount,
-                memo,
-                conditions,
-                &SplitTarget::default(),
-                &send_kind,
-                include_fees,
-            )
-            .await
+        wallet.send(amount, opts).await
     }
 
     /// Mint quote for wallet
@@ -193,15 +182,13 @@ impl MultiMintWallet {
         &self,
         wallet_key: &WalletKey,
         quote_id: &str,
-        conditions: Option<SpendingConditions>,
+        opts: MintOptions,
     ) -> Result<Proofs, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
-        wallet
-            .mint(quote_id, SplitTarget::default(), conditions)
-            .await
+        wallet.mint(quote_id, opts).await
     }
 
     /// Receive token
@@ -210,8 +197,7 @@ impl MultiMintWallet {
     pub async fn receive(
         &self,
         encoded_token: &str,
-        p2pk_signing_keys: &[SecretKey],
-        preimages: &[String],
+        opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
         let unit = token_data.unit().unwrap_or_default();
@@ -236,10 +222,7 @@ impl MultiMintWallet {
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        match wallet
-            .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
-            .await
-        {
+        match wallet.receive_proofs(proofs, opts).await {
             Ok(amount) => {
                 amount_received += amount;
             }
@@ -260,23 +243,24 @@ impl MultiMintWallet {
     pub async fn pay_invoice_for_wallet(
         &self,
         bolt11: &str,
-        options: Option<MeltOptions>,
+        quote_opts: Option<MeltQuoteOptions>,
         wallet_key: &WalletKey,
         max_fee: Option<Amount>,
+        opts: MeltOptions,
     ) -> Result<Melted, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        let quote = wallet.melt_quote(bolt11.to_string(), options).await?;
+        let quote = wallet.melt_quote(bolt11.to_string(), quote_opts).await?;
         if let Some(max_fee) = max_fee {
             if quote.fee_reserve > max_fee {
                 return Err(Error::MaxFeeExceeded);
             }
         }
 
-        wallet.melt(&quote.id).await
+        wallet.melt(&quote.id, opts).await
     }
 
     /// Restore

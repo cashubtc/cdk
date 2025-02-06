@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 
+use cdk_common::database::{Transaction, TransactionDirection};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -7,8 +9,8 @@ use super::MeltQuote;
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    PreMintSecrets, Proofs, ProofsMethods, State,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteOptions, PreMintSecrets, Proofs, ProofsMethods, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
@@ -43,7 +45,7 @@ impl Wallet {
     pub async fn melt_quote(
         &self,
         request: String,
-        options: Option<MeltOptions>,
+        options: Option<MeltQuoteOptions>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
@@ -112,7 +114,12 @@ impl Wallet {
 
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
-    pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
+    pub async fn melt_proofs(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        opts: MeltOptions,
+    ) -> Result<Melted, Error> {
         let quote_info = self.transaction_db.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
@@ -237,7 +244,20 @@ impl Wallet {
 
         let deleted_ys = proofs.ys()?;
         self.proof_db
-            .update_proofs(change_proof_infos, deleted_ys)
+            .update_proofs(change_proof_infos, deleted_ys.clone())
+            .await?;
+        self.transaction_db
+            .add_transaction(Transaction {
+                amount: quote_info.amount,
+                direction: TransactionDirection::Outgoing,
+                fee: melted.fee_paid,
+                mint_url: self.mint_url.clone(),
+                timestamp: unix_time(),
+                unit: quote_info.unit,
+                ys: deleted_ys,
+                memo: opts.memo,
+                metadata: opts.metadata,
+            })
             .await?;
 
         Ok(melted)
@@ -270,7 +290,7 @@ impl Wallet {
     ///  Ok(())
     /// }
     #[instrument(skip(self))]
-    pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
+    pub async fn melt(&self, quote_id: &str, opts: MeltOptions) -> Result<Melted, Error> {
         let quote_info = self.transaction_db.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
@@ -291,6 +311,15 @@ impl Wallet {
             .select_proofs_to_swap(inputs_needed_amount, available_proofs)
             .await?;
 
-        self.melt_proofs(quote_id, input_proofs).await
+        self.melt_proofs(quote_id, input_proofs, opts).await
     }
+}
+
+/// Melt Options
+#[derive(Debug, Clone, Default)]
+pub struct MeltOptions {
+    /// Memo
+    pub memo: Option<String>,
+    /// User-defined Metadata
+    pub metadata: HashMap<String, String>,
 }

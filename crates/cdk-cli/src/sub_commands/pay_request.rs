@@ -1,10 +1,9 @@
 use std::io::{self, Write};
 
 use anyhow::{anyhow, Result};
-use cdk::amount::SplitTarget;
 use cdk::nuts::nut18::TransportType;
 use cdk::nuts::{PaymentRequest, PaymentRequestPayload};
-use cdk::wallet::{MultiMintWallet, SendKind};
+use cdk::wallet::{MultiMintWallet, SendOptions};
 use clap::Args;
 use nostr_sdk::nips::nip19::Nip19Profile;
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys};
@@ -84,11 +83,10 @@ pub async fn pay_request(
     let proofs = matching_wallet
         .send(
             amount,
-            None,
-            None,
-            &SplitTarget::default(),
-            &SendKind::default(),
-            true,
+            SendOptions {
+                include_fees: true,
+                ..Default::default()
+            },
         )
         .await?
         .proofs();

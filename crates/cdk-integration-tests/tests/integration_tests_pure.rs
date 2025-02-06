@@ -1,8 +1,8 @@
 use std::assert_eq;
 
-use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::wallet::SendKind;
+use cdk::wallet::ReceiveOptions;
+use cdk::wallet::SendOptions;
 use cdk::Amount;
 use cdk_integration_tests::init_pure_tests::{
     create_and_start_test_mint, create_test_wallet_for_mint, fund_wallet,
@@ -20,14 +20,7 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
 
     // Alice wants to send 40 sats, which internally swaps
     let token = wallet_alice
-        .send(
-            Amount::from(40),
-            None,
-            None,
-            &SplitTarget::None,
-            &SendKind::OnlineExact,
-            false,
-        )
+        .send(Amount::from(40), SendOptions::default())
         .await?;
     assert_eq!(Amount::from(40), token.proofs().total_amount()?);
     assert_eq!(Amount::from(24), wallet_alice.total_balance().await?);
@@ -35,7 +28,7 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())?;
     let received_amount = wallet_carol
-        .receive_proofs(token.proofs(), SplitTarget::None, &[], &[])
+        .receive_proofs(token.proofs(), ReceiveOptions::default())
         .await?;
 
     assert_eq!(Amount::from(40), received_amount);

@@ -12,7 +12,7 @@ use cdk::nuts::{
     PreMintSecrets, State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::{WalletBuilder, WalletSubscription};
+use cdk::wallet::{MeltOptions, MintOptions, WalletBuilder, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
@@ -91,9 +91,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+    let proofs = wallet.mint(&mint_quote.id, MintOptions::default()).await?;
 
     let mint_amount = proofs.total_amount()?;
 
@@ -124,7 +122,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         r#"{"jsonrpc":"2.0","result":{"status":"OK","subId":"test-sub"},"id":2}"#
     );
 
-    let melt_response = wallet.melt(&melt.id).await.unwrap();
+    let melt_response = wallet.melt(&melt.id, MeltOptions::default()).await.unwrap();
     assert!(melt_response.preimage.is_some());
     assert!(melt_response.state == MeltQuoteState::Paid);
 
@@ -170,9 +168,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+    let proofs = wallet.mint(&mint_quote.id, MintOptions::default()).await?;
 
     let mint_amount = proofs.total_amount()?;
 
@@ -195,9 +191,7 @@ async fn test_restore() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+    let _mint_amount = wallet.mint(&mint_quote.id, MintOptions::default()).await?;
 
     assert!(wallet.total_balance().await? == 100.into());
 
@@ -247,9 +241,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+    let proofs = wallet.mint(&mint_quote.id, MintOptions::default()).await?;
 
     let mint_amount = proofs.total_amount()?;
 
@@ -259,11 +251,14 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     let melt_quote = wallet.melt_quote(invoice.clone(), None).await?;
 
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
+    let melt = wallet
+        .melt(&melt_quote.id, MeltOptions::default())
+        .await
+        .unwrap();
 
     let melt_two = wallet.melt_quote(invoice, None).await?;
 
-    let melt_two = wallet.melt(&melt_two.id).await;
+    let melt_two = wallet.melt(&melt_two.id, MeltOptions::default()).await;
 
     match melt_two {
         Err(err) => match err {
@@ -298,9 +293,7 @@ async fn test_internal_payment() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+    let _mint_amount = wallet.mint(&mint_quote.id, MintOptions::default()).await?;
 
     assert!(wallet.total_balance().await? == 100.into());
 
@@ -315,12 +308,12 @@ async fn test_internal_payment() -> Result<()> {
 
     assert_eq!(melt.amount, 10.into());
 
-    let _melted = wallet.melt(&melt.id).await.unwrap();
+    let _melted = wallet.melt(&melt.id, MeltOptions::default()).await.unwrap();
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _wallet_2_mint = wallet_2
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .mint(&mint_quote.id, MintOptions::default())
         .await
         .unwrap();
 

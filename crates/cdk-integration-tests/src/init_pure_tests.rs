@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
-use cdk::amount::SplitTarget;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::mint_url::MintUrl;
@@ -18,7 +17,7 @@ use cdk::nuts::{
 };
 use cdk::util::unix_time;
 use cdk::wallet::client::MintConnector;
-use cdk::wallet::{Wallet, WalletBuilder};
+use cdk::wallet::{MintOptions, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::Notify;
@@ -212,7 +211,7 @@ pub async fn fund_wallet(wallet: Arc<Wallet>, amount: u64) -> anyhow::Result<Amo
     wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     Ok(wallet
-        .mint(&quote.id, SplitTarget::default(), None)
+        .mint(&quote.id, MintOptions::default())
         .await?
         .total_amount()?)
 }

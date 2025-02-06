@@ -1,10 +1,8 @@
 use std::str::FromStr;
 
-use cdk::amount::SplitTarget;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload, SecretKey, SpendingConditions};
-use cdk::wallet::types::SendKind;
-use cdk::wallet::{WalletBuilder, WalletSubscription};
+use cdk::wallet::{MintOptions, ReceiveOptions, SendOptions, WalletBuilder, WalletSubscription};
 use cdk::Amount;
 use cdk_common::mint_url::MintUrl;
 use rand::Rng;
@@ -54,7 +52,7 @@ async fn main() -> Result<(), Error> {
     }
 
     // Mint the received amount
-    let _receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let _receive_amount = wallet.mint(&quote.id, MintOptions::default()).await?;
 
     // Generate a secret key for spending conditions
     let secret = SecretKey::generate();
@@ -70,11 +68,10 @@ async fn main() -> Result<(), Error> {
     let token = wallet
         .send(
             10.into(),
-            None,
-            Some(spending_conditions),
-            &SplitTarget::default(),
-            &SendKind::default(),
-            false,
+            SendOptions {
+                spending_conditions: Some(spending_conditions),
+                ..Default::default()
+            },
         )
         .await?;
 
@@ -83,7 +80,13 @@ async fn main() -> Result<(), Error> {
 
     // Receive the token using the secret key
     let amount = wallet
-        .receive(&token.to_string(), SplitTarget::default(), &[secret], &[])
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret],
+                ..Default::default()
+            },
+        )
         .await?;
 
     println!("Redeemed locked token worth: {}", u64::from(amount));

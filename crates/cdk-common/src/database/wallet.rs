@@ -127,6 +127,7 @@ pub trait TransactionDatabase: Debug {
 pub struct Transaction {
     pub amount: Amount,
     pub direction: TransactionDirection,
+    pub fee: Amount,
     pub mint_url: MintUrl,
     pub timestamp: u64,
     pub unit: CurrencyUnit,
@@ -168,6 +169,10 @@ impl Transaction {
             }
         }
         true
+    }
+
+    pub fn net_amount(&self) -> Amount {
+        self.amount - self.fee
     }
 }
 

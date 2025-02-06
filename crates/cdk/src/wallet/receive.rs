@@ -4,6 +4,8 @@ use std::str::FromStr;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::XOnlyPublicKey;
+use cdk_common::database::{Transaction, TransactionDirection};
+use cdk_common::util::unix_time;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -21,9 +23,7 @@ impl Wallet {
     pub async fn receive_proofs(
         &self,
         proofs: Proofs,
-        amount_split_target: SplitTarget,
-        p2pk_signing_keys: &[SecretKey],
-        preimages: &[String],
+        opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let mint_url = &self.mint_url;
         // Add mint if it does not exist in the store
@@ -48,7 +48,8 @@ impl Wallet {
         let mut sig_flag = SigFlag::SigInputs;
 
         // Map hash of preimage to preimage
-        let hashed_to_preimage: HashMap<String, &String> = preimages
+        let hashed_to_preimage: HashMap<String, &String> = opts
+            .preimages
             .iter()
             .map(|p| {
                 let hex_bytes = hex::decode(p)?;
@@ -56,7 +57,8 @@ impl Wallet {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = p2pk_signing_keys
+        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
+            .p2pk_signing_keys
             .iter()
             .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
             .collect();
@@ -106,6 +108,9 @@ impl Wallet {
             }
         }
 
+        let amount = proofs.total_amount()?;
+        let ys = proofs.ys()?;
+
         // Since the proofs are unknown they need to be added to the database
         let proofs_info = proofs
             .clone()
@@ -117,7 +122,7 @@ impl Wallet {
             .await?;
 
         let mut pre_swap = self
-            .create_swap(None, amount_split_target, proofs, None, false)
+            .create_swap(None, opts.split_target, proofs, None, false)
             .await?;
 
         if sig_flag.eq(&SigFlag::SigAll) {
@@ -143,6 +148,7 @@ impl Wallet {
             .await?;
 
         let total_amount = recv_proofs.total_amount()?;
+        let fee = amount - total_amount;
 
         let recv_proof_infos = recv_proofs
             .into_iter()
@@ -153,6 +159,19 @@ impl Wallet {
                 recv_proof_infos,
                 proofs_info.into_iter().map(|p| p.y).collect(),
             )
+            .await?;
+        self.transaction_db
+            .add_transaction(Transaction {
+                amount,
+                direction: TransactionDirection::Incoming,
+                fee,
+                mint_url: self.mint_url.clone(),
+                timestamp: unix_time(),
+                unit: self.unit.clone(),
+                ys,
+                memo: opts.memo,
+                metadata: opts.metadata,
+            })
             .await?;
 
         Ok(total_amount)
@@ -186,9 +205,7 @@ impl Wallet {
     pub async fn receive(
         &self,
         encoded_token: &str,
-        amount_split_target: SplitTarget,
-        p2pk_signing_keys: &[SecretKey],
-        preimages: &[String],
+        opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let token = Token::from_str(encoded_token)?;
 
@@ -210,9 +227,7 @@ impl Wallet {
             return Err(Error::IncorrectMint);
         }
 
-        let amount = self
-            .receive_proofs(proofs, amount_split_target, p2pk_signing_keys, preimages)
-            .await?;
+        let amount = self.receive_proofs(proofs, opts).await?;
 
         Ok(amount)
     }
@@ -246,17 +261,24 @@ impl Wallet {
     pub async fn receive_raw(
         &self,
         binary_token: &Vec<u8>,
-        amount_split_target: SplitTarget,
-        p2pk_signing_keys: &[SecretKey],
-        preimages: &[String],
+        opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let token_str = Token::try_from(binary_token)?.to_string();
-        self.receive(
-            token_str.as_str(),
-            amount_split_target,
-            p2pk_signing_keys,
-            preimages,
-        )
-        .await
+        self.receive(token_str.as_str(), opts).await
     }
+}
+
+/// Receive Options
+#[derive(Debug, Clone, Default)]
+pub struct ReceiveOptions {
+    /// Memo
+    pub memo: Option<String>,
+    /// User-defined Metadata
+    pub metadata: HashMap<String, String>,
+    /// P2PK Signing Keys
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Preimages
+    pub preimages: Vec<String>,
+    /// Split Target
+    pub split_target: SplitTarget,
 }

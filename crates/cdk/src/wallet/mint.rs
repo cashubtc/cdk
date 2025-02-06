@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use cdk_common::database::{Transaction, TransactionDirection};
 use tracing::instrument;
 
 use super::MintQuote;
@@ -126,9 +129,7 @@ impl Wallet {
 
             if mint_quote_response.state == MintQuoteState::Paid {
                 // TODO: Need to pass in keys here
-                let proofs = self
-                    .mint(&mint_quote.id, SplitTarget::default(), None)
-                    .await?;
+                let proofs = self.mint(&mint_quote.id, MintOptions::default()).await?;
                 total_amount += proofs.total_amount()?;
             } else if mint_quote.expiry.le(&unix_time()) {
                 self.transaction_db
@@ -172,12 +173,7 @@ impl Wallet {
     /// }
     /// ```
     #[instrument(skip(self))]
-    pub async fn mint(
-        &self,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
+    pub async fn mint(&self, quote_id: &str, opts: MintOptions) -> Result<Proofs, Error> {
         // Check that mint is in store of mints
         if self
             .proof_db
@@ -206,11 +202,11 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
-        let premint_secrets = match &spending_conditions {
+        let premint_secrets = match &opts.spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
                 quote_info.amount,
-                &amount_split_target,
+                &opts.split_target,
                 spending_conditions,
             )?,
             None => PreMintSecrets::from_xpriv(
@@ -218,7 +214,7 @@ impl Wallet {
                 count,
                 self.xpriv,
                 quote_info.amount,
-                &amount_split_target,
+                &opts.split_target,
             )?,
         };
 
@@ -259,8 +255,21 @@ impl Wallet {
         self.transaction_db
             .remove_mint_quote(&quote_info.id)
             .await?;
+        self.transaction_db
+            .add_transaction(Transaction {
+                amount: proofs.total_amount()?,
+                direction: TransactionDirection::Incoming,
+                fee: Amount::ZERO,
+                mint_url: self.mint_url.clone(),
+                timestamp: unix_time(),
+                unit: quote_info.unit.clone(),
+                ys: proofs.ys()?,
+                memo: None,
+                metadata: HashMap::new(),
+            })
+            .await?;
 
-        if spending_conditions.is_none() {
+        if opts.spending_conditions.is_none() {
             tracing::debug!(
                 "Incrementing keyset {} counter by {}",
                 active_keyset_id,
@@ -290,4 +299,17 @@ impl Wallet {
 
         Ok(proofs)
     }
+}
+
+/// Mint Options
+#[derive(Debug, Clone, Default)]
+pub struct MintOptions {
+    /// Memo
+    pub memo: Option<String>,
+    /// User-defined Metadata
+    pub metadata: HashMap<String, String>,
+    /// Spending Conditions
+    pub spending_conditions: Option<SpendingConditions>,
+    /// Amount Split Target
+    pub split_target: SplitTarget,
 }

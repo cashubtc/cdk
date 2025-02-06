@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use anyhow::bail;
 use cdk_common::nut00::ProofsMethods;
-use cdk_common::MeltOptions;
+use cdk_common::MeltQuoteOptions;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 use uuid::Uuid;
@@ -29,7 +29,7 @@ impl Mint {
         unit: CurrencyUnit,
         method: PaymentMethod,
         request: String,
-        options: Option<MeltOptions>,
+        options: Option<MeltQuoteOptions>,
     ) -> Result<(), Error> {
         let mint_info = self.localstore.get_mint_info().await?;
         let nut05 = mint_info.nuts.nut05;
@@ -43,7 +43,7 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnsupportedUnit)?;
 
-        if matches!(options, Some(MeltOptions::Mpp { mpp: _ })) {
+        if matches!(options, Some(MeltQuoteOptions::Mpp { mpp: _ })) {
             // Verify there is no corresponding mint quote.
             // Otherwise a wallet is trying to pay someone internally, but
             // with a multi-part quote. And that's just not possible.

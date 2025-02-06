@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+
+use cdk_common::database::{Transaction, TransactionDirection};
+use cdk_common::util::unix_time;
 use tracing::instrument;
 
 use super::SendKind;
@@ -9,32 +13,37 @@ use crate::{Amount, Error, Wallet};
 impl Wallet {
     /// Send specific proofs
     #[instrument(skip(self))]
-    pub async fn send_proofs(&self, memo: Option<String>, proofs: Proofs) -> Result<Token, Error> {
+    pub async fn send_proofs(&self, proofs: Proofs, opts: SendOptions) -> Result<Token, Error> {
         let ys = proofs.ys()?;
-        self.proof_db.reserve_proofs(ys).await?;
+        self.proof_db.reserve_proofs(ys.clone()).await?;
+        self.transaction_db
+            .add_transaction(Transaction {
+                amount: proofs.total_amount()?,
+                direction: TransactionDirection::Outgoing,
+                fee: Amount::ZERO, // TODO track this?
+                mint_url: self.mint_url.clone(),
+                timestamp: unix_time(),
+                unit: self.unit.clone(),
+                ys,
+                memo: opts.memo.clone(),
+                metadata: opts.metadata,
+            })
+            .await?;
 
         Ok(Token::new(
             self.mint_url.clone(),
             proofs,
-            memo,
+            opts.memo,
             self.unit.clone(),
         ))
     }
 
     /// Send
     #[instrument(skip(self))]
-    pub async fn send(
-        &self,
-        amount: Amount,
-        memo: Option<String>,
-        conditions: Option<SpendingConditions>,
-        amount_split_target: &SplitTarget,
-        send_kind: &SendKind,
-        include_fees: bool,
-    ) -> Result<Token, Error> {
+    pub async fn send(&self, amount: Amount, opts: SendOptions) -> Result<Token, Error> {
         // If online send check mint for current keysets fees
         if matches!(
-            send_kind,
+            opts.send_kind,
             SendKind::OnlineExact | SendKind::OnlineTolerance(_)
         ) {
             if let Err(e) = self.get_active_mint_keyset().await {
@@ -48,26 +57,27 @@ impl Wallet {
         let available_proofs = self
             .get_proofs_with(
                 Some(vec![State::Unspent]),
-                conditions.clone().map(|c| vec![c]),
+                opts.spending_conditions.clone().map(|c| vec![c]),
             )
             .await?;
 
         let proofs_sum = available_proofs.total_amount()?;
 
         let available_proofs = if proofs_sum < amount {
-            match &conditions {
+            match &opts.spending_conditions {
                 Some(conditions) => {
                     tracing::debug!("Insufficient prrofs matching conditions attempting swap");
                     let unspent_proofs = self.get_unspent_proofs().await?;
                     let proofs_to_swap = self.select_proofs_to_swap(amount, unspent_proofs).await?;
 
+                    // TODO determine fees of this action
                     let proofs_with_conditions = self
                         .swap(
                             Some(amount),
                             SplitTarget::default(),
                             proofs_to_swap,
                             Some(conditions.clone()),
-                            include_fees,
+                            opts.include_fees,
                         )
                         .await?;
                     proofs_with_conditions.ok_or(Error::InsufficientFunds)
@@ -79,15 +89,16 @@ impl Wallet {
         };
 
         let selected = self
-            .select_proofs_to_send(amount, available_proofs, include_fees)
+            .select_proofs_to_send(amount, available_proofs, opts.include_fees)
             .await;
 
-        let send_proofs: Proofs = match (send_kind, selected, conditions.clone()) {
+        let send_proofs: Proofs = match (opts.send_kind, selected, opts.spending_conditions.clone())
+        {
             // Handle exact matches offline
             (SendKind::OfflineExact, Ok(selected_proofs), _) => {
                 let selected_proofs_amount = selected_proofs.total_amount()?;
 
-                let amount_to_send = match include_fees {
+                let amount_to_send = match opts.include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
                     false => amount,
                 };
@@ -103,7 +114,7 @@ impl Wallet {
             (SendKind::OnlineExact, Ok(selected_proofs), _) => {
                 let selected_proofs_amount = selected_proofs.total_amount()?;
 
-                let amount_to_send = match include_fees {
+                let amount_to_send = match opts.include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
                     false => amount,
                 };
@@ -114,8 +125,12 @@ impl Wallet {
                     tracing::info!("Could not select proofs exact while offline.");
                     tracing::info!("Attempting to select proofs and swapping");
 
-                    self.swap_from_unspent(amount, conditions, include_fees)
-                        .await?
+                    self.swap_from_unspent(
+                        amount,
+                        opts.spending_conditions.clone(),
+                        opts.include_fees,
+                    )
+                    .await?
                 }
             }
 
@@ -123,11 +138,11 @@ impl Wallet {
             (SendKind::OfflineTolerance(tolerance), Ok(selected_proofs), _) => {
                 let selected_proofs_amount = selected_proofs.total_amount()?;
 
-                let amount_to_send = match include_fees {
+                let amount_to_send = match opts.include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
                     false => amount,
                 };
-                if selected_proofs_amount - amount_to_send <= *tolerance {
+                if selected_proofs_amount - amount_to_send <= tolerance {
                     selected_proofs
                 } else {
                     tracing::info!("Selected proofs greater than tolerance. Must swap online");
@@ -140,23 +155,27 @@ impl Wallet {
                 tracing::info!("Could not select proofs with conditions while offline.");
                 tracing::info!("Attempting to select proofs without conditions and swapping");
 
-                self.swap_from_unspent(amount, conditions, include_fees)
+                self.swap_from_unspent(amount, opts.spending_conditions.clone(), opts.include_fees)
                     .await?
             }
 
             // Handle online tolerance with successful selection
             (SendKind::OnlineTolerance(tolerance), Ok(selected_proofs), _) => {
                 let selected_proofs_amount = selected_proofs.total_amount()?;
-                let amount_to_send = match include_fees {
+                let amount_to_send = match opts.include_fees {
                     true => amount + self.get_proofs_fee(&selected_proofs).await?,
                     false => amount,
                 };
-                if selected_proofs_amount - amount_to_send <= *tolerance {
+                if selected_proofs_amount - amount_to_send <= tolerance {
                     selected_proofs
                 } else {
                     tracing::info!("Could not select proofs while offline. Attempting swap");
-                    self.swap_from_unspent(amount, conditions, include_fees)
-                        .await?
+                    self.swap_from_unspent(
+                        amount,
+                        opts.spending_conditions.clone(),
+                        opts.include_fees,
+                    )
+                    .await?
                 }
             }
 
@@ -174,6 +193,23 @@ impl Wallet {
             }
         };
 
-        self.send_proofs(memo, send_proofs).await
+        self.send_proofs(send_proofs, opts).await
     }
+}
+
+/// Send Options
+#[derive(Debug, Clone, Default)]
+pub struct SendOptions {
+    /// Include Fees
+    pub include_fees: bool,
+    /// Memo
+    pub memo: Option<String>,
+    /// User-defined Metadata
+    pub metadata: HashMap<String, String>,
+    /// Send Kind
+    pub send_kind: SendKind,
+    /// Spending Conditions
+    pub spending_conditions: Option<SpendingConditions>,
+    /// Split Target
+    pub split_target: SplitTarget,
 }

@@ -820,13 +820,14 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT INTO transaction
-(id, amount, direction, mint_url, timestamp, unit, ys, memo, metadata)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+(id, amount, direction, fee, mint_url, timestamp, unit, ys, memo, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(transaction.id().to_string())
         .bind(u64::from(transaction.amount) as i64)
         .bind(transaction.direction.to_string())
+        .bind(u64::from(transaction.fee) as i64)
         .bind(transaction.mint_url.to_string())
         .bind(transaction.timestamp as i64)
         .bind(transaction.unit.to_string())
@@ -976,6 +977,7 @@ fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<wallet::MeltQuote, Error>
 fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
     let amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let direction: String = row.try_get("direction").map_err(Error::from)?;
+    let fee: i64 = row.try_get("fee").map_err(Error::from)?;
     let mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
     let timestamp: i64 = row.try_get("timestamp").map_err(Error::from)?;
     let unit: String = row.try_get("unit").map_err(Error::from)?;
@@ -986,6 +988,7 @@ fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
     Ok(Transaction {
         amount: Amount::from(amount as u64),
         direction: direction.parse().map_err(Error::from)?,
+        fee: Amount::from(fee as u64),
         mint_url: MintUrl::from_str(&mint_url)?,
         timestamp: timestamp as u64,
         unit: CurrencyUnit::from_str(&unit)?,
