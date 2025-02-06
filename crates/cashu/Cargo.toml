@@ -32,7 +32,7 @@ url = "2.3"
 utoipa = { version = "4", optional = true }
 serde_json = "1"
 serde_with = "3"
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "b59f7e652b6e174476119b9ea343251ead307019" }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "78522b3285d657dfd3c6463290f4018ee4f2554d" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
