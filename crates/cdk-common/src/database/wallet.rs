@@ -112,7 +112,7 @@ pub trait TransactionDatabase: Debug {
     /// Get transaction from storage
     async fn get_transaction(&self, id: &TransactionId) -> Result<Option<Transaction>, Error>;
     /// Get all transactions from storage that match the given criteria
-    async fn get_transactions(
+    async fn list_transactions(
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
@@ -172,7 +172,10 @@ impl Transaction {
     }
 
     pub fn net_amount(&self) -> Amount {
-        self.amount - self.fee
+        match self.direction {
+            TransactionDirection::Incoming => self.amount - self.fee,
+            TransactionDirection::Outgoing => self.amount + self.fee,
+        }
     }
 }
 

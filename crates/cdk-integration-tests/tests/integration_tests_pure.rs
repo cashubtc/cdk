@@ -1,5 +1,6 @@
 use std::assert_eq;
 
+use cdk::cdk_database::TransactionDirection;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::wallet::ReceiveOptions;
 use cdk::wallet::SendOptions;
@@ -17,6 +18,18 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
     fund_wallet(wallet_alice.clone(), 64).await?;
     let balance_alice = wallet_alice.total_balance().await?;
     assert_eq!(Amount::from(64), balance_alice);
+    let alice_txs = wallet_alice
+        .transaction_db
+        .list_transactions(None, None, None, None)
+        .await?;
+    assert_eq!(1, alice_txs.len());
+    let alice_tx = alice_txs
+        .first()
+        .ok_or(anyhow::anyhow!("No transaction found"))?;
+    assert_eq!(Amount::from(64), alice_tx.amount);
+    assert_eq!(TransactionDirection::Incoming, alice_tx.direction);
+    assert_eq!(Amount::ZERO, alice_tx.fee);
+    assert_eq!(wallet_alice.mint_url, alice_tx.mint_url);
 
     // Alice wants to send 40 sats, which internally swaps
     let token = wallet_alice
@@ -33,6 +46,18 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
 
     assert_eq!(Amount::from(40), received_amount);
     assert_eq!(Amount::from(40), wallet_carol.total_balance().await?);
+    let carol_txs = wallet_alice
+        .transaction_db
+        .list_transactions(None, None, None, None)
+        .await?;
+    assert_eq!(1, carol_txs.len());
+    let carol_tx = carol_txs
+        .first()
+        .ok_or(anyhow::anyhow!("No transaction found"))?;
+    assert_eq!(Amount::from(40), carol_tx.amount);
+    assert_eq!(TransactionDirection::Incoming, carol_tx.direction);
+    assert_eq!(Amount::ZERO, carol_tx.fee);
+    assert_eq!(wallet_carol.mint_url, carol_tx.mint_url);
 
     Ok(())
 }

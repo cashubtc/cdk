@@ -758,7 +758,7 @@ impl WalletTransactionDatabase for WalletRedbDatabase {
         Ok(None)
     }
 
-    async fn get_transactions(
+    async fn list_transactions(
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,

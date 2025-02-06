@@ -867,7 +867,7 @@ WHERE id=?;
         Ok(Some(sqlite_row_to_transaction(&rec)?))
     }
 
-    async fn get_transactions(
+    async fn list_transactions(
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
