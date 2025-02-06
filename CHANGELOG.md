@@ -23,24 +23,30 @@
 
 #[Unrelased]
 
+#[v0.7.0]
 ### Changed
+* Moved db traits to `cdk-common` ([crodas]).
+* Moved other commin types to `cdk-common` ([crodas]).
+* `Wallet::mint` returns the minted `Proofs` and not just the amount ([dacidcaseria]).
 
 ### Added
 * `Token::to_raw_bytes` serializes generic token to raw bytes ([lollerfirst]).
 * `Token::try_from` for `Vec<u8>` constructs a generic token from raw bytes ([lollerfirst]).
 * `TokenV4::to_raw_bytes()` serializes a TokenV4 to raw bytes following the spec ([lollerfirst]).
 * `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
+* cdk-mint-rpc: Mint management gRPC client and server ([thesimpekid]).
+* cdk-common: cdk specific types and traits ([crodas]).
+* cashu: Core types and functions defined in NUTs ([crodas]).
 
 ### Fixed
 * Multimint unit check when wallet receiving token ([thesimplekid]).
 * Mint start up with most recent keyset after a rotation ([thesimplekid]).
 
-### Removed
 
 #[cdk:v0.6.1,cdk-mintd:v0.6.2]
 ### Fixed
 cdk: Missing check on mint that outputs equals the quote amount ([thesimplekid]).
-cdk: Reset mint quote status if in state that cannot continue ([thesimeokid]).
+cdk: Reset mint quote status if in state that cannot continue ([thesimplekid]).
 
 #[0.6.1]
 ### Added
