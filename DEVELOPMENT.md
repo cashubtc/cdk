@@ -86,6 +86,8 @@ just test
 just itest REDB/SQLITE/MEMEORY
 ```
 
+NOTE: if this command fails on macos change the nix channel to unstable (in the `flake.nix` file modify `nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";` to `nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";`)
+
 ### Running Format
 ```bash
 just format
