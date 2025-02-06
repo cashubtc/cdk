@@ -46,7 +46,7 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
 
     assert_eq!(Amount::from(40), received_amount);
     assert_eq!(Amount::from(40), wallet_carol.total_balance().await?);
-    let carol_txs = wallet_alice
+    let carol_txs = wallet_carol
         .transaction_db
         .list_transactions(None, None, None, None)
         .await?;
