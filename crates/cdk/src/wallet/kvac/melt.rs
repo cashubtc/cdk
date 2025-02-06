@@ -149,9 +149,6 @@ impl Wallet {
                 if response.fee_return > Amount::from(0) {
                     println!("received fee return: {}", response.fee_return);
 
-                    // Convert fee return into scalar
-                    let fee_return_tweak = Scalar::from(response.fee_return.0);
-
                     // Apply a tweak to the first output, adding the fee return
                     outputs
                         .get_mut(0)
@@ -159,7 +156,9 @@ impl Wallet {
                     
                     outputs
                         .get_mut(0)
-                        .expect("outputs has length 2").attributes.0.a.tweak_add(&fee_return_tweak);
+                        .expect("outputs has length 2")
+                        .attributes.0
+                        .tweak_amount(response.fee_return.into());
                 }
 
                 // Assemble new coins

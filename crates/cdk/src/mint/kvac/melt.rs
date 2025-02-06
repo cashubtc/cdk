@@ -1,6 +1,6 @@
 use crate::{Mint, Error};
 use anyhow::bail;
-use cashu_kvac::{secp::{GroupElement, Scalar}, transcript::CashuTranscript};
+use cashu_kvac::{secp::{GroupElement, TweakKind}, transcript::CashuTranscript};
 use cdk_common::{
     amount::to_unit,
     common::LnKey,
@@ -380,15 +380,12 @@ impl Mint {
             // Do this to check underflow anyway
             let overpaid = i64::try_from(amount_overpaid)?;
 
-            // Tweak first output to add the overpaid amount
-            let scalar_tweak = Scalar::from(overpaid as u64);
-
             // Ma' = Ma + o*G_amount
             outputs
                 .get_mut(0)
                 .expect("outputs have length == 2")
                 .commitments.0
-                .combine_add(&(cashu_kvac::generators::GENERATORS.G_amount.clone() * &scalar_tweak));
+                .tweak(TweakKind::AMOUNT, overpaid as u64);
         }
 
         // Collect nullifiers
