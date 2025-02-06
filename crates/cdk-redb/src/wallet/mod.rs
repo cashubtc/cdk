@@ -42,7 +42,8 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
-const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
+// <Transaction_id, Transaction>
+const TRANSACTIONS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("transactions");
 
 const DATABASE_VERSION: u32 = 2;
 
@@ -135,7 +136,7 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
-                        let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
+                        let _ = write_txn.open_table(TRANSACTIONS_TABLE)?;
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
 
@@ -716,32 +717,100 @@ impl WalletTransactionDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    async fn add_transaction(&self, _transaction: Transaction) -> Result<(), database::Error> {
-        unimplemented!()
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    transaction.id().to_string().as_str(),
+                    serde_json::to_string(&transaction)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
     }
 
     async fn get_transaction(
         &self,
-        _transaction_id: &TransactionId,
+        transaction_id: &TransactionId,
     ) -> Result<Option<Transaction>, database::Error> {
-        unimplemented!()
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let table = read_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .map_err(Error::from)?;
+
+        if let Some(transaction) = table
+            .get(transaction_id.to_string().as_str())
+            .map_err(Error::from)?
+        {
+            return Ok(serde_json::from_str(transaction.value()).map_err(Error::from)?);
+        }
+
+        Ok(None)
     }
 
     async fn get_transactions(
         &self,
-        _mint_url: Option<MintUrl>,
-        _unit: Option<CurrencyUnit>,
-        _start_timestamp: Option<u64>,
-        _end_timestamp: Option<u64>,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        start_timestamp: Option<u64>,
+        end_timestamp: Option<u64>,
     ) -> Result<Vec<Transaction>, database::Error> {
-        unimplemented!()
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let table = read_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .map_err(Error::from)?;
+
+        let transactions: Vec<Transaction> = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .filter_map(|(_id, transaction)| {
+                let transaction: Transaction = serde_json::from_str(transaction.value()).ok()?;
+
+                if transaction.matches_criteria(
+                    mint_url.clone(),
+                    unit.clone(),
+                    start_timestamp,
+                    end_timestamp,
+                ) {
+                    Some(transaction)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(transactions)
     }
 
     async fn remove_transaction(
         &self,
-        _transaction_id: &TransactionId,
+        transaction_id: &TransactionId,
     ) -> Result<(), database::Error> {
-        unimplemented!()
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(MELT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            table
+                .remove(transaction_id.to_string().as_str())
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
     }
 }
 

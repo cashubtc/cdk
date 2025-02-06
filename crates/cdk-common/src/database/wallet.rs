@@ -139,6 +139,36 @@ impl Transaction {
     pub fn id(&self) -> TransactionId {
         TransactionId::new(self.ys.clone())
     }
+
+    pub fn matches_criteria(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        start_timestamp: Option<u64>,
+        end_timestamp: Option<u64>,
+    ) -> bool {
+        if let Some(mint_url) = mint_url {
+            if self.mint_url != mint_url {
+                return false;
+            }
+        }
+        if let Some(unit) = unit {
+            if self.unit != unit {
+                return false;
+            }
+        }
+        if let Some(start_timestamp) = start_timestamp {
+            if self.timestamp < start_timestamp {
+                return false;
+            }
+        }
+        if let Some(end_timestamp) = end_timestamp {
+            if self.timestamp > end_timestamp {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl Ord for Transaction {
@@ -161,6 +191,27 @@ impl PartialOrd for Transaction {
 pub enum TransactionDirection {
     Incoming,
     Outgoing,
+}
+
+impl std::fmt::Display for TransactionDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransactionDirection::Incoming => write!(f, "Incoming"),
+            TransactionDirection::Outgoing => write!(f, "Outgoing"),
+        }
+    }
+}
+
+impl FromStr for TransactionDirection {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "Incoming" => Ok(Self::Incoming),
+            "Outgoing" => Ok(Self::Outgoing),
+            _ => Err(Error::InvalidTransactionDirection),
+        }
+    }
 }
 
 /// Transaction ID

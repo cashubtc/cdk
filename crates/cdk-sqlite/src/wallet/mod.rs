@@ -632,57 +632,6 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
     })
 }
 
-fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
-    let row_id: String = row.try_get("id").map_err(Error::from)?;
-    let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
-    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
-    let row_unit: String = row.try_get("unit").map_err(Error::from)?;
-    let row_request: String = row.try_get("request").map_err(Error::from)?;
-    let row_state: String = row.try_get("state").map_err(Error::from)?;
-    let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
-    let row_secret: Option<String> = row.try_get("secret_key").map_err(Error::from)?;
-
-    let state = MintQuoteState::from_str(&row_state)?;
-
-    let secret_key = row_secret
-        .map(|key| SecretKey::from_str(&key))
-        .transpose()?;
-
-    Ok(MintQuote {
-        id: row_id,
-        mint_url: MintUrl::from_str(&row_mint_url)?,
-        amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
-        request: row_request,
-        state,
-        expiry: row_expiry as u64,
-        secret_key,
-    })
-}
-
-fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<wallet::MeltQuote, Error> {
-    let row_id: String = row.try_get("id").map_err(Error::from)?;
-    let row_unit: String = row.try_get("unit").map_err(Error::from)?;
-    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
-    let row_request: String = row.try_get("request").map_err(Error::from)?;
-    let row_fee_reserve: i64 = row.try_get("fee_reserve").map_err(Error::from)?;
-    let row_state: String = row.try_get("state").map_err(Error::from)?;
-    let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
-    let row_preimage: Option<String> = row.try_get("payment_preimage").map_err(Error::from)?;
-
-    let state = MeltQuoteState::from_str(&row_state)?;
-    Ok(wallet::MeltQuote {
-        id: row_id,
-        amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
-        request: row_request,
-        fee_reserve: Amount::from(row_fee_reserve as u64),
-        state,
-        expiry: row_expiry as u64,
-        payment_preimage: row_preimage,
-    })
-}
-
 fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
     let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
@@ -867,33 +816,181 @@ WHERE id=?
 
         Ok(())
     }
-    async fn add_transaction(&self, _transaction: Transaction) -> Result<(), database::Error> {
-        unimplemented!()
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
+        sqlx::query(
+            r#"
+INSERT INTO transaction
+(id, amount, direction, mint_url, timestamp, unit, ys, memo, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        "#,
+        )
+        .bind(transaction.id().to_string())
+        .bind(u64::from(transaction.amount) as i64)
+        .bind(transaction.direction.to_string())
+        .bind(transaction.mint_url.to_string())
+        .bind(transaction.timestamp as i64)
+        .bind(transaction.unit.to_string())
+        .bind(serde_json::to_string(&transaction.ys).map_err(Error::from)?)
+        .bind(transaction.memo)
+        .bind(serde_json::to_string(&transaction.metadata).map_err(Error::from)?)
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
     }
 
     async fn get_transaction(
         &self,
-        _transaction_id: &TransactionId,
+        transaction_id: &TransactionId,
     ) -> Result<Option<Transaction>, database::Error> {
-        unimplemented!()
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM transaction
+WHERE id=?;
+        "#,
+        )
+        .bind(transaction_id.to_string())
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(Some(sqlite_row_to_transaction(&rec)?))
     }
 
     async fn get_transactions(
         &self,
-        _mint_url: Option<MintUrl>,
-        _unit: Option<CurrencyUnit>,
-        _start_timestamp: Option<u64>,
-        _end_timestamp: Option<u64>,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        start_timestamp: Option<u64>,
+        end_timestamp: Option<u64>,
     ) -> Result<Vec<Transaction>, database::Error> {
-        unimplemented!()
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM transaction
+        "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        let transactions: Vec<_> = rec
+            .iter()
+            .map(sqlite_row_to_transaction)
+            .collect::<Result<_, _>>()?;
+
+        Ok(transactions
+            .into_iter()
+            .filter(|t| {
+                t.matches_criteria(
+                    mint_url.clone(),
+                    unit.clone(),
+                    start_timestamp,
+                    end_timestamp,
+                )
+            })
+            .collect())
     }
 
     async fn remove_transaction(
         &self,
-        _transaction_id: &TransactionId,
+        transaction_id: &TransactionId,
     ) -> Result<(), database::Error> {
-        unimplemented!()
+        sqlx::query(
+            r#"
+DELETE FROM transaction
+WHERE id=?
+        "#,
+        )
+        .bind(transaction_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
     }
 }
 
 impl WalletDatabase for WalletSqliteDatabase {}
+
+fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
+    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
+    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let row_unit: String = row.try_get("unit").map_err(Error::from)?;
+    let row_request: String = row.try_get("request").map_err(Error::from)?;
+    let row_state: String = row.try_get("state").map_err(Error::from)?;
+    let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+    let row_secret: Option<String> = row.try_get("secret_key").map_err(Error::from)?;
+
+    let state = MintQuoteState::from_str(&row_state)?;
+
+    let secret_key = row_secret
+        .map(|key| SecretKey::from_str(&key))
+        .transpose()?;
+
+    Ok(MintQuote {
+        id: row_id,
+        mint_url: MintUrl::from_str(&row_mint_url)?,
+        amount: Amount::from(row_amount as u64),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
+        request: row_request,
+        state,
+        expiry: row_expiry as u64,
+        secret_key,
+    })
+}
+
+fn sqlite_row_to_melt_quote(row: &SqliteRow) -> Result<wallet::MeltQuote, Error> {
+    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_unit: String = row.try_get("unit").map_err(Error::from)?;
+    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let row_request: String = row.try_get("request").map_err(Error::from)?;
+    let row_fee_reserve: i64 = row.try_get("fee_reserve").map_err(Error::from)?;
+    let row_state: String = row.try_get("state").map_err(Error::from)?;
+    let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
+    let row_preimage: Option<String> = row.try_get("payment_preimage").map_err(Error::from)?;
+
+    let state = MeltQuoteState::from_str(&row_state)?;
+    Ok(wallet::MeltQuote {
+        id: row_id,
+        amount: Amount::from(row_amount as u64),
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
+        request: row_request,
+        fee_reserve: Amount::from(row_fee_reserve as u64),
+        state,
+        expiry: row_expiry as u64,
+        payment_preimage: row_preimage,
+    })
+}
+
+fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
+    let amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let direction: String = row.try_get("direction").map_err(Error::from)?;
+    let mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
+    let timestamp: i64 = row.try_get("timestamp").map_err(Error::from)?;
+    let unit: String = row.try_get("unit").map_err(Error::from)?;
+    let ys: String = row.try_get("ys").map_err(Error::from)?;
+    let memo: Option<String> = row.try_get("memo").map_err(Error::from)?;
+    let metadata: String = row.try_get("metadata").map_err(Error::from)?;
+
+    Ok(Transaction {
+        amount: Amount::from(amount as u64),
+        direction: direction.parse().map_err(Error::from)?,
+        mint_url: MintUrl::from_str(&mint_url)?,
+        timestamp: timestamp as u64,
+        unit: CurrencyUnit::from_str(&unit)?,
+        ys: serde_json::from_str(&ys).map_err(Error::from)?,
+        memo,
+        metadata: serde_json::from_str(&metadata).map_err(Error::from)?,
+    })
+}

@@ -363,25 +363,12 @@ impl WalletTransactionDatabase for WalletMemoryDatabase {
             .clone()
             .into_iter()
             .filter(|t| {
-                let mut matches = true;
-
-                if let Some(mint_url) = &mint_url {
-                    matches &= t.mint_url == *mint_url;
-                }
-
-                if let Some(unit) = &unit {
-                    matches &= t.unit == *unit;
-                }
-
-                if let Some(start_timestamp) = start_timestamp {
-                    matches &= t.timestamp >= start_timestamp;
-                }
-
-                if let Some(end_timestamp) = end_timestamp {
-                    matches &= t.timestamp <= end_timestamp;
-                }
-
-                matches
+                t.matches_criteria(
+                    mint_url.clone(),
+                    unit.clone(),
+                    start_timestamp,
+                    end_timestamp,
+                )
             })
             .collect();
 

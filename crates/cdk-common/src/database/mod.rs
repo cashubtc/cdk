@@ -38,4 +38,7 @@ pub enum Error {
     /// Hex error
     #[error(transparent)]
     HexError(#[from] hex::Error),
+    /// Invalid Transaction Direction
+    #[error("Invalid Transaction Direction")]
+    InvalidTransactionDirection,
 }
