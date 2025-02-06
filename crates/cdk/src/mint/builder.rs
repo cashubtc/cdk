@@ -16,19 +16,18 @@ use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod,
 };
-use crate::types::{LnKey, QuoteTTL};
+use crate::types::LnKey;
 
 /// Cashu Mint
 #[derive(Default)]
 pub struct MintBuilder {
     /// Mint Info
-    mint_info: MintInfo,
+    pub mint_info: MintInfo,
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
-    quote_ttl: Option<QuoteTTL>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
 }
 
@@ -175,15 +174,6 @@ impl MintBuilder {
         self
     }
 
-    /// Set quote ttl
-    pub fn with_quote_ttl(mut self, mint_ttl: u64, melt_ttl: u64) -> Self {
-        let quote_ttl = QuoteTTL { mint_ttl, melt_ttl };
-
-        self.quote_ttl = Some(quote_ttl);
-
-        self
-    }
-
     /// Set pubkey
     pub fn with_pubkey(mut self, pubkey: crate::nuts::PublicKey) -> Self {
         self.mint_info.pubkey = Some(pubkey);
@@ -222,11 +212,6 @@ impl MintBuilder {
             .localstore
             .clone()
             .ok_or(anyhow!("Localstore not set"))?;
-        localstore.set_mint_info(self.mint_info.clone()).await?;
-
-        localstore
-            .set_quote_ttl(self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?)
-            .await?;
 
         Ok(Mint::new(
             self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
