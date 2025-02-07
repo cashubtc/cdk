@@ -22,7 +22,7 @@ impl Mint {
             .len()
             .ne(&proof_count)
         {
-            return Err(Error::DuplicateProofs);
+            return Err(Error::DuplicateInputs);
         }
 
         Ok(())
@@ -39,7 +39,7 @@ impl Mint {
             .len()
             .ne(&output_count)
         {
-            return Err(Error::DuplicateProofs);
+            return Err(Error::DuplicateOutputs);
         }
 
         Ok(())
@@ -76,7 +76,7 @@ impl Mint {
         // now
         if keyset_units.len() != 1 {
             tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
-            return Err(Error::UnsupportedUnit);
+            return Err(Error::MultipleUnits);
         }
 
         Ok(keyset_units
@@ -110,7 +110,7 @@ impl Mint {
         // now
         if keyset_units.len() != 1 {
             tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
-            return Err(Error::UnsupportedUnit);
+            return Err(Error::MultipleUnits);
         }
 
         Ok(keyset_units
