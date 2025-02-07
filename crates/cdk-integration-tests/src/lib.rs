@@ -154,6 +154,7 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::incompatible_msrv)]
 pub async fn wait_for_mint_to_be_paid(
     wallet: &Wallet,
     mint_quote_id: &str,
@@ -165,16 +166,36 @@ pub async fn wait_for_mint_to_be_paid(
         ]))
         .await;
 
-    // Create the timeout future
+    // Create the wait future that handles both subscription and periodic state checks
     let wait_future = async {
-        while let Some(msg) = subscription.recv().await {
-            if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-                if response.state == MintQuoteState::Paid {
-                    return Ok(());
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+
+        loop {
+            tokio::select! {
+                // Check subscription messages
+                Some(msg) = subscription.recv() => {
+                    if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+                        if response.state == MintQuoteState::Paid {
+                            return Ok(());
+                        }
+                    }
+                }
+                // Periodic state check
+                _ = interval.tick() => {
+                    match wallet.mint_quote_state(mint_quote_id).await {
+                        Ok(state) => {
+                            if state.state == MintQuoteState::Paid {
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            // Log the error but continue waiting, as this is just a backup check
+                            tracing::warn!("Failed to check mint quote state: {}", e);
+                        }
+                    }
                 }
             }
         }
-        Ok(())
     };
 
     // Wait for either the payment to complete or timeout
