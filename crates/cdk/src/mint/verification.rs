@@ -161,7 +161,7 @@ impl Mint {
     /// **NOTE: This does not check if inputs have been spent
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
         Mint::check_inputs_unique(inputs)?;
-        let unit = self.verify_inputs_keyset(&inputs).await?;
+        let unit = self.verify_inputs_keyset(inputs).await?;
         let amount = inputs.total_amount()?;
 
         for proof in inputs {

@@ -338,7 +338,7 @@ impl Mint {
             let Verification {
                 amount: _,
                 unit: output_unit,
-            } = self.verify_outputs(&outputs).await?;
+            } = self.verify_outputs(outputs).await?;
 
             if input_unit != output_unit {
                 return Err(Error::UnsupportedUnit);
