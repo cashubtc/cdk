@@ -37,6 +37,18 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
         .await?;
     assert_eq!(Amount::from(40), token.proofs().total_amount()?);
     assert_eq!(Amount::from(24), wallet_alice.total_balance().await?);
+    let alice_tx = wallet_alice
+        .transaction_db
+        .list_transactions(None, None, None, None)
+        .await?;
+    assert_eq!(2, alice_tx.len());
+    let alice_tx = alice_tx
+        .first()
+        .ok_or(anyhow::anyhow!("No transaction found"))?;
+    assert_eq!(Amount::from(40), alice_tx.amount);
+    assert_eq!(TransactionDirection::Outgoing, alice_tx.direction);
+    assert_eq!(Amount::ZERO, alice_tx.fee);
+    assert_eq!(wallet_alice.mint_url, alice_tx.mint_url);
 
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())?;

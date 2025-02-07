@@ -6,6 +6,7 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::{MeltQuoteOptions, Mpp};
 use cdk::amount::{Amount, SplitTarget};
+use cdk::cdk_database::TransactionDirection;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -98,6 +99,17 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     assert!(mint_amount == 100.into());
 
+    let txs = wallet
+        .transaction_db
+        .list_transactions(None, None, None, None)
+        .await?;
+    assert_eq!(txs.len(), 1);
+    let tx = txs.first().ok_or(anyhow::anyhow!("No transaction found"))?;
+    assert_eq!(tx.amount, 100.into());
+    assert_eq!(tx.direction, TransactionDirection::Incoming);
+    assert_eq!(tx.fee, Amount::ZERO);
+    assert_eq!(tx.mint_url, wallet.mint_url);
+
     let invoice = lnd_client.create_invoice(Some(50)).await?;
 
     let melt = wallet.melt_quote(invoice, None).await?;
@@ -148,6 +160,16 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     assert_eq!(payload.amount + payload.fee_reserve, 100.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Paid);
+
+    let txs = wallet
+        .transaction_db
+        .list_transactions(None, None, None, None)
+        .await?;
+    let tx = txs.first().ok_or(anyhow::anyhow!("No transaction found"))?;
+    assert_eq!(tx.amount, 50.into());
+    assert_eq!(tx.direction, TransactionDirection::Outgoing);
+    assert_eq!(tx.fee, Amount::ZERO);
+    assert_eq!(tx.mint_url, wallet.mint_url);
 
     Ok(())
 }
