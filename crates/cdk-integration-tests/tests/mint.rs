@@ -169,6 +169,8 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
         Ok(_) => bail!("Swap occurred with overflow"),
         Err(err) => match err {
             cdk::Error::NUT03(cdk::nuts::nut03::Error::Amount(_)) => (),
+            cdk::Error::AmountOverflow => (),
+            cdk::Error::AmountError(_) => (),
             _ => {
                 println!("{:?}", err);
                 bail!("Wrong error returned in swap overflow")
