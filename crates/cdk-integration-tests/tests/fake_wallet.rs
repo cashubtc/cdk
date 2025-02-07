@@ -955,7 +955,10 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
         Err(err) => match err {
             cdk::Error::DuplicateInputs => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                bail!(
+                    "Wrong mint error returned, expected duplicate inputs: {}",
+                    err.to_string()
+                );
             }
         },
         Ok(_) => {
@@ -976,7 +979,10 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
         Err(err) => match err {
             cdk::Error::DuplicateOutputs => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                bail!(
+                    "Wrong mint error returned, expected duplicate outputs: {}",
+                    err.to_string()
+                );
             }
         },
         Ok(_) => {

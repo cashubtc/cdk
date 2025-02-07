@@ -295,18 +295,12 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let input_ys = melt_request.inputs.ys()?;
-
-        self.localstore
-            .add_proofs(melt_request.inputs.clone(), None)
-            .await?;
-
-        self.check_ys_spendable(&input_ys, State::Pending).await?;
-
         let Verification {
             amount: input_amount,
             unit: input_unit,
         } = self.verify_inputs(&melt_request.inputs).await?;
+
+        let input_ys = melt_request.inputs.ys()?;
 
         let fee = self.get_proofs_fee(&melt_request.inputs).await?;
 
@@ -327,6 +321,12 @@ impl Mint {
                 (fee + quote.fee_reserve).into(),
             ));
         }
+
+        self.localstore
+            .add_proofs(melt_request.inputs.clone(), None)
+            .await?;
+
+        self.check_ys_spendable(&input_ys, State::Pending).await?;
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
 
