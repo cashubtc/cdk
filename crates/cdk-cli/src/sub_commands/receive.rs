@@ -1,14 +1,11 @@
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use cdk::cdk_database::{self, WalletDatabase};
 use cdk::nuts::{SecretKey, Token};
-use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::Wallet;
+use cdk::wallet::{ReceiveOptions, WalletBuilder};
 use cdk::Amount;
 use clap::Args;
 use nostr_sdk::nips::nip04;
@@ -37,8 +34,7 @@ pub struct ReceiveSubCommand {
 
 pub async fn receive(
     multi_mint_wallet: &MultiMintWallet,
-    localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
-    seed: &[u8],
+    builder: WalletBuilder,
     sub_command_args: &ReceiveSubCommand,
 ) -> Result<()> {
     let mut signing_keys = Vec::new();
@@ -59,19 +55,14 @@ pub async fn receive(
             .collect::<Result<Vec<SecretKey>, _>>()?;
         signing_keys.append(&mut s_keys);
     }
+    let mut opts = ReceiveOptions {
+        p2pk_signing_keys: signing_keys,
+        preimages: sub_command_args.preimage.clone(),
+        ..Default::default()
+    };
 
     let amount = match &sub_command_args.token {
-        Some(token_str) => {
-            receive_token(
-                multi_mint_wallet,
-                localstore,
-                seed,
-                token_str,
-                &signing_keys,
-                &sub_command_args.preimage,
-            )
-            .await?
-        }
+        Some(token_str) => receive_token(multi_mint_wallet, builder, token_str, opts).await?,
         None => {
             //wallet.add_p2pk_signing_key(nostr_signing_key).await;
             let nostr_key = match sub_command_args.nostr_key.as_ref() {
@@ -86,26 +77,16 @@ pub async fn receive(
             let nostr_key =
                 nostr_key.ok_or(anyhow!("Nostr key required if token is not provided"))?;
 
-            signing_keys.push(nostr_key.clone());
+            opts.p2pk_signing_keys.push(nostr_key.clone());
 
             let relays = sub_command_args.relay.clone();
-            let since = localstore
-                .get_nostr_last_checked(&nostr_key.public_key())
-                .await?;
 
-            let tokens = nostr_receive(relays, nostr_key.clone(), since).await?;
+            let tokens = nostr_receive(relays, nostr_key.clone(), None).await?;
 
             let mut total_amount = Amount::ZERO;
             for token_str in &tokens {
-                match receive_token(
-                    multi_mint_wallet,
-                    localstore.clone(),
-                    seed,
-                    token_str,
-                    &signing_keys,
-                    &sub_command_args.preimage,
-                )
-                .await
+                match receive_token(multi_mint_wallet, builder.clone(), token_str, opts.clone())
+                    .await
                 {
                     Ok(amount) => {
                         total_amount += amount;
@@ -115,10 +96,6 @@ pub async fn receive(
                     }
                 }
             }
-
-            localstore
-                .add_nostr_last_checked(nostr_key.public_key(), unix_time() as u32)
-                .await?;
             total_amount
         }
     };
@@ -130,11 +107,9 @@ pub async fn receive(
 
 async fn receive_token(
     multi_mint_wallet: &MultiMintWallet,
-    localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
-    seed: &[u8],
+    builder: WalletBuilder,
     token_str: &str,
-    signing_keys: &[SecretKey],
-    preimage: &[String],
+    opts: ReceiveOptions,
 ) -> Result<Amount> {
     let token: Token = Token::from_str(token_str)?;
 
@@ -143,19 +118,11 @@ async fn receive_token(
     let wallet_key = WalletKey::new(mint_url.clone(), token.unit().unwrap_or_default());
 
     if multi_mint_wallet.get_wallet(&wallet_key).await.is_none() {
-        let wallet = Wallet::new(
-            &mint_url.to_string(),
-            token.unit().unwrap_or_default(),
-            localstore,
-            seed,
-            None,
-        )?;
+        let wallet = builder.build(mint_url.clone(), token.unit().unwrap_or_default())?;
         multi_mint_wallet.add_wallet(wallet).await;
     }
 
-    let amount = multi_mint_wallet
-        .receive(token_str, signing_keys, preimage)
-        .await?;
+    let amount = multi_mint_wallet.receive(token_str, opts).await?;
     Ok(amount)
 }
 

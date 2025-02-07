@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use cdk_common::database::{Transaction, TransactionDirection};
 use tracing::instrument;
 
 use super::MintQuote;
@@ -17,10 +20,11 @@ impl Wallet {
     /// Mint Quote
     /// # Synopsis
     /// ```rust
+    /// use std::str::FromStr;
     /// use std::sync::Arc;
     ///
     /// use cdk::amount::Amount;
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::mint_url::MintUrl;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
     /// use rand::Rng;
@@ -28,11 +32,10 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    ///     let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -51,7 +54,7 @@ impl Wallet {
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let mint_method_settings = self
-                .localstore
+                .proof_db
                 .get_mint(mint_url.clone())
                 .await?
                 .ok_or(Error::IncorrectMint)?
@@ -87,7 +90,7 @@ impl Wallet {
             secret_key: Some(secret_key),
         };
 
-        self.localstore.add_mint_quote(quote.clone()).await?;
+        self.transaction_db.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -100,12 +103,12 @@ impl Wallet {
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let response = self.client.get_mint_quote_status(quote_id).await?;
 
-        match self.localstore.get_mint_quote(quote_id).await? {
+        match self.transaction_db.get_mint_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                self.localstore.add_mint_quote(quote).await?;
+                self.transaction_db.add_mint_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote mint {} unknown", quote_id);
@@ -118,7 +121,7 @@ impl Wallet {
     /// Check status of pending mint quotes
     #[instrument(skip(self))]
     pub async fn check_all_mint_quotes(&self) -> Result<Amount, Error> {
-        let mint_quotes = self.localstore.get_mint_quotes().await?;
+        let mint_quotes = self.transaction_db.get_mint_quotes().await?;
         let mut total_amount = Amount::ZERO;
 
         for mint_quote in mint_quotes {
@@ -126,12 +129,12 @@ impl Wallet {
 
             if mint_quote_response.state == MintQuoteState::Paid {
                 // TODO: Need to pass in keys here
-                let proofs = self
-                    .mint(&mint_quote.id, SplitTarget::default(), None)
-                    .await?;
+                let proofs = self.mint(&mint_quote.id, MintOptions::default()).await?;
                 total_amount += proofs.total_amount()?;
             } else if mint_quote.expiry.le(&unix_time()) {
-                self.localstore.remove_mint_quote(&mint_quote.id).await?;
+                self.transaction_db
+                    .remove_mint_quote(&mint_quote.id)
+                    .await?;
             }
         }
         Ok(total_amount)
@@ -140,45 +143,40 @@ impl Wallet {
     /// Mint
     /// # Synopsis
     /// ```rust
+    /// use std::str::FromStr;
     /// use std::sync::Arc;
     ///
     /// use anyhow::Result;
-    /// use cdk::amount::{Amount, SplitTarget};
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk::amount::Amount;
+    /// use cdk::mint_url::MintUrl;
     /// use cdk::nuts::nut00::ProofsMethods;
     /// use cdk::nuts::CurrencyUnit;
-    /// use cdk::wallet::Wallet;
+    /// use cdk::wallet::{MintOptions, Wallet};
     /// use rand::Rng;
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
     ///     let quote_id = quote.id;
     ///     // To be called after quote request is paid
-    ///     let minted_proofs = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    ///     let minted_proofs = wallet.mint(&quote_id, MintOptions::default()).await?;
     ///     let minted_amount = minted_proofs.total_amount()?;
     ///
     ///     Ok(())
     /// }
     /// ```
     #[instrument(skip(self))]
-    pub async fn mint(
-        &self,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
+    pub async fn mint(&self, quote_id: &str, opts: MintOptions) -> Result<Proofs, Error> {
         // Check that mint is in store of mints
         if self
-            .localstore
+            .proof_db
             .get_mint(self.mint_url.clone())
             .await?
             .is_none()
@@ -186,7 +184,7 @@ impl Wallet {
             self.get_mint_info().await?;
         }
 
-        let quote_info = self.localstore.get_mint_quote(quote_id).await?;
+        let quote_info = self.transaction_db.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
@@ -200,18 +198,15 @@ impl Wallet {
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
+        let count = self.proof_db.get_keyset_counter(&active_keyset_id).await?;
 
         let count = count.map_or(0, |c| c + 1);
 
-        let premint_secrets = match &spending_conditions {
+        let premint_secrets = match &opts.spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
                 quote_info.amount,
-                &amount_split_target,
+                &opts.split_target,
                 spending_conditions,
             )?,
             None => PreMintSecrets::from_xpriv(
@@ -219,7 +214,7 @@ impl Wallet {
                 count,
                 self.xpriv,
                 quote_info.amount,
-                &amount_split_target,
+                &opts.split_target,
             )?,
         };
 
@@ -257,9 +252,24 @@ impl Wallet {
         )?;
 
         // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        self.transaction_db
+            .remove_mint_quote(&quote_info.id)
+            .await?;
+        self.transaction_db
+            .add_transaction(Transaction {
+                amount: proofs.total_amount()?,
+                direction: TransactionDirection::Incoming,
+                fee: Amount::ZERO,
+                mint_url: self.mint_url.clone(),
+                timestamp: unix_time(),
+                unit: quote_info.unit.clone(),
+                ys: proofs.ys()?,
+                memo: None,
+                metadata: HashMap::new(),
+            })
+            .await?;
 
-        if spending_conditions.is_none() {
+        if opts.spending_conditions.is_none() {
             tracing::debug!(
                 "Incrementing keyset {} counter by {}",
                 active_keyset_id,
@@ -267,7 +277,7 @@ impl Wallet {
             );
 
             // Update counter for keyset
-            self.localstore
+            self.proof_db
                 .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
                 .await?;
         }
@@ -285,8 +295,21 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        self.proof_db.update_proofs(proof_infos, vec![]).await?;
 
         Ok(proofs)
     }
+}
+
+/// Mint Options
+#[derive(Debug, Clone, Default)]
+pub struct MintOptions {
+    /// Memo
+    pub memo: Option<String>,
+    /// User-defined Metadata
+    pub metadata: HashMap<String, String>,
+    /// Spending Conditions
+    pub spending_conditions: Option<SpendingConditions>,
+    /// Amount Split Target
+    pub split_target: SplitTarget,
 }

@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 
+use cdk_common::database::{Transaction, TransactionDirection};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -7,8 +9,8 @@ use super::MeltQuote;
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    PreMintSecrets, Proofs, ProofsMethods, State,
+    CurrencyUnit, MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteOptions, PreMintSecrets, Proofs, ProofsMethods, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
@@ -18,9 +20,10 @@ impl Wallet {
     /// Melt Quote
     /// # Synopsis
     /// ```rust
+    ///  use std::str::FromStr;
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::mint_url::MintUrl;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use rand::Rng;
@@ -28,11 +31,10 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = WalletMemoryDatabase::default();
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///     let quote = wallet.melt_quote(bolt11, None).await?;
     ///
@@ -43,7 +45,7 @@ impl Wallet {
     pub async fn melt_quote(
         &self,
         request: String,
-        options: Option<MeltOptions>,
+        options: Option<MeltQuoteOptions>,
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
@@ -82,7 +84,7 @@ impl Wallet {
             payment_preimage: quote_res.payment_preimage,
         };
 
-        self.localstore.add_melt_quote(quote.clone()).await?;
+        self.transaction_db.add_melt_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -95,12 +97,12 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self.client.get_melt_quote_status(quote_id).await?;
 
-        match self.localstore.get_melt_quote(quote_id).await? {
+        match self.transaction_db.get_melt_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                self.localstore.add_melt_quote(quote).await?;
+                self.transaction_db.add_melt_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote melt {} unknown", quote_id);
@@ -112,8 +114,13 @@ impl Wallet {
 
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
-    pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+    pub async fn melt_proofs(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        opts: MeltOptions,
+    ) -> Result<Melted, Error> {
+        let quote_info = self.transaction_db.get_melt_quote(quote_id).await?;
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
                 return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
@@ -130,14 +137,11 @@ impl Wallet {
         }
 
         let ys = proofs.ys()?;
-        self.localstore.set_pending_proofs(ys).await?;
+        self.proof_db.set_pending_proofs(ys).await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
+        let count = self.proof_db.get_keyset_counter(&active_keyset_id).await?;
 
         let count = count.map_or(0, |c| c + 1);
 
@@ -169,7 +173,7 @@ impl Wallet {
         };
 
         let active_keys = self
-            .localstore
+            .proof_db
             .get_keys(&active_keyset_id)
             .await?
             .ok_or(Error::NoActiveKeyset)?;
@@ -215,7 +219,7 @@ impl Wallet {
                 );
 
                 // Update counter for keyset
-                self.localstore
+                self.proof_db
                     .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
                     .await?;
 
@@ -234,11 +238,26 @@ impl Wallet {
             None => Vec::new(),
         };
 
-        self.localstore.remove_melt_quote(&quote_info.id).await?;
+        self.transaction_db
+            .remove_melt_quote(&quote_info.id)
+            .await?;
 
         let deleted_ys = proofs.ys()?;
-        self.localstore
-            .update_proofs(change_proof_infos, deleted_ys)
+        self.proof_db
+            .update_proofs(change_proof_infos, deleted_ys.clone())
+            .await?;
+        self.transaction_db
+            .add_transaction(Transaction {
+                amount: quote_info.amount,
+                direction: TransactionDirection::Outgoing,
+                fee: melted.fee_paid,
+                mint_url: self.mint_url.clone(),
+                timestamp: unix_time(),
+                unit: quote_info.unit,
+                ys: deleted_ys,
+                memo: opts.memo,
+                metadata: opts.metadata,
+            })
             .await?;
 
         Ok(melted)
@@ -247,32 +266,32 @@ impl Wallet {
     /// Melt
     /// # Synopsis
     /// ```rust, no_run
+    ///  use std::str::FromStr;
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk::mint_url::MintUrl;
     ///  use cdk::nuts::CurrencyUnit;
-    ///  use cdk::wallet::Wallet;
+    ///  use cdk::wallet::{MeltOptions, Wallet};
     ///  use rand::Rng;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
-    ///  let mint_url = "https://testnut.cashu.space";
+    ///  let mint_url = MintUrl::from_str("https://testnut.cashu.space")?;
     ///  let unit = CurrencyUnit::Sat;
     ///
-    ///  let localstore = WalletMemoryDatabase::default();
-    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///  let wallet = Wallet::builder(seed.to_vec()).build(mint_url, unit)?;
     ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///  let quote = wallet.melt_quote(bolt11, None).await?;
     ///  let quote_id = quote.id;
     ///
-    ///  let _ = wallet.melt(&quote_id).await?;
+    ///  let _ = wallet.melt(&quote_id, MeltOptions::default()).await?;
     ///
     ///  Ok(())
     /// }
     #[instrument(skip(self))]
-    pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+    pub async fn melt(&self, quote_id: &str, opts: MeltOptions) -> Result<Melted, Error> {
+        let quote_info = self.transaction_db.get_melt_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) {
@@ -292,6 +311,15 @@ impl Wallet {
             .select_proofs_to_swap(inputs_needed_amount, available_proofs)
             .await?;
 
-        self.melt_proofs(quote_id, input_proofs).await
+        self.melt_proofs(quote_id, input_proofs, opts).await
     }
+}
+
+/// Melt Options
+#[derive(Debug, Clone, Default)]
+pub struct MeltOptions {
+    /// Memo
+    pub memo: Option<String>,
+    /// User-defined Metadata
+    pub metadata: HashMap<String, String>,
 }

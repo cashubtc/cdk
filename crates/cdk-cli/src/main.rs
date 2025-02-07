@@ -6,10 +6,10 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
-use cdk::cdk_database;
-use cdk::cdk_database::WalletDatabase;
+use cdk::cdk_database::WalletProofDatabase;
+use cdk::nuts::CurrencyUnit;
 use cdk::wallet::client::HttpClient;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::wallet::{MultiMintWallet, Wallet, WalletBuilder};
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
@@ -102,24 +102,6 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all(&work_dir)?;
 
-    let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
-        match args.engine.as_str() {
-            "sqlite" => {
-                let sql_path = work_dir.join("cdk-cli.sqlite");
-                let sql = WalletSqliteDatabase::new(&sql_path).await?;
-
-                sql.migrate().await;
-
-                Arc::new(sql)
-            }
-            "redb" => {
-                let redb_path = work_dir.join("cdk-cli.redb");
-
-                Arc::new(WalletRedbDatabase::new(&redb_path)?)
-            }
-            _ => bail!("Unknown DB engine"),
-        };
-
     let seed_path = work_dir.join("seed");
 
     let mnemonic = match fs::metadata(seed_path.clone()) {
@@ -140,24 +122,40 @@ async fn main() -> Result<()> {
         }
     };
 
+    let mut builder = WalletBuilder::new(mnemonic.to_seed_normalized("").to_vec());
+
+    let mints = match args.engine.as_str() {
+        "sqlite" => {
+            let sql_path = work_dir.join("cdk-cli.sqlite");
+            let sql = WalletSqliteDatabase::new(&sql_path).await?;
+
+            sql.migrate().await;
+
+            let db = Arc::new(sql);
+            builder = builder.proof_db(db.clone()).transaction_db(db.clone());
+            db.get_mints().await?
+        }
+        "redb" => {
+            let redb_path = work_dir.join("cdk-cli.redb");
+
+            let db = Arc::new(WalletRedbDatabase::new(&redb_path)?);
+            builder = builder.proof_db(db.clone()).transaction_db(db.clone());
+            db.get_mints().await?
+        }
+        _ => bail!("Unknown DB engine"),
+    };
+
     let mut wallets: Vec<Wallet> = Vec::new();
 
-    let mints = localstore.get_mints().await?;
-
     for (mint_url, _) in mints {
-        let mut wallet = Wallet::new(
-            &mint_url.to_string(),
-            cdk::nuts::CurrencyUnit::Sat,
-            localstore.clone(),
-            &mnemonic.to_seed_normalized(""),
-            None,
-        )?;
-        if let Some(proxy_url) = args.proxy.as_ref() {
-            let http_client = HttpClient::with_proxy(mint_url, proxy_url.clone(), None, true)?;
-            wallet.set_client(http_client);
-        }
+        let mut builder = builder.clone();
 
-        wallets.push(wallet);
+        if let Some(proxy_url) = args.proxy.as_ref() {
+            let http_client =
+                HttpClient::with_proxy(mint_url.clone(), proxy_url.clone(), None, true)?;
+            builder = builder.client(Arc::new(http_client));
+        }
+        wallets.push(builder.build(mint_url, CurrencyUnit::Sat)?);
     }
 
     let multi_mint_wallet = MultiMintWallet::new(wallets);
@@ -171,13 +169,7 @@ async fn main() -> Result<()> {
             sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Receive(sub_command_args) => {
-            sub_commands::receive::receive(
-                &multi_mint_wallet,
-                localstore,
-                &mnemonic.to_seed_normalized(""),
-                sub_command_args,
-            )
-            .await
+            sub_commands::receive::receive(&multi_mint_wallet, builder, sub_command_args).await
         }
         Commands::Send(sub_command_args) => {
             sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
@@ -189,13 +181,7 @@ async fn main() -> Result<()> {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
-            sub_commands::mint::mint(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                localstore,
-                sub_command_args,
-            )
-            .await
+            sub_commands::mint::mint(&multi_mint_wallet, builder, sub_command_args).await
         }
         Commands::MintPending => {
             sub_commands::pending_mints::mint_pending(&multi_mint_wallet).await
@@ -204,13 +190,7 @@ async fn main() -> Result<()> {
             sub_commands::burn::burn(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
-            sub_commands::restore::restore(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                localstore,
-                sub_command_args,
-            )
-            .await
+            sub_commands::restore::restore(&multi_mint_wallet, builder, sub_command_args).await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
             sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)

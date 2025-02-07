@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
-use cdk::amount::SplitTarget;
 use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk::cdk_database::{MintDatabase, WalletMemoryDatabase};
+use cdk::cdk_database::MintDatabase;
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
@@ -19,7 +19,7 @@ use cdk::nuts::{
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::wallet::client::MintConnector;
-use cdk::wallet::Wallet;
+use cdk::wallet::{MintOptions, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::Notify;
@@ -202,8 +202,8 @@ pub fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<Wallet
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let mint_url = "http://aa".to_string();
     let unit = CurrencyUnit::Sat;
-    let localstore = WalletMemoryDatabase::default();
-    let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let mut wallet =
+        WalletBuilder::new(seed.to_vec()).build(MintUrl::from_str(&mint_url)?, unit)?;
 
     wallet.set_client(connector);
 
@@ -219,7 +219,7 @@ pub async fn fund_wallet(wallet: Arc<Wallet>, amount: u64) -> anyhow::Result<Amo
     wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     Ok(wallet
-        .mint(&quote.id, SplitTarget::default(), None)
+        .mint(&quote.id, MintOptions::default())
         .await?
         .total_amount()?)
 }

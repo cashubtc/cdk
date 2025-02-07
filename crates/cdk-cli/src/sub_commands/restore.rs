@@ -1,12 +1,10 @@
 use std::str::FromStr;
-use std::sync::Arc;
 
 use anyhow::Result;
-use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::wallet::{MultiMintWallet, WalletBuilder};
 use clap::Args;
 
 #[derive(Args)]
@@ -20,8 +18,7 @@ pub struct RestoreSubCommand {
 
 pub async fn restore(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
-    localstore: Arc<dyn WalletDatabase<Err = Error> + Sync + Send>,
+    builder: WalletBuilder,
     sub_command_args: &RestoreSubCommand,
 ) -> Result<()> {
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
@@ -33,7 +30,7 @@ pub async fn restore(
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None)?;
+            let wallet = builder.build(mint_url, CurrencyUnit::Sat)?;
 
             multi_mint_wallet.add_wallet(wallet.clone()).await;
             wallet

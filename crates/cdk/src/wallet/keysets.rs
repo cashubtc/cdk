@@ -10,14 +10,14 @@ impl Wallet {
     /// If they are not known queries mint for keyset id and stores the [`Keys`]
     #[instrument(skip(self))]
     pub async fn get_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
-        let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
+        let keys = if let Some(keys) = self.proof_db.get_keys(&keyset_id).await? {
             keys
         } else {
             let keys = self.client.get_mint_keyset(keyset_id).await?;
 
             keys.verify_id()?;
 
-            self.localstore.add_keys(keys.keys.clone()).await?;
+            self.proof_db.add_keys(keys.keys.clone()).await?;
 
             keys.keys
         };
@@ -32,7 +32,7 @@ impl Wallet {
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self.client.get_mint_keysets().await?;
 
-        self.localstore
+        self.proof_db
             .add_mint_keysets(self.mint_url.clone(), keysets.keysets.clone())
             .await?;
 
@@ -48,7 +48,7 @@ impl Wallet {
         let keysets = self.client.get_mint_keysets().await?;
         let keysets = keysets.keysets;
 
-        self.localstore
+        self.proof_db
             .add_mint_keysets(self.mint_url.clone(), keysets.clone())
             .await?;
 
@@ -59,7 +59,7 @@ impl Wallet {
             .collect::<Vec<KeySetInfo>>();
 
         match self
-            .localstore
+            .proof_db
             .get_mint_keysets(self.mint_url.clone())
             .await?
         {

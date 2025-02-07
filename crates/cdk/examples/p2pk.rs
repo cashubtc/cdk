@@ -1,12 +1,10 @@
-use std::sync::Arc;
+use std::str::FromStr;
 
-use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload, SecretKey, SpendingConditions};
-use cdk::wallet::types::SendKind;
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::{MintOptions, ReceiveOptions, SendOptions, WalletBuilder, WalletSubscription};
 use cdk::Amount;
+use cdk_common::mint_url::MintUrl;
 use rand::Rng;
 use tracing_subscriber::EnvFilter;
 
@@ -21,9 +19,6 @@ async fn main() -> Result<(), Error> {
     // Parse input
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    // Initialize the memory store for the wallet
-    let localstore = WalletMemoryDatabase::default();
-
     // Generate a random seed for the wallet
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
@@ -33,7 +28,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(50);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = WalletBuilder::new(seed.to_vec()).build(MintUrl::from_str(&mint_url)?, unit)?;
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;
@@ -57,7 +52,7 @@ async fn main() -> Result<(), Error> {
     }
 
     // Mint the received amount
-    let _receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let _receive_amount = wallet.mint(&quote.id, MintOptions::default()).await?;
 
     // Generate a secret key for spending conditions
     let secret = SecretKey::generate();
@@ -73,11 +68,10 @@ async fn main() -> Result<(), Error> {
     let token = wallet
         .send(
             10.into(),
-            None,
-            Some(spending_conditions),
-            &SplitTarget::default(),
-            &SendKind::default(),
-            false,
+            SendOptions {
+                spending_conditions: Some(spending_conditions),
+                ..Default::default()
+            },
         )
         .await?;
 
@@ -86,7 +80,13 @@ async fn main() -> Result<(), Error> {
 
     // Receive the token using the secret key
     let amount = wallet
-        .receive(&token.to_string(), SplitTarget::default(), &[secret], &[])
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret],
+                ..Default::default()
+            },
+        )
         .await?;
 
     println!("Redeemed locked token worth: {}", u64::from(amount));

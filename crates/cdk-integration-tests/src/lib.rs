@@ -13,7 +13,7 @@ use cdk::nuts::{
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::subscription::SubscriptionManager;
-use cdk::wallet::WalletSubscription;
+use cdk::wallet::{MintOptions, WalletSubscription};
 use cdk::Wallet;
 use tokio::time::{timeout, Duration};
 
@@ -44,7 +44,15 @@ pub async fn wallet_mint(
         }
     }
 
-    let proofs = wallet.mint(&quote.id, split_target, None).await?;
+    let proofs = wallet
+        .mint(
+            &quote.id,
+            MintOptions {
+                split_target,
+                ..Default::default()
+            },
+        )
+        .await?;
 
     let receive_amount = proofs.total_amount()?;
 
@@ -122,7 +130,7 @@ pub async fn mint_proofs(
 // Will return Ok if swap fails as expected
 pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     let pending = wallet
-        .localstore
+        .proof_db
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await?;
 

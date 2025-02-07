@@ -44,6 +44,9 @@ pub enum Error {
     /// Invalid Database Path
     #[error("Invalid database path")]
     InvalidDbPath,
+    /// Database Error
+    #[error(transparent)]
+    Database(#[from] cdk_common::database::Error),
 }
 
 impl From<Error> for cdk_common::database::Error {

@@ -46,14 +46,14 @@ pub struct MeltQuoteBolt11Request {
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
     /// Payment Options
-    pub options: Option<MeltOptions>,
+    pub options: Option<MeltQuoteOptions>,
 }
 
 /// Melt Options
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub enum MeltOptions {
+pub enum MeltQuoteOptions {
     /// Mpp Options
     Mpp {
         /// MPP
@@ -61,7 +61,7 @@ pub enum MeltOptions {
     },
 }
 
-impl MeltOptions {
+impl MeltQuoteOptions {
     /// Create new [`Options::Mpp`]
     pub fn new_mpp<A>(amount: A) -> Self
     where
@@ -100,7 +100,7 @@ impl MeltQuoteBolt11Request {
                 .amount_milli_satoshis()
                 .ok_or(Error::InvalidAmountRequest)?
                 .into()),
-            Some(MeltOptions::Mpp { mpp }) => Ok(mpp.amount),
+            Some(MeltQuoteOptions::Mpp { mpp }) => Ok(mpp.amount),
         }
     }
 }

@@ -1,14 +1,11 @@
 use std::str::FromStr;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use cdk::amount::SplitTarget;
-use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::{MultiMintWallet, Wallet, WalletSubscription};
+use cdk::wallet::{MintOptions, MultiMintWallet, WalletBuilder, WalletSubscription};
 use cdk::Amount;
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -32,8 +29,7 @@ pub struct MintSubCommand {
 
 pub async fn mint(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
-    localstore: Arc<dyn WalletDatabase<Err = Error> + Sync + Send>,
+    builder: WalletBuilder,
     sub_command_args: &MintSubCommand,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
@@ -46,7 +42,7 @@ pub async fn mint(
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None)?;
+            let wallet = builder.build(mint_url.clone(), CurrencyUnit::Sat)?;
 
             multi_mint_wallet.add_wallet(wallet.clone()).await;
             wallet
@@ -82,7 +78,7 @@ pub async fn mint(
         Some(quote_id) => quote_id.to_string(),
     };
 
-    let proofs = wallet.mint(&quote_id, SplitTarget::default(), None).await?;
+    let proofs = wallet.mint(&quote_id, MintOptions::default()).await?;
 
     let receive_amount = proofs.total_amount()?;
 

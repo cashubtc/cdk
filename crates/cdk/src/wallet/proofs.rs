@@ -37,7 +37,7 @@ impl Wallet {
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Proofs, Error> {
         Ok(self
-            .localstore
+            .proof_db
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
@@ -53,7 +53,7 @@ impl Wallet {
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
     pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        Ok(self.localstore.set_unspent_proofs(ys).await?)
+        Ok(self.proof_db.set_unspent_proofs(ys).await?)
     }
 
     /// Reclaim unspent proofs
@@ -97,7 +97,7 @@ impl Wallet {
             })
             .collect();
 
-        self.localstore.update_proofs(vec![], spent_ys).await?;
+        self.proof_db.update_proofs(vec![], spent_ys).await?;
 
         Ok(spendable.states)
     }
@@ -108,7 +108,7 @@ impl Wallet {
         let mut balance = Amount::ZERO;
 
         let proofs = self
-            .localstore
+            .proof_db
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
@@ -141,7 +141,7 @@ impl Wallet {
 
         let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
 
-        self.localstore
+        self.proof_db
             .update_proofs(
                 vec![],
                 non_pending_proofs.into_iter().map(|p| p.y).collect(),

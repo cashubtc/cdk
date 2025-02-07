@@ -38,7 +38,7 @@ impl Wallet {
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
 
         let active_keys = self
-            .localstore
+            .proof_db
             .get_keys(&active_keyset_id)
             .await?
             .ok_or(Error::NoActiveKeyset)?;
@@ -50,7 +50,7 @@ impl Wallet {
             &active_keys,
         )?;
 
-        self.localstore
+        self.proof_db
             .increment_keyset_counter(&active_keyset_id, pre_swap.derived_secret_count)
             .await?;
 
@@ -128,7 +128,7 @@ impl Wallet {
             .map(|proof| proof.y())
             .collect::<Result<Vec<PublicKey>, _>>()?;
 
-        self.localstore
+        self.proof_db
             .update_proofs(added_proofs, deleted_ys)
             .await?;
         Ok(send_proofs)
@@ -143,7 +143,7 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<Proofs, Error> {
         let available_proofs = self
-            .localstore
+            .proof_db
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
@@ -194,7 +194,7 @@ impl Wallet {
         let proofs_total = proofs.total_amount()?;
 
         let ys: Vec<PublicKey> = proofs.ys()?;
-        self.localstore.set_pending_proofs(ys).await?;
+        self.proof_db.set_pending_proofs(ys).await?;
 
         let fee = self.get_proofs_fee(&proofs).await?;
 
@@ -230,7 +230,7 @@ impl Wallet {
         let derived_secret_count;
 
         let count = self
-            .localstore
+            .proof_db
             .get_keyset_counter(&active_keyset_id)
             .await?;
 

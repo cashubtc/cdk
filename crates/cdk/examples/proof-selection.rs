@@ -1,13 +1,12 @@
 //! Wallet example with memory store
 
-use std::sync::Arc;
+use std::str::FromStr;
 
-use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::{MintOptions, WalletBuilder, WalletSubscription};
 use cdk::Amount;
+use cdk_common::mint_url::MintUrl;
 use rand::Rng;
 
 #[tokio::main]
@@ -19,11 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint_url = "https://testnut.cashu.space";
     let unit = CurrencyUnit::Sat;
 
-    // Initialize the memory store
-    let localstore = WalletMemoryDatabase::default();
-
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = WalletBuilder::new(seed.to_vec()).build(MintUrl::from_str(&mint_url)?, unit)?;
 
     // Amount to mint
     for amount in [64] {
@@ -50,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Mint the received amount
-        let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+        let proofs = wallet.mint(&quote.id, MintOptions::default()).await?;
         let receive_amount = proofs.total_amount()?;
         println!("Minted {}", receive_amount);
     }

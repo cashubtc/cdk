@@ -4,9 +4,10 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use cdk::amount::MSAT_IN_SAT;
-use cdk::nuts::{CurrencyUnit, MeltOptions};
+use cdk::nuts::{CurrencyUnit, MeltQuoteOptions};
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::types::WalletKey;
+use cdk::wallet::MeltOptions;
 use cdk::Bolt11Invoice;
 use clap::Args;
 
@@ -57,7 +58,7 @@ pub async fn pay(
     stdin.read_line(&mut user_input)?;
     let bolt11 = Bolt11Invoice::from_str(user_input.trim())?;
 
-    let mut options: Option<MeltOptions> = None;
+    let mut options: Option<MeltQuoteOptions> = None;
 
     if sub_command_args.mpp {
         println!("Enter the amount you would like to pay in sats, for a mpp payment.");
@@ -74,7 +75,7 @@ pub async fn pay(
             bail!("Not enough funds");
         }
 
-        options = Some(MeltOptions::new_mpp(user_amount * MSAT_IN_SAT));
+        options = Some(MeltQuoteOptions::new_mpp(user_amount * MSAT_IN_SAT));
     } else if bolt11
         .amount_milli_satoshis()
         .unwrap()
@@ -87,7 +88,7 @@ pub async fn pay(
 
     println!("{:?}", quote);
 
-    let melt = wallet.melt(&quote.id).await?;
+    let melt = wallet.melt(&quote.id, MeltOptions::default()).await?;
 
     println!("Paid invoice: {}", melt.state);
     if let Some(preimage) = melt.preimage {

@@ -42,8 +42,8 @@ pub use nut04::{
     MintQuoteBolt11Response, QuoteState as MintQuoteState, Settings as NUT04Settings,
 };
 pub use nut05::{
-    MeltBolt11Request, MeltMethodSettings, MeltOptions, MeltQuoteBolt11Request,
-    MeltQuoteBolt11Response, QuoteState as MeltQuoteState, Settings as NUT05Settings,
+    MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteOptions, QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
 pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
