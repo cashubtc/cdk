@@ -96,8 +96,6 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     lnd_client.pay_invoice(mint_quote.request).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
-
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
