@@ -458,7 +458,7 @@ WHERE state = ?
                 Ok(mint_quotes)
             }
             Err(err) => {
-                tracing::error!("SQLite get mint quotes");
+                tracing::error!("SQLite get mint quotes with state");
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
