@@ -49,6 +49,11 @@ pub trait Database {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+    /// Get Mint Quotes with state
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintMintQuote>, Self::Err>;
     /// Remove [`MintMintQuote`]
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
 

@@ -381,6 +381,28 @@ impl MintDatabase for MintRedbDatabase {
         Ok(quotes)
     }
 
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintQuote>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(MINT_QUOTES_TABLE)
+            .map_err(Error::from)?;
+
+        let mut quotes = Vec::new();
+
+        for (_id, quote) in (table.iter().map_err(Error::from)?).flatten() {
+            let quote: MintQuote = serde_json::from_str(quote.value()).map_err(Error::from)?;
+
+            if quote.state == state {
+                quotes.push(quote)
+            }
+        }
+
+        Ok(quotes)
+    }
+
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
