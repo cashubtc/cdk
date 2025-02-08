@@ -23,6 +23,7 @@ use cdk::wallet::Wallet;
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::Notify;
+use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use crate::wait_for_mint_to_be_paid;
@@ -143,6 +144,18 @@ impl MintConnector for DirectMintConnection {
 }
 
 pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
+    let default_filter = "debug";
+
+    let sqlx_filter = "sqlx=warn";
+    let hyper_filter = "hyper=warn";
+
+    let env_filter = EnvFilter::new(format!(
+        "{},{},{}",
+        default_filter, sqlx_filter, hyper_filter
+    ));
+
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     let mut mint_builder = MintBuilder::new();
 
     let database = MintMemoryDatabase::default();

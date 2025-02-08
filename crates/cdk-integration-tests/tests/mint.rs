@@ -169,6 +169,8 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
         Ok(_) => bail!("Swap occurred with overflow"),
         Err(err) => match err {
             cdk::Error::NUT03(cdk::nuts::nut03::Error::Amount(_)) => (),
+            cdk::Error::AmountOverflow => (),
+            cdk::Error::AmountError(_) => (),
             _ => {
                 println!("{:?}", err);
                 bail!("Wrong error returned in swap overflow")
@@ -288,7 +290,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     for keys in public_keys_to_listen {
         let statuses = msgs.remove(&keys).expect("some events");
-        assert_eq!(statuses, vec![State::Pending, State::Pending, State::Spent]);
+        assert_eq!(statuses, vec![State::Pending, State::Spent]);
     }
 
     assert!(listener.try_recv().is_err(), "no other event is happening");

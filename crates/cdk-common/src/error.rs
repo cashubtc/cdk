@@ -103,11 +103,17 @@ pub enum Error {
     #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
     TransactionUnbalanced(u64, u64, u64),
     /// Duplicate proofs provided
-    #[error("Duplicate proofs")]
-    DuplicateProofs,
+    #[error("Duplicate Inputs")]
+    DuplicateInputs,
+    /// Duplicate output
+    #[error("Duplicate outputs")]
+    DuplicateOutputs,
     /// Multiple units provided
     #[error("Cannot have multiple units")]
     MultipleUnits,
+    /// Unit mismatch
+    #[error("Input unit must match output")]
+    UnitMismatch,
     /// Sig all cannot be used in melt
     #[error("Sig all cannot be used in melt")]
     SigAllUsedInMelt,
@@ -393,6 +399,26 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::DuplicateInputs => ErrorResponse {
+                code: ErrorCode::DuplicateInputs,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::DuplicateOutputs => ErrorResponse {
+                code: ErrorCode::DuplicateOutputs,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::MultipleUnits => ErrorResponse {
+                code: ErrorCode::MultipleUnits,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::UnitMismatch => ErrorResponse {
+                code: ErrorCode::UnitMismatch,
+                error: Some(err.to_string()),
+                detail: None,
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),
@@ -423,6 +449,10 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::TokenPending => Self::TokenPending,
             ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
+            ErrorCode::DuplicateInputs => Self::DuplicateInputs,
+            ErrorCode::DuplicateOutputs => Self::DuplicateOutputs,
+            ErrorCode::MultipleUnits => Self::MultipleUnits,
+            ErrorCode::UnitMismatch => Self::UnitMismatch,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -466,6 +496,14 @@ pub enum ErrorCode {
     AmountOutofLimitRange,
     /// Witness missing or invalid
     WitnessMissingOrInvalid,
+    /// Duplicate Inputs
+    DuplicateInputs,
+    /// Duplicate Outputs
+    DuplicateOutputs,
+    /// Multiple Units
+    MultipleUnits,
+    /// Input unit does not match output
+    UnitMismatch,
     /// Unknown error code
     Unknown(u16),
 }
@@ -480,7 +518,11 @@ impl ErrorCode {
             11002 => Self::TransactionUnbalanced,
             11005 => Self::UnsupportedUnit,
             11006 => Self::AmountOutofLimitRange,
-            11007 => Self::TokenPending,
+            11007 => Self::DuplicateInputs,
+            11008 => Self::DuplicateOutputs,
+            11009 => Self::MultipleUnits,
+            11010 => Self::UnitMismatch,
+            11012 => Self::TokenPending,
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
             20000 => Self::LightningError,
@@ -504,7 +546,11 @@ impl ErrorCode {
             Self::TransactionUnbalanced => 11002,
             Self::UnsupportedUnit => 11005,
             Self::AmountOutofLimitRange => 11006,
-            Self::TokenPending => 11007,
+            Self::DuplicateInputs => 11007,
+            Self::DuplicateOutputs => 11008,
+            Self::MultipleUnits => 11009,
+            Self::UnitMismatch => 11010,
+            Self::TokenPending => 11012,
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
             Self::LightningError => 20000,
