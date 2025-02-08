@@ -27,6 +27,7 @@ use crate::Amount;
 mod builder;
 mod check_spendable;
 mod keysets;
+mod ln;
 mod melt;
 mod mint_nut04;
 mod start_up_check;
