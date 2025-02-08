@@ -194,6 +194,21 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.mint_quotes.read().await.values().cloned().collect())
     }
 
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintQuote>, Self::Err> {
+        let mint_quotes = self.mint_quotes.read().await;
+
+        let pending_quotes = mint_quotes
+            .values()
+            .filter(|q| q.state == state)
+            .cloned()
+            .collect();
+
+        Ok(pending_quotes)
+    }
+
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         self.mint_quotes.write().await.remove(quote_id);
 

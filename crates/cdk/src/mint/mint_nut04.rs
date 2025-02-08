@@ -178,23 +178,23 @@ impl Mint {
     /// Get pending mint quotes
     #[instrument(skip_all)]
     pub async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
-        let mint_quotes = self.localstore.get_mint_quotes().await?;
+        let mint_quotes = self
+            .localstore
+            .get_mint_quotes_with_state(MintQuoteState::Pending)
+            .await?;
 
-        Ok(mint_quotes
-            .into_iter()
-            .filter(|p| p.state == MintQuoteState::Pending)
-            .collect())
+        Ok(mint_quotes)
     }
 
     /// Get pending mint quotes
     #[instrument(skip_all)]
     pub async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
-        let mint_quotes = self.localstore.get_mint_quotes().await?;
+        let mint_quotes = self
+            .localstore
+            .get_mint_quotes_with_state(MintQuoteState::Unpaid)
+            .await?;
 
-        Ok(mint_quotes
-            .into_iter()
-            .filter(|p| p.state == MintQuoteState::Unpaid)
-            .collect())
+        Ok(mint_quotes)
     }
 
     /// Remove mint quote
