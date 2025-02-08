@@ -58,6 +58,9 @@ pub enum Error {
     /// Unknown Proof Y
     #[error("Unknown proof Y")]
     UnknownY,
+    /// Unknown Quote
+    #[error("Unknown quote")]
+    UnknownQuote,
     /// Unknown Database Version
     #[error("Unknown database version")]
     UnknownDatabaseVersion,
