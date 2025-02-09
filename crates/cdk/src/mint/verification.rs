@@ -192,7 +192,7 @@ impl Mint {
                 output_verification.unit,
                 input_verification.unit
             );
-            return Err(Error::MultipleUnits);
+            return Err(Error::UnitMismatch);
         }
 
         let fees = self.get_proofs_fee(inputs).await?;

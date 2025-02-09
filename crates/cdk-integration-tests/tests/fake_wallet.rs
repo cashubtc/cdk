@@ -866,8 +866,10 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
 
     match response {
         Err(err) => match err {
-            cdk::Error::UnsupportedUnit => (),
-            _ => {}
+            cdk::Error::UnitMismatch => (),
+            err => {
+                bail!("Wrong error returned: {}", err);
+            }
         },
         Ok(_) => {
             bail!("Should not have allowed to mint with multiple units");
