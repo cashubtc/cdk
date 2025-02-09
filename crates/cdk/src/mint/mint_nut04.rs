@@ -147,6 +147,7 @@ impl Mint {
         // a quote while waiting for the mint response.
         let state = match quote.state {
             MintQuoteState::Pending => MintQuoteState::Paid,
+            MintQuoteState::Unpaid => self.check_mint_quote_paid(quote_id).await?,
             s => s,
         };
 
@@ -273,6 +274,12 @@ impl Mint {
             .localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)
             .await?;
+
+        let state = if state == MintQuoteState::Unpaid {
+            self.check_mint_quote_paid(&mint_quote.id).await?
+        } else {
+            state
+        };
 
         match state {
             MintQuoteState::Unpaid => {
