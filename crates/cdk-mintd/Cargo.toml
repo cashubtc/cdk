@@ -36,6 +36,12 @@ cdk-axum = { path = "../cdk-axum", version = "0.7.0", default-features = false }
 cdk-mint-rpc = { path = "../cdk-mint-rpc", version = "0.7.0", default-features = false, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
 clap = { version = "~4.0.32", features = ["derive"] }
+bitcoin = { version = "0.32.2", features = [
+    "base64",
+    "serde",
+    "rand",
+    "rand-std",
+] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = [
     "attributes",

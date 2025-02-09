@@ -86,7 +86,7 @@ impl fmt::Display for KeySetVersion {
 /// anyone who knows the set of public keys of a mint. The keyset ID **CAN**
 /// be stored in a Cashu token such that the token can be used to identify
 /// which mint or keyset it was generated from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = String))]
 pub struct Id {
@@ -134,6 +134,12 @@ impl From<Id> for u32 {
 
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&format!("{}{}", self.version, hex::encode(self.id)))
+    }
+}
+
+impl fmt::Debug for Id {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&format!("{}{}", self.version, hex::encode(self.id)))
     }
 }
