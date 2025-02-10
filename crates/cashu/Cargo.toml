@@ -1,9 +1,13 @@
 [package]
 name = "cashu"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
+authors = ["CDK Developers"]
 description = "Cashu shared types and crypto utilities, used as the foundation for the CDK and their crates"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.63.0"                                                                                      # MSRV
+license = "MIT"
 
 [features]
 default = ["mint", "wallet", "kvac"]
@@ -14,7 +18,7 @@ bench = []
 kvac = []
 
 [dependencies]
-uuid = { version = "1", features = ["v4", "serde"], optional = true }
+uuid = { version = "=1.12.1", features = ["v4", "serde"], optional = true }
 bitcoin = { version = "0.32.2", features = [
     "base64",
     "serde",
@@ -39,4 +43,4 @@ instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
 bip39 = "2.0"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "=1.12.1", features = ["v4", "serde"] }

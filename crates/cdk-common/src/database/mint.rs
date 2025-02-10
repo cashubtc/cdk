@@ -66,6 +66,11 @@ pub trait Database {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+    /// Get Mint Quotes with state
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintMintQuote>, Self::Err>;
     /// Remove [`MintMintQuote`]
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
 
@@ -115,8 +120,14 @@ pub trait Database {
         Err(Self::Err::from(Error::Unimplemented))
     }
 
-    /// Add spent [`Proofs`]
+    /// Add  [`Proofs`]
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
+    /// Remove [`Proofs`]
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err>;
     /// Add kvac nullifiers
     async fn add_kvac_nullifiers(&self, _nullifiers: &[KvacNullifier]) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))

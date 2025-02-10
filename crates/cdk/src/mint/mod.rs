@@ -8,7 +8,7 @@ use bitcoin::secp256k1::{self, Secp256k1};
 use cashu_kvac::kvac::{IParamsProof, MacProof};
 use cashu_kvac::models::{MAC, ZKP};
 use cashu_kvac::transcript::CashuTranscript;
-use cdk_common::common::LnKey;
+use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::kvac::{KvacCoinMessage, KvacRandomizedCoin, MintKvacKeySet};
 use cdk_common::mint::MintKeySetInfo;
@@ -32,11 +32,13 @@ mod builder;
 mod check_spendable;
 mod keysets;
 mod kvac;
+mod ln;
 mod melt;
 mod mint_nut04;
 mod start_up_check;
 pub mod subscription;
 mod swap;
+mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintQuote};
@@ -303,6 +305,21 @@ impl Mint {
     /// Get mint info
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
         Ok(self.localstore.get_mint_info().await?)
+    }
+
+    /// Set mint info
+    pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
+        Ok(self.localstore.set_mint_info(mint_info).await?)
+    }
+
+    /// Get quote ttl
+    pub async fn quote_ttl(&self) -> Result<QuoteTTL, Error> {
+        Ok(self.localstore.get_quote_ttl().await?)
+    }
+
+    /// Set quote ttl
+    pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
+        Ok(self.localstore.set_quote_ttl(quote_ttl).await?)
     }
 
     /// Wait for any invoice to be paid

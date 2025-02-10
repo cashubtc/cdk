@@ -573,6 +573,43 @@ FROM mint_quote
         }
     }
 
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintQuote>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let rec = sqlx::query(
+            r#"
+SELECT * 
+FROM mint_quote 
+WHERE state = ?
+        "#,
+        )
+        .bind(state.to_string())
+        .fetch_all(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rows) => {
+                transaction.commit().await.map_err(Error::from)?;
+                let mint_quotes = rows
+                    .into_iter()
+                    .map(sqlite_row_to_mint_quote)
+                    .collect::<Result<Vec<MintQuote>, _>>()?;
+
+                Ok(mint_quotes)
+            }
+            Err(err) => {
+                tracing::error!("SQLite get mint quotes with state");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                return Err(Error::from(err).into());
+            }
+        }
+    }
+
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -1019,6 +1056,33 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         }
         transaction.commit().await.map_err(Error::from)?;
 
+        Ok(())
+    }
+
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        _quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let sql = format!(
+            "DELETE FROM proof WHERE y IN ({})",
+            std::iter::repeat("?")
+                .take(ys.len())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        ys.iter()
+            .fold(sqlx::query(&sql), |query, y| {
+                query.bind(y.to_bytes().to_vec())
+            })
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
         Ok(())
     }
 

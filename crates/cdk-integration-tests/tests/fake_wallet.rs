@@ -586,7 +586,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
 
     match response {
         Err(err) => match err {
-            cdk::Error::UnsupportedUnit => (),
+            cdk::Error::MultipleUnits => (),
             err => {
                 bail!("Wrong mint error returned: {}", err.to_string());
             }
@@ -652,7 +652,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
 
         match response {
             Err(err) => match err {
-                cdk::Error::UnsupportedUnit => (),
+                cdk::Error::MultipleUnits => (),
                 err => {
                     bail!("Wrong mint error returned: {}", err.to_string());
                 }
@@ -689,7 +689,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
 
         match response {
             Err(err) => match err {
-                cdk::Error::UnsupportedUnit => (),
+                cdk::Error::MultipleUnits => (),
                 err => {
                     bail!("Wrong mint error returned: {}", err.to_string());
                 }
@@ -763,7 +763,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
 
         match response {
             Err(err) => match err {
-                cdk::Error::UnsupportedUnit => (),
+                cdk::Error::MultipleUnits => (),
                 err => {
                     bail!("Wrong mint error returned: {}", err.to_string());
                 }
@@ -807,7 +807,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
 
         match response {
             Err(err) => match err {
-                cdk::Error::UnsupportedUnit => (),
+                cdk::Error::MultipleUnits => (),
                 err => {
                     bail!("Wrong mint error returned: {}", err.to_string());
                 }
@@ -815,6 +815,225 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
             Ok(_) => {
                 bail!("Should not have allowed to melt with multiple units");
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Test swap where input unit != output unit
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_input_output_mismatch() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+
+    let wallet_usd = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Usd,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
+
+    let inputs = proofs;
+
+    let pre_mint = PreMintSecrets::random(
+        usd_active_keyset_id,
+        inputs.total_amount()?,
+        &SplitTarget::None,
+    )?;
+
+    let swap_request = SwapRequest {
+        inputs,
+        outputs: pre_mint.blinded_messages(),
+    };
+
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let response = http_client.post_swap(swap_request.clone()).await;
+
+    match response {
+        Err(err) => match err {
+            cdk::Error::UnitMismatch => (),
+            err => bail!("Wrong error returned: {}", err),
+        },
+        Ok(_) => {
+            bail!("Should not have allowed to mint with multiple units");
+        }
+    }
+
+    Ok(())
+}
+
+/// Test swap where input is less the output
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_swap_inflated() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
+
+    let swap_request = SwapRequest {
+        inputs: proofs,
+        outputs: pre_mint.blinded_messages(),
+    };
+
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let response = http_client.post_swap(swap_request.clone()).await;
+
+    match response {
+        Err(err) => match err {
+            cdk::Error::TransactionUnbalanced(_, _, _) => (),
+            err => {
+                bail!("Wrong mint error returned: {}", err.to_string());
+            }
+        },
+        Ok(_) => {
+            bail!("Should not have allowed to mint with multiple units");
+        }
+    }
+
+    Ok(())
+}
+
+/// Test swap where input unit != output unit
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+
+    let inputs = vec![proofs[0].clone(), proofs[0].clone()];
+
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
+
+    let swap_request = SwapRequest {
+        inputs: inputs.clone(),
+        outputs: pre_mint.blinded_messages(),
+    };
+
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let response = http_client.post_swap(swap_request.clone()).await;
+
+    match response {
+        Err(err) => match err {
+            cdk::Error::DuplicateInputs => (),
+            err => {
+                bail!(
+                    "Wrong mint error returned, expected duplicate inputs: {}",
+                    err.to_string()
+                );
+            }
+        },
+        Ok(_) => {
+            bail!("Should not have allowed duplicate inputs");
+        }
+    }
+
+    let blinded_message = pre_mint.blinded_messages();
+
+    let outputs = vec![blinded_message[0].clone(), blinded_message[0].clone()];
+
+    let swap_request = SwapRequest { inputs, outputs };
+
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let response = http_client.post_swap(swap_request.clone()).await;
+
+    match response {
+        Err(err) => match err {
+            cdk::Error::DuplicateOutputs => (),
+            err => {
+                bail!(
+                    "Wrong mint error returned, expected duplicate outputs: {}",
+                    err.to_string()
+                );
+            }
+        },
+        Ok(_) => {
+            bail!("Should not have allow duplicate inputs");
+        }
+    }
+
+    Ok(())
+}
+
+/// Test duplicate proofs in melt
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+
+    let inputs = vec![proofs[0].clone(), proofs[0].clone()];
+
+    let invoice = create_fake_invoice(7000, "".to_string());
+
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+
+    let melt_request = MeltBolt11Request {
+        quote: melt_quote.id,
+        inputs,
+        outputs: None,
+    };
+
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let response = http_client.post_melt(melt_request.clone()).await;
+
+    match response {
+        Err(err) => match err {
+            cdk::Error::DuplicateInputs => (),
+            err => {
+                bail!("Wrong mint error returned: {}", err.to_string());
+            }
+        },
+        Ok(_) => {
+            bail!("Should not have allow duplicate inputs");
         }
     }
 

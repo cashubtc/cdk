@@ -1,6 +1,6 @@
 [package]
 name = "cdk-redb"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Redb storage backend for CDK"
@@ -17,8 +17,8 @@ wallet = []
 
 [dependencies]
 async-trait = "0.1"
-cdk-common = { path = "../cdk-common", version = "0.6.0" }
-redb = "2.1.0"
+cdk-common = { path = "../cdk-common", version = "0.7.0" }
+redb = "2.2.0"
 thiserror = "1"
 tracing = { version = "0.1", default-features = false, features = [
     "attributes",

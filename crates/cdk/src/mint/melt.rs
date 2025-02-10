@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::str::FromStr;
 
 use anyhow::bail;
@@ -14,9 +13,10 @@ use super::{
 };
 use crate::amount::to_unit;
 use crate::cdk_lightning::{MintLightning, PayInvoiceResponse};
+use crate::mint::verification::Verification;
 use crate::mint::SigFlag;
 use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
-use crate::nuts::{Id, MeltQuoteState};
+use crate::nuts::MeltQuoteState;
 use crate::types::LnKey;
 use crate::util::unix_time;
 use crate::{cdk_lightning, Amount, Error};
@@ -43,30 +43,45 @@ impl Mint {
             .get_settings(&unit, &method)
             .ok_or(Error::UnsupportedUnit)?;
 
-        if matches!(options, Some(MeltOptions::Mpp { mpp: _ })) {
-            // Verify there is no corresponding mint quote.
-            // Otherwise a wallet is trying to pay someone internally, but
-            // with a multi-part quote. And that's just not possible.
-            if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
-                return Err(Error::InternalMultiPartMeltQuote);
+        let amount = match options {
+            Some(MeltOptions::Mpp { mpp: _ }) => {
+                // Verify there is no corresponding mint quote.
+                // Otherwise a wallet is trying to pay someone internally, but
+                // with a multi-part quote. And that's just not possible.
+                if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
+                    return Err(Error::InternalMultiPartMeltQuote);
+                }
+                // Verify MPP is enabled for unit and method
+                if !nut15
+                    .methods
+                    .into_iter()
+                    .any(|m| m.method == method && m.unit == unit)
+                {
+                    return Err(Error::MppUnitMethodNotSupported(unit, method));
+                }
+                // Assign `amount`
+                // because should have already been converted to the partial amount
+                amount
             }
-            // Verify MPP is enabled for unit and method
-            if !nut15
-                .methods
-                .into_iter()
-                .any(|m| m.method == method && m.unit == unit)
-            {
-                return Err(Error::MppUnitMethodNotSupported(unit, method));
-            }
-        }
+            None => amount,
+        };
+
         let is_above_max = matches!(settings.max_amount, Some(max) if amount > max);
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
-            true => Err(Error::AmountOutofLimitRange(
-                settings.min_amount.unwrap_or_default(),
-                settings.max_amount.unwrap_or_default(),
-                amount,
-            )),
+            true => {
+                tracing::error!(
+                    "Melt amount out of range: {} is not within {} and {}",
+                    amount,
+                    settings.min_amount.unwrap_or_default(),
+                    settings.max_amount.unwrap_or_default(),
+                );
+                Err(Error::AmountOutofLimitRange(
+                    settings.min_amount.unwrap_or_default(),
+                    settings.max_amount.unwrap_or_default(),
+                    amount,
+                ))
+            }
             false => Ok(()),
         }
     }
@@ -210,18 +225,16 @@ impl Mint {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
 
-        let invoice_amount_msats: Amount = match melt_quote.msat_to_pay {
-            Some(amount) => amount,
-            None => invoice
-                .amount_milli_satoshis()
-                .ok_or(Error::InvoiceAmountUndefined)?
-                .into(),
+        let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
+            Some(amt) => amt.into(),
+            None => melt_quote
+                .msat_to_pay
+                .ok_or(Error::InvoiceAmountUndefined)?,
         };
 
         let partial_amount = match invoice_amount_msats > quote_msats {
             true => {
                 let partial_msats = invoice_amount_msats - quote_msats;
-
                 Some(
                     to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
                         .map_err(|_| Error::UnsupportedUnit)?,
@@ -276,29 +289,18 @@ impl Mint {
             MeltQuoteState::Unknown => Err(Error::UnknownPaymentState),
         }?;
 
-        let ys = melt_request.inputs.ys()?;
-
-        // Ensure proofs are unique and not being double spent
-        if melt_request.inputs.len() != ys.iter().collect::<HashSet<_>>().len() {
-            return Err(Error::DuplicateProofs);
-        }
-
-        self.localstore
-            .add_proofs(melt_request.inputs.clone(), Some(melt_request.quote))
-            .await?;
-        self.check_ys_spendable(&ys, State::Pending).await?;
-
-        for proof in &melt_request.inputs {
-            self.verify_proof(proof).await?;
-        }
-
         let quote = self
             .localstore
             .get_melt_quote(&melt_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let proofs_total = melt_request.proofs_amount()?;
+        let Verification {
+            amount: input_amount,
+            unit: input_unit,
+        } = self.verify_inputs(&melt_request.inputs).await?;
+
+        let input_ys = melt_request.inputs.ys()?;
 
         let fee = self.get_proofs_fee(&melt_request.inputs).await?;
 
@@ -306,33 +308,25 @@ impl Mint {
 
         // Check that the inputs proofs are greater then total.
         // Transaction does not need to be balanced as wallet may not want change.
-        if proofs_total < required_total {
+        if input_amount < required_total {
             tracing::info!(
                 "Swap request unbalanced: {}, outputs {}, fee {}",
-                proofs_total,
+                input_amount,
                 quote.amount,
                 fee
             );
             return Err(Error::TransactionUnbalanced(
-                proofs_total.into(),
+                input_amount.into(),
                 quote.amount.into(),
                 (fee + quote.fee_reserve).into(),
             ));
         }
 
-        let input_keyset_ids: HashSet<Id> =
-            melt_request.inputs.iter().map(|p| p.keyset_id).collect();
+        self.localstore
+            .add_proofs(melt_request.inputs.clone(), None)
+            .await?;
 
-        let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
-
-        for id in input_keyset_ids {
-            let keyset = self
-                .localstore
-                .get_keyset_info(&id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
-            keyset_units.insert(keyset.unit);
-        }
+        self.check_ys_spendable(&input_ys, State::Pending).await?;
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
 
@@ -341,32 +335,14 @@ impl Mint {
         }
 
         if let Some(outputs) = &melt_request.outputs {
-            let output_keysets_ids: HashSet<Id> = outputs.iter().map(|b| b.keyset_id).collect();
-            for id in output_keysets_ids {
-                let keyset = self
-                    .localstore
-                    .get_keyset_info(&id)
-                    .await?
-                    .ok_or(Error::UnknownKeySet)?;
+            let Verification {
+                amount: _,
+                unit: output_unit,
+            } = self.verify_outputs(outputs).await?;
 
-                // Get the active keyset for the unit
-                let active_keyset_id = self
-                    .localstore
-                    .get_active_keyset_id(&keyset.unit)
-                    .await?
-                    .ok_or(Error::InactiveKeyset)?;
-
-                // Check output is for current active keyset
-                if id.ne(&active_keyset_id) {
-                    return Err(Error::InactiveKeyset);
-                }
-                keyset_units.insert(keyset.unit);
+            if input_unit != output_unit {
+                return Err(Error::UnsupportedUnit);
             }
-        }
-
-        // Check that all input and output proofs are the same unit
-        if keyset_units.len().gt(&1) {
-            return Err(Error::UnsupportedUnit);
         }
 
         tracing::debug!("Verified melt quote: {}", melt_request.quote);
@@ -385,7 +361,7 @@ impl Mint {
         let input_ys = melt_request.inputs.ys()?;
 
         self.localstore
-            .update_proofs_states(&input_ys, State::Unspent)
+            .remove_proofs(&input_ys, Some(melt_request.quote))
             .await?;
 
         self.localstore
@@ -491,6 +467,7 @@ impl Mint {
                     }
                     _ => None,
                 };
+                tracing::debug!("partial_amount: {:?}", partial_amount);
                 let ln = match self
                     .ln
                     .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt11))

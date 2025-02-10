@@ -26,9 +26,11 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint.
     * [**cdk-phoenixd**](./crates/cdk-phoenixd/): Phoenixd Lightning backend for mint.
     * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
+    * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
+    * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint managemtn gRCP client cli.
 
 
 ## Development 

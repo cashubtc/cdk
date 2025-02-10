@@ -295,38 +295,36 @@ impl MintDatabase for MintRedbDatabase {
     ) -> Result<MintQuoteState, Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
-        let mut mint_quote: MintQuote;
+        let current_state;
         {
-            let table = write_txn
-                .open_table(MINT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-
-            let quote_guard = table
-                .get(quote_id.as_bytes())
-                .map_err(Error::from)?
-                .ok_or(Error::UnknownMintInfo)?;
-
-            let quote = quote_guard.value();
-
-            mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
-        }
-
-        let current_state = mint_quote.state;
-        mint_quote.state = state;
-
-        {
+            let mut mint_quote: MintQuote;
             let mut table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
+            {
+                let quote_guard = table
+                    .get(quote_id.as_bytes())
+                    .map_err(Error::from)?
+                    .ok_or(Error::UnknownQuote)?;
 
-            table
-                .insert(
-                    quote_id.as_bytes(),
-                    serde_json::to_string(&mint_quote)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
+                let quote = quote_guard.value();
+
+                mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
+            }
+
+            current_state = mint_quote.state;
+            mint_quote.state = state;
+
+            {
+                table
+                    .insert(
+                        quote_id.as_bytes(),
+                        serde_json::to_string(&mint_quote)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 
@@ -376,6 +374,28 @@ impl MintDatabase for MintRedbDatabase {
             let quote = serde_json::from_str(quote.value()).map_err(Error::from)?;
 
             quotes.push(quote)
+        }
+
+        Ok(quotes)
+    }
+
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintQuote>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(MINT_QUOTES_TABLE)
+            .map_err(Error::from)?;
+
+        let mut quotes = Vec::new();
+
+        for (_id, quote) in (table.iter().map_err(Error::from)?).flatten() {
+            let quote: MintQuote = serde_json::from_str(quote.value()).map_err(Error::from)?;
+
+            if quote.state == state {
+                quotes.push(quote)
+            }
         }
 
         Ok(quotes)
@@ -432,39 +452,36 @@ impl MintDatabase for MintRedbDatabase {
     ) -> Result<MeltQuoteState, Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
-        let mut melt_quote: mint::MeltQuote;
-
+        let current_state;
         {
-            let table = write_txn
-                .open_table(MELT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-
-            let quote_guard = table
-                .get(quote_id.as_bytes())
-                .map_err(Error::from)?
-                .ok_or(Error::UnknownMintInfo)?;
-
-            let quote = quote_guard.value();
-
-            melt_quote = serde_json::from_str(quote).map_err(Error::from)?;
-        }
-
-        let current_state = melt_quote.state;
-        melt_quote.state = state;
-
-        {
+            let mut melt_quote: mint::MeltQuote;
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
+            {
+                let quote_guard = table
+                    .get(quote_id.as_bytes())
+                    .map_err(Error::from)?
+                    .ok_or(Error::UnknownQuote)?;
 
-            table
-                .insert(
-                    quote_id.as_bytes(),
-                    serde_json::to_string(&melt_quote)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
-                .map_err(Error::from)?;
+                let quote = quote_guard.value();
+
+                melt_quote = serde_json::from_str(quote).map_err(Error::from)?;
+            }
+
+            current_state = melt_quote.state;
+            melt_quote.state = state;
+
+            {
+                table
+                    .insert(
+                        quote_id.as_bytes(),
+                        serde_json::to_string(&melt_quote)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
         }
         write_txn.commit().map_err(Error::from)?;
 
@@ -529,6 +546,47 @@ impl MintDatabase for MintRedbDatabase {
                 }
             }
         }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut proofs_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+            for y in ys {
+                proofs_table.remove(&y.to_bytes()).map_err(Error::from)?;
+            }
+        }
+
+        {
+            let mut proof_state_table = write_txn
+                .open_table(PROOFS_STATE_TABLE)
+                .map_err(Error::from)?;
+            for y in ys {
+                proof_state_table
+                    .remove(&y.to_bytes())
+                    .map_err(Error::from)?;
+            }
+        }
+
+        if let Some(quote_id) = quote_id {
+            let mut quote_proofs_table = write_txn
+                .open_multimap_table(QUOTE_PROOFS_TABLE)
+                .map_err(Error::from)?;
+
+            quote_proofs_table
+                .remove_all(quote_id.as_bytes())
+                .map_err(Error::from)?;
+        }
+
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())

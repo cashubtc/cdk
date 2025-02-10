@@ -17,6 +17,7 @@ use cdk::nuts::{
     PreMintSecrets, ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::subscription::{IndexableParams, Params};
+use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
 use cdk_fake_wallet::FakeWallet;
@@ -168,6 +169,8 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
         Ok(_) => bail!("Swap occurred with overflow"),
         Err(err) => match err {
             cdk::Error::NUT03(cdk::nuts::nut03::Error::Amount(_)) => (),
+            cdk::Error::AmountOverflow => (),
+            cdk::Error::AmountError(_) => (),
             _ => {
                 println!("{:?}", err);
                 bail!("Wrong error returned in swap overflow")
@@ -287,7 +290,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     for keys in public_keys_to_listen {
         let statuses = msgs.remove(&keys).expect("some events");
-        assert_eq!(statuses, vec![State::Pending, State::Pending, State::Spent]);
+        assert_eq!(statuses, vec![State::Pending, State::Spent]);
     }
 
     assert!(listener.try_recv().is_err(), "no other event is happening");
@@ -465,10 +468,15 @@ async fn test_correct_keyset() -> Result<()> {
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())
         .with_description("regtest mint".to_string())
-        .with_quote_ttl(10000, 1000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
     let mint = mint_builder.build().await?;
+
+    localstore
+        .set_mint_info(mint_builder.mint_info.clone())
+        .await?;
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+    localstore.set_quote_ttl(quote_ttl).await?;
 
     mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;
     mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;

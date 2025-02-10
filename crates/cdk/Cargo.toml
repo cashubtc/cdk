@@ -1,6 +1,6 @@
 [package]
 name = "cdk"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
@@ -22,7 +22,7 @@ http_subscription = []
 
 [dependencies]
 cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "78522b3285d657dfd3c6463290f4018ee4f2554d" }
-cdk-common = { path = "../cdk-common", version = "0.6.1" }
+cdk-common = { path = "../cdk-common", version = "0.7.0" }
 cbor-diag = "0.1.12"
 async-trait = "0.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
@@ -58,7 +58,7 @@ futures = { version = "0.3.28", default-features = false, optional = true, featu
 ] }
 url = "2.3"
 utoipa = { version = "4", optional = true }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "=1.12.1", features = ["v4", "serde"] }
 
 # -Z minimal-versions
 sync_wrapper = "0.1.2"

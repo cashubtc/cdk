@@ -224,6 +224,21 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.mint_quotes.read().await.values().cloned().collect())
     }
 
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintQuote>, Self::Err> {
+        let mint_quotes = self.mint_quotes.read().await;
+
+        let pending_quotes = mint_quotes
+            .values()
+            .filter(|q| q.state == state)
+            .cloned()
+            .collect();
+
+        Ok(pending_quotes)
+    }
+
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         self.mint_quotes.write().await.remove(quote_id);
 
@@ -309,6 +324,35 @@ impl MintDatabase for MintMemoryDatabase {
             let mut db_quote_proofs = self.quote_proofs.lock().await;
 
             db_quote_proofs.insert(quote_id, ys);
+        }
+
+        Ok(())
+    }
+
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        {
+            let mut db_proofs = self.proofs.write().await;
+
+            ys.iter().for_each(|y| {
+                db_proofs.remove(&y.to_bytes());
+            });
+        }
+
+        {
+            let mut db_proofs_state = self.proof_state.lock().await;
+
+            ys.iter().for_each(|y| {
+                db_proofs_state.remove(&y.to_bytes());
+            });
+        }
+
+        if let Some(quote_id) = quote_id {
+            let mut quote_proofs = self.quote_proofs.lock().await;
+            quote_proofs.remove(&quote_id);
         }
 
         Ok(())
