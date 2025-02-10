@@ -274,4 +274,243 @@ impl Wallet {
 
         Err(Error::InsufficientFunds)
     }
+
+    /// Select proofs v2
+    pub fn select_proofs_v2(amount: Amount, proofs: Proofs) -> Result<Proofs, Error> {
+        // println!(
+        //     "select_proofs_v2: amount={}, proofs={:?}",
+        //     amount,
+        //     proofs.iter().map(|p| p.amount).collect::<Vec<_>>()
+        // );
+        if amount == Amount::ZERO {
+            return Ok(vec![]);
+        }
+        if proofs.total_amount()? < amount {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Sort proofs in descending order
+        let mut proofs = proofs;
+        proofs.sort_by(|a, b| a.cmp(b).reverse());
+
+        // Split the amount into optimal amounts
+        let optimal_amounts = amount.split();
+
+        // Track selected proofs and remaining amounts
+        let mut selected_proofs: HashSet<Proof> = HashSet::new();
+        let mut remaining_amounts: Vec<Amount> = Vec::new();
+
+        // Select proof with the exact amount and not already selected
+        let mut select_proof = |proofs: &Proofs, amount: Amount, exact: bool| -> bool {
+            // print!("select_proof: amount={}, exact={}... ", amount, exact);
+            let mut last_proof = None;
+            for proof in proofs.iter() {
+                if !selected_proofs.contains(proof) {
+                    if proof.amount == amount {
+                        selected_proofs.insert(proof.clone());
+                        // println!("found");
+                        return true;
+                    } else if !exact && proof.amount > amount {
+                        last_proof = Some(proof.clone());
+                    } else if proof.amount < amount {
+                        break;
+                    }
+                }
+            }
+            if let Some(proof) = last_proof {
+                selected_proofs.insert(proof);
+                // println!("found");
+                true
+            } else {
+                // println!("not found");
+                false
+            }
+        };
+
+        // Select proofs with the optimal amounts
+        // println!("optimal_amounts={:?}", optimal_amounts);
+        for optimal_amount in optimal_amounts {
+            if !select_proof(&proofs, optimal_amount, true) {
+                // Add the remaining amount to the remaining amounts because proof with the optimal amount was not found
+                remaining_amounts.push(optimal_amount);
+            }
+        }
+
+        // If all the optimal amounts are selected, return the selected proofs
+        if remaining_amounts.is_empty() {
+            return Ok(selected_proofs.into_iter().collect());
+        }
+
+        // Select proofs with the remaining amounts by checking for 2 of the half amount, 4 of the quarter amount, etc.
+        // println!("remaining_amounts={:?}", remaining_amounts);
+        for remaining_amount in remaining_amounts {
+            // println!("remaining_amount={}", remaining_amount);
+            // Number of proofs to select
+            let mut n = 2;
+
+            let mut target_amount = remaining_amount;
+            let mut found = false;
+            while let Some(curr_amount) = target_amount.checked_div(Amount::from(2)) {
+                // println!("curr_amount={}, n={}", curr_amount, n);
+                if curr_amount == Amount::ZERO {
+                    break;
+                }
+
+                // Select proofs with the current amount
+                for _ in 0..n {
+                    if select_proof(&proofs, curr_amount, true) {
+                        n -= 1;
+                    }
+                }
+
+                // All proofs with the current amount are selected
+                if n == 0 {
+                    found = true;
+                    break;
+                }
+
+                // Try to find double the number of the next amount
+                n *= 2;
+                target_amount = curr_amount;
+            }
+
+            // Find closest amount over the remaining amount
+            if !found {
+                // println!("find closest amount over the remaining amount");
+                select_proof(&proofs, remaining_amount, false);
+            }
+        }
+
+        // Check if the selected proofs total amount is equal to the amount else filter out unnecessary proofs
+        let mut selected_proofs = selected_proofs.into_iter().collect::<Vec<_>>();
+        let total_amount = selected_proofs.total_amount()?;
+        if total_amount != amount {
+            // println!("total_amount={}, amount={}", total_amount, amount);
+            selected_proofs.sort_by(|a, b| a.cmp(b).reverse());
+            for i in 1..selected_proofs.len() {
+                let (left, right) = selected_proofs.split_at(i);
+                let left_amount = Amount::try_sum(left.iter().map(|p| p.amount))?;
+                let right_amount = Amount::try_sum(right.iter().map(|p| p.amount))?;
+                // println!(
+                //     "left_amount={}, right_amount={}, left={:?}, right={:?}",
+                //     left_amount,
+                //     right_amount,
+                //     left.iter().map(|p| p.amount).collect::<Vec<_>>(),
+                //     right.iter().map(|p| p.amount).collect::<Vec<_>>()
+                // );
+                if left_amount >= amount && right_amount >= amount {
+                    if left_amount <= right_amount {
+                        return Ok(left.to_vec());
+                    } else {
+                        return Ok(right.to_vec());
+                    }
+                } else if left_amount >= amount {
+                    return Ok(left.to_vec());
+                } else if right_amount >= amount {
+                    return Ok(right.to_vec());
+                }
+            }
+        }
+
+        Ok(selected_proofs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::{secret::Secret, Amount, Id, Proof, PublicKey};
+
+    use crate::Wallet;
+
+    fn proof(amount: u64) -> Proof {
+        Proof::new(
+            Amount::from(amount),
+            Id::from_bytes(&[0; 8]).unwrap(),
+            Secret::generate(),
+            PublicKey::from_hex(
+                "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_select_proofs_v2_empty() {
+        let proofs = vec![];
+        let selected_proofs = Wallet::select_proofs_v2(0.into(), proofs).unwrap();
+        assert_eq!(selected_proofs.len(), 0);
+    }
+
+    #[test]
+    fn test_select_proofs_v2_insufficient() {
+        let proofs = vec![proof(1), proof(2), proof(4)];
+        let selected_proofs = Wallet::select_proofs_v2(8.into(), proofs);
+        assert!(selected_proofs.is_err());
+    }
+
+    #[test]
+    fn test_select_proofs_v2_exact() {
+        let proofs = vec![
+            proof(1),
+            proof(2),
+            proof(4),
+            proof(8),
+            proof(16),
+            proof(32),
+            proof(64),
+        ];
+        let mut selected_proofs = Wallet::select_proofs_v2(77.into(), proofs).unwrap();
+        selected_proofs.sort();
+        assert_eq!(selected_proofs.len(), 4);
+        assert_eq!(selected_proofs[0].amount, 1.into());
+        assert_eq!(selected_proofs[1].amount, 4.into());
+        assert_eq!(selected_proofs[2].amount, 8.into());
+        assert_eq!(selected_proofs[3].amount, 64.into());
+    }
+
+    #[test]
+    fn test_select_proofs_v2_over() {
+        let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
+        let selected_proofs = Wallet::select_proofs_v2(31.into(), proofs).unwrap();
+        assert_eq!(selected_proofs.len(), 1);
+        assert_eq!(selected_proofs[0].amount, 32.into());
+    }
+
+    #[test]
+    fn test_select_proofs_v2_smaller_over() {
+        let proofs = vec![proof(8), proof(16), proof(32)];
+        let selected_proofs = Wallet::select_proofs_v2(23.into(), proofs).unwrap();
+        assert_eq!(selected_proofs.len(), 2);
+        assert_eq!(selected_proofs[0].amount, 16.into());
+        assert_eq!(selected_proofs[1].amount, 8.into());
+    }
+
+    #[test]
+    fn test_select_proofs_v2_many_ones() {
+        let proofs = (0..1024).into_iter().map(|_| proof(1)).collect::<Vec<_>>();
+        let selected_proofs = Wallet::select_proofs_v2(1024.into(), proofs).unwrap();
+        assert_eq!(selected_proofs.len(), 1024);
+        for i in 0..1024 {
+            assert_eq!(selected_proofs[i].amount, 1.into());
+        }
+    }
+
+    #[test]
+    fn test_select_proofs_v2_huge_proofs() {
+        let proofs = (0..32)
+            .flat_map(|i| {
+                (0..5)
+                    .into_iter()
+                    .map(|_| proof(1 << i))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let mut selected_proofs =
+            Wallet::select_proofs_v2(((1u64 << 32) - 1).into(), proofs).unwrap();
+        selected_proofs.sort();
+        assert_eq!(selected_proofs.len(), 32);
+        for i in 0..32 {
+            assert_eq!(selected_proofs[i].amount, (1 << i).into());
+        }
+    }
 }

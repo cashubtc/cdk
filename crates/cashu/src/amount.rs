@@ -115,6 +115,16 @@ impl Amount {
         self.0.checked_sub(other.0).map(Amount)
     }
 
+    /// Checked multiplication for Amount. Returns None if overflow occurs.
+    pub fn checked_mul(self, other: Amount) -> Option<Amount> {
+        self.0.checked_mul(other.0).map(Amount)
+    }
+
+    /// Checked division for Amount. Returns None if overflow occurs.
+    pub fn checked_div(self, other: Amount) -> Option<Amount> {
+        self.0.checked_div(other.0).map(Amount)
+    }
+
     /// Try sum to check for overflow
     pub fn try_sum<I>(iter: I) -> Result<Self, Error>
     where
