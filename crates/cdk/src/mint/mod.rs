@@ -42,7 +42,7 @@ pub use cdk_common::mint::{MeltQuote, MintQuote};
 #[derive(Clone)]
 pub struct Mint {
     /// Mint Storage backend
-    pub localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     /// Ln backends for mint
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
@@ -58,7 +58,7 @@ impl Mint {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         seed: &[u8],
-        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,

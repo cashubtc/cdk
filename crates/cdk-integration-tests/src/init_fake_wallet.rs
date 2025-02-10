@@ -14,7 +14,7 @@ use crate::init_mint::start_mint;
 
 pub async fn start_fake_mint<D>(addr: &str, port: u16, database: D) -> Result<()>
 where
-    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+    D: MintDatabase<cdk_database::Error> + Send + Sync + 'static,
 {
     let default_filter = "debug";
 

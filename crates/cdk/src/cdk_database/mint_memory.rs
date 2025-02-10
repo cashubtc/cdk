@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::QuoteTTL;
-use cdk_common::database::{Error, MintDatabase};
+use cdk_common::database::{
+    Error, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+    MintSignaturesDatabase,
+};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::MintInfo;
@@ -100,8 +103,12 @@ impl MintMemoryDatabase {
 }
 
 #[async_trait]
-impl MintDatabase for MintMemoryDatabase {
+impl MintKeysDatabase for MintMemoryDatabase {
     type Err = Error;
+
+    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Ok(self.keysets.read().await.values().cloned().collect())
+    }
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         self.active_keysets.write().await.insert(unit, id);
@@ -124,10 +131,11 @@ impl MintDatabase for MintMemoryDatabase {
     async fn get_keyset_info(&self, keyset_id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         Ok(self.keysets.read().await.get(keyset_id).cloned())
     }
+}
 
-    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        Ok(self.keysets.read().await.values().cloned().collect())
-    }
+#[async_trait]
+impl MintQuotesDatabase for MintMemoryDatabase {
+    type Err = Error;
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         self.mint_quotes.write().await.insert(quote.id, quote);
@@ -275,6 +283,11 @@ impl MintDatabase for MintMemoryDatabase {
 
         Ok(melt_request.cloned())
     }
+}
+
+#[async_trait]
+impl MintProofsDatabase for MintMemoryDatabase {
+    type Err = Error;
 
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut db_proofs = self.proofs.write().await;
@@ -404,6 +417,11 @@ impl MintDatabase for MintMemoryDatabase {
 
         Ok((proofs_for_id, states))
     }
+}
+
+#[async_trait]
+impl MintSignaturesDatabase for MintMemoryDatabase {
+    type Err = Error;
 
     async fn add_blind_signatures(
         &self,
@@ -465,27 +483,32 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(ys.get(quote_id).cloned().unwrap_or_default())
     }
 
-    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
+}
+
+#[async_trait]
+impl MintDatabase<Error> for MintMemoryDatabase {
+
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
         let mut current_mint_info = self.mint_info.write().await;
 
         *current_mint_info = mint_info;
 
         Ok(())
     }
-    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
+    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let mint_info = self.mint_info.read().await;
 
         Ok(mint_info.clone())
     }
 
-    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err> {
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
         let mut current_quote_ttl = self.quote_ttl.write().await;
 
         *current_quote_ttl = quote_ttl;
 
         Ok(())
     }
-    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error> {
         let quote_ttl = self.quote_ttl.read().await;
 
         Ok(*quote_ttl)

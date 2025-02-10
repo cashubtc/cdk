@@ -152,7 +152,7 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
 #[instrument(skip_all)]
 pub async fn create_mint<D, L>(addr: &str, port: u16, database: D, lighting: L) -> Result<()>
 where
-    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+    D: MintDatabase<cdk_database::Error> + Send + Sync + 'static,
     L: MintLightning<Err = cdk_lightning::Error> + Send + Sync + 'static,
 {
     let mut mint_builder = MintBuilder::new();

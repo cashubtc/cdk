@@ -18,7 +18,7 @@ use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, 
 ///
 /// It is used to send the initial state of the subscription to the client.
 pub struct OnSubscription(
-    pub(crate) Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
+    pub(crate) Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
 );
 
 #[async_trait::async_trait]

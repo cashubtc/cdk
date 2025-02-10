@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::{LnKey, QuoteTTL};
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{
+    self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+    MintSignaturesDatabase,
+};
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
@@ -160,7 +163,7 @@ impl MintRedbDatabase {
 }
 
 #[async_trait]
-impl MintDatabase for MintRedbDatabase {
+impl MintKeysDatabase for MintRedbDatabase {
     type Err = database::Error;
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
@@ -256,6 +259,11 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(keysets)
     }
+}
+
+#[async_trait]
+impl MintQuotesDatabase for MintRedbDatabase {
+    type Err = database::Error;
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
@@ -519,6 +527,52 @@ impl MintDatabase for MintRedbDatabase {
         Ok(())
     }
 
+    /// Add melt request
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request<Uuid>,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
+
+        table
+            .insert(
+                melt_request.quote.as_bytes(),
+                (
+                    serde_json::to_string(&melt_request)?.as_str(),
+                    serde_json::to_string(&ln_key)?.as_str(),
+                ),
+            )
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+    /// Get melt request
+    async fn get_melt_request(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
+
+        match table.get(quote_id.as_bytes()).map_err(Error::from)? {
+            Some(melt_request) => {
+                let (melt_request_str, ln_key_str) = melt_request.value();
+                let melt_request = serde_json::from_str(melt_request_str)?;
+                let ln_key = serde_json::from_str(ln_key_str)?;
+
+                Ok(Some((melt_request, ln_key)))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+#[async_trait]
+impl MintProofsDatabase for MintRedbDatabase {
+    type Err = database::Error;
+
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
@@ -718,6 +772,11 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(states)
     }
+}
+
+#[async_trait]
+impl MintSignaturesDatabase for MintRedbDatabase {
+    type Err = database::Error;
 
     async fn add_blind_signatures(
         &self,
@@ -800,46 +859,6 @@ impl MintDatabase for MintRedbDatabase {
             .collect())
     }
 
-    /// Add melt request
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltBolt11Request<Uuid>,
-        ln_key: LnKey,
-    ) -> Result<(), Self::Err> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-        let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
-
-        table
-            .insert(
-                melt_request.quote.as_bytes(),
-                (
-                    serde_json::to_string(&melt_request)?.as_str(),
-                    serde_json::to_string(&ln_key)?.as_str(),
-                ),
-            )
-            .map_err(Error::from)?;
-
-        Ok(())
-    }
-    /// Get melt request
-    async fn get_melt_request(
-        &self,
-        quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
-
-        match table.get(quote_id.as_bytes()).map_err(Error::from)? {
-            Some(melt_request) => {
-                let (melt_request_str, ln_key_str) = melt_request.value();
-                let melt_request = serde_json::from_str(melt_request_str)?;
-                let ln_key = serde_json::from_str(ln_key_str)?;
-
-                Ok(Some((melt_request, ln_key)))
-            }
-            None => Ok(None),
-        }
-    }
 
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
@@ -870,8 +889,15 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(signatures)
     }
+}
 
-    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
+#[async_trait]
+impl MintDatabase<database::Error> for MintRedbDatabase {
+
+
+
+
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -884,7 +910,7 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(())
     }
-    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
+    async fn get_mint_info(&self) -> Result<MintInfo, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
 
@@ -897,7 +923,7 @@ impl MintDatabase for MintRedbDatabase {
         Err(Error::UnknownMintInfo.into())
     }
 
-    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err> {
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -910,7 +936,7 @@ impl MintDatabase for MintRedbDatabase {
 
         Ok(())
     }
-    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(CONFIG_TABLE).map_err(Error::from)?;
 

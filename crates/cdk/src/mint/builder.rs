@@ -25,7 +25,7 @@ pub struct MintBuilder {
     /// Mint Info
     pub mint_info: MintInfo,
     /// Mint Storage backend
-    localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
+    localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
@@ -56,7 +56,7 @@ impl MintBuilder {
     /// Set localstore
     pub fn with_localstore(
         mut self,
-        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
         self
