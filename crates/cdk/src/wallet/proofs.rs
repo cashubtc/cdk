@@ -286,11 +286,11 @@ impl Wallet {
         proofs: Proofs,
         keyset_fees: &HashMap<Id, u64>,
     ) -> Result<Proofs, Error> {
-        // println!(
-        //     "select_proofs_v2: amount={}, proofs={:?}",
-        //     amount,
-        //     proofs.iter().map(|p| p.amount).collect::<Vec<_>>()
-        // );
+        tracing::debug!(
+            "select_proofs_v2: amount={}, proofs={:?}",
+            amount,
+            proofs.iter().map(|p| p.amount.into()).collect::<Vec<u64>>()
+        );
         if amount == Amount::ZERO {
             return Ok(vec![]);
         }
@@ -311,13 +311,11 @@ impl Wallet {
 
         // Select proof with the exact amount and not already selected
         let mut select_proof = |proofs: &Proofs, amount: Amount, exact: bool| -> bool {
-            // print!("select_proof: amount={}, exact={}... ", amount, exact);
             let mut last_proof = None;
             for proof in proofs.iter() {
                 if !selected_proofs.contains(proof) {
                     if proof.amount == amount {
                         selected_proofs.insert(proof.clone());
-                        // println!("found");
                         return true;
                     } else if !exact && proof.amount > amount {
                         last_proof = Some(proof.clone());
@@ -328,16 +326,13 @@ impl Wallet {
             }
             if let Some(proof) = last_proof {
                 selected_proofs.insert(proof);
-                // println!("found");
                 true
             } else {
-                // println!("not found");
                 false
             }
         };
 
         // Select proofs with the optimal amounts
-        // println!("optimal_amounts={:?}", optimal_amounts);
         for optimal_amount in optimal_amounts {
             if !select_proof(&proofs, optimal_amount, true) {
                 // Add the remaining amount to the remaining amounts because proof with the optimal amount was not found
@@ -347,20 +342,21 @@ impl Wallet {
 
         // If all the optimal amounts are selected, return the selected proofs
         if remaining_amounts.is_empty() {
+            tracing::debug!(
+                "select_proofs_v2: found optimal; selected_proofs={:?}",
+                selected_proofs.iter().map(|p| p.amount).collect::<Vec<_>>()
+            );
             return Ok(selected_proofs.into_iter().collect());
         }
 
         // Select proofs with the remaining amounts by checking for 2 of the half amount, 4 of the quarter amount, etc.
-        // println!("remaining_amounts={:?}", remaining_amounts);
         for remaining_amount in remaining_amounts {
-            // println!("remaining_amount={}", remaining_amount);
             // Number of proofs to select
             let mut n = 2;
 
             let mut target_amount = remaining_amount;
             let mut found = false;
             while let Some(curr_amount) = target_amount.checked_div(Amount::from(2)) {
-                // println!("curr_amount={}, n={}", curr_amount, n);
                 if curr_amount == Amount::ZERO {
                     break;
                 }
@@ -385,7 +381,6 @@ impl Wallet {
 
             // Find closest amount over the remaining amount
             if !found {
-                // println!("find closest amount over the remaining amount");
                 select_proof(&proofs, remaining_amount, false);
             }
         }
@@ -394,19 +389,16 @@ impl Wallet {
         let mut selected_proofs = selected_proofs.into_iter().collect::<Vec<_>>();
         let total_amount = selected_proofs.total_amount()?;
         if total_amount != amount && selected_proofs.len() > 1 {
-            // println!("total_amount={}, amount={}", total_amount, amount);
+            tracing::debug!(
+                "select_proofs_v2: total_amount={}, amount={}",
+                total_amount,
+                amount,
+            );
             selected_proofs.sort_by(|a, b| a.cmp(b).reverse());
             for i in 1..selected_proofs.len() {
                 let (left, right) = selected_proofs.split_at(i);
                 let left_amount = Amount::try_sum(left.iter().map(|p| p.amount))?;
                 let right_amount = Amount::try_sum(right.iter().map(|p| p.amount))?;
-                // println!(
-                //     "left_amount={}, right_amount={}, left={:?}, right={:?}",
-                //     left_amount,
-                //     right_amount,
-                //     left.iter().map(|p| p.amount).collect::<Vec<_>>(),
-                //     right.iter().map(|p| p.amount).collect::<Vec<_>>()
-                // );
                 if left_amount >= amount && right_amount >= amount {
                     if left_amount <= right_amount {
                         selected_proofs = left.to_vec();
@@ -441,6 +433,13 @@ impl Wallet {
             )?);
         }
 
+        tracing::debug!(
+            "select_proofs_v2: found not optimal; selected_proofs={:?}",
+            selected_proofs
+                .iter()
+                .map(|p| p.amount.into())
+                .collect::<Vec<u64>>()
+        );
         Ok(selected_proofs)
     }
 }

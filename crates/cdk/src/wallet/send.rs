@@ -11,11 +11,14 @@ use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Prepare send
+    #[instrument(skip(self))]
     pub async fn prepare_send(
         &self,
         amount: Amount,
         opts: SendOptions,
     ) -> Result<PreparedSend, Error> {
+        tracing::info!("Preparing send");
+
         // If online send check mint for current keysets fees
         if opts.send_kind.is_online() {
             if let Err(e) = self.get_active_mint_keyset().await {
@@ -48,6 +51,7 @@ impl Wallet {
                 let unspent_proofs = self.get_unspent_proofs().await?;
                 let proofs_to_swap =
                     Wallet::select_proofs_v2(amount, unspent_proofs, &keyset_fees)?;
+                let proofs_to_swap_sum = proofs_to_swap.total_amount()?;
                 let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
                 return self
                     .store_prepared_send(PreparedSend {
@@ -55,7 +59,8 @@ impl Wallet {
                         options: opts,
                         nonce: rand::random(),
                         proofs_to_swap,
-                        target_swap_amounts: amount.split(),
+                        target_swap_amounts: proofs_to_swap_sum
+                            .split_targeted(&SplitTarget::Values(amount.split()))?,
                         swap_fee,
                         proofs_to_send: vec![],
                         send_fee: Amount::ZERO,
@@ -179,6 +184,7 @@ impl Wallet {
         &self,
         prepared_send: PreparedSend,
     ) -> Result<PreparedSend, Error> {
+        tracing::debug!("Storing prepared send");
         let mut guard = self.prepared_send.lock().await;
         match *guard {
             Some(_) => Err(Error::ActivePreparedSend),
@@ -189,6 +195,7 @@ impl Wallet {
                     .update_proofs_state(ys, State::Reserved)
                     .await?;
                 *guard = Some(prepared_send.nonce);
+                tracing::info!("Prepared send stored");
                 Ok(prepared_send)
             }
         }
@@ -197,6 +204,7 @@ impl Wallet {
     /// Send prepared send
     #[instrument(skip(self))]
     pub async fn send(&self, send: PreparedSend) -> Result<Token, Error> {
+        tracing::info!("Sending prepared send");
         let guard = self.prepared_send.lock().await;
         match *guard {
             Some(nonce) if nonce == send.nonce => {}
@@ -205,9 +213,11 @@ impl Wallet {
 
         let mut send_proofs = send.proofs_to_send;
         if !send.proofs_to_swap.is_empty() {
+            let swap_amount = send.amount - send_proofs.total_amount()?;
+            tracing::debug!("Swapping proofs; swap_amount={}", swap_amount,);
             if let Some(proofs) = self
                 .swap(
-                    Some(send.amount - send_proofs.total_amount()?),
+                    Some(swap_amount),
                     SplitTarget::Values(send.target_swap_amounts),
                     send.proofs_to_swap,
                     send.options.conditions,
@@ -215,7 +225,7 @@ impl Wallet {
                 )
                 .await?
             {
-                send_proofs = proofs;
+                send_proofs.extend(proofs);
             }
         }
 

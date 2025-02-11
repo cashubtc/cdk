@@ -76,6 +76,7 @@ impl PreMintSecrets {
 
         let mut counter = counter;
 
+        tracing::debug!("HERE");
         for amount in amount.split_targeted(amount_split_target)? {
             let secret = Secret::from_xpriv(xpriv, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_xpriv(xpriv, keyset_id, counter)?;
@@ -94,6 +95,7 @@ impl PreMintSecrets {
             pre_mint_secrets.secrets.push(pre_mint);
             counter += 1;
         }
+        tracing::debug!("It worked");
 
         Ok(pre_mint_secrets)
     }

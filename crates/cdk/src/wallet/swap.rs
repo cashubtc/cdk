@@ -20,6 +20,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
+        tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;
 
@@ -188,6 +189,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<PreSwap, Error> {
+        tracing::info!("Creating swap");
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         // Desired amount is either amount passed or value of all proof
