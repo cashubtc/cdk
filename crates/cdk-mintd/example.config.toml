@@ -91,3 +91,10 @@ reserve_fee_min = 4
 # reserve_fee_min = 1
 # min_delay_time = 1
 # max_delay_time = 3
+
+# [grpc_processor]
+# gRPC Payment Processor configuration
+# supported_units = ["sat"]
+# addr = "127.0.0.1"
+# port = 50051
+# tls_dir = "/path/to/tls"

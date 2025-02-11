@@ -10,18 +10,19 @@ description = "CDK mint binary"
 rust-version = "1.75.0"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor"]
 # Ensure at least one lightning backend is enabled
-swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
-redis = ["cdk-axum/redis"]
 management-rpc = ["cdk-mint-rpc"]
-# MSRV is not commited to with redb enabled
-redb = ["dep:cdk-redb"]
-sqlcipher = ["cdk-sqlite/sqlcipher"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
+grpc-processor = ["dep:cdk-payment-processor"]
+sqlcipher = ["cdk-sqlite/sqlcipher"]
+# MSRV is not commited to with redb enabled
+redb = ["dep:cdk-redb"]
+swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
+redis = ["cdk-axum/redis"]
 
 [dependencies]
 anyhow.workspace = true
@@ -42,6 +43,7 @@ cdk-lnd = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
+cdk-payment-processor = { workspace = true, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
 clap.workspace = true
 bitcoin.workspace = true
@@ -54,7 +56,7 @@ bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
 tower = "0.5.2"
 lightning-invoice.workspace = true
-home = "0.5.5"
+home.workspace = true
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
