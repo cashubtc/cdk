@@ -51,7 +51,6 @@ impl Wallet {
                 let unspent_proofs = self.get_unspent_proofs().await?;
                 let proofs_to_swap =
                     Wallet::select_proofs_v2(amount, unspent_proofs, &keyset_fees)?;
-                let proofs_to_swap_sum = proofs_to_swap.total_amount()?;
                 let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
                 return self
                     .store_prepared_send(PreparedSend {
@@ -59,8 +58,6 @@ impl Wallet {
                         options: opts,
                         nonce: rand::random(),
                         proofs_to_swap,
-                        target_swap_amounts: proofs_to_swap_sum
-                            .split_targeted(&SplitTarget::Values(amount.split()))?,
                         swap_fee,
                         proofs_to_send: vec![],
                         send_fee: Amount::ZERO,
@@ -82,6 +79,7 @@ impl Wallet {
             Amount::ZERO
         };
 
+        // TODO what is this?
         if opts.include_fee || selected_total == amount {
             return self
                 .store_prepared_send(PreparedSend {
@@ -89,7 +87,6 @@ impl Wallet {
                     options: opts,
                     nonce: rand::random(),
                     proofs_to_swap: vec![],
-                    target_swap_amounts: vec![],
                     swap_fee: Amount::ZERO,
                     proofs_to_send: selected_proofs,
                     send_fee,
@@ -111,7 +108,6 @@ impl Wallet {
                         options: opts,
                         nonce: rand::random(),
                         proofs_to_swap: vec![],
-                        target_swap_amounts: vec![],
                         swap_fee: Amount::ZERO,
                         proofs_to_send: selected_proofs,
                         send_fee,
@@ -132,7 +128,6 @@ impl Wallet {
                             options: opts,
                             nonce: rand::random(),
                             proofs_to_swap: vec![],
-                            target_swap_amounts: vec![],
                             swap_fee: Amount::ZERO,
                             proofs_to_send: selected_proofs,
                             send_fee,
@@ -164,14 +159,12 @@ impl Wallet {
 
             let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
             let send_fee = self.get_proofs_fee(&proofs_to_send).await?;
-            let target_swap_amounts = (proofs_to_swap.total_amount()? - swap_fee).split();
 
             self.store_prepared_send(PreparedSend {
                 amount,
                 options: opts,
                 nonce: rand::random(),
                 proofs_to_swap,
-                target_swap_amounts,
                 swap_fee,
                 proofs_to_send,
                 send_fee,
@@ -218,7 +211,7 @@ impl Wallet {
             if let Some(proofs) = self
                 .swap(
                     Some(swap_amount),
-                    SplitTarget::Values(send.target_swap_amounts),
+                    SplitTarget::None,
                     send.proofs_to_swap,
                     send.options.conditions,
                     send.options.include_fee,
@@ -252,7 +245,6 @@ pub struct PreparedSend {
     options: SendOptions,
     nonce: u64,
     proofs_to_swap: Proofs,
-    target_swap_amounts: Vec<Amount>,
     swap_fee: Amount,
     proofs_to_send: Proofs,
     send_fee: Amount,
@@ -269,10 +261,6 @@ impl PreparedSend {
 
     pub fn proofs_to_swap(&self) -> &Proofs {
         &self.proofs_to_swap
-    }
-
-    pub fn target_swap_amounts(&self) -> &[Amount] {
-        &self.target_swap_amounts
     }
 
     pub fn swap_fee(&self) -> Amount {
