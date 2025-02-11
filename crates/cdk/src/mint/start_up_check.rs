@@ -67,7 +67,7 @@ impl Mint {
                             if let Err(err) = self
                                 .process_melt_request(
                                     &melt_request,
-                                    pay_invoice_response.payment_preimage,
+                                    pay_invoice_response.payment_proof,
                                     pay_invoice_response.total_spent,
                                 )
                                 .await
