@@ -28,7 +28,7 @@ pub use cdk_common::{
 };
 #[cfg(feature = "mint")]
 #[doc(hidden)]
-pub use cdk_common::{lightning as cdk_lightning, subscription};
+pub use cdk_common::{payment as cdk_payment, subscription};
 
 pub mod fees;
 

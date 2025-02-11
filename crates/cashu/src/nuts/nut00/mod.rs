@@ -455,20 +455,22 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
 
 /// Payment Method
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum PaymentMethod {
     /// Bolt11 payment type
     #[default]
     Bolt11,
+    /// Custom
+    Custom(String),
 }
 
 impl FromStr for PaymentMethod {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
+        match value.to_lowercase().as_str() {
             "bolt11" => Ok(Self::Bolt11),
-            _ => Err(Error::UnsupportedPaymentMethod),
+            c => Ok(Self::Custom(c.to_string())),
         }
     }
 }
@@ -477,6 +479,7 @@ impl fmt::Display for PaymentMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentMethod::Bolt11 => write!(f, "bolt11"),
+            PaymentMethod::Custom(p) => write!(f, "{}", p),
         }
     }
 }

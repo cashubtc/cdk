@@ -1,4 +1,4 @@
-use cdk_common::common::LnKey;
+use cdk_common::common::PaymentProcessorKey;
 use cdk_common::MintQuoteState;
 
 use super::Mint;
@@ -14,7 +14,7 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let ln = match self.ln.get(&LnKey::new(
+        let ln = match self.ln.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
             cdk_common::PaymentMethod::Bolt11,
         )) {
@@ -27,7 +27,7 @@ impl Mint {
         };
 
         let ln_status = ln
-            .check_incoming_invoice_status(&quote.request_lookup_id)
+            .check_incoming_payment_status(&quote.request_lookup_id)
             .await?;
 
         if ln_status != quote.state && quote.state != MintQuoteState::Issued {

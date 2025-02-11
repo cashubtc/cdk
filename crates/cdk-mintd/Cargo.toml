@@ -41,6 +41,7 @@ cdk-lnd = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
+cdk-payment-processor.workspace = true
 config = { version = "0.13.3", features = ["toml"] }
 clap.workspace = true
 bitcoin.workspace = true

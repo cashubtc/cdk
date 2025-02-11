@@ -32,6 +32,7 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
+use cdk_payment_processor::PaymentProcessorClient;
 #[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -179,12 +180,14 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             let cln = Arc::new(cln);
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                cln.clone(),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    cln.clone(),
+                )
+                .await?;
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
@@ -197,12 +200,15 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnbits),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(lnbits),
+                )
+                .await?;
+
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
@@ -214,12 +220,14 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnd),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(lnd),
+                )
+                .await?;
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
@@ -228,20 +236,59 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "fakewallet")]
         LnBackend::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
+            tracing::info!("Using fake wallet: {:?}", fake_wallet);
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
                     .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
-                    .await?;
+                    .await
+                    .expect("hhh");
 
                 let fake = Arc::new(fake);
 
-                mint_builder = mint_builder.add_ln_backend(
-                    unit.clone(),
-                    PaymentMethod::Bolt11,
-                    mint_melt_limits,
-                    fake.clone(),
-                );
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt11,
+                        mint_melt_limits,
+                        fake.clone(),
+                    )
+                    .await?;
+
+                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+
+                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+            }
+        }
+        LnBackend::GrpcProcessor => {
+            let grpc_processor = settings
+                .clone()
+                .grpc_processor
+                .expect("grpc defined defined");
+
+            tracing::info!(
+                "Attempting to start with grpc payment processor at {}:{}.",
+                grpc_processor.addr,
+                grpc_processor.port
+            );
+
+            for unit in grpc_processor.supported_units {
+                tracing::debug!("Adding unit: {:?}", unit);
+                let payment_processor = PaymentProcessorClient::new(
+                    &grpc_processor.addr,
+                    grpc_processor.port,
+                    grpc_processor.tls_dir.clone(),
+                )
+                .await?;
+
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt11,
+                        mint_melt_limits,
+                        Arc::new(payment_processor),
+                    )
+                    .await?;
 
                 let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
 
@@ -296,6 +343,8 @@ async fn main() -> anyhow::Result<()> {
     mint_builder = mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints);
 
     let mint = mint_builder.build().await?;
+
+    tracing::debug!("Mint built from builder.");
 
     let mint = Arc::new(mint);
 
@@ -422,6 +471,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install CTRL+C handler");
+    tracing::info!("Shutdown signal received");
+}
+
 fn work_dir() -> Result<PathBuf> {
     let home_dir = home::home_dir().ok_or(anyhow!("Unknown home dir"))?;
     let dir = home_dir.join(".cdk-mintd");
@@ -429,11 +485,4 @@ fn work_dir() -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
 
     Ok(dir)
-}
-
-async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install CTRL+C handler");
-    tracing::info!("Shutdown signal received");
 }

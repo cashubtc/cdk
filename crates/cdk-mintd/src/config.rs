@@ -56,6 +56,7 @@ pub enum LnBackend {
     FakeWallet,
     #[cfg(feature = "lnd")]
     Lnd,
+    GrpcProcessor,
 }
 
 impl std::str::FromStr for LnBackend {
@@ -71,6 +72,7 @@ impl std::str::FromStr for LnBackend {
             "fakewallet" => Ok(LnBackend::FakeWallet),
             #[cfg(feature = "lnd")]
             "lnd" => Ok(LnBackend::Lnd),
+            "grpc" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
     }
@@ -166,6 +168,14 @@ fn default_max_delay_time() -> u64 {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+pub struct GrpcProcessor {
+    pub supported_units: Vec<CurrencyUnit>,
+    pub addr: String,
+    pub port: u16,
+    pub tls_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseEngine {
     #[default]
@@ -206,6 +216,7 @@ pub struct Settings {
     pub lnd: Option<Lnd>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
+    pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
@@ -313,6 +324,12 @@ impl Settings {
                 settings.fake_wallet.is_some(),
                 "FakeWallet backend requires a valid config."
             ),
+            LnBackend::GrpcProcessor => {
+                assert!(
+                    settings.grpc_processor.is_some(),
+                    "GRPC backend requires a valid config."
+                )
+            }
         }
 
         Ok(settings)

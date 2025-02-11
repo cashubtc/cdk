@@ -10,7 +10,7 @@ pub mod common;
 pub mod database;
 pub mod error;
 #[cfg(feature = "mint")]
-pub mod lightning;
+pub mod payment;
 pub mod pub_sub;
 pub mod subscription;
 pub mod ws;
