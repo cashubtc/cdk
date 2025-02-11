@@ -100,7 +100,7 @@ impl Mint {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
-            return Err(Error::DuplicateProofs);
+            return Err(Error::DuplicateInputs);
         }
 
         // Extract script if present
