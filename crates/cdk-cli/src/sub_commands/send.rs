@@ -3,10 +3,9 @@ use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
-use cdk::amount::SplitTarget;
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
 use cdk::wallet::types::{SendKind, WalletKey};
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::{MultiMintWallet, SendOptions};
 use cdk::Amount;
 use clap::Args;
 
@@ -170,16 +169,19 @@ pub async fn send(
         (false, None) => SendKind::OnlineExact,
     };
 
-    let token = wallet
-        .send(
+    let prepared_send = wallet
+        .prepare_send(
             token_amount,
-            sub_command_args.memo.clone(),
-            conditions,
-            &SplitTarget::default(),
-            &send_kind,
-            sub_command_args.include_fee,
+            SendOptions {
+                memo: sub_command_args.memo.clone(),
+                send_kind,
+                include_fee: sub_command_args.include_fee,
+                conditions,
+                ..Default::default()
+            },
         )
         .await?;
+    let token = wallet.send(prepared_send).await?;
 
     match sub_command_args.v3 {
         true => {

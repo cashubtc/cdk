@@ -1,10 +1,9 @@
 use std::io::{self, Write};
 
 use anyhow::{anyhow, Result};
-use cdk::amount::SplitTarget;
 use cdk::nuts::nut18::TransportType;
 use cdk::nuts::{PaymentRequest, PaymentRequestPayload};
-use cdk::wallet::{MultiMintWallet, SendKind};
+use cdk::wallet::{MultiMintWallet, SendOptions};
 use clap::Args;
 use nostr_sdk::nips::nip19::Nip19Profile;
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys};
@@ -81,17 +80,16 @@ pub async fn pay_request(
         })
         .ok_or(anyhow!("No supported transport method found"))?;
 
-    let proofs = matching_wallet
-        .send(
+    let prepared_send = matching_wallet
+        .prepare_send(
             amount,
-            None,
-            None,
-            &SplitTarget::default(),
-            &SendKind::default(),
-            true,
+            SendOptions {
+                include_fee: true,
+                ..Default::default()
+            },
         )
-        .await?
-        .proofs();
+        .await?;
+    let proofs = matching_wallet.send(prepared_send).await?.proofs();
 
     let payload = PaymentRequestPayload {
         id: payment_request.payment_id.clone(),

@@ -11,7 +11,7 @@ use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
-use super::types::SendKind;
+use super::send::{PreparedSend, SendOptions};
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
@@ -110,32 +110,31 @@ impl MultiMintWallet {
         Ok(mint_proofs)
     }
 
-    /// Create cashu token
+    /// Prepare to send
     #[instrument(skip(self))]
-    pub async fn send(
+    pub async fn prepare_send(
         &self,
         wallet_key: &WalletKey,
         amount: Amount,
-        memo: Option<String>,
-        conditions: Option<SpendingConditions>,
-        send_kind: SendKind,
-        include_fees: bool,
-    ) -> Result<Token, Error> {
+        opts: SendOptions,
+    ) -> Result<PreparedSend, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        wallet
-            .send(
-                amount,
-                memo,
-                conditions,
-                &SplitTarget::default(),
-                &send_kind,
-                include_fees,
-            )
+        wallet.prepare_send(amount, opts).await
+    }
+
+    /// Create cashu token
+    #[instrument(skip(self))]
+    pub async fn send(&self, wallet_key: &WalletKey, send: PreparedSend) -> Result<Token, Error> {
+        let wallet = self
+            .get_wallet(wallet_key)
             .await
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+
+        wallet.send(send).await
     }
 
     /// Mint quote for wallet

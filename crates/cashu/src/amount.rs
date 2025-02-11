@@ -105,6 +105,24 @@ impl Amount {
         Ok(parts)
     }
 
+    pub fn split_with_fee(&self, fee_ppk: u64) -> Result<Vec<Self>, Error> {
+        let without_fee_amounts = self.split();
+        let fee_ppk = fee_ppk * without_fee_amounts.len() as u64;
+        let fee = Amount::from((fee_ppk + 999) / 1000);
+
+        let split = self.checked_add(fee).ok_or(Error::AmountOverflow)?.split();
+        let split_fee_ppk = split.len() as u64 * fee_ppk;
+        if let Some(net_amount) = self.checked_sub(Amount::from(split_fee_ppk)) {
+            if net_amount >= *self {
+                Ok(split)
+            } else {
+                net_amount.split_with_fee(fee_ppk)
+            }
+        } else {
+            Err(Error::AmountOverflow)
+        }
+    }
+
     /// Checked addition for Amount. Returns None if overflow occurs.
     pub fn checked_add(self, other: Amount) -> Option<Amount> {
         self.0.checked_add(other.0).map(Amount)

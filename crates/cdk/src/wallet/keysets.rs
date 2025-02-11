@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySetInfo, Keys};
@@ -96,5 +98,21 @@ impl Wallet {
             .min_by_key(|key| key.input_fee_ppk)
             .ok_or(Error::NoActiveKeyset)?;
         Ok(keyset_with_lowest_fee)
+    }
+
+    /// Get keyset fees for mint
+    pub async fn get_keyset_fees(&self) -> Result<HashMap<Id, u64>, Error> {
+        let keysets = self
+            .localstore
+            .get_mint_keysets(self.mint_url.clone())
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
+
+        let mut fees = HashMap::new();
+        for keyset in keysets {
+            fees.insert(keyset.id, keyset.input_fee_ppk);
+        }
+
+        Ok(fees)
     }
 }

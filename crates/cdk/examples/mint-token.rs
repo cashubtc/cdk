@@ -5,8 +5,7 @@ use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
-use cdk::wallet::types::SendKind;
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
 use cdk::Amount;
 use rand::Rng;
 
@@ -52,16 +51,8 @@ async fn main() -> Result<(), Error> {
     println!("Received {} from mint {}", receive_amount, mint_url);
 
     // Send a token with the specified amount
-    let token = wallet
-        .send(
-            amount,
-            None,
-            None,
-            &SplitTarget::default(),
-            &SendKind::OnlineExact,
-            false,
-        )
-        .await?;
+    let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+    let token = wallet.send(prepared_send).await?;
     println!("Token:");
     println!("{}", token);
 

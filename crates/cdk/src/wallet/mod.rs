@@ -12,6 +12,7 @@ use client::MintConnector;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
 use subscription::{ActiveSubscription, SubscriptionManager};
+use tokio::sync::Mutex;
 use tracing::instrument;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -43,6 +44,7 @@ mod swap;
 pub mod util;
 
 pub use cdk_common::wallet as types;
+pub use send::SendOptions;
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -64,6 +66,7 @@ pub struct Wallet {
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    prepared_send: Arc<Mutex<Option<u64>>>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -151,6 +154,7 @@ impl Wallet {
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
+            prepared_send: Arc::new(Mutex::new(None)),
         })
     }
 

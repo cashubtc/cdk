@@ -16,6 +16,9 @@ use crate::Amount;
 /// CDK Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A prepared send is active
+    #[error("Active prepared send")]
+    ActivePreparedSend,
     /// Mint does not have a key for amount
     #[error("No Key for Amount")]
     AmountKey,
@@ -37,6 +40,9 @@ pub enum Error {
     /// Invalid payment request
     #[error("Invalid payment request")]
     InvalidPaymentRequest,
+    /// Invalid prepared send
+    #[error("Invalid prepared send")]
+    InvalidPreparedSend,
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,

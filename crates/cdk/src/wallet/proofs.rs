@@ -1,8 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use cdk_common::Id;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
+use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
@@ -276,7 +278,11 @@ impl Wallet {
     }
 
     /// Select proofs v2
-    pub fn select_proofs_v2(amount: Amount, proofs: Proofs) -> Result<Proofs, Error> {
+    pub fn select_proofs_v2(
+        amount: Amount,
+        proofs: Proofs,
+        keyset_fees: &HashMap<Id, u64>,
+    ) -> Result<Proofs, Error> {
         // println!(
         //     "select_proofs_v2: amount={}, proofs={:?}",
         //     amount,
@@ -384,7 +390,7 @@ impl Wallet {
         // Check if the selected proofs total amount is equal to the amount else filter out unnecessary proofs
         let mut selected_proofs = selected_proofs.into_iter().collect::<Vec<_>>();
         let total_amount = selected_proofs.total_amount()?;
-        if total_amount != amount {
+        if total_amount != amount && selected_proofs.len() > 1 {
             // println!("total_amount={}, amount={}", total_amount, amount);
             selected_proofs.sort_by(|a, b| a.cmp(b).reverse());
             for i in 1..selected_proofs.len() {
@@ -400,16 +406,36 @@ impl Wallet {
                 // );
                 if left_amount >= amount && right_amount >= amount {
                     if left_amount <= right_amount {
-                        return Ok(left.to_vec());
+                        selected_proofs = left.to_vec();
                     } else {
-                        return Ok(right.to_vec());
+                        selected_proofs = right.to_vec();
                     }
+                    break;
                 } else if left_amount >= amount {
-                    return Ok(left.to_vec());
+                    selected_proofs = left.to_vec();
+                    break;
                 } else if right_amount >= amount {
-                    return Ok(right.to_vec());
+                    selected_proofs = right.to_vec();
+                    break;
                 }
             }
+        }
+
+        // Handle fees
+        let fee =
+            calculate_fee(&selected_proofs.count_by_keyset(), keyset_fees).unwrap_or_default();
+        let net_amount = selected_proofs.total_amount()? - fee;
+        if net_amount < amount {
+            let remaining_amount = amount - net_amount;
+            let remaining_proofs = proofs
+                .into_iter()
+                .filter(|p| !selected_proofs.contains(p))
+                .collect::<Proofs>();
+            selected_proofs.extend(Wallet::select_proofs_v2(
+                remaining_amount,
+                remaining_proofs,
+                keyset_fees,
+            )?);
         }
 
         Ok(selected_proofs)
@@ -418,6 +444,8 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use cdk_common::{secret::Secret, Amount, Id, Proof, PublicKey};
 
     use crate::Wallet;
@@ -437,14 +465,14 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_empty() {
         let proofs = vec![];
-        let selected_proofs = Wallet::select_proofs_v2(0.into(), proofs).unwrap();
+        let selected_proofs = Wallet::select_proofs_v2(0.into(), proofs, &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 0);
     }
 
     #[test]
     fn test_select_proofs_v2_insufficient() {
         let proofs = vec![proof(1), proof(2), proof(4)];
-        let selected_proofs = Wallet::select_proofs_v2(8.into(), proofs);
+        let selected_proofs = Wallet::select_proofs_v2(8.into(), proofs, &HashMap::new());
         assert!(selected_proofs.is_err());
     }
 
@@ -459,7 +487,8 @@ mod tests {
             proof(32),
             proof(64),
         ];
-        let mut selected_proofs = Wallet::select_proofs_v2(77.into(), proofs).unwrap();
+        let mut selected_proofs =
+            Wallet::select_proofs_v2(77.into(), proofs, &HashMap::new()).unwrap();
         selected_proofs.sort();
         assert_eq!(selected_proofs.len(), 4);
         assert_eq!(selected_proofs[0].amount, 1.into());
@@ -471,7 +500,7 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_over() {
         let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
-        let selected_proofs = Wallet::select_proofs_v2(31.into(), proofs).unwrap();
+        let selected_proofs = Wallet::select_proofs_v2(31.into(), proofs, &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 32.into());
     }
@@ -479,7 +508,7 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_smaller_over() {
         let proofs = vec![proof(8), proof(16), proof(32)];
-        let selected_proofs = Wallet::select_proofs_v2(23.into(), proofs).unwrap();
+        let selected_proofs = Wallet::select_proofs_v2(23.into(), proofs, &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 2);
         assert_eq!(selected_proofs[0].amount, 16.into());
         assert_eq!(selected_proofs[1].amount, 8.into());
@@ -488,7 +517,8 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_many_ones() {
         let proofs = (0..1024).into_iter().map(|_| proof(1)).collect::<Vec<_>>();
-        let selected_proofs = Wallet::select_proofs_v2(1024.into(), proofs).unwrap();
+        let selected_proofs =
+            Wallet::select_proofs_v2(1024.into(), proofs, &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 1024);
         for i in 0..1024 {
             assert_eq!(selected_proofs[i].amount, 1.into());
@@ -506,7 +536,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut selected_proofs =
-            Wallet::select_proofs_v2(((1u64 << 32) - 1).into(), proofs).unwrap();
+            Wallet::select_proofs_v2(((1u64 << 32) - 1).into(), proofs, &HashMap::new()).unwrap();
         selected_proofs.sort();
         assert_eq!(selected_proofs.len(), 32);
         for i in 0..32 {

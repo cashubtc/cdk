@@ -1,9 +1,8 @@
 use std::assert_eq;
 
-use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::wallet::SendKind;
 use cdk::Amount;
+use cdk::{amount::SplitTarget, wallet::SendOptions};
 use cdk_integration_tests::init_pure_tests::{
     create_and_start_test_mint, create_test_wallet_for_mint, fund_wallet,
 };
@@ -19,16 +18,10 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
     assert_eq!(Amount::from(64), balance_alice);
 
     // Alice wants to send 40 sats, which internally swaps
-    let token = wallet_alice
-        .send(
-            Amount::from(40),
-            None,
-            None,
-            &SplitTarget::None,
-            &SendKind::OnlineExact,
-            false,
-        )
+    let prepared_send = wallet_alice
+        .prepare_send(Amount::from(40), SendOptions::default())
         .await?;
+    let token = wallet_alice.send(prepared_send).await?;
     assert_eq!(Amount::from(40), token.proofs().total_amount()?);
     assert_eq!(Amount::from(24), wallet_alice.total_balance().await?);
 

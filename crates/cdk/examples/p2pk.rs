@@ -4,8 +4,7 @@ use cdk::amount::SplitTarget;
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload, SecretKey, SpendingConditions};
-use cdk::wallet::types::SendKind;
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
 use cdk::Amount;
 use rand::Rng;
 use tracing_subscriber::EnvFilter;
@@ -70,16 +69,16 @@ async fn main() -> Result<(), Error> {
     println!("{}", bal);
 
     // Send a token with the specified amount and spending conditions
-    let token = wallet
-        .send(
+    let prepared_send = wallet
+        .prepare_send(
             10.into(),
-            None,
-            Some(spending_conditions),
-            &SplitTarget::default(),
-            &SendKind::default(),
-            false,
+            SendOptions {
+                conditions: Some(spending_conditions),
+                ..Default::default()
+            },
         )
         .await?;
+    let token = wallet.send(prepared_send).await?;
 
     println!("Created token locked to pubkey: {}", secret.public_key());
     println!("{}", token);
