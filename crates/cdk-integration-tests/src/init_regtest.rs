@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use cdk::mint::FeeReserve;
+use cdk::types::FeeReserve;
 use cdk_cln::Cln as CdkCln;
 use cdk_lnd::Lnd as CdkLnd;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;

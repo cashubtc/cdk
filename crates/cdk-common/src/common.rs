@@ -241,3 +241,12 @@ mod tests {
         assert_eq!(melted.total_amount(), Amount::from(32));
     }
 }
+
+/// Mint Fee Reserve
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeeReserve {
+    /// Absolute expected min fee
+    pub min_fee_reserve: Amount,
+    /// Percentage expected fee
+    pub percent_fee_reserve: f32,
+}

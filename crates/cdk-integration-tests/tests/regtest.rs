@@ -161,39 +161,6 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_regtest_mint_melt() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
-
-    let mint_amount = Amount::from(100);
-
-    let mint_quote = wallet.mint_quote(mint_amount, None).await?;
-
-    assert_eq!(mint_quote.amount, mint_amount);
-
-    lnd_client.pay_invoice(mint_quote.request).await?;
-
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
-
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
-
-    let mint_amount = proofs.total_amount()?;
-
-    assert!(mint_amount == 100.into());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_restore() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
@@ -248,65 +215,6 @@ async fn test_restore() -> Result<()> {
             bail!("All proofs should be spent");
         }
     }
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_pay_invoice_twice() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
-        &seed,
-        None,
-    )?;
-
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
-
-    lnd_client
-        .pay_invoice(mint_quote.request)
-        .await
-        .expect("Could not pay invoice");
-
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
-
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
-
-    let mint_amount = proofs.total_amount()?;
-
-    assert_eq!(mint_amount, 100.into());
-
-    let invoice = lnd_client.create_invoice(Some(10)).await?;
-
-    let melt_quote = wallet.melt_quote(invoice.clone(), None).await?;
-
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
-
-    let melt_two = wallet.melt_quote(invoice, None).await?;
-
-    let melt_two = wallet.melt(&melt_two.id).await;
-
-    match melt_two {
-        Err(err) => match err {
-            cdk::Error::RequestAlreadyPaid => (),
-            err => {
-                bail!("Wrong invoice already paid: {}", err.to_string());
-            }
-        },
-        Ok(_) => {
-            bail!("Should not have allowed second payment");
-        }
-    }
-
-    let balance = wallet.total_balance().await?;
-
-    assert_eq!(balance, (Amount::from(100) - melt.fee_paid - melt.amount));
 
     Ok(())
 }

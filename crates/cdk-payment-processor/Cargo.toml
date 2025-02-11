@@ -1,0 +1,75 @@
+[package]
+name = "cdk-payment-processor"
+version = "0.7.1"
+edition = "2021"
+authors = ["CDK Developers"]
+description = "CDK payment processor"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+# NOTE: The libary is msrv of 1.63.0 but the binary follows msrv of the enabled feature.
+rust-version = "1.63.0"                     # MSRV
+license = "MIT"
+
+[[bin]]
+name = "cdk-payment-processor"
+path = "src/bin/payment_processor.rs"
+
+[features]
+default = ["cln", "fake", "lnd"]
+bench = []
+cln = ["dep:cdk-cln"]
+fake = ["dep:cdk-fake-wallet"]
+lnd = ["dep:cdk-lnd"]
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+bitcoin = { version = "0.32.2", features = [
+    "base64",
+    "serde",
+    "rand",
+    "rand-std",
+] }
+cdk-common = { path = "../cdk-common", default-features = false, version = "0.7.1", features = ["mint"] }
+cdk-cln = { path = "../cdk-cln", default-features = false, version = "0.7.1", optional = true }
+cdk-lnd = { path = "../cdk-lnd", default-features = false, version = "0.7.1", optional = true }
+cdk-fake-wallet = { path = "../cdk-fake-wallet", default-features = false, version = "0.7.1", optional = true }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+uuid = { version = "=1.12.1", features = ["v4", "serde"], optional = true }
+utoipa = { version = "4", optional = true }
+futures = "0.3.31"
+serde_json = "1"
+serde_with = "3"
+tonic = { version = "0.9", features = [
+    "channel",
+    "tls",
+    "tls-webpki-roots",
+] }
+prost = "0.11.0"
+tokio-stream = "0.1.15"
+tokio-util = { version = "0.7.11", default-features = false }
+
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.21", features = [
+    "rt-multi-thread",
+    "time",
+    "macros",
+    "sync",
+    "signal"
+] }
+
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1.21", features = ["rt", "macros", "sync", "time"] }
+
+[dev-dependencies]
+rand = "0.8.5"
+bip39 = "2.0"
+
+[build-dependencies]
+tonic-build = "0.9"

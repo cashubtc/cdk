@@ -18,7 +18,7 @@ pub mod pub_sub;
 pub use cdk_common::{
     amount, common as types, dhke,
     error::{self, Error},
-    lightning as cdk_lightning, lightning_invoice, mint_url, nuts, secret, subscription, util, ws,
+    lightning_invoice, mint_url, nuts, payment as cdk_payment, secret, subscription, util, ws,
     Amount, Bolt11Invoice,
 };
 
