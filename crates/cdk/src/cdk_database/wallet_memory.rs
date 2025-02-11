@@ -254,42 +254,6 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        let mut all_proofs = self.proofs.write().await;
-
-        for y in ys.into_iter() {
-            if let Some(proof_info) = all_proofs.get_mut(&y) {
-                proof_info.state = State::Pending;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        let mut all_proofs = self.proofs.write().await;
-
-        for y in ys.into_iter() {
-            if let Some(proof_info) = all_proofs.get_mut(&y) {
-                proof_info.state = State::Reserved;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        let mut all_proofs = self.proofs.write().await;
-
-        for y in ys.into_iter() {
-            if let Some(proof_info) = all_proofs.get_mut(&y) {
-                proof_info.state = State::Unspent;
-            }
-        }
-
-        Ok(())
-    }
-
     async fn get_proofs(
         &self,
         mint_url: Option<MintUrl>,
@@ -312,6 +276,18 @@ impl WalletDatabase for WalletMemoryDatabase {
             .collect();
 
         Ok(proofs)
+    }
+
+    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Error> {
+        let mut all_proofs = self.proofs.write().await;
+
+        for y in ys.into_iter() {
+            if let Some(proof_info) = all_proofs.get_mut(&y) {
+                proof_info.state = state;
+            }
+        }
+
+        Ok(())
     }
 
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error> {

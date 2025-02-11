@@ -136,12 +136,6 @@ impl Wallet {
                 }
             }
 
-            // let optimal_by_keyset = selected_proofs
-            //     .sum_by_keyset()
-            //     .into_iter()
-            //     .filter_map(|(id, amount)| amount.split_with_fee(keyset_fees.get(id)))
-            //     .collect::<HashMap<_, _>>();
-
             let mut optimal_by_keyset = HashMap::new();
             for (id, amount) in selected_proofs.sum_by_keyset() {
                 let fee_ppk = keyset_fees.get(&id).ok_or(Error::KeysetUnknown(id))?;
@@ -191,7 +185,9 @@ impl Wallet {
             None => {
                 let mut ys = prepared_send.proofs_to_send.ys()?;
                 ys.extend(prepared_send.proofs_to_swap.ys()?);
-                self.localstore.reserve_proofs(ys).await?;
+                self.localstore
+                    .update_proofs_state(ys, State::Reserved)
+                    .await?;
                 *guard = Some(prepared_send.nonce);
                 Ok(prepared_send)
             }
@@ -211,7 +207,7 @@ impl Wallet {
         if !send.proofs_to_swap.is_empty() {
             if let Some(proofs) = self
                 .swap(
-                    None,
+                    Some(send.amount - send_proofs.total_amount()?),
                     SplitTarget::Values(send.target_swap_amounts),
                     send.proofs_to_swap,
                     send.options.conditions,
@@ -227,7 +223,9 @@ impl Wallet {
             return Err(Error::InsufficientFunds);
         }
 
-        // TODO pending spent proofs
+        self.localstore
+            .update_proofs_state(send_proofs.ys()?, State::PendingSpent)
+            .await?;
 
         Ok(Token::new(
             self.mint_url.clone(),

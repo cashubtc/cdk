@@ -130,7 +130,9 @@ impl Wallet {
         }
 
         let ys = proofs.ys()?;
-        self.localstore.set_pending_proofs(ys).await?;
+        self.localstore
+            .update_proofs_state(ys, State::Pending)
+            .await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 

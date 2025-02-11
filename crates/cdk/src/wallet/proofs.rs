@@ -55,7 +55,10 @@ impl Wallet {
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
     pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        Ok(self.localstore.set_unspent_proofs(ys).await?)
+        Ok(self
+            .localstore
+            .update_proofs_state(ys, State::Unspent)
+            .await?)
     }
 
     /// Reclaim unspent proofs

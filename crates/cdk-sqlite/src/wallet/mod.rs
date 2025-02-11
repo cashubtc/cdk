@@ -52,23 +52,6 @@ impl WalletSqliteDatabase {
             .await
             .expect("Could not run migrations");
     }
-
-    async fn set_proof_state(&self, y: PublicKey, state: State) -> Result<(), database::Error> {
-        sqlx::query(
-            r#"
-    UPDATE proof
-    SET state=?
-    WHERE y IS ?;
-            "#,
-        )
-        .bind(state.to_string())
-        .bind(y.to_bytes().to_vec())
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -602,30 +585,6 @@ WHERE id=?
         Ok(())
     }
 
-    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-        for y in ys {
-            self.set_proof_state(y, State::Pending).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-        for y in ys {
-            self.set_proof_state(y, State::Reserved).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-        for y in ys {
-            self.set_proof_state(y, State::Unspent).await?;
-        }
-
-        Ok(())
-    }
-
     #[instrument(skip(self, state, spending_conditions))]
     async fn get_proofs(
         &self,
@@ -676,6 +635,29 @@ FROM proof;
             false => Ok(proofs),
             true => return Ok(vec![]),
         }
+    }
+
+    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        for y in ys {
+            sqlx::query(
+                r#"
+UPDATE proof
+SET state=?
+WHERE y IS ?;
+                "#,
+            )
+            .bind(state.to_string())
+            .bind(y.to_bytes().to_vec())
+            .execute(&mut transaction)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
