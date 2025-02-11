@@ -11,11 +11,17 @@ use async_trait::async_trait;
 use axum::Router;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
-use cdk::cdk_lightning::MintLightning;
-use cdk::mint::FeeReserve;
+use cdk::cdk_payment::MintPayment;
 #[cfg(feature = "lnbits")]
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
+#[cfg(any(
+    feature = "lnbits",
+    feature = "cln",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
+use cdk::types::FeeReserve;
 #[cfg(feature = "lnbits")]
 use tokio::sync::Mutex;
 
@@ -30,7 +36,7 @@ pub trait LnBackendSetup {
         routers: &mut Vec<Router>,
         settings: &Settings,
         unit: CurrencyUnit,
-    ) -> anyhow::Result<impl MintLightning>;
+    ) -> anyhow::Result<impl MintPayment>;
 }
 
 #[cfg(feature = "cln")]
@@ -160,5 +166,25 @@ impl LnBackendSetup for config::FakeWallet {
         );
 
         Ok(fake_wallet)
+    }
+}
+
+#[cfg(feature = "grpc-processor")]
+#[async_trait]
+impl LnBackendSetup for config::GrpcProcessor {
+    async fn setup(
+        &self,
+        _routers: &mut Vec<Router>,
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
+        let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
+            &self.addr,
+            self.port,
+            self.tls_dir.clone(),
+        )
+        .await?;
+
+        Ok(payment_processor)
     }
 }
