@@ -24,9 +24,8 @@ use cln_rpc::model::requests::{
 };
 use cln_rpc::model::responses::{
     ListinvoicesInvoices, ListinvoicesInvoicesStatus, ListpaysPaysStatus, PayStatus,
-    WaitanyinvoiceResponse, WaitanyinvoiceStatus,
+    WaitanyinvoiceStatus,
 };
-use cln_rpc::model::Request;
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
 use error::Error;
 use futures::{Stream, StreamExt};
@@ -103,6 +102,10 @@ impl MintLightning for Cln {
                 is_active.store(true, Ordering::SeqCst);
 
                 loop {
+                    let request = WaitanyinvoiceRequest {
+                        timeout: None,
+                        lastpay_index: last_pay_idx,
+                    };
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
                             // Set the stream as inactive
@@ -110,41 +113,22 @@ impl MintLightning for Cln {
                             // End the stream
                             return None;
                         }
-                        result = cln_client.call(cln_rpc::Request::WaitAnyInvoice(WaitanyinvoiceRequest {
-                            timeout: None,
-                            lastpay_index: last_pay_idx,
-                        })) => {
+                        result = cln_client.call_typed(&request) => {
                             match result {
                                 Ok(invoice) => {
 
-                                        // Try to convert the invoice to WaitanyinvoiceResponse
-                            let wait_any_response_result: Result<WaitanyinvoiceResponse, _> =
-                                invoice.try_into();
-
-                            let wait_any_response = match wait_any_response_result {
-                                Ok(response) => response,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to parse WaitAnyInvoice response: {:?}",
-                                        e
-                                    );
-                                    // Continue to the next iteration without panicking
-                                    continue;
-                                }
-                            };
-
                             // Check the status of the invoice
                             // We only want to yield invoices that have been paid
-                            match wait_any_response.status {
+                            match invoice.status {
                                 WaitanyinvoiceStatus::PAID => (),
                                 WaitanyinvoiceStatus::EXPIRED => continue,
                             }
 
-                            last_pay_idx = wait_any_response.pay_index;
+                            last_pay_idx = invoice.pay_index;
 
-                            let payment_hash = wait_any_response.payment_hash.to_string();
+                            let payment_hash = invoice.payment_hash.to_string();
 
-                            let request_look_up = match wait_any_response.bolt12 {
+                            let request_look_up = match invoice.bolt12 {
                                 // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
                                 // Since this is not returned in the wait any response,
                                 // we need to do a second query for it.
@@ -252,7 +236,7 @@ impl MintLightning for Cln {
 
         let mut cln_client = self.cln_client.lock().await;
         let cln_response = cln_client
-            .call(Request::Pay(PayRequest {
+            .call_typed(&PayRequest {
                 bolt11: melt_quote.request.to_string(),
                 amount_msat,
                 label: None,
@@ -279,11 +263,11 @@ impl MintLightning for Cln {
                         ))
                     })
                     .transpose()?,
-            }))
+            })
             .await;
 
         let response = match cln_response {
-            Ok(cln_rpc::Response::Pay(pay_response)) => {
+            Ok(pay_response) => {
                 let status = match pay_response.status {
                     PayStatus::COMPLETE => MeltQuoteState::Paid,
                     PayStatus::PENDING => MeltQuoteState::Pending,
@@ -305,13 +289,6 @@ impl MintLightning for Cln {
             Err(err) => {
                 tracing::error!("Could not pay invoice: {}", err);
                 return Err(Error::ClnRpc(err).into());
-            }
-            _ => {
-                tracing::error!(
-                    "Error attempting to pay invoice: {}",
-                    bolt11.payment_hash().to_string()
-                );
-                return Err(Error::WrongClnResponse.into());
             }
         };
 
@@ -335,8 +312,8 @@ impl MintLightning for Cln {
         let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
         let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.into()));
 
-        let cln_response = cln_client
-            .call(cln_rpc::Request::Invoice(InvoiceRequest {
+        let invoice_response = cln_client
+            .call_typed(&InvoiceRequest {
                 amount_msat,
                 description,
                 label: label.clone(),
@@ -346,27 +323,19 @@ impl MintLightning for Cln {
                 cltv: None,
                 deschashonly: None,
                 exposeprivatechannels: None,
-            }))
+            })
             .await
             .map_err(Error::from)?;
 
-        match cln_response {
-            cln_rpc::Response::Invoice(invoice_res) => {
-                let request = Bolt11Invoice::from_str(&invoice_res.bolt11)?;
-                let expiry = request.expires_at().map(|t| t.as_secs());
-                let payment_hash = request.payment_hash();
+        let request = Bolt11Invoice::from_str(&invoice_response.bolt11)?;
+        let expiry = request.expires_at().map(|t| t.as_secs());
+        let payment_hash = request.payment_hash();
 
-                Ok(CreateInvoiceResponse {
-                    request_lookup_id: payment_hash.to_string(),
-                    request,
-                    expiry,
-                })
-            }
-            _ => {
-                tracing::warn!("CLN returned wrong response kind");
-                Err(Error::WrongClnResponse.into())
-            }
-        }
+        Ok(CreateInvoiceResponse {
+            request_lookup_id: payment_hash.to_string(),
+            request,
+            expiry,
+        })
     }
 
     async fn check_incoming_invoice_status(
@@ -375,8 +344,8 @@ impl MintLightning for Cln {
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
-        let cln_response = cln_client
-            .call(Request::ListInvoices(ListinvoicesRequest {
+        let listinvoices_response = cln_client
+            .call_typed(&ListinvoicesRequest {
                 payment_hash: Some(payment_hash.to_string()),
                 label: None,
                 invstring: None,
@@ -384,27 +353,17 @@ impl MintLightning for Cln {
                 index: None,
                 limit: None,
                 start: None,
-            }))
+            })
             .await
             .map_err(Error::from)?;
 
-        let status = match cln_response {
-            cln_rpc::Response::ListInvoices(invoice_response) => {
-                match invoice_response.invoices.first() {
-                    Some(invoice_response) => {
-                        cln_invoice_status_to_mint_state(invoice_response.status)
-                    }
-                    None => {
-                        tracing::info!(
-                            "Check invoice called on unknown look up id: {}",
-                            payment_hash
-                        );
-                        return Err(Error::WrongClnResponse.into());
-                    }
-                }
-            }
-            _ => {
-                tracing::warn!("CLN returned wrong response kind");
+        let status = match listinvoices_response.invoices.first() {
+            Some(invoice_response) => cln_invoice_status_to_mint_state(invoice_response.status),
+            None => {
+                tracing::info!(
+                    "Check invoice called on unknown look up id: {}",
+                    payment_hash
+                );
                 return Err(Error::WrongClnResponse.into());
             }
         };
@@ -418,45 +377,39 @@ impl MintLightning for Cln {
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
-        let cln_response = cln_client
-            .call(Request::ListPays(ListpaysRequest {
+        let listpays_response = cln_client
+            .call_typed(&ListpaysRequest {
                 payment_hash: Some(payment_hash.parse().map_err(|_| Error::InvalidHash)?),
                 bolt11: None,
                 status: None,
                 start: None,
                 index: None,
                 limit: None,
-            }))
+            })
             .await
             .map_err(Error::from)?;
 
-        match cln_response {
-            cln_rpc::Response::ListPays(pays_response) => match pays_response.pays.first() {
-                Some(pays_response) => {
-                    let status = cln_pays_status_to_mint_state(pays_response.status);
+        match listpays_response.pays.first() {
+            Some(pays_response) => {
+                let status = cln_pays_status_to_mint_state(pays_response.status);
 
-                    Ok(PayInvoiceResponse {
-                        payment_lookup_id: pays_response.payment_hash.to_string(),
-                        payment_preimage: pays_response.preimage.map(|p| hex::encode(p.to_vec())),
-                        status,
-                        total_spent: pays_response
-                            .amount_sent_msat
-                            .map_or(Amount::ZERO, |a| a.msat().into()),
-                        unit: CurrencyUnit::Msat,
-                    })
-                }
-                None => Ok(PayInvoiceResponse {
-                    payment_lookup_id: payment_hash.to_string(),
-                    payment_preimage: None,
-                    status: MeltQuoteState::Unknown,
-                    total_spent: Amount::ZERO,
+                Ok(PayInvoiceResponse {
+                    payment_lookup_id: pays_response.payment_hash.to_string(),
+                    payment_preimage: pays_response.preimage.map(|p| hex::encode(p.to_vec())),
+                    status,
+                    total_spent: pays_response
+                        .amount_sent_msat
+                        .map_or(Amount::ZERO, |a| a.msat().into()),
                     unit: CurrencyUnit::Msat,
-                }),
-            },
-            _ => {
-                tracing::warn!("CLN returned wrong response kind");
-                Err(Error::WrongClnResponse.into())
+                })
             }
+            None => Ok(PayInvoiceResponse {
+                payment_lookup_id: payment_hash.to_string(),
+                payment_preimage: None,
+                status: MeltQuoteState::Unknown,
+                total_spent: Amount::ZERO,
+                unit: CurrencyUnit::Msat,
+            }),
         }
     }
 }
@@ -465,8 +418,8 @@ impl Cln {
     /// Get last pay index for cln
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
         let mut cln_client = self.cln_client.lock().await;
-        let cln_response = cln_client
-            .call(cln_rpc::Request::ListInvoices(ListinvoicesRequest {
+        let listinvoices_response = cln_client
+            .call_typed(&ListinvoicesRequest {
                 index: None,
                 invstring: None,
                 label: None,
@@ -474,19 +427,13 @@ impl Cln {
                 offer_id: None,
                 payment_hash: None,
                 start: None,
-            }))
+            })
             .await
             .map_err(Error::from)?;
 
-        match cln_response {
-            cln_rpc::Response::ListInvoices(invoice_res) => match invoice_res.invoices.last() {
-                Some(last_invoice) => Ok(last_invoice.pay_index),
-                None => Ok(None),
-            },
-            _ => {
-                tracing::warn!("CLN returned wrong response kind");
-                Err(Error::WrongClnResponse)
-            }
+        match listinvoices_response.invoices.last() {
+            Some(last_invoice) => Ok(last_invoice.pay_index),
+            None => Ok(None),
         }
     }
 }
@@ -512,7 +459,7 @@ async fn fetch_invoice_by_payment_hash(
     payment_hash: &str,
 ) -> Result<Option<ListinvoicesInvoices>, Error> {
     match cln_client
-        .call(cln_rpc::Request::ListInvoices(ListinvoicesRequest {
+        .call_typed(&ListinvoicesRequest {
             payment_hash: Some(payment_hash.to_string()),
             index: None,
             invstring: None,
@@ -520,16 +467,10 @@ async fn fetch_invoice_by_payment_hash(
             limit: None,
             offer_id: None,
             start: None,
-        }))
+        })
         .await
     {
-        Ok(cln_rpc::Response::ListInvoices(invoice_response)) => {
-            Ok(invoice_response.invoices.first().cloned())
-        }
-        Ok(_) => {
-            tracing::warn!("CLN returned an unexpected response type");
-            Err(Error::WrongClnResponse)
-        }
+        Ok(invoice_response) => Ok(invoice_response.invoices.first().cloned()),
         Err(e) => {
             tracing::warn!("Error fetching invoice: {e}");
             Err(Error::from(e))
