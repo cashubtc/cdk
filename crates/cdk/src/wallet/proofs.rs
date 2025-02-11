@@ -362,11 +362,15 @@ impl Wallet {
                 }
 
                 // Select proofs with the current amount
+                let mut count = 0;
                 for _ in 0..n {
                     if select_proof(&proofs, curr_amount, true) {
-                        n -= 1;
+                        count += 1;
+                    } else {
+                        break;
                     }
                 }
+                n -= count;
 
                 // All proofs with the current amount are selected
                 if n == 0 {
