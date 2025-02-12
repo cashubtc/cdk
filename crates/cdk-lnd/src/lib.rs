@@ -506,7 +506,13 @@ impl MintLightning for Lnd {
                             payment_lookup_id: payment_hash.to_string(),
                             payment_preimage: Some(update.payment_preimage),
                             status: MeltQuoteState::Paid,
-                            total_spent: Amount::from((update.value_sat + update.fee_sat) as u64),
+                            total_spent: Amount::from(
+                                (update
+                                    .value_sat
+                                    .checked_add(update.fee_sat)
+                                    .ok_or(Error::AmountOverflow)?)
+                                    as u64,
+                            ),
                             unit: CurrencyUnit::Sat,
                         },
                         PaymentStatus::Failed => PayInvoiceResponse {

@@ -14,6 +14,9 @@ pub enum Error {
     /// Unsupported unit
     #[error("Unit Unsupported")]
     UnsupportedUnit,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
     /// phd error
     #[error(transparent)]
     Phd(#[from] phoenixd_rs::Error),
