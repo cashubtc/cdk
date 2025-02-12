@@ -30,7 +30,7 @@ The project is split up into several crates in the `crates/` directory:
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
-    * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint managemtn gRCP client cli.
+    * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint managemtn gRPC client cli.
 
 
 ## Development 
