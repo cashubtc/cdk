@@ -5,7 +5,8 @@ use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::signatory::{KeysetIdentifier, Signatory};
 use cdk_common::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse, Proof,
+    dhke, BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, KeysResponse, KeysetResponse,
+    Proof,
 };
 
 use crate::proto::signatory_client::SignatoryClient;
@@ -36,9 +37,23 @@ impl Signatory for RemoteSigner {
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 
-    async fn verify_proof(&self, _proof: Proof) -> Result<(), Error> {
-        todo!()
+    async fn verify_proof(&self, request: Proof) -> Result<(), Error> {
+        let req: super::Proof = request.into();
+        let result: super::Success = self
+            .client
+            .clone()
+            .verify_proof(req)
+            .await
+            .map(|response| response.into_inner())
+            .map_err(|e| Error::Custom(e.to_string()))?;
+
+        if result.success {
+            Ok(())
+        } else {
+            Err(dhke::Error::TokenNotVerified)?
+        }
     }
+
     async fn keyset(&self, _keyset_id: Id) -> Result<Option<KeySet>, Error> {
         todo!()
     }

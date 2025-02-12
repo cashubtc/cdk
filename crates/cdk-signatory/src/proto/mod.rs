@@ -1,3 +1,4 @@
+use cdk_common::secret::Secret;
 use cdk_common::{HTLCWitness, P2PKWitness};
 use tonic::Status;
 
@@ -5,6 +6,62 @@ tonic::include_proto!("cdk_signatory");
 
 pub mod client;
 pub mod server;
+
+impl From<cdk_common::ProofDleq> for ProofDleq {
+    fn from(value: cdk_common::ProofDleq) -> Self {
+        ProofDleq {
+            e: value.e.as_secret_bytes().to_vec(),
+            s: value.s.as_secret_bytes().to_vec(),
+            r: value.r.as_secret_bytes().to_vec(),
+        }
+    }
+}
+
+impl TryInto<cdk_common::ProofDleq> for ProofDleq {
+    type Error = Status;
+
+    fn try_into(self) -> Result<cdk_common::ProofDleq, Self::Error> {
+        Ok(cdk_common::ProofDleq {
+            e: cdk_common::SecretKey::from_slice(&self.e)
+                .map_err(|e| Status::from_error(Box::new(e)))?,
+            s: cdk_common::SecretKey::from_slice(&self.s)
+                .map_err(|e| Status::from_error(Box::new(e)))?,
+            r: cdk_common::SecretKey::from_slice(&self.r)
+                .map_err(|e| Status::from_error(Box::new(e)))?,
+        })
+    }
+}
+
+impl From<cdk_common::Proof> for Proof {
+    fn from(value: cdk_common::Proof) -> Self {
+        Proof {
+            amount: value.amount.into(),
+            keyset_id: value.keyset_id.to_string(),
+            secret: value.secret.to_bytes(),
+            c: value.c.to_bytes().to_vec(),
+            witness: value.witness.map(|w| w.into()),
+            dleq: value.dleq.map(|dleq| dleq.into()),
+        }
+    }
+}
+
+impl TryInto<cdk_common::Proof> for Proof {
+    type Error = Status;
+    fn try_into(self) -> Result<cdk_common::Proof, Self::Error> {
+        Ok(cdk_common::Proof {
+            amount: self.amount.into(),
+            keyset_id: self
+                .keyset_id
+                .parse()
+                .map_err(|e| Status::from_error(Box::new(e)))?,
+            secret: Secret::from_bytes(self.secret),
+            c: cdk_common::PublicKey::from_slice(&self.c)
+                .map_err(|e| Status::from_error(Box::new(e)))?,
+            witness: self.witness.map(|w| w.try_into()).transpose()?,
+            dleq: self.dleq.map(|x| x.try_into()).transpose()?,
+        })
+    }
+}
 
 impl From<cdk_common::BlindedMessage> for BlindedMessage {
     fn from(value: cdk_common::BlindedMessage) -> Self {
