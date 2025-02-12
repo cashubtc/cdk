@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use cdk_common::dhke;
 use cdk_common::signatory::Signatory as _;
 use tonic::transport::{Error, Server};
 use tonic::{Request, Response, Status};
@@ -22,6 +23,22 @@ impl signatory_server::Signatory for CdkSignatory {
             .await
             .map_err(|e| Status::from_error(Box::new(e)))?;
         Ok(Response::new(blind_signature.into()))
+    }
+
+    async fn verify_proof(
+        &self,
+        request: Request<proto::Proof>,
+    ) -> Result<Response<proto::Success>, Status> {
+        println!("Got a request: {:?}", request);
+        let result = match self.0.verify_proof(request.into_inner().try_into()?).await {
+            Ok(()) => proto::Success { success: true },
+            Err(cdk_common::error::Error::DHKE(dhke::Error::TokenNotVerified)) => {
+                proto::Success { success: false }
+            }
+            Err(err) => return Err(Status::from_error(Box::new(err))),
+        };
+
+        Ok(Response::new(result))
     }
 }
 

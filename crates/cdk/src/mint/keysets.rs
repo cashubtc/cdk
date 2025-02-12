@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use bitcoin::bip32::DerivationPath;
-
 use cdk_common::mint::MintKeySetInfo;
 use tracing::instrument;
 
