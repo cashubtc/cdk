@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk_common::Id;
 use tracing::instrument;
 
 use super::SendKind;
@@ -33,7 +34,7 @@ impl Wallet {
         let keyset_fees = self.get_keyset_fees().await?;
 
         // Get available proofs matching conditions
-        let available_proofs = self
+        let mut available_proofs = self
             .get_proofs_with(
                 Some(vec![State::Unspent]),
                 opts.conditions.clone().map(|c| vec![c]),
@@ -41,31 +42,42 @@ impl Wallet {
             .await?;
 
         // Check if sufficient proofs are available
-        let proofs_sum = available_proofs.total_amount()?;
-        if proofs_sum < amount {
+        let mut behavior = PreparedSendBehavior::None;
+        let available_sum = available_proofs.total_amount()?;
+        if available_sum < amount {
             if opts.conditions.is_none() || opts.send_kind.is_offline() {
                 return Err(Error::InsufficientFunds);
             } else {
                 // Swap is required for send
                 tracing::debug!("Insufficient proofs matching conditions");
-                let unspent_proofs = self.get_unspent_proofs().await?;
-                let proofs_to_swap =
-                    Wallet::select_proofs_v2(amount, unspent_proofs, &keyset_fees)?;
-                let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
-                return self
-                    .store_prepared_send(PreparedSend {
-                        amount,
-                        options: opts,
-                        nonce: rand::random(),
-                        proofs_to_swap,
-                        swap_fee,
-                        proofs_to_send: vec![],
-                        send_fee: Amount::ZERO,
+                behavior = PreparedSendBehavior::ForceSwap;
+                available_proofs = self
+                    .localstore
+                    .get_proofs(
+                        Some(self.mint_url.clone()),
+                        Some(self.unit.clone()),
+                        Some(vec![State::Unspent]),
+                        None,
+                    )
+                    .await?
+                    .into_iter()
+                    .filter_map(|p| {
+                        if p.spending_condition.is_none() {
+                            Some(p.proof)
+                        } else {
+                            None
+                        }
                     })
-                    .await;
+                    .collect();
             }
         }
 
+        // Check if force swap is required and offline send
+        if behavior == PreparedSendBehavior::ForceSwap && opts.send_kind.is_offline() {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Select proofs (including fee)
         let selected_proofs = if opts.include_fee {
             Wallet::select_proofs_v2(amount, available_proofs, &keyset_fees)?
         } else {
@@ -73,111 +85,134 @@ impl Wallet {
         };
         let selected_total = selected_proofs.total_amount()?;
 
+        // Check if selected proofs are exact
         let send_fee = if opts.include_fee {
             self.get_proofs_fee(&selected_proofs).await?
         } else {
             Amount::ZERO
         };
-
-        // TODO what is this?
-        if opts.include_fee || selected_total == amount {
+        if selected_total == amount + send_fee {
             return self
-                .store_prepared_send(PreparedSend {
+                .store_prepared_send(
                     amount,
-                    options: opts,
-                    nonce: rand::random(),
-                    proofs_to_swap: vec![],
-                    swap_fee: Amount::ZERO,
-                    proofs_to_send: selected_proofs,
-                    send_fee,
-                })
+                    opts,
+                    selected_proofs,
+                    keyset_fees,
+                    PreparedSendBehavior::ForceSend,
+                )
                 .await;
+        } else if opts.send_kind == SendKind::OfflineExact {
+            return Err(Error::InsufficientFunds);
         }
 
+        // Check if selected proofs are sufficient for tolerance
         let tolerance = match opts.send_kind {
             SendKind::OfflineTolerance(tolerance) => Some(tolerance),
             SendKind::OnlineTolerance(tolerance) => Some(tolerance),
             _ => None,
         };
-
-        if opts.send_kind.is_offline() {
-            if let Some(tolerance) = tolerance {
-                if selected_total - amount <= tolerance {
-                    self.store_prepared_send(PreparedSend {
+        if let Some(tolerance) = tolerance {
+            if selected_total - amount <= tolerance {
+                return self
+                    .store_prepared_send(
                         amount,
-                        options: opts,
-                        nonce: rand::random(),
-                        proofs_to_swap: vec![],
-                        swap_fee: Amount::ZERO,
-                        proofs_to_send: selected_proofs,
-                        send_fee,
-                    })
-                    .await
-                } else {
-                    Err(Error::InsufficientFunds)
-                }
-            } else {
-                Err(Error::InsufficientFunds)
+                        opts,
+                        selected_proofs,
+                        keyset_fees,
+                        PreparedSendBehavior::ForceSend,
+                    )
+                    .await;
+            } else if opts.send_kind.is_offline() {
+                return Err(Error::InsufficientFunds);
             }
-        } else {
-            if let Some(tolerance) = tolerance {
-                if selected_total - amount <= tolerance {
-                    return self
-                        .store_prepared_send(PreparedSend {
-                            amount,
-                            options: opts,
-                            nonce: rand::random(),
-                            proofs_to_swap: vec![],
-                            swap_fee: Amount::ZERO,
-                            proofs_to_send: selected_proofs,
-                            send_fee,
-                        })
-                        .await;
-                }
-            }
-
-            let mut optimal_by_keyset = HashMap::new();
-            for (id, amount) in selected_proofs.sum_by_keyset() {
-                let fee_ppk = keyset_fees.get(&id).ok_or(Error::KeysetUnknown(id))?;
-                optimal_by_keyset.insert(id, amount.split_with_fee(*fee_ppk)?);
-            }
-
-            let mut proofs_to_send = vec![];
-            let mut proofs_to_swap = vec![];
-            for proof in selected_proofs {
-                let keyset_id = proof.keyset_id;
-                let optimal_amounts = optimal_by_keyset
-                    .get_mut(&keyset_id)
-                    .ok_or(Error::KeysetUnknown(keyset_id))?;
-                if let Some(idx) = optimal_amounts.iter().position(|a| a == &proof.amount) {
-                    proofs_to_send.push(proof);
-                    optimal_amounts.remove(idx);
-                } else {
-                    proofs_to_swap.push(proof);
-                }
-            }
-
-            let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
-            let send_fee = self.get_proofs_fee(&proofs_to_send).await?;
-
-            self.store_prepared_send(PreparedSend {
-                amount,
-                options: opts,
-                nonce: rand::random(),
-                proofs_to_swap,
-                swap_fee,
-                proofs_to_send,
-                send_fee,
-            })
-            .await
         }
+
+        self.store_prepared_send(
+            amount,
+            opts,
+            selected_proofs,
+            keyset_fees,
+            PreparedSendBehavior::None,
+        )
+        .await
     }
 
     async fn store_prepared_send(
         &self,
-        prepared_send: PreparedSend,
+        amount: Amount,
+        opts: SendOptions,
+        proofs: Proofs,
+        keyset_fees: HashMap<Id, u64>,
+        behavior: PreparedSendBehavior,
     ) -> Result<PreparedSend, Error> {
-        tracing::debug!("Storing prepared send");
+        tracing::debug!("Storing prepared send behavior={:?}", behavior);
+        let prepared_send = match behavior {
+            PreparedSendBehavior::ForceSend => {
+                let proofs_to_send = proofs;
+                let send_fee = self.get_proofs_fee(&proofs_to_send).await?;
+                PreparedSend {
+                    amount,
+                    options: opts,
+                    nonce: rand::random(),
+                    proofs_to_swap: vec![],
+                    swap_fee: Amount::ZERO,
+                    proofs_to_send,
+                    send_fee,
+                }
+            }
+            PreparedSendBehavior::ForceSwap => {
+                let proofs_to_swap = proofs;
+                let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
+                PreparedSend {
+                    amount,
+                    options: opts,
+                    nonce: rand::random(),
+                    proofs_to_swap,
+                    swap_fee,
+                    proofs_to_send: vec![],
+                    send_fee: Amount::ZERO,
+                }
+            }
+            PreparedSendBehavior::None => {
+                // TODO: this is a temporary solution and probably wrong; only allow one keyset per send
+                let mut optimal_by_keyset = HashMap::new();
+                for (id, _) in proofs.count_by_keyset() {
+                    let fee_ppk = keyset_fees.get(&id).ok_or(Error::KeysetUnknown(id))?;
+                    optimal_by_keyset.insert(id, amount.split_with_fee(*fee_ppk)?);
+                }
+
+                let mut proofs_to_send = vec![];
+                let mut proofs_to_swap = vec![];
+                for proof in proofs {
+                    tracing::debug!("proof={:?}", proof);
+                    let keyset_id = proof.keyset_id;
+                    let optimal_amounts = optimal_by_keyset
+                        .get_mut(&keyset_id)
+                        .ok_or(Error::KeysetUnknown(keyset_id))?;
+                    tracing::debug!("optimal_amounts={:?}", optimal_amounts);
+                    if let Some(idx) = optimal_amounts.iter().position(|a| a == &proof.amount) {
+                        tracing::debug!("Proof is optimal");
+                        proofs_to_send.push(proof);
+                        optimal_amounts.remove(idx);
+                    } else {
+                        tracing::debug!("Proof is suboptimal");
+                        proofs_to_swap.push(proof);
+                    }
+                }
+
+                let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
+                let send_fee = self.get_proofs_fee(&proofs_to_send).await?;
+                PreparedSend {
+                    amount,
+                    options: opts,
+                    nonce: rand::random(),
+                    proofs_to_swap,
+                    swap_fee,
+                    proofs_to_send,
+                    send_fee,
+                }
+            }
+        };
         let mut guard = self.prepared_send.lock().await;
         match *guard {
             Some(_) => Err(Error::ActivePreparedSend),
@@ -274,6 +309,13 @@ impl PreparedSend {
     pub fn send_fee(&self) -> Amount {
         self.send_fee
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PreparedSendBehavior {
+    None,
+    ForceSwap,
+    ForceSend,
 }
 
 /// Send options
