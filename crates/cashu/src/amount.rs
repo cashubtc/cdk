@@ -108,6 +108,7 @@ impl Amount {
         Ok(parts)
     }
 
+    /// Splits amount into powers of two while accounting for the swap fee
     pub fn split_with_fee(&self, fee_ppk: u64) -> Result<Vec<Self>, Error> {
         let without_fee_amounts = self.split();
         let fee_ppk = fee_ppk * without_fee_amounts.len() as u64;
@@ -118,16 +119,14 @@ impl Amount {
         let split_fee_ppk = split.len() as u64 * fee_ppk;
         let split_fee = Amount::from((split_fee_ppk + 999) / 1000);
 
-        let net_amount = new_amount
-            .checked_sub(split_fee)
-            .ok_or(Error::AmountOverflow)?;
-        if net_amount >= *self {
-            Ok(split)
-        } else {
-            self.checked_add(Amount::ONE)
-                .ok_or(Error::AmountOverflow)?
-                .split_with_fee(fee_ppk)
+        if let Some(net_amount) = new_amount.checked_sub(split_fee) {
+            if net_amount >= *self {
+                return Ok(split);
+            }
         }
+        self.checked_add(Amount::ONE)
+            .ok_or(Error::AmountOverflow)?
+            .split_with_fee(fee_ppk)
     }
 
     /// Checked addition for Amount. Returns None if overflow occurs.
@@ -401,6 +400,27 @@ mod tests {
             ],
             split
         );
+    }
+
+    #[test]
+    fn test_split_with_fee() {
+        let amount = Amount(2);
+        let fee_ppk = 1;
+
+        let split = amount.split_with_fee(fee_ppk).unwrap();
+        assert_eq!(split, vec![Amount(2), Amount(1)]);
+
+        let amount = Amount(3);
+        let fee_ppk = 1;
+
+        let split = amount.split_with_fee(fee_ppk).unwrap();
+        assert_eq!(split, vec![Amount(4)]);
+
+        let amount = Amount(3);
+        let fee_ppk = 1000;
+
+        let split = amount.split_with_fee(fee_ppk).unwrap();
+        assert_eq!(split, vec![Amount(32)]);
     }
 
     #[test]
