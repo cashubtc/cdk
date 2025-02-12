@@ -11,6 +11,9 @@ pub enum Error {
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
     /// Anyhow error
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
