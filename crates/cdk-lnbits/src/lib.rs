@@ -205,7 +205,13 @@ impl MintLightning for LNbits {
             false => MeltQuoteState::Paid,
         };
 
-        let total_spent = Amount::from((invoice_info.amount + invoice_info.fee).unsigned_abs());
+        let total_spent = Amount::from(
+            (invoice_info
+                .amount
+                .checked_add(invoice_info.fee)
+                .ok_or(Error::AmountOverflow)?)
+            .unsigned_abs(),
+        );
 
         Ok(PayInvoiceResponse {
             payment_lookup_id: pay_response.payment_hash,
