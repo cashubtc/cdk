@@ -182,13 +182,13 @@ impl Wallet {
     ) -> Result<Amount, Error> {
         let mut fee_per_keyset = HashMap::new();
 
-        for (keyset_id, _) in &proofs_per_keyset {
+        for keyset_id in proofs_per_keyset.keys() {
             let mint_keyset_info = self
                 .localstore
                 .get_keyset_by_id(keyset_id)
                 .await?
                 .ok_or(Error::UnknownKeySet)?;
-            fee_per_keyset.insert(keyset_id.clone(), mint_keyset_info.input_fee_ppk);
+            fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
         let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;

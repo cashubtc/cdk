@@ -350,13 +350,13 @@ impl Wallet {
 
         // If all the optimal amounts are selected, return the selected proofs
         if remaining_amounts.is_empty() {
-            return Ok(Wallet::finalize_fees(
+            return Wallet::finalize_fees(
                 amount,
                 proofs,
                 selected_proofs.into_iter().collect(),
                 active_keyset_id,
                 keyset_fees,
-            )?);
+            );
         }
 
         // Select proofs with the remaining amounts by checking for 2 of the half amount, 4 of the quarter amount, etc.
@@ -425,13 +425,13 @@ impl Wallet {
             }
         }
 
-        Ok(Wallet::finalize_fees(
+        Wallet::finalize_fees(
             amount,
             proofs,
             selected_proofs.into_iter().collect(),
             active_keyset_id,
             keyset_fees,
-        )?)
+        )
     }
 
     fn finalize_fees(
