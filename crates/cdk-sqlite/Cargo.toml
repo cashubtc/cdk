@@ -1,6 +1,6 @@
 [package]
 name = "cdk-sqlite"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "SQLite storage backend for CDK"
@@ -17,7 +17,7 @@ wallet = []
 
 [dependencies]
 async-trait = "0.1"
-cdk-common = { path = "../cdk-common", version = "0.7.0" }
+cdk-common = { path = "../cdk-common", version = "0.7.1" }
 bitcoin = { version = "0.32.2", default-features = false }
 sqlx = { version = "0.6.3", default-features = false, features = [
     "runtime-tokio-rustls",

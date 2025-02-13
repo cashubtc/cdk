@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
 
 use super::nut17::SupportedMethods;
@@ -29,6 +30,7 @@ pub struct MintBuilder {
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    custom_paths: HashMap<CurrencyUnit, DerivationPath>,
 }
 
 impl MintBuilder {
@@ -206,6 +208,15 @@ impl MintBuilder {
         self
     }
 
+    /// Set custom derivation paths for mint units
+    pub fn add_custom_derivation_paths(
+        mut self,
+        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    ) -> Self {
+        self.custom_paths = custom_paths;
+        self
+    }
+
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
         let localstore = self
@@ -218,7 +229,7 @@ impl MintBuilder {
             localstore,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
             self.supported_units.clone(),
-            HashMap::new(),
+            self.custom_paths.clone(),
         )
         .await?)
     }

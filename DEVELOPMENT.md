@@ -147,7 +147,7 @@ just final-check
 ## Additional Resources
 
 - [Nix Documentation](https://nixos.org/manual/nix/stable/)
-- [Contributing Guidelines](CONTRIBUTING.md)
+- [Contributing Guidelines](CODE_STYLE.md)
 
 ## License
 

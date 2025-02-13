@@ -27,6 +27,9 @@ pub enum Error {
     /// Missing last hop in route
     #[error("LND missing last hop in route")]
     MissingLastHop,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
     /// Errors coming from the backend
     #[error("LND error: `{0}`")]
     LndError(Status),

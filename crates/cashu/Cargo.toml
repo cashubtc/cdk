@@ -1,6 +1,6 @@
 [package]
 name = "cashu"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Cashu shared types and crypto utilities, used as the foundation for the CDK and their crates"
