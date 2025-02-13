@@ -280,6 +280,7 @@ impl Wallet {
     }
 }
 
+/// Prepared send
 pub struct PreparedSend {
     amount: Amount,
     options: SendOptions,
@@ -287,34 +288,35 @@ pub struct PreparedSend {
     force_swap: bool,
     swap_fee: Amount,
     send_fee: Amount,
-    // nonce: u64,
-    // proofs_to_swap: Proofs,
-    // swap_fee: Amount,
-    // proofs_to_send: Proofs,
-    // send_fee: Amount,
 }
 
 impl PreparedSend {
+    /// Amount
     pub fn amount(&self) -> Amount {
         self.amount
     }
 
+    /// Send options
     pub fn options(&self) -> &SendOptions {
         &self.options
     }
 
+    /// Selected proofs
     pub fn proofs(&self) -> &Proofs {
         &self.proofs
     }
 
+    /// If full swap is required
     pub fn force_swap(&self) -> bool {
         self.force_swap
     }
 
+    /// Swap fee
     pub fn swap_fee(&self) -> Amount {
         self.swap_fee
     }
 
+    /// Send fee
     pub fn send_fee(&self) -> Amount {
         self.send_fee
     }
