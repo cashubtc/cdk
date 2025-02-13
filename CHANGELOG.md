@@ -23,6 +23,11 @@
 
 #[Unrelased]
 
+#[cdk-mintd:v0.7.2]
+### Fixed
+-cdk-mintd: Fixed mint and melt error on mint initialized with RPC interface disabled ([ok300]).
+
+
 #[v0.7.1]
 ### Changed
 - cdk: Debug print of `Id` is hex ([thesimplekid]).
