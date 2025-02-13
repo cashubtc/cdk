@@ -320,6 +320,11 @@ impl PreparedSend {
     pub fn send_fee(&self) -> Amount {
         self.send_fee
     }
+
+    /// Total fee
+    pub fn total_fee(&self) -> Amount {
+        self.swap_fee + self.send_fee
+    }
 }
 
 impl Debug for PreparedSend {
