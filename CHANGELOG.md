@@ -28,6 +28,7 @@
 - cdk: Debug print of `Id` is hex ([thesimplekid]).
 - cdk: Debug print of mint secret is the hash [(thesimplekid)].
 - cdk: Use check_incoming payment on attempted mint or check mint qutoe ([thesimplekid]).
+- cdk-cln: Use `call_typed` for cln rpc calls ([daywalker90]).
 
 ### Added
 - cdk: Mint builder add ability to set custom derivation paths [(thesimplekid)].
@@ -268,4 +269,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [vnprc]: https://github.com/vnprc
 [crodas]: https://github.com/crodas
 [tdelabro]: https://github.com/tdelabro
-
+[daywalker90]: https://github.com/daywalker90
