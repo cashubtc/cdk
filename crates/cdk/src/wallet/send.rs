@@ -191,12 +191,7 @@ impl Wallet {
         tracing::info!("Sending prepared send");
 
         // Get active keyset ID
-        let active_keyset_id = self
-            .get_active_mint_keysets()
-            .await?
-            .first()
-            .ok_or(Error::NoActiveKeyset)?
-            .id;
+        let active_keyset_id = self.get_active_mint_keyset().await?.id;
         tracing::debug!("Active keyset ID: {:?}", active_keyset_id);
 
         // Get keyset fees
@@ -233,7 +228,10 @@ impl Wallet {
 
         // Swap proofs if necessary
         if !proofs_to_swap.is_empty() {
-            let swap_amount = send.amount - proofs_to_send.total_amount()?;
+            let mut swap_amount = send.amount + send.swap_fee - proofs_to_send.total_amount()?;
+            if send.options.include_fee {
+                swap_amount += send.send_fee;
+            }
             tracing::debug!("Swapping proofs; swap_amount={}", swap_amount);
             if let Some(proofs) = self
                 .swap(
