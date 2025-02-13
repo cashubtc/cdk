@@ -22,7 +22,7 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
 use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
-use cdk::types::LnKey;
+use cdk::types::{LnKey, QuoteTTL};
 use cdk_axum::cache::HttpCache;
 #[cfg(feature = "management-rpc")]
 use cdk_mint_rpc::MintRPCServer;
@@ -403,6 +403,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::warn!("RPC not enabled, using mint info from config.");
         mint.set_mint_info(mint_builder.mint_info).await?;
+        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     }
 
     let axum_result = axum::Server::bind(
