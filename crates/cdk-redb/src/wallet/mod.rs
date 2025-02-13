@@ -573,21 +573,6 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(())
     }
 
-    // #[instrument(skip(self, ys))]
-    // async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-    //     self.update_proof_states(ys, State::Pending).await
-    // }
-
-    // #[instrument(skip(self, ys))]
-    // async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-    //     self.update_proof_states(ys, State::Reserved).await
-    // }
-
-    // #[instrument(skip(self, ys))]
-    // async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-    //     self.update_proof_states(ys, State::Unspent).await
-    // }
-
     #[instrument(skip_all)]
     async fn get_proofs(
         &self,
