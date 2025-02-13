@@ -8,7 +8,6 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
@@ -162,8 +161,8 @@ impl MintLightning for Cln {
                                 }
                                 Err(e) => {
                                     tracing::warn!("Error fetching invoice: {e}");
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    continue;
+                                    is_active.store(false, Ordering::SeqCst);
+                                    return None;
                                 }
                             }
                         }
