@@ -57,7 +57,9 @@ impl MintRedbDatabase {
     pub fn new(work_dir: &Path, backups_to_keep: u8) -> Result<Self, Error> {
         let db_file_path = work_dir.join("cdk-mintd.redb");
 
-        Self::backup(work_dir, &db_file_path, backups_to_keep)?;
+        if db_file_path.exists() {
+            Self::backup(work_dir, &db_file_path, backups_to_keep)?;
+        }
 
         let db_inner = Arc::new(Database::create(db_file_path)?);
         let redb_db = Self {
