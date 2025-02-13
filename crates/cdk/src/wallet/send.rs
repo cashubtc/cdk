@@ -12,7 +12,7 @@ use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Prepare send
-    #[instrument(skip(self))]
+    #[instrument(skip(self), err)]
     pub async fn prepare_send(
         &self,
         amount: Amount,
@@ -186,7 +186,7 @@ impl Wallet {
     }
 
     /// Send prepared send
-    #[instrument(skip(self))]
+    #[instrument(skip(self), err)]
     pub async fn send(&self, send: PreparedSend) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
 
@@ -199,7 +199,9 @@ impl Wallet {
         tracing::debug!("Keyset fees: {:?}", keyset_fee_ppk);
 
         // Split amount with fee
-        let mut send_split = send.amount.split_with_fee(keyset_fee_ppk)?;
+        let total_send_amount = send.amount + send.send_fee;
+        tracing::debug!("Total send amount: {}", total_send_amount);
+        let mut send_split = total_send_amount.split();
         tracing::debug!("Send split: {:?}", send_split);
 
         // Separate proofs to send and proofs to swap
@@ -228,11 +230,8 @@ impl Wallet {
 
         // Swap proofs if necessary
         if !proofs_to_swap.is_empty() {
-            let mut swap_amount = send.amount + send.swap_fee - proofs_to_send.total_amount()?;
-            if send.options.include_fee {
-                swap_amount += send.send_fee;
-            }
-            tracing::debug!("Swapping proofs; swap_amount={}", swap_amount);
+            let swap_amount = total_send_amount - proofs_to_send.total_amount()?;
+            tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
             if let Some(proofs) = self
                 .swap(
                     Some(swap_amount),
