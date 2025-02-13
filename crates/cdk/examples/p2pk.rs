@@ -74,6 +74,7 @@ async fn main() -> Result<(), Error> {
             10.into(),
             SendOptions {
                 conditions: Some(spending_conditions),
+                include_fee: true,
                 ..Default::default()
             },
         )

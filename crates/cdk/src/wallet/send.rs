@@ -238,7 +238,7 @@ impl Wallet {
                     SplitTarget::None,
                     proofs_to_swap,
                     send.options.conditions,
-                    send.options.include_fee,
+                    false, // already included in swap_amount
                 )
                 .await?
             {
