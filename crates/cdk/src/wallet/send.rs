@@ -80,9 +80,9 @@ impl Wallet {
             .ok_or(Error::NoActiveKeyset)?
             .id;
         let selected_proofs = if opts.include_fee {
-            Wallet::select_proofs_v2(amount, available_proofs, active_keyset_id, &keyset_fees)?
+            Wallet::select_proofs(amount, available_proofs, active_keyset_id, &keyset_fees)?
         } else {
-            Wallet::select_proofs_v2(amount, available_proofs, active_keyset_id, &HashMap::new())?
+            Wallet::select_proofs(amount, available_proofs, active_keyset_id, &HashMap::new())?
         };
         let selected_total = selected_proofs.total_amount()?;
 

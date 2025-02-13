@@ -158,137 +158,16 @@ impl Wallet {
         Ok(balance)
     }
 
-    /// Select proofs to send
+    /// Select proofs
     #[instrument(skip_all)]
-    pub async fn select_proofs_to_send(
-        &self,
-        amount: Amount,
-        proofs: Proofs,
-        include_fees: bool,
-    ) -> Result<Proofs, Error> {
-        tracing::debug!(
-            "Selecting proofs to send {} from {}",
-            amount,
-            proofs.total_amount()?
-        );
-        if proofs.total_amount()? < amount {
-            return Err(Error::InsufficientFunds);
-        }
-
-        let (mut proofs_larger, mut proofs_smaller): (Proofs, Proofs) =
-            proofs.into_iter().partition(|p| p.amount > amount);
-
-        let next_bigger_proof = proofs_larger.first().cloned();
-
-        let mut selected_proofs: Proofs = Vec::new();
-        let mut remaining_amount = amount;
-
-        while remaining_amount > Amount::ZERO {
-            proofs_larger.sort();
-            // Sort smaller proofs in descending order
-            proofs_smaller.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
-
-            let selected_proof = if let Some(next_small) = proofs_smaller.clone().first() {
-                next_small.clone()
-            } else if let Some(next_bigger) = proofs_larger.first() {
-                next_bigger.clone()
-            } else {
-                break;
-            };
-
-            let proof_amount = selected_proof.amount;
-
-            selected_proofs.push(selected_proof);
-
-            let fees = match include_fees {
-                true => self.get_proofs_fee(&selected_proofs).await?,
-                false => Amount::ZERO,
-            };
-
-            if proof_amount >= remaining_amount + fees {
-                remaining_amount = Amount::ZERO;
-                break;
-            }
-
-            remaining_amount = amount.checked_add(fees).ok_or(Error::AmountOverflow)?
-                - selected_proofs.total_amount()?;
-            (proofs_larger, proofs_smaller) = proofs_smaller
-                .into_iter()
-                .skip(1)
-                .partition(|p| p.amount > remaining_amount);
-        }
-
-        if remaining_amount > Amount::ZERO {
-            if let Some(next_bigger) = next_bigger_proof {
-                return Ok(vec![next_bigger.clone()]);
-            }
-
-            return Err(Error::InsufficientFunds);
-        }
-
-        Ok(selected_proofs)
-    }
-
-    /// Select proofs to send
-    #[instrument(skip_all)]
-    pub async fn select_proofs_to_swap(
-        &self,
-        amount: Amount,
-        proofs: Proofs,
-    ) -> Result<Proofs, Error> {
-        tracing::debug!(
-            "Selecting proofs to swap {} from {}",
-            amount,
-            proofs.total_amount()?
-        );
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
-
-        let (mut active_proofs, mut inactive_proofs): (Proofs, Proofs) = proofs
-            .into_iter()
-            .partition(|p| p.keyset_id == active_keyset_id);
-
-        let mut selected_proofs: Proofs = Vec::new();
-        inactive_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
-
-        for inactive_proof in inactive_proofs {
-            selected_proofs.push(inactive_proof);
-            let selected_total = selected_proofs.total_amount()?;
-            let fees = self.get_proofs_fee(&selected_proofs).await?;
-
-            if selected_total >= amount + fees {
-                return Ok(selected_proofs);
-            }
-        }
-
-        active_proofs.sort_by(|a: &Proof, b: &Proof| b.cmp(a));
-
-        for active_proof in active_proofs {
-            selected_proofs.push(active_proof);
-            let selected_total = selected_proofs.total_amount()?;
-            let fees = self.get_proofs_fee(&selected_proofs).await?;
-
-            if selected_total >= amount + fees {
-                return Ok(selected_proofs);
-            }
-        }
-
-        tracing::debug!(
-            "Could not select proofs to swap: total selected: {}",
-            selected_proofs.total_amount()?
-        );
-
-        Err(Error::InsufficientFunds)
-    }
-
-    /// Select proofs v2
-    pub fn select_proofs_v2(
+    pub fn select_proofs(
         amount: Amount,
         proofs: Proofs,
         active_keyset_id: Id,
         keyset_fees: &HashMap<Id, u64>,
     ) -> Result<Proofs, Error> {
         tracing::debug!(
-            "select_proofs_v2: amount={}, proofs={:?}",
+            "Select proofs: amount={}, proofs={:?}",
             amount,
             proofs.iter().map(|p| p.amount.into()).collect::<Vec<u64>>()
         );
@@ -460,7 +339,7 @@ impl Wallet {
             .into_iter()
             .filter(|p| !selected_proofs.contains(p))
             .collect::<Proofs>();
-        selected_proofs.extend(Wallet::select_proofs_v2(
+        selected_proofs.extend(Wallet::select_proofs(
             remaining_amount,
             remaining_proofs,
             active_keyset_id,
@@ -505,14 +384,14 @@ mod tests {
     fn test_select_proofs_v2_empty() {
         let proofs = vec![];
         let selected_proofs =
-            Wallet::select_proofs_v2(0.into(), proofs, id(), &HashMap::new()).unwrap();
+            Wallet::select_proofs(0.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 0);
     }
 
     #[test]
     fn test_select_proofs_v2_insufficient() {
         let proofs = vec![proof(1), proof(2), proof(4)];
-        let selected_proofs = Wallet::select_proofs_v2(8.into(), proofs, id(), &HashMap::new());
+        let selected_proofs = Wallet::select_proofs(8.into(), proofs, id(), &HashMap::new());
         assert!(selected_proofs.is_err());
     }
 
@@ -528,7 +407,7 @@ mod tests {
             proof(64),
         ];
         let mut selected_proofs =
-            Wallet::select_proofs_v2(77.into(), proofs, id(), &HashMap::new()).unwrap();
+            Wallet::select_proofs(77.into(), proofs, id(), &HashMap::new()).unwrap();
         selected_proofs.sort();
         assert_eq!(selected_proofs.len(), 4);
         assert_eq!(selected_proofs[0].amount, 1.into());
@@ -541,7 +420,7 @@ mod tests {
     fn test_select_proofs_v2_over() {
         let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
         let selected_proofs =
-            Wallet::select_proofs_v2(31.into(), proofs, id(), &HashMap::new()).unwrap();
+            Wallet::select_proofs(31.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 32.into());
     }
@@ -550,7 +429,7 @@ mod tests {
     fn test_select_proofs_v2_smaller_over() {
         let proofs = vec![proof(8), proof(16), proof(32)];
         let selected_proofs =
-            Wallet::select_proofs_v2(23.into(), proofs, id(), &HashMap::new()).unwrap();
+            Wallet::select_proofs(23.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 2);
         assert_eq!(selected_proofs[0].amount, 16.into());
         assert_eq!(selected_proofs[1].amount, 8.into());
@@ -560,7 +439,7 @@ mod tests {
     fn test_select_proofs_v2_many_ones() {
         let proofs = (0..1024).into_iter().map(|_| proof(1)).collect::<Vec<_>>();
         let selected_proofs =
-            Wallet::select_proofs_v2(1024.into(), proofs, id(), &HashMap::new()).unwrap();
+            Wallet::select_proofs(1024.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 1024);
         for i in 0..1024 {
             assert_eq!(selected_proofs[i].amount, 1.into());
@@ -578,7 +457,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut selected_proofs =
-            Wallet::select_proofs_v2(((1u64 << 32) - 1).into(), proofs, id(), &HashMap::new())
+            Wallet::select_proofs(((1u64 << 32) - 1).into(), proofs, id(), &HashMap::new())
                 .unwrap();
         selected_proofs.sort();
         assert_eq!(selected_proofs.len(), 32);

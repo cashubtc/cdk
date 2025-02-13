@@ -1,5 +1,6 @@
 //! Wallet example with memory store
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk::amount::SplitTarget;
@@ -59,9 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proofs = wallet.get_unspent_proofs().await?;
 
     // Select proofs to send
-    let selected = wallet
-        .select_proofs_to_send(Amount::from(64), proofs, false)
-        .await?;
+    let amount = Amount::from(64);
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let selected = Wallet::select_proofs(amount, proofs, active_keyset_id, &HashMap::new())?;
     for (i, proof) in selected.iter().enumerate() {
         println!("{}: {}", i, proof.amount);
     }
