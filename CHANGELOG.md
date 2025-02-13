@@ -23,6 +23,19 @@
 
 #[Unrelased]
 
+#[v0.7.1]
+### Changed
+- cdk: Debug print of `Id` is hex ([thesimplekid]).
+- cdk: Debug print of mint secret is the hash [(thesimplekid)].
+- cdk: Use check_incoming payment on attempted mint or check mint qutoe ([thesimplekid]).
+
+### Added
+- cdk: Mint builder add ability to set custom derivation paths [(thesimplekid)].
+
+### Fixed
+- cdk-cln: return error on stream error [(thesimplekid)].
+
+
 #[v0.7.0]
 ### Changed
 * Moved db traits to `cdk-common` ([crodas]).
