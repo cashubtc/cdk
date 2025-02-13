@@ -26,15 +26,15 @@
 #[v0.7.1]
 ### Changed
 - cdk: Debug print of `Id` is hex ([thesimplekid]).
-- cdk: Debug print of mint secret is the hash [(thesimplekid)].
+- cdk: Debug print of mint secret is the hash ([thesimplekid]).
 - cdk: Use check_incoming payment on attempted mint or check mint qutoe ([thesimplekid]).
 - cdk-cln: Use `call_typed` for cln rpc calls ([daywalker90]).
 
 ### Added
-- cdk: Mint builder add ability to set custom derivation paths [(thesimplekid)].
+- cdk: Mint builder add ability to set custom derivation paths ([thesimplekid]).
 
 ### Fixed
-- cdk-cln: return error on stream error [(thesimplekid)].
+- cdk-cln: return error on stream error ([thesimplekid]).
 
 
 #[v0.7.0]
