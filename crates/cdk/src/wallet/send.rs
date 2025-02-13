@@ -7,7 +7,6 @@ use super::SendKind;
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, SpendingConditions, State, Token};
-use crate::secp256k1::rand;
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -42,7 +41,6 @@ impl Wallet {
             .await?;
 
         // Check if sufficient proofs are available
-        let mut behavior = PreparedSendBehavior::None;
         let available_sum = available_proofs.total_amount()?;
         if available_sum < amount {
             if opts.conditions.is_none() || opts.send_kind.is_offline() {
@@ -50,7 +48,6 @@ impl Wallet {
             } else {
                 // Swap is required for send
                 tracing::debug!("Insufficient proofs matching conditions");
-                behavior = PreparedSendBehavior::ForceSwap;
                 available_proofs = self
                     .localstore
                     .get_proofs(
@@ -72,16 +69,17 @@ impl Wallet {
             }
         }
 
-        // Check if force swap is required and offline send
-        if behavior == PreparedSendBehavior::ForceSwap && opts.send_kind.is_offline() {
-            return Err(Error::InsufficientFunds);
-        }
-
         // Select proofs (including fee)
+        let active_keyset_id = self
+            .get_active_mint_keysets()
+            .await?
+            .first()
+            .ok_or(Error::NoActiveKeyset)?
+            .id;
         let selected_proofs = if opts.include_fee {
-            Wallet::select_proofs_v2(amount, available_proofs, &keyset_fees)?
+            Wallet::select_proofs_v2(amount, available_proofs, active_keyset_id, &keyset_fees)?
         } else {
-            Wallet::select_proofs_v2(amount, available_proofs, &HashMap::new())?
+            Wallet::select_proofs_v2(amount, available_proofs, active_keyset_id, &HashMap::new())?
         };
         let selected_total = selected_proofs.total_amount()?;
 
@@ -93,13 +91,7 @@ impl Wallet {
         };
         if selected_total == amount + send_fee {
             return self
-                .store_prepared_send(
-                    amount,
-                    opts,
-                    selected_proofs,
-                    keyset_fees,
-                    PreparedSendBehavior::ForceSend,
-                )
+                .internal_prepare_send(amount, opts, selected_proofs, active_keyset_id)
                 .await;
         } else if opts.send_kind == SendKind::OfflineExact {
             return Err(Error::InsufficientFunds);
@@ -114,163 +106,122 @@ impl Wallet {
         if let Some(tolerance) = tolerance {
             if selected_total - amount <= tolerance {
                 return self
-                    .store_prepared_send(
-                        amount,
-                        opts,
-                        selected_proofs,
-                        keyset_fees,
-                        PreparedSendBehavior::ForceSend,
-                    )
+                    .internal_prepare_send(amount, opts, selected_proofs, active_keyset_id)
                     .await;
             } else if opts.send_kind.is_offline() {
                 return Err(Error::InsufficientFunds);
             }
         }
 
-        self.store_prepared_send(
-            amount,
-            opts,
-            selected_proofs,
-            keyset_fees,
-            PreparedSendBehavior::None,
-        )
-        .await
+        self.internal_prepare_send(amount, opts, selected_proofs, active_keyset_id)
+            .await
     }
 
-    async fn store_prepared_send(
+    async fn internal_prepare_send(
         &self,
         amount: Amount,
         opts: SendOptions,
         proofs: Proofs,
-        keyset_fees: HashMap<Id, u64>,
-        behavior: PreparedSendBehavior,
+        active_keyset_id: Id,
     ) -> Result<PreparedSend, Error> {
-        tracing::debug!("Storing prepared send behavior={:?}", behavior);
-        let prepared_send = match behavior {
-            PreparedSendBehavior::ForceSend => {
-                let proofs_to_send = proofs;
-                let send_fee = self.get_proofs_fee(&proofs_to_send).await?;
-                PreparedSend {
-                    amount,
-                    options: opts,
-                    nonce: rand::random(),
-                    proofs_to_swap: vec![],
-                    swap_fee: Amount::ZERO,
-                    proofs_to_send,
-                    send_fee,
-                }
-            }
-            PreparedSendBehavior::ForceSwap => {
-                let proofs_to_swap = proofs;
-                let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
-                PreparedSend {
-                    amount,
-                    options: opts,
-                    nonce: rand::random(),
-                    proofs_to_swap,
-                    swap_fee,
-                    proofs_to_send: vec![],
-                    send_fee: Amount::ZERO,
-                }
-            }
-            PreparedSendBehavior::None => {
-                // TODO: this is a temporary solution and probably wrong; only allow one keyset per send
-                let mut optimal_by_keyset = HashMap::new();
-                for (id, _) in proofs.count_by_keyset() {
-                    let fee_ppk = keyset_fees.get(&id).ok_or(Error::KeysetUnknown(id))?;
-                    optimal_by_keyset.insert(id, amount.split_with_fee(*fee_ppk)?);
-                }
+        let keyset_fee_ppk = self.get_keyset_fees_by_id(active_keyset_id).await?;
+        let mut send_split = amount.split_with_fee(keyset_fee_ppk)?;
+        let send_fee = self
+            .get_proofs_fee_by_count(
+                vec![(active_keyset_id, send_split.len() as u64)]
+                    .into_iter()
+                    .collect(),
+            )
+            .await?;
 
-                let mut proofs_to_send = vec![];
-                let mut proofs_to_swap = vec![];
-                for proof in proofs {
-                    tracing::debug!("proof={:?}", proof);
-                    let keyset_id = proof.keyset_id;
-                    let optimal_amounts = optimal_by_keyset
-                        .get_mut(&keyset_id)
-                        .ok_or(Error::KeysetUnknown(keyset_id))?;
-                    tracing::debug!("optimal_amounts={:?}", optimal_amounts);
-                    if let Some(idx) = optimal_amounts.iter().position(|a| a == &proof.amount) {
-                        tracing::debug!("Proof is optimal");
-                        proofs_to_send.push(proof);
-                        optimal_amounts.remove(idx);
-                    } else {
-                        tracing::debug!("Proof is suboptimal");
-                        proofs_to_swap.push(proof);
-                    }
-                }
-
-                let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
-                let send_fee = self.get_proofs_fee(&proofs_to_send).await?;
-                PreparedSend {
-                    amount,
-                    options: opts,
-                    nonce: rand::random(),
-                    proofs_to_swap,
-                    swap_fee,
-                    proofs_to_send,
-                    send_fee,
-                }
-            }
-        };
-        let mut guard = self.prepared_send.lock().await;
-        match *guard {
-            Some(_) => Err(Error::ActivePreparedSend),
-            None => {
-                let mut ys = prepared_send.proofs_to_send.ys()?;
-                ys.extend(prepared_send.proofs_to_swap.ys()?);
-                self.localstore
-                    .update_proofs_state(ys, State::Reserved)
-                    .await?;
-                *guard = Some(prepared_send.nonce);
-                tracing::info!("Prepared send stored");
-                Ok(prepared_send)
+        let mut swap_count = HashMap::new();
+        for proof in &proofs {
+            let keyset_id = proof.keyset_id;
+            if let Some(idx) = send_split.iter().position(|a| a == &proof.amount) {
+                send_split.remove(idx);
+            } else {
+                let count = swap_count.entry(keyset_id).or_insert(0);
+                *count += 1;
             }
         }
+        let swap_fee = self.get_proofs_fee_by_count(swap_count).await?;
+
+        Ok(PreparedSend {
+            amount,
+            options: opts,
+            proofs,
+            swap_fee,
+            send_fee,
+        })
     }
 
     /// Send prepared send
     #[instrument(skip(self))]
     pub async fn send(&self, send: PreparedSend) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
-        let guard = self.prepared_send.lock().await;
-        match *guard {
-            Some(nonce) if nonce == send.nonce => {}
-            _ => return Err(Error::InvalidPreparedSend),
+
+        let active_keyset_id = self
+            .get_active_mint_keysets()
+            .await?
+            .first()
+            .ok_or(Error::NoActiveKeyset)?
+            .id;
+        let keyset_fee_ppk = self.get_keyset_fees_by_id(active_keyset_id).await?;
+        let mut send_split = send.amount.split_with_fee(keyset_fee_ppk)?;
+
+        let mut proofs_to_send = Proofs::new();
+        let mut proofs_to_swap = Proofs::new();
+        for proof in send.proofs {
+            if let Some(idx) = send_split.iter().position(|a| a == &proof.amount) {
+                send_split.remove(idx);
+                proofs_to_send.push(proof);
+            } else {
+                proofs_to_swap.push(proof);
+            }
         }
 
-        let mut send_proofs = send.proofs_to_send;
-        if !send.proofs_to_swap.is_empty() {
-            let swap_amount = send.amount - send_proofs.total_amount()?;
+        if !proofs_to_swap.is_empty() {
+            let swap_amount = send.amount - proofs_to_send.total_amount()?;
             tracing::debug!("Swapping proofs; swap_amount={}", swap_amount,);
             if let Some(proofs) = self
                 .swap(
                     Some(swap_amount),
                     SplitTarget::None,
-                    send.proofs_to_swap,
+                    proofs_to_swap,
                     send.options.conditions,
                     send.options.include_fee,
                 )
                 .await?
             {
-                send_proofs.extend(proofs);
+                proofs_to_send.extend(proofs);
             }
         }
 
-        if send.amount > send_proofs.total_amount()? {
+        if send.amount > proofs_to_send.total_amount()? {
             return Err(Error::InsufficientFunds);
         }
 
         self.localstore
-            .update_proofs_state(send_proofs.ys()?, State::PendingSpent)
+            .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
         Ok(Token::new(
             self.mint_url.clone(),
-            send_proofs,
+            proofs_to_send,
             send.options.memo,
             self.unit.clone(),
         ))
+    }
+
+    /// Cancel prepared send
+    pub async fn cancel_send(&self, send: PreparedSend) -> Result<(), Error> {
+        tracing::info!("Cancelling prepared send");
+
+        self.localstore
+            .update_proofs_state(send.proofs.ys()?, State::Unspent)
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -278,11 +229,14 @@ impl Wallet {
 pub struct PreparedSend {
     amount: Amount,
     options: SendOptions,
-    nonce: u64,
-    proofs_to_swap: Proofs,
+    proofs: Proofs,
     swap_fee: Amount,
-    proofs_to_send: Proofs,
     send_fee: Amount,
+    // nonce: u64,
+    // proofs_to_swap: Proofs,
+    // swap_fee: Amount,
+    // proofs_to_send: Proofs,
+    // send_fee: Amount,
 }
 
 impl PreparedSend {
@@ -294,28 +248,17 @@ impl PreparedSend {
         &self.options
     }
 
-    pub fn proofs_to_swap(&self) -> &Proofs {
-        &self.proofs_to_swap
+    pub fn proofs(&self) -> &Proofs {
+        &self.proofs
     }
 
     pub fn swap_fee(&self) -> Amount {
         self.swap_fee
     }
 
-    pub fn proofs_to_send(&self) -> &Proofs {
-        &self.proofs_to_send
-    }
-
     pub fn send_fee(&self) -> Amount {
         self.send_fee
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum PreparedSendBehavior {
-    None,
-    ForceSwap,
-    ForceSend,
 }
 
 /// Send options

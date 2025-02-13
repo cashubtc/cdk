@@ -284,6 +284,7 @@ impl Wallet {
     pub fn select_proofs_v2(
         amount: Amount,
         proofs: Proofs,
+        active_keyset_id: Id,
         keyset_fees: &HashMap<Id, u64>,
     ) -> Result<Proofs, Error> {
         tracing::debug!(
@@ -305,8 +306,15 @@ impl Wallet {
         // Split the amount into optimal amounts
         let optimal_amounts = amount.split();
 
-        // Track selected proofs and remaining amounts
-        let mut selected_proofs: HashSet<Proof> = HashSet::new();
+        // Track selected proofs and remaining amounts (include all inactive proofs first)
+        let mut selected_proofs: HashSet<Proof> = proofs
+            .iter()
+            .filter(|p| p.keyset_id != active_keyset_id)
+            .cloned()
+            .collect();
+        if selected_proofs.total_amount()? >= amount {
+            return Ok(selected_proofs.into_iter().collect());
+        }
         let mut remaining_amounts: Vec<Amount> = Vec::new();
 
         // Select proof with the exact amount and not already selected
@@ -342,11 +350,13 @@ impl Wallet {
 
         // If all the optimal amounts are selected, return the selected proofs
         if remaining_amounts.is_empty() {
-            tracing::debug!(
-                "select_proofs_v2: found optimal; selected_proofs={:?}",
-                selected_proofs.iter().map(|p| p.amount).collect::<Vec<_>>()
-            );
-            return Ok(selected_proofs.into_iter().collect());
+            return Ok(Wallet::finalize_fees(
+                amount,
+                proofs,
+                selected_proofs.into_iter().collect(),
+                active_keyset_id,
+                keyset_fees,
+            )?);
         }
 
         // Select proofs with the remaining amounts by checking for 2 of the half amount, 4 of the quarter amount, etc.
@@ -393,11 +403,6 @@ impl Wallet {
         let mut selected_proofs = selected_proofs.into_iter().collect::<Vec<_>>();
         let total_amount = selected_proofs.total_amount()?;
         if total_amount != amount && selected_proofs.len() > 1 {
-            tracing::debug!(
-                "select_proofs_v2: total_amount={}, amount={}",
-                total_amount,
-                amount,
-            );
             selected_proofs.sort_by(|a, b| a.cmp(b).reverse());
             for i in 1..selected_proofs.len() {
                 let (left, right) = selected_proofs.split_at(i);
@@ -420,29 +425,53 @@ impl Wallet {
             }
         }
 
-        // Handle fees
+        Ok(Wallet::finalize_fees(
+            amount,
+            proofs,
+            selected_proofs.into_iter().collect(),
+            active_keyset_id,
+            keyset_fees,
+        )?)
+    }
+
+    fn finalize_fees(
+        amount: Amount,
+        proofs: Proofs,
+        mut selected_proofs: Proofs,
+        active_keyset_id: Id,
+        keyset_fees: &HashMap<Id, u64>,
+    ) -> Result<Proofs, Error> {
         let fee =
             calculate_fee(&selected_proofs.count_by_keyset(), keyset_fees).unwrap_or_default();
         let net_amount = selected_proofs.total_amount()? - fee;
-        if net_amount < amount {
-            let remaining_amount = amount - net_amount;
-            let remaining_proofs = proofs
-                .into_iter()
-                .filter(|p| !selected_proofs.contains(p))
-                .collect::<Proofs>();
-            selected_proofs.extend(Wallet::select_proofs_v2(
-                remaining_amount,
-                remaining_proofs,
-                keyset_fees,
-            )?);
+        if net_amount >= amount {
+            tracing::debug!(
+                "Selected proofs: {:?}",
+                selected_proofs
+                    .iter()
+                    .map(|p| p.amount.into())
+                    .collect::<Vec<u64>>(),
+            );
+            return Ok(selected_proofs);
         }
 
+        let remaining_amount = amount - net_amount;
+        let remaining_proofs = proofs
+            .into_iter()
+            .filter(|p| !selected_proofs.contains(p))
+            .collect::<Proofs>();
+        selected_proofs.extend(Wallet::select_proofs_v2(
+            remaining_amount,
+            remaining_proofs,
+            active_keyset_id,
+            keyset_fees,
+        )?);
         tracing::debug!(
-            "select_proofs_v2: found not optimal; selected_proofs={:?}",
+            "Selected proofs: {:?}",
             selected_proofs
                 .iter()
                 .map(|p| p.amount.into())
-                .collect::<Vec<u64>>()
+                .collect::<Vec<u64>>(),
         );
         Ok(selected_proofs)
     }
@@ -456,10 +485,14 @@ mod tests {
 
     use crate::Wallet;
 
+    fn id() -> Id {
+        Id::from_bytes(&[0; 8]).unwrap()
+    }
+
     fn proof(amount: u64) -> Proof {
         Proof::new(
             Amount::from(amount),
-            Id::from_bytes(&[0; 8]).unwrap(),
+            id(),
             Secret::generate(),
             PublicKey::from_hex(
                 "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
@@ -471,14 +504,15 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_empty() {
         let proofs = vec![];
-        let selected_proofs = Wallet::select_proofs_v2(0.into(), proofs, &HashMap::new()).unwrap();
+        let selected_proofs =
+            Wallet::select_proofs_v2(0.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 0);
     }
 
     #[test]
     fn test_select_proofs_v2_insufficient() {
         let proofs = vec![proof(1), proof(2), proof(4)];
-        let selected_proofs = Wallet::select_proofs_v2(8.into(), proofs, &HashMap::new());
+        let selected_proofs = Wallet::select_proofs_v2(8.into(), proofs, id(), &HashMap::new());
         assert!(selected_proofs.is_err());
     }
 
@@ -494,7 +528,7 @@ mod tests {
             proof(64),
         ];
         let mut selected_proofs =
-            Wallet::select_proofs_v2(77.into(), proofs, &HashMap::new()).unwrap();
+            Wallet::select_proofs_v2(77.into(), proofs, id(), &HashMap::new()).unwrap();
         selected_proofs.sort();
         assert_eq!(selected_proofs.len(), 4);
         assert_eq!(selected_proofs[0].amount, 1.into());
@@ -506,7 +540,8 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_over() {
         let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
-        let selected_proofs = Wallet::select_proofs_v2(31.into(), proofs, &HashMap::new()).unwrap();
+        let selected_proofs =
+            Wallet::select_proofs_v2(31.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 32.into());
     }
@@ -514,7 +549,8 @@ mod tests {
     #[test]
     fn test_select_proofs_v2_smaller_over() {
         let proofs = vec![proof(8), proof(16), proof(32)];
-        let selected_proofs = Wallet::select_proofs_v2(23.into(), proofs, &HashMap::new()).unwrap();
+        let selected_proofs =
+            Wallet::select_proofs_v2(23.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 2);
         assert_eq!(selected_proofs[0].amount, 16.into());
         assert_eq!(selected_proofs[1].amount, 8.into());
@@ -524,7 +560,7 @@ mod tests {
     fn test_select_proofs_v2_many_ones() {
         let proofs = (0..1024).into_iter().map(|_| proof(1)).collect::<Vec<_>>();
         let selected_proofs =
-            Wallet::select_proofs_v2(1024.into(), proofs, &HashMap::new()).unwrap();
+            Wallet::select_proofs_v2(1024.into(), proofs, id(), &HashMap::new()).unwrap();
         assert_eq!(selected_proofs.len(), 1024);
         for i in 0..1024 {
             assert_eq!(selected_proofs[i].amount, 1.into());
@@ -542,7 +578,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut selected_proofs =
-            Wallet::select_proofs_v2(((1u64 << 32) - 1).into(), proofs, &HashMap::new()).unwrap();
+            Wallet::select_proofs_v2(((1u64 << 32) - 1).into(), proofs, id(), &HashMap::new())
+                .unwrap();
         selected_proofs.sort();
         assert_eq!(selected_proofs.len(), 32);
         for i in 0..32 {

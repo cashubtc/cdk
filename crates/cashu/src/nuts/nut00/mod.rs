@@ -3,7 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/00.md>
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
@@ -53,6 +53,34 @@ pub trait ProofsMethods {
 }
 
 impl ProofsMethods for Proofs {
+    fn count_by_keyset(&self) -> HashMap<Id, u64> {
+        let mut counts = HashMap::new();
+        for proof in self.iter() {
+            *counts.entry(proof.keyset_id).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
+        let mut sums = HashMap::new();
+        for proof in self.iter() {
+            *sums.entry(proof.keyset_id).or_insert(Amount::ZERO) += proof.amount;
+        }
+        sums
+    }
+
+    fn total_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(self.iter().map(|p| p.amount)).map_err(Into::into)
+    }
+
+    fn ys(&self) -> Result<Vec<PublicKey>, Error> {
+        self.iter()
+            .map(|p| p.y())
+            .collect::<Result<Vec<PublicKey>, _>>()
+    }
+}
+
+impl ProofsMethods for HashSet<Proof> {
     fn count_by_keyset(&self) -> HashMap<Id, u64> {
         let mut counts = HashMap::new();
         for proof in self.iter() {

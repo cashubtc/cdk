@@ -12,7 +12,6 @@ use client::MintConnector;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
 use subscription::{ActiveSubscription, SubscriptionManager};
-use tokio::sync::Mutex;
 use tracing::instrument;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -66,7 +65,6 @@ pub struct Wallet {
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
-    prepared_send: Arc<Mutex<Option<u64>>>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -154,7 +152,6 @@ impl Wallet {
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
-            prepared_send: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -174,25 +171,24 @@ impl Wallet {
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
-        let mut proofs_per_keyset = HashMap::new();
+        let proofs_per_keyset = proofs.count_by_keyset();
+        self.get_proofs_fee_by_count(proofs_per_keyset).await
+    }
+
+    /// Fee required for proof set by count
+    pub async fn get_proofs_fee_by_count(
+        &self,
+        proofs_per_keyset: HashMap<Id, u64>,
+    ) -> Result<Amount, Error> {
         let mut fee_per_keyset = HashMap::new();
 
-        for proof in proofs {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                fee_per_keyset.entry(proof.keyset_id)
-            {
-                let mint_keyset_info = self
-                    .localstore
-                    .get_keyset_by_id(&proof.keyset_id)
-                    .await?
-                    .ok_or(Error::UnknownKeySet)?;
-                e.insert(mint_keyset_info.input_fee_ppk);
-            }
-
-            proofs_per_keyset
-                .entry(proof.keyset_id)
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
+        for (keyset_id, _) in &proofs_per_keyset {
+            let mint_keyset_info = self
+                .localstore
+                .get_keyset_by_id(keyset_id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+            fee_per_keyset.insert(keyset_id.clone(), mint_keyset_info.input_fee_ppk);
         }
 
         let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
