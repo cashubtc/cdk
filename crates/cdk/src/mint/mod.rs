@@ -503,12 +503,12 @@ mod tests {
     use std::str::FromStr;
 
     use bitcoin::Network;
-    use cdk_common::common::{LnKey, QuoteTTL};
+    use cdk_common::common::LnKey;
+    use cdk_sqlite::mint::memory::new_with_state;
     use secp256k1::Secp256k1;
     use uuid::Uuid;
 
     use super::*;
-    use crate::cdk_database::mint_memory::MintMemoryDatabase;
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
@@ -604,32 +604,25 @@ mod tests {
         melt_quotes: Vec<MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
-        blinded_signatures: HashMap<[u8; 33], BlindSignature>,
-        quote_proofs: HashMap<Uuid, Vec<PublicKey>>,
-        quote_signatures: HashMap<Uuid, Vec<BlindSignature>>,
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         melt_requests: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
-        quote_ttl: QuoteTTL,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
         let localstore = Arc::new(
-            MintMemoryDatabase::new(
+            new_with_state(
                 config.active_keysets,
                 config.keysets,
                 config.mint_quotes,
                 config.melt_quotes,
                 config.pending_proofs,
                 config.spent_proofs,
-                config.quote_proofs,
-                config.blinded_signatures,
-                config.quote_signatures,
                 config.melt_requests,
                 config.mint_info,
-                config.quote_ttl,
             )
+            .await
             .unwrap(),
         );
 

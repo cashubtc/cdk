@@ -7,7 +7,6 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits, MintQuote};
@@ -21,6 +20,7 @@ use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
 use cdk_fake_wallet::FakeWallet;
+use cdk_sqlite::mint::memory;
 use tokio::sync::OnceCell;
 use tokio::time::sleep;
 
@@ -43,7 +43,7 @@ async fn new_mint(fee: u64) -> Mint {
 
     let mint_info = MintInfo::new().nuts(nuts);
 
-    let localstore = MintMemoryDatabase::default();
+    let localstore = memory::empty().await.expect("valid db instance");
 
     localstore
         .set_mint_info(mint_info)
@@ -450,7 +450,7 @@ async fn test_correct_keyset() -> Result<()> {
         percent_fee_reserve: 1.0,
     };
 
-    let database = MintMemoryDatabase::default();
+    let database = memory::empty().await.expect("valid db instance");
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
