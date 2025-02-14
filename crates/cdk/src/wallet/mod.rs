@@ -119,7 +119,7 @@ impl Wallet {
     /// ```rust
     /// use std::sync::Arc;
     ///
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
     /// use rand::Rng;
@@ -128,7 +128,7 @@ impl Wallet {
     /// let mint_url = "https://testnut.cashu.space";
     /// let unit = CurrencyUnit::Sat;
     ///
-    /// let localstore = WalletMemoryDatabase::default();
+    /// let localstore = memory::empty().await?();
     /// let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
     /// ```
     pub fn new(
