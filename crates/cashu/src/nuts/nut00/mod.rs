@@ -52,61 +52,64 @@ pub trait ProofsMethods {
     fn ys(&self) -> Result<Vec<PublicKey>, Error>;
 }
 
-// TODO: DRY up the implementation of ProofsMethods for Proofs and HashSet<Proof>
 impl ProofsMethods for Proofs {
     fn count_by_keyset(&self) -> HashMap<Id, u64> {
-        let mut counts = HashMap::new();
-        for proof in self.iter() {
-            *counts.entry(proof.keyset_id).or_insert(0) += 1;
-        }
-        counts
+        count_by_keyset(self.iter())
     }
 
     fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
-        let mut sums = HashMap::new();
-        for proof in self.iter() {
-            *sums.entry(proof.keyset_id).or_insert(Amount::ZERO) += proof.amount;
-        }
-        sums
+        sum_by_keyset(self.iter())
     }
 
     fn total_amount(&self) -> Result<Amount, Error> {
-        Amount::try_sum(self.iter().map(|p| p.amount)).map_err(Into::into)
+        total_amount(self.iter())
     }
 
     fn ys(&self) -> Result<Vec<PublicKey>, Error> {
-        self.iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()
+        ys(self.iter())
     }
 }
 
 impl ProofsMethods for HashSet<Proof> {
     fn count_by_keyset(&self) -> HashMap<Id, u64> {
-        let mut counts = HashMap::new();
-        for proof in self.iter() {
-            *counts.entry(proof.keyset_id).or_insert(0) += 1;
-        }
-        counts
+        count_by_keyset(self.iter())
     }
 
     fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
-        let mut sums = HashMap::new();
-        for proof in self.iter() {
-            *sums.entry(proof.keyset_id).or_insert(Amount::ZERO) += proof.amount;
-        }
-        sums
+        sum_by_keyset(self.iter())
     }
 
     fn total_amount(&self) -> Result<Amount, Error> {
-        Amount::try_sum(self.iter().map(|p| p.amount)).map_err(Into::into)
+        total_amount(self.iter())
     }
 
     fn ys(&self) -> Result<Vec<PublicKey>, Error> {
-        self.iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()
+        ys(self.iter())
     }
+}
+
+fn count_by_keyset<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> HashMap<Id, u64> {
+    let mut counts = HashMap::new();
+    for proof in proofs {
+        *counts.entry(proof.keyset_id).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn sum_by_keyset<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> HashMap<Id, Amount> {
+    let mut sums = HashMap::new();
+    for proof in proofs {
+        *sums.entry(proof.keyset_id).or_insert(Amount::ZERO) += proof.amount;
+    }
+    sums
+}
+
+fn total_amount<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Amount, Error> {
+    Amount::try_sum(proofs.map(|p| p.amount)).map_err(Into::into)
+}
+
+fn ys<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Vec<PublicKey>, Error> {
+    proofs.map(|p| p.y()).collect::<Result<Vec<PublicKey>, _>>()
 }
 
 /// NUT00 Error
