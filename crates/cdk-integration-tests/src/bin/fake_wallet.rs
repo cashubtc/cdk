@@ -1,10 +1,10 @@
 use std::env;
 
 use anyhow::Result;
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk_integration_tests::init_fake_wallet::start_fake_mint;
 use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_redb::MintRedbDatabase;
+use cdk_sqlite::mint::memory;
 use cdk_sqlite::MintSqliteDatabase;
 
 #[tokio::main]
@@ -16,7 +16,12 @@ async fn main() -> Result<()> {
 
     match mint_db_kind.as_str() {
         "MEMORY" => {
-            start_fake_mint(addr, port, MintMemoryDatabase::default()).await?;
+            start_fake_mint(
+                addr,
+                port,
+                memory::empty().await.expect("valid db instance"),
+            )
+            .await?;
         }
         "SQLITE" => {
             let sqlite_db = MintSqliteDatabase::new(&get_temp_dir().join("mint")).await?;

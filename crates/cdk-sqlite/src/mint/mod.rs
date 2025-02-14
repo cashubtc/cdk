@@ -26,6 +26,7 @@ use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
 pub mod error;
+pub mod memory;
 
 /// Mint SQLite Database
 #[derive(Debug, Clone)]
@@ -35,8 +36,8 @@ pub struct MintSqliteDatabase {
 
 impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
-    pub async fn new(path: &Path) -> Result<Self, Error> {
-        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
+    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let path = path.as_ref().to_str().ok_or(Error::InvalidDbPath)?;
         let db_options = SqliteConnectOptions::from_str(path)?
             .busy_timeout(Duration::from_secs(5))
             .read_only(false)
@@ -438,8 +439,8 @@ FROM mint_quote
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
             r#"
-SELECT * 
-FROM mint_quote 
+SELECT *
+FROM mint_quote
 WHERE state = ?
         "#,
         )

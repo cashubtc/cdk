@@ -1,7 +1,6 @@
 use std::env;
 
 use anyhow::Result;
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk_integration_tests::init_regtest::{
     create_cln_backend, create_lnd_backend, create_mint, fund_ln, generate_block, get_bitcoin_dir,
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_temp_dir,
@@ -9,6 +8,7 @@ use cdk_integration_tests::init_regtest::{
     LND_ADDR, LND_RPC_ADDR, LND_TWO_ADDR, LND_TWO_RPC_ADDR,
 };
 use cdk_redb::MintRedbDatabase;
+use cdk_sqlite::mint::memory;
 use cdk_sqlite::MintSqliteDatabase;
 use ln_regtest_rs::cln::Clnd;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
@@ -161,7 +161,7 @@ async fn main() -> Result<()> {
                 create_mint(
                     mint_addr,
                     cln_mint_port,
-                    MintMemoryDatabase::default(),
+                    memory::empty().await.expect("valid db instance"),
                     cln_backend,
                 )
                 .await
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
             create_mint(
                 mint_addr,
                 lnd_mint_port,
-                MintMemoryDatabase::default(),
+                memory::empty().await.expect("valid db instance"),
                 lnd_backend,
             )
             .await?;
