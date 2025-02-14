@@ -156,12 +156,18 @@ impl Wallet {
         tracing::debug!("Send amounts: {:?}", send_amounts);
         tracing::debug!("Send fee: {:?}", send_fee);
 
+        // Check if proofs are exact send amount
+        let proofs_exact_amount = proofs.total_amount()? == amount + send_fee;
+
         // Split proofs to swap and send
         let mut proofs_to_swap = Proofs::new();
         let mut proofs_to_send = Proofs::new();
         if force_swap {
             proofs_to_swap = proofs;
-        } else if opts.send_kind.is_offline() || opts.send_kind.has_tolerance() {
+        } else if proofs_exact_amount
+            || opts.send_kind.is_offline()
+            || opts.send_kind.has_tolerance()
+        {
             proofs_to_send = proofs;
         } else {
             let mut remaining_send_amounts = send_amounts.clone();
