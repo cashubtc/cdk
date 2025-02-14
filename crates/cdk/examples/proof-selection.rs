@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Select proofs to send
     let amount = Amount::from(64);
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let selected = Wallet::select_proofs(amount, proofs, active_keyset_id, &HashMap::new())?;
+    let selected = Wallet::select_proofs(amount, proofs, active_keyset_id, &HashMap::new(), false)?;
     for (i, proof) in selected.iter().enumerate() {
         println!("{}: {}", i, proof.amount);
     }

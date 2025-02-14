@@ -8,9 +8,19 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
 use cdk::Amount;
 use rand::Rng;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let default_filter = "debug";
+
+    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn,rustls=warn";
+
+    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+
+    // Parse input
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     // Initialize the memory store for the wallet
     let localstore = WalletMemoryDatabase::default();
 

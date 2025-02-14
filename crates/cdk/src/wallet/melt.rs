@@ -297,6 +297,7 @@ impl Wallet {
             available_proofs,
             active_keyset_id,
             &keyset_fees,
+            true,
         )?;
 
         self.melt_proofs(quote_id, input_proofs).await

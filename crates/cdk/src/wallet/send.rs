@@ -71,15 +71,20 @@ impl Wallet {
             }
         }
 
-        // Select proofs (including fee)
+        // Select proofs
         let active_keyset_id = self
             .get_active_mint_keysets()
             .await?
             .first()
             .ok_or(Error::NoActiveKeyset)?
             .id;
-        let selected_proofs =
-            Wallet::select_proofs(amount, available_proofs, active_keyset_id, &keyset_fees)?;
+        let selected_proofs = Wallet::select_proofs(
+            amount,
+            available_proofs,
+            active_keyset_id,
+            &keyset_fees,
+            opts.include_fee,
+        )?;
         let selected_total = selected_proofs.total_amount()?;
 
         // Check if selected proofs are exact
