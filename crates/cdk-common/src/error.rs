@@ -156,9 +156,9 @@ pub enum Error {
     /// Invalid DLEQ proof
     #[error("Could not verify DLEQ proof")]
     CouldNotVerifyDleq,
-    /// Incorrect Mint
-    /// Token does not match wallet mint
-    #[error("Token does not match wallet mint")]
+    /// Incorrect or Unknown Mint
+    /// Token does not match wallet mint, or the wallet does not know this mint
+    #[error("Token does not match wallet mint or the mint is unknown")]
     IncorrectMint,
     /// Receive can only be used with tokens from single mint
     #[error("Multiple mint tokens not supported by receive. Please deconstruct the token and use receive with_proof")]

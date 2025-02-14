@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+#[allow(clippy::upper_case_acronyms)]
 /// SQLite Database Error
 #[derive(Debug, Error)]
 pub enum Error {

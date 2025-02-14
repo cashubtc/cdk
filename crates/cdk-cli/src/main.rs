@@ -102,11 +102,11 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all(&work_dir)?;
 
-    let backups_to_keep = 3;
+    let backups_to_keep = 5;
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
             "sqlite" => Arc::new(WalletSqliteDatabase::new(&work_dir, backups_to_keep).await?),
-            "redb" => Arc::new(WalletRedbDatabase::new(&work_dir)?),
+            "redb" => Arc::new(WalletRedbDatabase::new(&work_dir, backups_to_keep)?),
             _ => bail!("Unknown DB engine"),
         };
 

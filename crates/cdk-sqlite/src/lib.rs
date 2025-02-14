@@ -14,15 +14,14 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use cdk_common::database;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Pool, Sqlite};
-
-use crate::error::Error;
-
 #[cfg(feature = "mint")]
 pub use mint::MintSqliteDatabase;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{Pool, Sqlite};
 #[cfg(feature = "wallet")]
 pub use wallet::WalletSqliteDatabase;
+
+use crate::error::Error;
 
 async fn connect_to_db(db_file_path: &Path) -> Result<Pool<Sqlite>, Error> {
     let db_file_path_str = db_file_path.to_str().ok_or(Error::InvalidDbPath)?;

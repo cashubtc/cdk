@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -20,7 +20,8 @@ use migrations::{migrate_01_to_02, migrate_04_to_05};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use uuid::Uuid;
 
-use super::error::Error;
+use crate::backup;
+use crate::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::mint::migrations::{migrate_02_to_03, migrate_03_to_04};
 
@@ -58,7 +59,7 @@ impl MintRedbDatabase {
         let db_file_path = work_dir.join("cdk-mintd.redb");
 
         if db_file_path.exists() {
-            Self::backup(work_dir, &db_file_path, backups_to_keep)?;
+            backup(work_dir, &db_file_path, backups_to_keep)?;
         }
 
         let db_inner = Arc::new(Database::create(db_file_path)?);
@@ -69,16 +70,6 @@ impl MintRedbDatabase {
         Self::migrate(db_inner.clone())?;
 
         Ok(redb_db)
-    }
-
-    fn backup(work_dir: &Path, db_file_path: &PathBuf, backups_to_keep: u8) -> Result<(), Error> {
-        if let Some(new_backup_file) =
-            database::prepare_backup(work_dir, "redb", backups_to_keep).map_err(Error::DbBackup)?
-        {
-            Self::create_backup(db_file_path, new_backup_file).map_err(Error::DbBackup)?;
-        }
-
-        Ok(())
     }
 
     fn migrate(db: Arc<Database>) -> Result<(), Error> {
@@ -172,25 +163,6 @@ impl MintRedbDatabase {
                 write_txn.commit()?;
             }
         }
-
-        Ok(())
-    }
-
-    fn create_backup(
-        db_file_path: &PathBuf,
-        backup_file_path: PathBuf,
-    ) -> Result<(), database::Error> {
-        // The closest thing to a backup/restore in redb seems to be
-        // https://github.com/cberner/redb/issues/100#issuecomment-1371786445
-        // However, that is very error prone, as the table list has to be maintained manually.
-        //
-        // The savepoint feature is also not usable for our use-case, as savepoints are for rolling
-        // back transactions and do not allow restoring an older DB schema.
-        //
-        // Therefore, backups are done by copying the underlying DB file before the DB is opened.
-
-        std::fs::copy(db_file_path, backup_file_path)
-            .map_err(|e| database::Error::Database(Box::new(e)))?;
 
         Ok(())
     }

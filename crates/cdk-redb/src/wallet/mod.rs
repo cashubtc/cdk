@@ -18,7 +18,8 @@ use cdk_common::{
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
 
-use super::error::Error;
+use crate::backup;
+use crate::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::wallet::migrations::migrate_01_to_02;
 
@@ -52,67 +53,54 @@ pub struct WalletRedbDatabase {
 
 impl WalletRedbDatabase {
     /// Create new [`WalletRedbDatabase`]
-    pub fn new(work_dir: &Path) -> Result<Self, Error> {
+    pub fn new(work_dir: &Path, backups_to_keep: u8) -> Result<Self, Error> {
         let db_file_path = work_dir.join("cdk-wallet.redb");
 
-        {
-            let db = Arc::new(Database::create(&db_file_path)?);
+        if db_file_path.exists() {
+            backup(work_dir, &db_file_path, backups_to_keep)?;
+        }
 
-            let db_version: Option<String>;
-            {
-                // Check database version
-                let read_txn = db.begin_read()?;
-                let table = read_txn.open_table(CONFIG_TABLE);
+        let db_inner = Arc::new(Database::create(db_file_path)?);
+        let redb_db = Self {
+            db: db_inner.clone(),
+        };
 
-                db_version = match table {
-                    Ok(table) => table.get("db_version")?.map(|v| v.value().to_string()),
-                    Err(_) => None,
-                };
-            }
+        Self::migrate(db_inner.clone())?;
 
-            match db_version {
-                Some(db_version) => {
-                    let mut current_file_version = u32::from_str(&db_version)?;
-                    tracing::info!("Current file version {}", current_file_version);
+        Ok(redb_db)
+    }
 
-                    match current_file_version.cmp(&DATABASE_VERSION) {
-                        Ordering::Less => {
-                            tracing::info!(
-                                "Database needs to be upgraded at {} current is {}",
-                                current_file_version,
-                                DATABASE_VERSION
-                            );
-                            if current_file_version == 0 {
-                                current_file_version = migrate_00_to_01(Arc::clone(&db))?;
-                            }
+    fn migrate(db: Arc<Database>) -> Result<(), Error> {
+        // Check database version
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(CONFIG_TABLE);
 
-                            if current_file_version == 1 {
-                                current_file_version = migrate_01_to_02(Arc::clone(&db))?;
-                            }
+        let db_version = match table {
+            Ok(table) => table.get("db_version")?.map(|v| v.value().to_string()),
+            Err(_) => None,
+        };
 
-                            if current_file_version != DATABASE_VERSION {
-                                tracing::warn!(
-                                    "Database upgrade did not complete at {} current is {}",
-                                    current_file_version,
-                                    DATABASE_VERSION
-                                );
-                                return Err(Error::UnknownDatabaseVersion);
-                            }
+        match db_version {
+            Some(db_version) => {
+                let mut current_file_version = u32::from_str(&db_version)?;
+                tracing::info!("Current file version {}", current_file_version);
 
-                            let write_txn = db.begin_write()?;
-                            {
-                                let mut table = write_txn.open_table(CONFIG_TABLE)?;
-
-                                table
-                                    .insert("db_version", DATABASE_VERSION.to_string().as_str())?;
-                            }
-
-                            write_txn.commit()?;
+                match current_file_version.cmp(&DATABASE_VERSION) {
+                    Ordering::Less => {
+                        tracing::info!(
+                            "Database needs to be upgraded at {} current is {}",
+                            current_file_version,
+                            DATABASE_VERSION
+                        );
+                        if current_file_version == 0 {
+                            current_file_version = migrate_00_to_01(Arc::clone(&db))?;
                         }
-                        Ordering::Equal => {
-                            tracing::info!("Database is at current version {}", DATABASE_VERSION);
+
+                        if current_file_version == 1 {
+                            current_file_version = migrate_01_to_02(Arc::clone(&db))?;
                         }
-                        Ordering::Greater => {
+
+                        if current_file_version != DATABASE_VERSION {
                             tracing::warn!(
                                 "Database upgrade did not complete at {} current is {}",
                                 current_file_version,
@@ -120,34 +108,51 @@ impl WalletRedbDatabase {
                             );
                             return Err(Error::UnknownDatabaseVersion);
                         }
-                    }
-                }
-                None => {
-                    let write_txn = db.begin_write()?;
-                    {
-                        let mut table = write_txn.open_table(CONFIG_TABLE)?;
-                        // Open all tables to init a new db
-                        let _ = write_txn.open_table(MINTS_TABLE)?;
-                        let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
-                        let _ = write_txn.open_table(KEYSETS_TABLE)?;
-                        let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
-                        let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
-                        let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
-                        let _ = write_txn.open_table(PROOFS_TABLE)?;
-                        let _ = write_txn.open_table(KEYSET_COUNTER)?;
-                        let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
-                        table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
-                    }
 
-                    write_txn.commit()?;
+                        let write_txn = db.begin_write()?;
+                        {
+                            let mut table = write_txn.open_table(CONFIG_TABLE)?;
+
+                            table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
+                        }
+
+                        write_txn.commit()?;
+                    }
+                    Ordering::Equal => {
+                        tracing::info!("Database is at current version {}", DATABASE_VERSION);
+                    }
+                    Ordering::Greater => {
+                        tracing::warn!(
+                            "Database upgrade did not complete at {} current is {}",
+                            current_file_version,
+                            DATABASE_VERSION
+                        );
+                        return Err(Error::UnknownDatabaseVersion);
+                    }
                 }
             }
-            drop(db);
+            None => {
+                let write_txn = db.begin_write()?;
+                {
+                    let mut table = write_txn.open_table(CONFIG_TABLE)?;
+                    // Open all tables to init a new db
+                    let _ = write_txn.open_table(MINTS_TABLE)?;
+                    let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+                    let _ = write_txn.open_table(KEYSETS_TABLE)?;
+                    let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
+                    let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
+                    let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
+                    let _ = write_txn.open_table(PROOFS_TABLE)?;
+                    let _ = write_txn.open_table(KEYSET_COUNTER)?;
+                    let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
+                    table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
+                }
+
+                write_txn.commit()?;
+            }
         }
 
-        let db = Database::create(db_file_path)?;
-
-        Ok(Self { db: Arc::new(db) })
+        Ok(())
     }
 
     async fn update_proof_states(
