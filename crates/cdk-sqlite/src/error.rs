@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// SQLite Wallet Error
+/// SQLite Database Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// SQLX Error
@@ -11,9 +11,6 @@ pub enum Error {
     /// SQLX Migration Error
     #[error(transparent)]
     SQLXMigration(#[from] sqlx::migrate::MigrateError),
-    /// Serde Error
-    #[error(transparent)]
-    Serde(#[from] serde_json::Error),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),
@@ -35,18 +32,30 @@ pub enum Error {
     /// Secret Error
     #[error(transparent)]
     CDKSECRET(#[from] cdk_common::secret::Error),
-    /// Mint Url
-    #[error(transparent)]
-    MintUrl(#[from] cdk_common::mint_url::Error),
     /// BIP32 Error
     #[error(transparent)]
     BIP32(#[from] bitcoin::bip32::Error),
+    /// Mint Url Error
+    #[error(transparent)]
+    MintUrl(#[from] cdk_common::mint_url::Error),
     /// Could Not Initialize Database
     #[error("Could not initialize database")]
     CouldNotInitialize,
     /// Invalid Database Path
     #[error("Invalid database path")]
     InvalidDbPath,
+    /// Error while trying to prepare or executing a DB backup
+    #[error("Error while doing DB backup: {0}")]
+    DbBackup(cdk_common::database::Error),
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
+    /// Unknown Mint Info
+    #[error("Unknown mint info")]
+    UnknownMintInfo,
+    /// Unknown quote TTL
+    #[error("Unknown quote TTL")]
+    UnknownQuoteTTL,
 }
 
 impl From<Error> for cdk_common::database::Error {

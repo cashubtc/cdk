@@ -15,12 +15,11 @@ use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, PublicKey, SecretKey,
     SpendingConditions, State,
 };
-use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
 use tracing::instrument;
 
-pub mod error;
+use crate::error::Error;
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]

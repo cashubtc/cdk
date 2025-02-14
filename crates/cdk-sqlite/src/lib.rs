@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+mod error;
 #[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "wallet")]
