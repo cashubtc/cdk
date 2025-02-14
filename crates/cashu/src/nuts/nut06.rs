@@ -59,7 +59,7 @@ impl<'de> Deserialize<'de> for MintVersion {
     }
 }
 
-/// Mint Info [NIP-06]
+/// Mint Info [NUT-06]
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintInfo {
@@ -95,6 +95,9 @@ pub struct MintInfo {
     /// server unix timestamp
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<u64>,
+    /// terms of service of the mint
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tos: Option<String>,
 }
 
 impl MintInfo {
@@ -194,6 +197,17 @@ impl MintInfo {
     {
         Self {
             time: Some(time.into()),
+            ..self
+        }
+    }
+
+    /// Set tos
+    pub fn tos<S>(self, tos: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            tos: Some(tos.into()),
             ..self
         }
     }
@@ -405,12 +419,12 @@ mod tests {
     #[test]
     fn test_des_mint_into() {
         let mint_info_str = r#"{
-    "name": "Cashu mint",
-    "pubkey": "0296d0aa13b6a31cf0cd974249f28c7b7176d7274712c95a41c7d8066d3f29d679",
-    "version": "Nutshell/0.15.3",
-    "contact": [
-        ["", ""],
-        ["", ""]
+"name": "Cashu mint",
+"pubkey": "0296d0aa13b6a31cf0cd974249f28c7b7176d7274712c95a41c7d8066d3f29d679",
+"version": "Nutshell/0.15.3",
+"contact": [
+    ["", ""],
+    ["", ""]
     ],
     "nuts": {
         "4": {
@@ -432,7 +446,8 @@ mod tests {
         "9": {"supported": true},
         "10": {"supported": true},
         "11": {"supported": true}
-    }
+    },
+"tos": "https://cashu.mint/tos"
 }"#;
 
         let _mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
@@ -455,7 +470,8 @@ mod tests {
 
                 println!("{}", mint_info);
         */
-        let mint_info_str = r#"{
+        let mint_info_str = r#"
+{
   "name": "Bob's Cashu mint",
   "pubkey": "0283bf290884eed3a7ca2663fc0260de2e2064d6b355ea13f98dec004b7a7ead99",
   "version": "Nutshell/0.15.0",
@@ -502,51 +518,54 @@ mod tests {
     "9": {"supported": true},
     "10": {"supported": true},
     "12": {"supported": true}
-  }
+  },
+  "tos": "https://cashu.mint/tos"
 }"#;
         let info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
-        let mint_info_str = r#"{
-  "name": "Bob's Cashu mint",
-  "pubkey": "0283bf290884eed3a7ca2663fc0260de2e2064d6b355ea13f98dec004b7a7ead99",
-  "version": "Nutshell/0.15.0",
-  "description": "The short mint description",
-  "description_long": "A description that can be a long piece of text.",
-  "contact": [
-        ["nostr", "xxxxx"],
-        ["email", "contact@me.com"]
-  ],
-  "motd": "Message to display to users.",
-  "icon_url": "https://this-is-a-mint-icon-url.com/icon.png",
-  "nuts": {
-    "4": {
-      "methods": [
-        {
-        "method": "bolt11",
-        "unit": "sat",
-        "min_amount": 0,
-        "max_amount": 10000,
-        "description": true
-        }
-      ],
-      "disabled": false
-    },
-    "5": {
-      "methods": [
-        {
-        "method": "bolt11",
-        "unit": "sat",
-        "min_amount": 0,
-        "max_amount": 10000
-        }
-      ],
-      "disabled": false
-    },
-    "7": {"supported": true},
-    "8": {"supported": true},
-    "9": {"supported": true},
-    "10": {"supported": true},
-    "12": {"supported": true}
-  }
+        let mint_info_str = r#"
+{
+    "name": "Bob's Cashu mint",
+    "pubkey": "0283bf290884eed3a7ca2663fc0260de2e2064d6b355ea13f98dec004b7a7ead99",
+    "version": "Nutshell/0.15.0",
+    "description": "The short mint description",
+    "description_long": "A description that can be a long piece of text.",
+    "contact": [
+    ["nostr", "xxxxx"],
+    ["email", "contact@me.com"]
+        ],
+        "motd": "Message to display to users.",
+        "icon_url": "https://this-is-a-mint-icon-url.com/icon.png",
+        "nuts": {
+            "4": {
+            "methods": [
+                {
+                "method": "bolt11",
+                "unit": "sat",
+                "min_amount": 0,
+                "max_amount": 10000,
+                "description": true
+                }
+            ],
+            "disabled": false
+            },
+            "5": {
+            "methods": [
+                {
+                "method": "bolt11",
+                "unit": "sat",
+                "min_amount": 0,
+                "max_amount": 10000
+                }
+            ],
+            "disabled": false
+            },
+            "7": {"supported": true},
+            "8": {"supported": true},
+            "9": {"supported": true},
+            "10": {"supported": true},
+            "12": {"supported": true}
+        },
+        "tos": "https://cashu.mint/tos"
 }"#;
         let mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
 
