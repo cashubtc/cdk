@@ -15,11 +15,12 @@ use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, PublicKey, SecretKey,
     SpendingConditions, State,
 };
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
-use sqlx::{ConnectOptions, Row};
+use sqlx::sqlite::{SqlitePool, SqliteRow};
+use sqlx::Row;
 use tracing::instrument;
 
 use crate::error::Error;
+use crate::{backup, connect_to_db};
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
@@ -29,17 +30,14 @@ pub struct WalletSqliteDatabase {
 
 impl WalletSqliteDatabase {
     /// Create new [`WalletSqliteDatabase`]
-    pub async fn new(path: &Path) -> Result<Self, Error> {
-        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
-        let _conn = SqliteConnectOptions::from_str(path)?
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .read_only(false)
-            .create_if_missing(true)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Full)
-            .connect()
-            .await?;
+    pub async fn new(work_dir: &Path, backups_to_keep: u8) -> Result<Self, Error> {
+        let db_file_path = work_dir.join("cdk-wallet.sqlite");
 
-        let pool = SqlitePool::connect(path).await?;
+        if db_file_path.exists() {
+            backup(work_dir, &db_file_path, backups_to_keep).await?;
+        }
+
+        let pool = connect_to_db(&db_file_path).await?;
 
         sqlx::migrate!("./src/wallet/migrations").run(&pool).await?;
 

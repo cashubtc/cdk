@@ -53,7 +53,7 @@ pub struct WalletRedbDatabase {
 impl WalletRedbDatabase {
     /// Create new [`WalletRedbDatabase`]
     pub fn new(work_dir: &Path) -> Result<Self, Error> {
-        let db_file_path = work_dir.join("cdk-mintd.redb");
+        let db_file_path = work_dir.join("cdk-wallet.redb");
 
         {
             let db = Arc::new(Database::create(&db_file_path)?);
