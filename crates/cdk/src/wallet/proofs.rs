@@ -286,25 +286,7 @@ impl Wallet {
         let total_amount = selected_proofs.total_amount()?;
         if total_amount != amount && selected_proofs.len() > 1 {
             selected_proofs.sort_by(|a, b| a.cmp(b).reverse());
-            for i in 1..selected_proofs.len() {
-                let (left, right) = selected_proofs.split_at(i);
-                let left_amount = Amount::try_sum(left.iter().map(|p| p.amount))?;
-                let right_amount = Amount::try_sum(right.iter().map(|p| p.amount))?;
-                if left_amount >= amount && right_amount >= amount {
-                    if left_amount <= right_amount {
-                        selected_proofs = left.to_vec();
-                    } else {
-                        selected_proofs = right.to_vec();
-                    }
-                    break;
-                } else if left_amount >= amount {
-                    selected_proofs = left.to_vec();
-                    break;
-                } else if right_amount >= amount {
-                    selected_proofs = right.to_vec();
-                    break;
-                }
-            }
+            selected_proofs = Wallet::select_least_amount_over(selected_proofs, amount)?;
         }
 
         Wallet::finalize_fees(
@@ -314,6 +296,50 @@ impl Wallet {
             active_keyset_id,
             keyset_fees,
         )
+    }
+
+    fn select_least_amount_over(proofs: Proofs, amount: Amount) -> Result<Vec<Proof>, Error> {
+        let total_amount = proofs.total_amount()?;
+        if total_amount < amount {
+            return Err(Error::InsufficientFunds);
+        }
+        if proofs.len() == 1 {
+            return Ok(proofs);
+        }
+
+        for i in 1..proofs.len() {
+            let (left, right) = proofs.split_at(i);
+            let left = left.to_vec();
+            let right = right.to_vec();
+            let left_amount = left.total_amount()?;
+            let right_amount = right.total_amount()?;
+
+            if left_amount >= amount && right_amount >= amount {
+                match (
+                    Self::select_least_amount_over(left, amount),
+                    Self::select_least_amount_over(right, amount),
+                ) {
+                    (Ok(left_proofs), Ok(right_proofs)) => {
+                        let left_total_amount = left_proofs.total_amount()?;
+                        let right_total_amount = right_proofs.total_amount()?;
+                        if left_total_amount < right_total_amount {
+                            return Ok(left_proofs);
+                        } else {
+                            return Ok(right_proofs);
+                        }
+                    }
+                    (Ok(left_proofs), Err(_)) => return Ok(left_proofs),
+                    (Err(_), Ok(right_proofs)) => return Ok(right_proofs),
+                    (Err(_), Err(_)) => return Err(Error::InsufficientFunds),
+                }
+            } else if left_amount >= amount {
+                return Self::select_least_amount_over(left, amount);
+            } else if right_amount >= amount {
+                return Self::select_least_amount_over(right, amount);
+            }
+        }
+
+        Ok(proofs)
     }
 
     fn finalize_fees(
@@ -392,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_proofs_v2_empty() {
+    fn test_select_proofs_empty() {
         let proofs = vec![];
         let selected_proofs =
             Wallet::select_proofs(0.into(), proofs, id(), &HashMap::new()).unwrap();
@@ -400,14 +426,14 @@ mod tests {
     }
 
     #[test]
-    fn test_select_proofs_v2_insufficient() {
+    fn test_select_proofs_insufficient() {
         let proofs = vec![proof(1), proof(2), proof(4)];
         let selected_proofs = Wallet::select_proofs(8.into(), proofs, id(), &HashMap::new());
         assert!(selected_proofs.is_err());
     }
 
     #[test]
-    fn test_select_proofs_v2_exact() {
+    fn test_select_proofs_exact() {
         let proofs = vec![
             proof(1),
             proof(2),
@@ -428,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_proofs_v2_over() {
+    fn test_select_proofs_over() {
         let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
         let selected_proofs =
             Wallet::select_proofs(31.into(), proofs, id(), &HashMap::new()).unwrap();
@@ -437,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_proofs_v2_smaller_over() {
+    fn test_select_proofs_smaller_over() {
         let proofs = vec![proof(8), proof(16), proof(32)];
         let selected_proofs =
             Wallet::select_proofs(23.into(), proofs, id(), &HashMap::new()).unwrap();
@@ -447,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_proofs_v2_many_ones() {
+    fn test_select_proofs_many_ones() {
         let proofs = (0..1024).into_iter().map(|_| proof(1)).collect::<Vec<_>>();
         let selected_proofs =
             Wallet::select_proofs(1024.into(), proofs, id(), &HashMap::new()).unwrap();
@@ -458,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_proofs_v2_huge_proofs() {
+    fn test_select_proofs_huge_proofs() {
         let proofs = (0..32)
             .flat_map(|i| {
                 (0..5)
@@ -475,5 +501,15 @@ mod tests {
         for i in 0..32 {
             assert_eq!(selected_proofs[i].amount, (1 << i).into());
         }
+    }
+
+    #[test]
+    fn test_select_proofs_with_fees() {
+        let proofs = vec![proof(64), proof(4), proof(32)];
+        let mut keyset_fees = HashMap::new();
+        keyset_fees.insert(id(), 100);
+        let selected_proofs = Wallet::select_proofs(10.into(), proofs, id(), &keyset_fees).unwrap();
+        assert_eq!(selected_proofs.len(), 1);
+        assert_eq!(selected_proofs[0].amount, 32.into());
     }
 }

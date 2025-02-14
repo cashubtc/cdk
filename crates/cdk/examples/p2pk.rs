@@ -29,10 +29,10 @@ async fn main() -> Result<(), Error> {
     // Define the mint URL and currency unit
     let mint_url = "https://testnut.cashu.space";
     let unit = CurrencyUnit::Sat;
-    let amount = Amount::from(12);
+    let amount = Amount::from(100);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, Some(1))?;
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;

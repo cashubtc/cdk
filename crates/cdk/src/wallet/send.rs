@@ -156,6 +156,8 @@ impl Wallet {
         let mut proofs_to_send = Proofs::new();
         if force_swap {
             proofs_to_swap = proofs;
+        } else if opts.send_kind.is_offline() || opts.send_kind.has_tolerance() {
+            proofs_to_send = proofs;
         } else {
             let mut remaining_send_amounts = send_amounts.clone();
             for proof in proofs {
@@ -220,6 +222,10 @@ impl Wallet {
                 proofs_to_send.extend(proofs);
             }
         }
+        tracing::debug!(
+            "Proofs to send: {:?}",
+            proofs_to_send.iter().map(|p| p.amount).collect::<Vec<_>>()
+        );
 
         // Check if sufficient proofs are available
         if send.amount > proofs_to_send.total_amount()? {

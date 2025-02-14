@@ -96,4 +96,14 @@ impl SendKind {
     pub fn is_offline(&self) -> bool {
         matches!(self, Self::OfflineExact | Self::OfflineTolerance(_))
     }
+
+    /// Check if send kind is exact
+    pub fn is_exact(&self) -> bool {
+        matches!(self, Self::OnlineExact | Self::OfflineExact)
+    }
+
+    /// Check if send kind has tolerance
+    pub fn has_tolerance(&self) -> bool {
+        matches!(self, Self::OnlineTolerance(_) | Self::OfflineTolerance(_))
+    }
 }

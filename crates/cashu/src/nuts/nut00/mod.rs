@@ -52,6 +52,7 @@ pub trait ProofsMethods {
     fn ys(&self) -> Result<Vec<PublicKey>, Error>;
 }
 
+// TODO: DRY up the implementation of ProofsMethods for Proofs and HashSet<Proof>
 impl ProofsMethods for Proofs {
     fn count_by_keyset(&self) -> HashMap<Id, u64> {
         let mut counts = HashMap::new();
