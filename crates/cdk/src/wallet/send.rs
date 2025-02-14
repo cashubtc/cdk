@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::Debug;
 
 use cdk_common::Id;
@@ -79,11 +78,8 @@ impl Wallet {
             .first()
             .ok_or(Error::NoActiveKeyset)?
             .id;
-        let selected_proofs = if opts.include_fee {
-            Wallet::select_proofs(amount, available_proofs, active_keyset_id, &keyset_fees)?
-        } else {
-            Wallet::select_proofs(amount, available_proofs, active_keyset_id, &HashMap::new())?
-        };
+        let selected_proofs =
+            Wallet::select_proofs(amount, available_proofs, active_keyset_id, &keyset_fees)?;
         let selected_total = selected_proofs.total_amount()?;
 
         // Check if selected proofs are exact
@@ -135,7 +131,7 @@ impl Wallet {
         force_swap: bool,
     ) -> Result<PreparedSend, Error> {
         // Split amount with fee if necessary
-        let (mut send_split, send_fee) = if opts.include_fee {
+        let (send_amounts, send_fee) = if opts.include_fee {
             let keyset_fee_ppk = self.get_keyset_fees_by_id(active_keyset_id).await?;
             tracing::debug!("Keyset fee per proof: {:?}", keyset_fee_ppk);
             let send_split = amount.split_with_fee(keyset_fee_ppk)?;
@@ -152,35 +148,39 @@ impl Wallet {
             let send_fee = Amount::ZERO;
             (send_split, send_fee)
         };
-        tracing::debug!("Send split: {:?}", send_split);
+        tracing::debug!("Send amounts: {:?}", send_amounts);
         tracing::debug!("Send fee: {:?}", send_fee);
 
-        // Count proofs for swap if necessary
-        let mut swap_count = HashMap::new();
+        // Split proofs to swap and send
+        let mut proofs_to_swap = Proofs::new();
+        let mut proofs_to_send = Proofs::new();
         if force_swap {
-            swap_count = proofs.count_by_keyset();
+            proofs_to_swap = proofs;
         } else {
-            for proof in &proofs {
-                let keyset_id = proof.keyset_id;
-                if let Some(idx) = send_split.iter().position(|a| a == &proof.amount) {
-                    send_split.remove(idx);
+            let mut remaining_send_amounts = send_amounts.clone();
+            for proof in proofs {
+                if let Some(idx) = remaining_send_amounts
+                    .iter()
+                    .position(|a| a == &proof.amount)
+                {
+                    proofs_to_send.push(proof);
+                    remaining_send_amounts.remove(idx);
                 } else {
-                    let count = swap_count.entry(keyset_id).or_insert(0);
-                    *count += 1;
+                    proofs_to_swap.push(proof);
                 }
             }
         }
-        tracing::debug!("Swap count: {:?}", swap_count);
-        let swap_fee = self.get_proofs_fee_by_count(swap_count).await?;
-        tracing::debug!("Swap fee: {:?}", swap_fee);
+
+        // Calculate swap fee
+        let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
 
         // Return prepared send
         Ok(PreparedSend {
             amount,
             options: opts,
-            proofs,
-            force_swap,
+            proofs_to_swap,
             swap_fee,
+            proofs_to_send,
             send_fee,
         })
     }
@@ -189,6 +189,7 @@ impl Wallet {
     #[instrument(skip(self), err)]
     pub async fn send(&self, send: PreparedSend) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
+        let mut proofs_to_send = send.proofs_to_send;
 
         // Get active keyset ID
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
@@ -198,45 +199,19 @@ impl Wallet {
         let keyset_fee_ppk = self.get_keyset_fees_by_id(active_keyset_id).await?;
         tracing::debug!("Keyset fees: {:?}", keyset_fee_ppk);
 
-        // Split amount with fee
+        // Calculate total send amount
         let total_send_amount = send.amount + send.send_fee;
         tracing::debug!("Total send amount: {}", total_send_amount);
-        let mut send_split = total_send_amount.split();
-        tracing::debug!("Send split: {:?}", send_split);
-
-        // Separate proofs to send and proofs to swap
-        let mut proofs_to_send = Proofs::new();
-        let mut proofs_to_swap = Proofs::new();
-        if send.force_swap {
-            proofs_to_swap = send.proofs;
-        } else {
-            for proof in send.proofs {
-                if let Some(idx) = send_split.iter().position(|a| a == &proof.amount) {
-                    send_split.remove(idx);
-                    proofs_to_send.push(proof);
-                } else {
-                    proofs_to_swap.push(proof);
-                }
-            }
-        }
-        tracing::debug!(
-            "Proofs to send: {:?}",
-            proofs_to_send.iter().map(|p| p.amount).collect::<Vec<_>>()
-        );
-        tracing::debug!(
-            "Proofs to swap: {:?}",
-            proofs_to_swap.iter().map(|p| p.amount).collect::<Vec<_>>()
-        );
 
         // Swap proofs if necessary
-        if !proofs_to_swap.is_empty() {
+        if !send.proofs_to_swap.is_empty() {
             let swap_amount = total_send_amount - proofs_to_send.total_amount()?;
             tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
             if let Some(proofs) = self
                 .swap(
                     Some(swap_amount),
                     SplitTarget::None,
-                    proofs_to_swap,
+                    send.proofs_to_swap,
                     send.options.conditions,
                     false, // already included in swap_amount
                 )
@@ -270,7 +245,7 @@ impl Wallet {
         tracing::info!("Cancelling prepared send");
 
         self.localstore
-            .update_proofs_state(send.proofs.ys()?, State::Unspent)
+            .update_proofs_state(send.proofs().ys()?, State::Unspent)
             .await?;
 
         Ok(())
@@ -281,9 +256,9 @@ impl Wallet {
 pub struct PreparedSend {
     amount: Amount,
     options: SendOptions,
-    proofs: Proofs,
-    force_swap: bool,
+    proofs_to_swap: Proofs,
     swap_fee: Amount,
+    proofs_to_send: Proofs,
     send_fee: Amount,
 }
 
@@ -298,14 +273,9 @@ impl PreparedSend {
         &self.options
     }
 
-    /// Selected proofs
-    pub fn proofs(&self) -> &Proofs {
-        &self.proofs
-    }
-
-    /// If full swap is required
-    pub fn force_swap(&self) -> bool {
-        self.force_swap
+    /// Proofs to swap
+    pub fn proofs_to_swap(&self) -> &Proofs {
+        &self.proofs_to_swap
     }
 
     /// Swap fee
@@ -313,13 +283,25 @@ impl PreparedSend {
         self.swap_fee
     }
 
+    /// Proofs to send
+    pub fn proofs_to_send(&self) -> &Proofs {
+        &self.proofs_to_send
+    }
+
     /// Send fee
     pub fn send_fee(&self) -> Amount {
         self.send_fee
     }
 
+    /// All proofs
+    pub fn proofs(&self) -> Proofs {
+        let mut proofs = self.proofs_to_swap.clone();
+        proofs.extend(self.proofs_to_send.clone());
+        proofs
+    }
+
     /// Total fee
-    pub fn total_fee(&self) -> Amount {
+    pub fn fee(&self) -> Amount {
         self.swap_fee + self.send_fee
     }
 }
@@ -329,8 +311,23 @@ impl Debug for PreparedSend {
         f.debug_struct("PreparedSend")
             .field("amount", &self.amount)
             .field("options", &self.options)
-            .field("force_swap", &self.force_swap)
+            .field(
+                "proofs_to_swap",
+                &self
+                    .proofs_to_swap
+                    .iter()
+                    .map(|p| p.amount)
+                    .collect::<Vec<_>>(),
+            )
             .field("swap_fee", &self.swap_fee)
+            .field(
+                "proofs_to_send",
+                &self
+                    .proofs_to_send
+                    .iter()
+                    .map(|p| p.amount)
+                    .collect::<Vec<_>>(),
+            )
             .field("send_fee", &self.send_fee)
             .finish()
     }

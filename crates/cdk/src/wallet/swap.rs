@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -169,11 +167,7 @@ impl Wallet {
         }
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
-        let keyset_fees = if include_fees {
-            self.get_keyset_fees().await?
-        } else {
-            HashMap::new()
-        };
+        let keyset_fees = self.get_keyset_fees().await?;
         let proofs =
             Wallet::select_proofs(amount, available_proofs, active_keyset_id, &keyset_fees)?;
 

@@ -167,7 +167,7 @@ impl Wallet {
         keyset_fees: &HashMap<Id, u64>,
     ) -> Result<Proofs, Error> {
         tracing::debug!(
-            "Select proofs: amount={}, proofs={:?}",
+            "amount={}, proofs={:?}",
             amount,
             proofs.iter().map(|p| p.amount.into()).collect::<Vec<u64>>()
         );
@@ -192,6 +192,7 @@ impl Wallet {
             .cloned()
             .collect();
         if selected_proofs.total_amount()? >= amount {
+            tracing::debug!("All inactive proofs are sufficient");
             return Ok(selected_proofs.into_iter().collect());
         }
         let mut remaining_amounts: Vec<Amount> = Vec::new();
@@ -229,6 +230,7 @@ impl Wallet {
 
         // If all the optimal amounts are selected, return the selected proofs
         if remaining_amounts.is_empty() {
+            tracing::debug!("All optimal amounts are selected");
             return Wallet::finalize_fees(
                 amount,
                 proofs,
@@ -239,6 +241,7 @@ impl Wallet {
         }
 
         // Select proofs with the remaining amounts by checking for 2 of the half amount, 4 of the quarter amount, etc.
+        tracing::debug!("Selecting proofs with the remaining amounts");
         for remaining_amount in remaining_amounts {
             // Number of proofs to select
             let mut n = 2;
@@ -320,9 +323,16 @@ impl Wallet {
         active_keyset_id: Id,
         keyset_fees: &HashMap<Id, u64>,
     ) -> Result<Proofs, Error> {
+        tracing::debug!("Finalizing fees");
         let fee =
             calculate_fee(&selected_proofs.count_by_keyset(), keyset_fees).unwrap_or_default();
         let net_amount = selected_proofs.total_amount()? - fee;
+        tracing::debug!(
+            "Net amount={}, fee={}, total amount={}",
+            net_amount,
+            fee,
+            selected_proofs.total_amount()?
+        );
         if net_amount >= amount {
             tracing::debug!(
                 "Selected proofs: {:?}",
@@ -334,6 +344,7 @@ impl Wallet {
             return Ok(selected_proofs);
         }
 
+        tracing::debug!("Net amount is less than the required amount");
         let remaining_amount = amount - net_amount;
         let remaining_proofs = proofs
             .into_iter()
@@ -343,7 +354,7 @@ impl Wallet {
             remaining_amount,
             remaining_proofs,
             active_keyset_id,
-            keyset_fees,
+            &HashMap::new(), // Fees are already calculated
         )?);
         tracing::debug!(
             "Selected proofs: {:?}",

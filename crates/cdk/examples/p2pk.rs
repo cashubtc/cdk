@@ -29,7 +29,7 @@ async fn main() -> Result<(), Error> {
     // Define the mint URL and currency unit
     let mint_url = "https://testnut.cashu.space";
     let unit = CurrencyUnit::Sat;
-    let amount = Amount::from(50);
+    let amount = Amount::from(12);
 
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
@@ -56,7 +56,14 @@ async fn main() -> Result<(), Error> {
     }
 
     // Mint the received amount
-    let _receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    let received_proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
+    println!(
+        "Minted nuts: {:?}",
+        received_proofs
+            .into_iter()
+            .map(|p| p.amount)
+            .collect::<Vec<_>>()
+    );
 
     // Generate a secret key for spending conditions
     let secret = SecretKey::generate();
@@ -66,7 +73,7 @@ async fn main() -> Result<(), Error> {
 
     // Get the total balance of the wallet
     let bal = wallet.total_balance().await?;
-    println!("{}", bal);
+    println!("Total balance: {}", bal);
 
     // Send a token with the specified amount and spending conditions
     let prepared_send = wallet
@@ -79,6 +86,7 @@ async fn main() -> Result<(), Error> {
             },
         )
         .await?;
+    println!("Fee: {}", prepared_send.fee());
     let token = wallet.send(prepared_send).await?;
 
     println!("Created token locked to pubkey: {}", secret.public_key());
