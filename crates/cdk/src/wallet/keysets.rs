@@ -25,14 +25,13 @@ impl Wallet {
         Ok(keys)
     }
 
-    /// Straight up yolo those keys into the db no cap
+    /// Add a keyset to the local database and update keyset info
     pub async fn add_keyset(
         &self,
         keys: Keys,
         active: bool,
         input_fee_ppk: u64,
     ) -> Result<(), Error> {
-        // add to localstore
         self.localstore.add_keys(keys.clone()).await?;
 
         let keyset_info = KeySetInfo {
@@ -42,7 +41,6 @@ impl Wallet {
             input_fee_ppk,
         };
 
-        // somehow also add to localstore...why do I need to make two different calls?
         self.localstore
             .add_mint_keysets(self.mint_url.clone(), vec![keyset_info])
             .await?;

@@ -1,5 +1,5 @@
 use cdk_common::{BlindSignature, CurrencyUnit};
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 use super::MintQuote;
 use crate::amount::SplitTarget;
@@ -291,35 +291,7 @@ impl Wallet {
         Ok(proofs)
     }
 
-    /// Generates blinded secrets to send to the mint for signing. This function
-    /// is appropriate if the caller is providing their own network
-    /// transport. Otherwise use `mint`, which makes a network request to
-    /// the mint.
-    ///
-    /// # Parameters
-    ///
-    /// - `&self`: A reference to the current instance
-    /// - `active_keyset_id`: The ID of the active keyset
-    /// - `quote_info_amount`: The amount to be minted
-    /// - `amount_split_target`: Strategy for splitting amount into discrete
-    ///   tokens
-    /// - `spending_conditions`: Optional spending conditions to apply to the
-    ///   minted tokens
-    /// - `count`: How many tokens were previously generated from this keyset +
-    ///   1
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing `PreMintSecrets` if successful, or an `Error`
-    /// otherwise.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the creation of `PreMintSecrets`
-    /// fails.
-    ///
-    /// ```
-    pub fn generate_premint_secrets(
+    fn generate_premint_secrets(
         &self,
         active_keyset_id: Id,
         quote_info_amount: Amount,
@@ -346,44 +318,65 @@ impl Wallet {
         Ok(premint_secrets)
     }
 
-    pub async fn gen_ehash_premint_secrets(
+    /// Creates and stores pre-mint secrets for a given quote.
+    ///
+    /// This function checks whether a mint quote already exists, creates a new quote if necessary,
+    /// generates pre-mint secrets, and stores them in the local wallet store.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - The amount for which pre-mint secrets should be generated.
+    /// * `quote_id` - A unique identifier for the mint quote.
+    /// * `mint_url` - The URL of the mint.
+    /// * `currency_unit` - nut00 currency unit
+    ///
+    /// # Returns
+    ///
+    /// Returns a `PreMintSecrets` object containing the generated secrets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The quote ID already exists (`Error::PaidQuote`).
+    /// - Adding the quote or pre-mint secrets fails.
+    pub async fn create_premint_secrets(
         &self,
         amount: u64,
         quote_id: &str,
         mint_url: &str,
+        currency_unit: CurrencyUnit,
     ) -> Result<PreMintSecrets, Error> {
-        // check for existing quote
-        if let Some(_) = self.localstore.get_mint_quote(quote_id).await? {
+        // Ensure the quote does not already exist
+        if self.localstore.get_mint_quote(quote_id).await?.is_some() {
             return Err(Error::PaidQuote);
         }
-        self.localstore
-            .add_mint_quote(MintQuote {
-                id: quote_id.to_string(),
-                mint_url: mint_url.parse()?,
-                amount: Amount::from(amount),
-                unit: CurrencyUnit::Custom("HASH".to_string()),
-                // TODO what to put here? needs to identify the mining share
-                // probably channel_id:sequence_number
-                request: "todo".to_string(),
-                state: MintQuoteState::Paid,
-                // TODO should we set an expiry?
-                expiry: u64::MAX,
-                secret_key: None,
-            })
-            .await?;
+
+        // Create and store a new mint quote
+        let mint_quote = MintQuote {
+            id: quote_id.to_string(),
+            mint_url: mint_url.parse()?,
+            amount: Amount::from(amount),
+            unit: currency_unit,
+            request: "todo".to_string(), // TODO: what does request do?
+            state: MintQuoteState::Paid,
+            expiry: u64::MAX, // TODO: expiry param?
+            secret_key: None,
+        };
+
+        self.localstore.add_mint_quote(mint_quote).await?;
 
         let active_keyset_id = self.get_active_mint_keyset_local().await?.id;
 
+        // Retrieve the keyset counter, defaulting to 0 if not found
         let count = self
             .localstore
             .get_keyset_counter(&active_keyset_id)
-            .await?;
-
-        let count = count.map_or(0, |c| c + 1);
+            .await?
+            .unwrap_or(0)
+            + 1;
 
         let premint_secrets = self.generate_premint_secrets(
             active_keyset_id,
-            // TODO when do we want to set amount?
             Amount::from(amount),
             &SplitTarget::None,
             None,
@@ -397,7 +390,31 @@ impl Wallet {
         Ok(premint_secrets)
     }
 
-    pub async fn gen_ehash_proofs(
+    /// Verifies signatures, constructs proofs, and stores them in the wallet.
+    ///
+    /// This function:
+    /// - Ensures that the quote exists and the keyset matches.
+    /// - Verifies each provided signature against the pre-mint secrets.
+    /// - Constructs proofs based on verified signatures.
+    /// - Updates the keyset counter and stores the proofs.
+    /// - Removes the corresponding mint quote, logging a warning if removal fails.
+    ///
+    /// # Arguments
+    ///
+    /// * `signatures` - An array of optional `BlindSignature`s, each corresponding to a pre-minted secret.
+    /// * `quote_id` - The quote identifier associated with the signatures.
+    ///
+    /// # Returns
+    ///
+    /// Returns the total minted amount.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The quote is unknown or has an invalid keyset (`Error::UnknownQuote` or `Error::UnknownKeySet`).
+    /// - Signature verification fails (`Error::CouldNotVerifyDleq`).
+    /// - Constructing proofs fails.
+    pub async fn verify_and_store_proofs(
         &self,
         signatures: [Option<BlindSignature>; 64],
         quote_id: &str,
@@ -405,10 +422,12 @@ impl Wallet {
         // TODO pass this in, it will break if the keyset changes before getting proofs
         let active_keyset_id = self.get_active_mint_keyset_local().await?.id;
         let keys = self.get_keyset_keys(active_keyset_id).await?;
-        let premint_secrets = match self.localstore.get_premint_secrets(quote_id).await? {
-            Some(premint_secrets) => premint_secrets,
-            None => return Err(Error::UnknownQuote),
-        };
+
+        let premint_secrets = self
+            .localstore
+            .get_premint_secrets(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
         if premint_secrets.keyset_id != active_keyset_id {
             return Err(Error::UnknownKeySet);
@@ -419,65 +438,56 @@ impl Wallet {
         let mut premint_secrets_vec = Vec::new();
 
         // verify each signature
-        for sig_opt in signatures.iter() {
-            if let Some(sig) = sig_opt {
-                // Find the secret corresponding to the signature using amount field
-                if let Some(matching_secret) = premint_secrets
-                    .secrets
-                    .iter()
-                    .find(|secret| secret.amount == sig.amount)
-                {
-                    // Ensure the keyset for the signature matches the active keyset
-                    let keys = self.get_keyset_keys(sig.keyset_id).await?;
-                    let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
+        for sig in signatures.iter().flatten() {
+            let matching_secret = premint_secrets
+                .secrets
+                .iter()
+                .find(|secret| secret.amount == sig.amount)
+                .ok_or_else(|| Error::Custom("Secret not found".to_string()))?;
 
-                    match sig.verify_dleq(key, matching_secret.blinded_message.blinded_secret) {
-                        Ok(_) | Err(nut12::Error::MissingDleqProof) => {
-                            // Add verified signature and related premint data
-                            verified_signatures.push(sig.clone());
-                            premint_rs.push(matching_secret.r.clone());
-                            premint_secrets_vec.push(matching_secret.secret.clone());
-                        }
-                        Err(_) => return Err(Error::CouldNotVerifyDleq),
-                    }
-                } else {
-                    return Err(Error::Custom(String::from("Secret not found")));
+            let keys = self.get_keyset_keys(sig.keyset_id).await?;
+            let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
+
+            match sig.verify_dleq(key, matching_secret.blinded_message.blinded_secret) {
+                Ok(_) | Err(nut12::Error::MissingDleqProof) => {
+                    // TODO can we clean up these clones?
+                    verified_signatures.push(sig.clone());
+                    premint_rs.push(matching_secret.r.clone());
+                    premint_secrets_vec.push(matching_secret.secret.clone());
                 }
+                Err(_) => return Err(Error::CouldNotVerifyDleq),
             }
         }
 
-        // Construct proofs
         let proofs = construct_proofs(verified_signatures, premint_rs, premint_secrets_vec, &keys)?;
-        // TODO rebase to latest master and remove this (proofs are returned now)
-        println!("proofs {:?}", proofs);
-
         let minted_amount = proofs.total_amount()?;
 
-        // update keyset token counter
         self.localstore
             .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
             .await?;
 
-        let proofs = proofs
+        let proofs: Vec<ProofInfo> = proofs
             .into_iter()
             .map(|proof| {
                 ProofInfo::new(
                     proof,
                     self.mint_url.clone(),
                     State::Unspent,
+                    // TODO retrieve currency unit from quote
                     CurrencyUnit::Custom("HASH".to_string()),
                 )
             })
-            .collect::<Result<Vec<ProofInfo>, _>>()?;
+            .collect::<Result<_, _>>()?;
 
         // store new proofs in wallet
         self.localstore
             .update_proofs(proofs.clone(), vec![])
             .await?;
 
-        // Remove Quote
-        // TODO handle result
-        self.localstore.remove_mint_quote(quote_id).await;
+        // Remove Quote and warn log any error
+        if let Err(err) = self.localstore.remove_mint_quote(quote_id).await {
+            warn!("Failed to remove mint quote {}: {}", quote_id, err);
+        }
 
         Ok(minted_amount)
     }
