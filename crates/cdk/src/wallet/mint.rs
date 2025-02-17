@@ -168,7 +168,7 @@ impl Wallet {
     ///     let minted_amount = minted_proofs.total_amount()?;
     ///
     ///     Ok(())
-    /// }
+
     /// ```
     #[instrument(skip(self))]
     pub async fn mint(
@@ -368,6 +368,7 @@ impl Wallet {
         let active_keyset_id = self.get_active_mint_keyset_local().await?.id;
 
         // Retrieve the keyset counter, defaulting to 0 if not found
+        // TODO do we need to update the counter if it was not returned?
         let count = self
             .localstore
             .get_keyset_counter(&active_keyset_id)
@@ -419,6 +420,12 @@ impl Wallet {
         signatures: [Option<BlindSignature>; 64],
         quote_id: &str,
     ) -> Result<Amount, Error> {
+        let quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .expect("No quote found");
+
         // TODO pass this in, it will break if the keyset changes before getting proofs
         let active_keyset_id = self.get_active_mint_keyset_local().await?.id;
         let keys = self.get_keyset_keys(active_keyset_id).await?;
@@ -473,8 +480,7 @@ impl Wallet {
                     proof,
                     self.mint_url.clone(),
                     State::Unspent,
-                    // TODO retrieve currency unit from quote
-                    CurrencyUnit::Custom("HASH".to_string()),
+                    quote.unit.clone(),
                 )
             })
             .collect::<Result<_, _>>()?;
