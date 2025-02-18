@@ -339,7 +339,6 @@ impl Mint {
                 let shutdown = Arc::clone(&shutdown);
                 let key = key.clone();
                 join_set.spawn(async move {
-            if !ln.is_wait_invoice_active() {
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
@@ -358,12 +357,12 @@ impl Mint {
                             }
                             Err(err) => {
                                 tracing::warn!("Could not get invoice stream for {:?}: {}",key, err);
+
                                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             }
                         }
                     }
                     }
-                }
             }
         });
             }

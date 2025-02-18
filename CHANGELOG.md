@@ -23,6 +23,25 @@
 
 #[Unrelased]
 
+#[cdk-mintd:v0.7.2]
+### Fixed
+-cdk-mintd: Fixed mint and melt error on mint initialized with RPC interface disabled ([ok300]).
+
+
+#[v0.7.1]
+### Changed
+- cdk: Debug print of `Id` is hex ([thesimplekid]).
+- cdk: Debug print of mint secret is the hash ([thesimplekid]).
+- cdk: Use check_incoming payment on attempted mint or check mint qutoe ([thesimplekid]).
+- cdk-cln: Use `call_typed` for cln rpc calls ([daywalker90]).
+
+### Added
+- cdk: Mint builder add ability to set custom derivation paths ([thesimplekid]).
+
+### Fixed
+- cdk-cln: return error on stream error ([thesimplekid]).
+
+
 #[v0.7.0]
 ### Changed
 * Moved db traits to `cdk-common` ([crodas]).
@@ -255,4 +274,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [vnprc]: https://github.com/vnprc
 [crodas]: https://github.com/crodas
 [tdelabro]: https://github.com/tdelabro
-
+[daywalker90]: https://github.com/daywalker90
