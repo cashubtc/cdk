@@ -21,7 +21,7 @@ http_subscription = []
 
 
 [dependencies]
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "78522b3285d657dfd3c6463290f4018ee4f2554d" }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "8d19166da66b27c3089a73d50c212fb4734c3b31" }
 cdk-common = { path = "../cdk-common", version = "0.7.1" }
 cbor-diag = "0.1.12"
 async-trait = "0.1"
