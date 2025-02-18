@@ -137,13 +137,13 @@ impl Mint {
         //tracing::debug!("test challenge: {}", String::from(&test));
 
         // Verify the outputs are within range
-        let commitments = outputs
+        let amount_commitments = outputs
             .iter()
-            .map(|o| (o.commitments.0.clone(), None))
-            .collect::<Vec<(GroupElement, Option<GroupElement>)>>();
+            .map(|o| o.commitments.0.clone())
+            .collect::<Vec<GroupElement>>();
         if !RangeProof::verify(
             &mut verify_transcript,
-            &commitments,
+            &amount_commitments,
             range_proof,
         ) {
             self.localstore
