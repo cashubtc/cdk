@@ -21,7 +21,7 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
     let prepared_send = wallet_alice
         .prepare_send(Amount::from(40), SendOptions::default())
         .await?;
-    let token = wallet_alice.send(prepared_send).await?;
+    let token = wallet_alice.send(prepared_send, None).await?;
     assert_eq!(Amount::from(40), token.proofs().total_amount()?);
     assert_eq!(Amount::from(24), wallet_alice.total_balance().await?);
 

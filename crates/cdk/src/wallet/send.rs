@@ -200,7 +200,7 @@ impl Wallet {
 
     /// Send prepared send
     #[instrument(skip(self), err)]
-    pub async fn send(&self, send: PreparedSend) -> Result<Token, Error> {
+    pub async fn send(&self, send: PreparedSend, memo: Option<String>) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
         let mut proofs_to_send = send.proofs_to_send;
 
@@ -248,11 +248,18 @@ impl Wallet {
             .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
+        // Include token memo
+        let memo = if send.options.include_memo {
+            memo.or(send.options.memo)
+        } else {
+            None
+        };
+
         // Create and return token
         Ok(Token::new(
             self.mint_url.clone(),
             proofs_to_send,
-            send.options.memo,
+            memo,
             self.unit.clone(),
         ))
     }
@@ -355,6 +362,8 @@ impl Debug for PreparedSend {
 pub struct SendOptions {
     /// Memo
     pub memo: Option<String>,
+    /// Include memo in token
+    pub include_memo: bool,
     /// Spending conditions
     pub conditions: Option<SpendingConditions>,
     /// Amount split target

@@ -89,7 +89,7 @@ pub async fn pay_request(
             },
         )
         .await?;
-    let proofs = matching_wallet.send(prepared_send).await?.proofs();
+    let proofs = matching_wallet.send(prepared_send, None).await?.proofs();
 
     let payload = PaymentRequestPayload {
         id: payment_request.payment_id.clone(),

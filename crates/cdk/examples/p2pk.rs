@@ -87,7 +87,7 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
     println!("Fee: {}", prepared_send.fee());
-    let token = wallet.send(prepared_send).await?;
+    let token = wallet.send(prepared_send, None).await?;
 
     println!("Created token locked to pubkey: {}", secret.public_key());
     println!("{}", token);

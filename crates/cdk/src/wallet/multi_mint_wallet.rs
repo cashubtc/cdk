@@ -128,13 +128,18 @@ impl MultiMintWallet {
 
     /// Create cashu token
     #[instrument(skip(self))]
-    pub async fn send(&self, wallet_key: &WalletKey, send: PreparedSend) -> Result<Token, Error> {
+    pub async fn send(
+        &self,
+        wallet_key: &WalletKey,
+        send: PreparedSend,
+        memo: Option<String>,
+    ) -> Result<Token, Error> {
         let wallet = self
             .get_wallet(wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        wallet.send(send).await
+        wallet.send(send, memo).await
     }
 
     /// Mint quote for wallet
