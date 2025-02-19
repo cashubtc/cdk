@@ -43,7 +43,7 @@ mod swap;
 pub mod util;
 
 pub use cdk_common::wallet as types;
-pub use send::{PreparedSend, SendOptions};
+pub use send::{PreparedSend, SendMemo, SendOptions};
 
 use crate::nuts::nut00::ProofsMethods;
 

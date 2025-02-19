@@ -200,7 +200,7 @@ impl Wallet {
 
     /// Send prepared send
     #[instrument(skip(self), err)]
-    pub async fn send(&self, send: PreparedSend, memo: Option<String>) -> Result<Token, Error> {
+    pub async fn send(&self, send: PreparedSend, memo: Option<SendMemo>) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
         let mut proofs_to_send = send.proofs_to_send;
 
@@ -249,11 +249,10 @@ impl Wallet {
             .await?;
 
         // Include token memo
-        let memo = if send.options.include_memo {
-            memo.or(send.options.memo)
-        } else {
-            None
-        };
+        let send_memo = send.options.memo.or(memo);
+        let memo = send_memo
+            .map(|m| if m.include_memo { Some(m.memo) } else { None })
+            .flatten();
 
         // Create and return token
         Ok(Token::new(
@@ -361,9 +360,7 @@ impl Debug for PreparedSend {
 #[derive(Debug, Clone, Default)]
 pub struct SendOptions {
     /// Memo
-    pub memo: Option<String>,
-    /// Include memo in token
-    pub include_memo: bool,
+    pub memo: Option<SendMemo>,
     /// Spending conditions
     pub conditions: Option<SpendingConditions>,
     /// Amount split target
@@ -372,4 +369,13 @@ pub struct SendOptions {
     pub send_kind: SendKind,
     /// Include fee
     pub include_fee: bool,
+}
+
+/// Send memo
+#[derive(Debug, Clone)]
+pub struct SendMemo {
+    /// Memo
+    pub memo: String,
+    /// Include memo in token
+    pub include_memo: bool,
 }

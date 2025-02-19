@@ -11,7 +11,7 @@ use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
-use super::send::{PreparedSend, SendOptions};
+use super::send::{PreparedSend, SendMemo, SendOptions};
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
@@ -132,7 +132,7 @@ impl MultiMintWallet {
         &self,
         wallet_key: &WalletKey,
         send: PreparedSend,
-        memo: Option<String>,
+        memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
         let wallet = self
             .get_wallet(wallet_key)

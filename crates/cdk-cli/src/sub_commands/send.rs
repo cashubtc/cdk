@@ -5,7 +5,7 @@ use std::str::FromStr;
 use anyhow::{bail, Result};
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
 use cdk::wallet::types::{SendKind, WalletKey};
-use cdk::wallet::{MultiMintWallet, SendOptions};
+use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
 use clap::Args;
 
@@ -173,7 +173,10 @@ pub async fn send(
         .prepare_send(
             token_amount,
             SendOptions {
-                memo: sub_command_args.memo.clone(),
+                memo: sub_command_args.memo.clone().map(|memo| SendMemo {
+                    memo,
+                    include_memo: true,
+                }),
                 send_kind,
                 include_fee: sub_command_args.include_fee,
                 conditions,
