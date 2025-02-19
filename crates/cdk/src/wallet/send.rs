@@ -250,9 +250,7 @@ impl Wallet {
 
         // Include token memo
         let send_memo = send.options.memo.or(memo);
-        let memo = send_memo
-            .map(|m| if m.include_memo { Some(m.memo) } else { None })
-            .flatten();
+        let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
 
         // Create and return token
         Ok(Token::new(

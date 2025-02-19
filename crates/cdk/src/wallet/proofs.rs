@@ -290,6 +290,7 @@ impl Wallet {
         let mut selected_proofs = selected_proofs.into_iter().collect::<Vec<_>>();
         let total_amount = selected_proofs.total_amount()?;
         if total_amount != amount && selected_proofs.len() > 1 {
+            selected_proofs.sort_by(|a, b| a.cmp(b).reverse());
             selected_proofs = Self::select_least_amount_over(selected_proofs, amount)?;
         }
 
@@ -315,8 +316,6 @@ impl Wallet {
             return Ok(proofs);
         }
 
-        let mut proofs = proofs;
-        proofs.sort_by(|a, b| a.cmp(b).reverse());
         for i in 1..proofs.len() {
             let (left, right) = proofs.split_at(i);
             let left = left.to_vec();
