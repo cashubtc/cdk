@@ -1,8 +1,9 @@
 use std::assert_eq;
 
+use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
+use cdk::wallet::SendOptions;
 use cdk::Amount;
-use cdk::{amount::SplitTarget, wallet::SendOptions};
 use cdk_integration_tests::init_pure_tests::{
     create_and_start_test_mint, create_test_wallet_for_mint, fund_wallet,
 };

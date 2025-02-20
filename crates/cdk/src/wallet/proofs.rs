@@ -407,7 +407,8 @@ impl Wallet {
 mod tests {
     use std::collections::HashMap;
 
-    use cdk_common::{secret::Secret, Amount, Id, Proof, PublicKey};
+    use cdk_common::secret::Secret;
+    use cdk_common::{Amount, Id, Proof, PublicKey};
 
     use crate::Wallet;
 
