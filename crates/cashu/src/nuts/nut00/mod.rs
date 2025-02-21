@@ -116,6 +116,7 @@ pub struct BlindedMessage {
     ///
     /// ID from which we expect a signature.
     #[serde(rename = "id")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub keyset_id: Id,
     /// Blinded secret message (B_)
     ///
@@ -161,6 +162,7 @@ pub struct BlindSignature {
     ///
     /// ID of the mint keys that signed the token.
     #[serde(rename = "id")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub keyset_id: Id,
     /// Blinded signature (C_)
     ///
@@ -240,6 +242,7 @@ pub struct Proof {
     pub amount: Amount,
     /// `Keyset id`
     #[serde(rename = "id")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub keyset_id: Id,
     /// Secret message
     #[cfg_attr(feature = "swagger", schema(value_type = String))]

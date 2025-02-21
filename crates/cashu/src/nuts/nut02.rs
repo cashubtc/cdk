@@ -51,7 +51,6 @@ pub enum Error {
 
 /// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Current Version 00
     Version00,
@@ -88,7 +87,6 @@ impl fmt::Display for KeySetVersion {
 /// which mint or keyset it was generated from.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = String))]
 pub struct Id {
     version: KeySetVersion,
     id: [u8; Self::BYTELEN],
@@ -221,6 +219,7 @@ pub struct KeysetResponse {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySet {
     /// Keyset [`Id`]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
@@ -257,6 +256,7 @@ impl From<MintKeySet> for KeySet {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySetInfo {
     /// Keyset [`Id`]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
