@@ -228,6 +228,16 @@ impl AmountStr {
     pub(crate) fn from(amt: Amount) -> Self {
         Self(amt)
     }
+
+    pub fn inner(&self) -> Amount {
+        self.0
+    }
+}
+
+impl From<Amount> for AmountStr {
+    fn from(amt: Amount) -> Self {
+        Self(amt)
+    }
 }
 
 impl PartialOrd<Self> for AmountStr {

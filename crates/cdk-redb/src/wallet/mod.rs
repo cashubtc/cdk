@@ -13,7 +13,8 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote};
 use cdk_common::{
-    database, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    database, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PreMintSecrets, PublicKey,
+    SpendingConditions, State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
@@ -739,5 +740,20 @@ impl WalletDatabase for WalletRedbDatabase {
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
+    }
+
+    async fn add_premint_secrets(
+        &self,
+        quote_id: &str,
+        premint_secrets: &PreMintSecrets,
+    ) -> Result<(), Self::Err> {
+        todo!()
+    }
+
+    async fn get_premint_secrets(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<PreMintSecrets>, Self::Err> {
+        todo!()
     }
 }

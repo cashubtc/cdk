@@ -12,8 +12,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, PublicKey, SecretKey,
-    SpendingConditions, State,
+    database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PreMintSecrets, Proof,
+    PublicKey, SecretKey, SpendingConditions, State,
 };
 use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
@@ -777,6 +777,21 @@ VALUES (?, ?);
         .map_err(Error::from)?;
 
         Ok(())
+    }
+
+    async fn add_premint_secrets(
+        &self,
+        quote_id: &str,
+        premint_secrets: &PreMintSecrets,
+    ) -> Result<(), Self::Err> {
+        todo!()
+    }
+
+    async fn get_premint_secrets(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<PreMintSecrets>, Self::Err> {
+        todo!()
     }
 }
 
