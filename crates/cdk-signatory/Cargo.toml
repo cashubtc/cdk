@@ -1,0 +1,28 @@
+[package]
+name = "cdk-signatory"
+version = "0.6.0"
+edition = "2021"
+description = "CDK signatory default implementation"
+
+[features]
+default = []
+grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
+
+[dependencies]
+async-trait = "0.1.83"
+bitcoin = { version = "0.32.2", features = [
+    "base64",
+    "serde",
+    "rand",
+    "rand-std",
+] }
+cdk-common = { path = "../cdk-common", default-features = false, features = [
+    "mint",
+] }
+tracing = "0.1.41"
+tokio = { version = "1", default-features = false, features = ["sync"] }
+tonic = { version = "0.11.0", optional = true }
+prost = { version = "0.12.6", optional = true }
+
+[build-dependencies]
+tonic-build = { version = "0.11.0", features = ["prost"], optional = true }

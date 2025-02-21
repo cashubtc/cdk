@@ -46,6 +46,14 @@ pub enum Error {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Keys(BTreeMap<AmountStr, PublicKey>);
 
+impl Deref for Keys {
+    type Target = BTreeMap<AmountStr, PublicKey>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl From<MintKeys> for Keys {
     fn from(keys: MintKeys) -> Self {
         Self(

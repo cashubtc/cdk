@@ -26,14 +26,17 @@ cdk-redb = { path = "../cdk-redb", version = "0.7.1", default-features = false, 
 cdk-sqlite = { path = "../cdk-sqlite", version = "0.7.1", default-features = false, features = [
     "mint",
 ] }
-cdk-cln = { path = "../cdk-cln", version = "0.7.1", default-features = false }
-cdk-lnbits = { path = "../cdk-lnbits", version = "0.7.1", default-features = false }
-cdk-phoenixd = { path = "../cdk-phoenixd", version = "0.7.1", default-features = false }
-cdk-lnd = { path = "../cdk-lnd", version = "0.7.1", default-features = false }
-cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.7.1", default-features = false }
-cdk-strike = { path = "../cdk-strike", version = "0.7.1" }
-cdk-axum = { path = "../cdk-axum", version = "0.7.1", default-features = false }
-cdk-mint-rpc = { path = "../cdk-mint-rpc", version = "0.7.1", default-features = false, optional = true }
+cdk-cln = { path = "../cdk-cln", version = "0.7.0", default-features = false }
+cdk-lnbits = { path = "../cdk-lnbits", version = "0.7.0", default-features = false }
+cdk-phoenixd = { path = "../cdk-phoenixd", version = "0.7.0", default-features = false }
+cdk-lnd = { path = "../cdk-lnd", version = "0.7.0", default-features = false }
+cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.7.0", default-features = false }
+cdk-strike = { path = "../cdk-strike", version = "0.7.0" }
+cdk-axum = { path = "../cdk-axum", version = "0.7.0", default-features = false }
+cdk-mint-rpc = { path = "../cdk-mint-rpc", version = "0.7.0", default-features = false, optional = true }
+cdk-signatory = { path = "../cdk-signatory", default-features = false, features = [
+    "grpc",
+] }
 config = { version = "0.13.3", features = ["toml"] }
 clap = { version = "~4.0.32", features = ["derive"] }
 bitcoin = { version = "0.32.2", features = [

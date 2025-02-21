@@ -44,6 +44,12 @@ impl Secret {
         Self(secret.into())
     }
 
+    /// Creates a new [`Secret`] from bytes
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        let secret = hex::encode(bytes);
+        Self(secret)
+    }
+
     /// Create secret value
     /// Generate a new random secret as the recommended 32 byte hex
     pub fn generate() -> Self {

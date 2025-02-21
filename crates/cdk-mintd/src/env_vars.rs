@@ -83,15 +83,15 @@ pub const ENV_MINT_MANAGEMENT_PORT: &str = "CDK_MINTD_MANAGEMENT_PORT";
 pub const ENV_MINT_MANAGEMENT_TLS_DIR_PATH: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR_PATH";
 
 impl Settings {
-    pub fn from_env(&mut self) -> Result<Self> {
+    pub fn from_env(mut self) -> Result<Self> {
         if let Ok(database) = env::var(DATABASE_ENV_VAR) {
             let engine = DatabaseEngine::from_str(&database).map_err(|err| anyhow!(err))?;
             self.database = Database { engine };
         }
 
-        self.info = self.info.clone().from_env();
-        self.mint_info = self.mint_info.clone().from_env();
-        self.ln = self.ln.clone().from_env();
+        self.info = self.info.from_env();
+        self.mint_info = self.mint_info.from_env();
+        self.ln = self.ln.from_env();
 
         #[cfg(feature = "management-rpc")]
         {
@@ -125,7 +125,7 @@ impl Settings {
             LnBackend::None => bail!("Ln backend must be set"),
         }
 
-        Ok(self.clone())
+        Ok(self)
     }
 }
 

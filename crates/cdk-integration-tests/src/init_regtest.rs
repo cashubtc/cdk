@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use anyhow::Result;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning::{self, MintLightning};
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::mint::{FeeReserve, MemorySignatory, MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_cln::Cln as CdkCln;
@@ -156,7 +157,9 @@ where
     L: MintLightning<Err = cdk_lightning::Error> + Send + Sync + 'static,
 {
     let mut mint_builder = MintBuilder::new();
+
     let localstore = Arc::new(database);
+
     mint_builder = mint_builder.with_localstore(localstore.clone());
 
     mint_builder = mint_builder.add_ln_backend(
@@ -168,8 +171,18 @@ where
 
     let mnemonic = Mnemonic::generate(12)?;
 
+    let signatory_manager = MemorySignatory::new(
+        localstore.clone(),
+        &mnemonic.to_seed_normalized(""),
+        mint_builder.supported_units.clone(),
+        HashMap::new(),
+    )
+    .await
+    .expect("valid signatory");
+
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())
+        .with_signatory(Arc::new(signatory_manager))
         .with_description("regtest mint".to_string())
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
