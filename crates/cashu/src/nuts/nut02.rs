@@ -23,10 +23,8 @@ use thiserror::Error;
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
-use crate::amount::AmountStr;
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
-#[cfg(feature = "mint")]
 use crate::Amount;
 
 /// NUT02 Error
@@ -181,7 +179,7 @@ impl From<&Keys> for Id {
     ///   4. take the first 14 characters of the hex-encoded hash
     ///   5. prefix it with a keyset ID version byte
     fn from(map: &Keys) -> Self {
-        let mut keys: Vec<(&AmountStr, &super::PublicKey)> = map.iter().collect();
+        let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
         let pubkeys_concat: Vec<u8> = keys
