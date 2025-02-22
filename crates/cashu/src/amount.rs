@@ -23,6 +23,9 @@ pub enum Error {
     /// Cannot convert units
     #[error("Cannot convert units")]
     CannotConvertUnits,
+    /// Invalid amount
+    #[error("Invalid Amount: {0}")]
+    InvalidAmount(String),
 }
 
 /// Amount can be any unit
@@ -35,7 +38,9 @@ impl FromStr for Amount {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let value = s.parse::<u64>().map_err(|_| Error::AmountOverflow)?;
+        let value = s
+            .parse::<u64>()
+            .map_err(|_| Error::InvalidAmount(s.to_owned()))?;
         Ok(Amount(value))
     }
 }
