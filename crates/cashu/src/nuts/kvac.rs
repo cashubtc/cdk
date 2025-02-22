@@ -18,10 +18,10 @@ use cashu_kvac::models::{
     ScriptAttribute, MAC, ZKP,
 };
 use cashu_kvac::secp::{GroupElement, Scalar};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::VecSkipError;
-use serde::de::DeserializeOwned;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -84,7 +84,7 @@ impl MintKvacKeySet {
         secp: &Secp256k1<C>,
         mut xpriv: Xpriv,
         unit: CurrencyUnit,
-        derivation_path: DerivationPath
+        derivation_path: DerivationPath,
     ) -> Self {
         xpriv = xpriv
             .derive_priv(secp, &derivation_path)
@@ -494,6 +494,13 @@ pub struct KvacMintBolt11Request<Q> {
 
 pub type KvacMeltBolt11Request<Q> = KvacMintBolt11Request<Q>;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacRestoreRequest {
+    /// Each tag should match an output for which [`MAC`]s were previously issued
+    pub tags: Vec<Scalar>,
+}
+
 // --- Responses ---
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -530,13 +537,17 @@ pub struct BootstrapResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacResponse {
+    /// Outputs
+    ///
+    /// Output commitments of the request.
+    pub outputs: Vec<KvacCoinMessage>,
     /// MACs
     ///
-    /// [`Vec<MAC>`] Approval stamp of the Mint
+    /// Approval stamp of the Mint
     pub macs: Vec<MAC>,
     /// IParams Proofs
     ///
-    /// [`Vec<ZKP>`] Proving that a specific [`MintPrivateKey`] was used to issue each [`MAC`]
+    /// Proving that a specific [`MintPrivateKey`] was used to issue each [`MAC`]
     pub proofs: Vec<ZKP>,
 }
 
@@ -551,14 +562,18 @@ pub type KvacMintBolt11Response = KvacResponse;
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacMeltBolt11Response {
     /// Lightning fee return
-    /// 
+    ///
     /// [`Amount`] added to the first output as a lightning overpaid-fee return
     pub fee_return: Amount,
     /// Payment preimage
-    /// 
+    ///
     /// [`Option<String>`] holding the pre-image to the payment
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preimage: Option<String>,
+    /// Outputs
+    ///
+    /// Output commitments of the request.
+    pub outputs: Vec<KvacCoinMessage>,
     /// MACs
     ///
     /// [`Vec<MAC>`] Approval stamp of the Mint
@@ -567,4 +582,11 @@ pub struct KvacMeltBolt11Response {
     ///
     /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
     pub proofs: Vec<ZKP>,
+}
+
+/// Restore Response
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacRestoreResponse {
+    pub issued_macs: Vec<KvacIssuedMac>,
 }

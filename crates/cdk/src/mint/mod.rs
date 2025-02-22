@@ -215,8 +215,9 @@ impl Mint {
                         highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
                     };
 
-                    let derivation_path = kvac_derivation_path_from_unit(unit.clone(), derivation_path_index)
-                        .ok_or(Error::UnsupportedUnit)?;
+                    let derivation_path =
+                        kvac_derivation_path_from_unit(unit.clone(), derivation_path_index)
+                            .ok_or(Error::UnsupportedUnit)?;
 
                     let (keyset, keyset_info) = create_new_kvac_keyset(
                         &secp_ctx,
@@ -268,8 +269,8 @@ impl Mint {
         for (unit, (fee, _max_order)) in supported_units {
             if !active_kvac_keyset_units.contains(&unit) {
                 tracing::debug!("Creating new kvac keyset");
-                let derivation_path =
-                    kvac_derivation_path_from_unit(unit.clone(), 0).ok_or(Error::UnsupportedUnit)?;
+                let derivation_path = kvac_derivation_path_from_unit(unit.clone(), 0)
+                    .ok_or(Error::UnsupportedUnit)?;
 
                 let (keyset, keyset_info) = create_new_kvac_keyset(
                     &secp_ctx,
@@ -763,12 +764,7 @@ fn create_new_kvac_keyset<C: secp256k1::Signing>(
     unit: CurrencyUnit,
     input_fee_ppk: u64,
 ) -> (MintKvacKeySet, MintKeySetInfo) {
-    let keyset = MintKvacKeySet::generate(
-        secp,
-        xpriv,
-        unit,
-        derivation_path.clone(),
-    );
+    let keyset = MintKvacKeySet::generate(secp, xpriv, unit, derivation_path.clone());
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
         unit: keyset.unit.clone(),

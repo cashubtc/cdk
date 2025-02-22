@@ -2,9 +2,9 @@
 //!
 //! Is any unit and will be treated as the unit of the wallet
 
-use std::{cmp::Ordering, i64};
 use std::fmt;
 use std::str::FromStr;
+use std::{cmp::Ordering, i64};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
@@ -168,7 +168,7 @@ impl From<Amount> for u64 {
 
 impl TryFrom<Amount> for i64 {
     type Error = Error;
-    
+
     fn try_from(value: Amount) -> Result<Self, Error> {
         if value.0 < (i64::MAX as u64) {
             Ok(value.0 as i64)

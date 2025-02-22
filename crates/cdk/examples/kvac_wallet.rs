@@ -43,17 +43,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let coins = wallet.kvac_mint(&mint_quote.id, Amount::from(1337)).await?;
 
     for coin in coins {
-        println!(
-            "coin: {}\n",
-            serde_json::to_string_pretty(&coin).unwrap(),
-        );
+        println!("coin: {}\n", serde_json::to_string_pretty(&coin).unwrap(),);
     }
 
     // Send 19 sats
     println!("Sending 19 sats...\n");
 
     let (sent, kept) = wallet.kvac_send(Amount::from(19)).await?;
-    
+
     println!("sent: {}\n", serde_json::to_string_pretty(&sent).unwrap());
     println!("kept: {}\n", serde_json::to_string_pretty(&kept).unwrap());
 
@@ -66,7 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let coins = wallet.kvac_melt(&melt_quote.id).await?;
 
-    println!("remaining: {}\n", serde_json::to_string_pretty(&coins).unwrap());
+    println!(
+        "remaining: {}\n",
+        serde_json::to_string_pretty(&coins).unwrap()
+    );
 
     Ok(())
 }

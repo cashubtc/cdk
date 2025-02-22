@@ -1,6 +1,16 @@
 //! KVAC mint request
-use cashu_kvac::{kvac::{BalanceProof, IParamsProof, MacProof, RangeProof}, models::{AmountAttribute, Coin}, secp::Scalar, transcript::CashuTranscript};
-use cdk_common::{common::KvacCoinInfo, kvac::{KvacCoin, KvacCoinMessage, KvacMeltBolt11Request, KvacRandomizedCoin}, util::unix_time, Amount, State};
+use cashu_kvac::{
+    kvac::{BalanceProof, IParamsProof, MacProof, RangeProof},
+    models::{AmountAttribute, Coin},
+    secp::Scalar,
+    transcript::CashuTranscript,
+};
+use cdk_common::{
+    common::KvacCoinInfo,
+    kvac::{KvacCoin, KvacCoinMessage, KvacMeltBolt11Request, KvacRandomizedCoin},
+    util::unix_time,
+    Amount, State,
+};
 use tracing::instrument;
 
 use crate::{Error, Wallet};
@@ -8,17 +18,14 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Compute the necessary proofs and perform a KVAC melt
     #[instrument(skip(self))]
-    pub async fn kvac_melt(
-        &self,
-        quote_id: &str,
-    ) -> Result<Vec<KvacCoin>, Error> {
+    pub async fn kvac_melt(&self, quote_id: &str) -> Result<Vec<KvacCoin>, Error> {
         let mint_url = &self.mint_url;
         let active_keyset_id = self.get_active_mint_kvac_keyset().await?.id;
         let mut coins = self.get_unspent_kvac_coins().await?;
 
         // Cannot perform melt with less than 2 coins
         if coins.len() < 2 {
-            return Err(Error::NotEnoughCoins)
+            return Err(Error::NotEnoughCoins);
         }
 
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
@@ -76,7 +83,7 @@ impl Wallet {
 
         let mut proving_transcript = CashuTranscript::new();
         let mut verifying_transcript = CashuTranscript::new();
-        
+
         // Set selected inputs as pending
         let ts: Vec<Scalar> = inputs.iter().map(|i| i.coin.mac.t.clone()).collect();
         self.localstore.set_pending_kvac_coins(&ts).await?;
@@ -150,14 +157,13 @@ impl Wallet {
                     println!("received fee return: {}", response.fee_return);
 
                     // Apply a tweak to the first output, adding the fee return
-                    outputs
-                        .get_mut(0)
-                        .expect("outputs has length 2").amount += response.fee_return;
-                    
+                    outputs.get_mut(0).expect("outputs has length 2").amount += response.fee_return;
+
                     outputs
                         .get_mut(0)
                         .expect("outputs has length 2")
-                        .attributes.0
+                        .attributes
+                        .0
                         .tweak_amount(response.fee_return.into());
                 }
 
@@ -181,7 +187,12 @@ impl Wallet {
                 // Verify each MAC issuance
                 for (new_coin, proof) in new_coins.iter().zip(response.proofs.into_iter()) {
                     let keys = self.get_kvac_keyset_keys(new_coin.keyset_id).await?;
-                    if !IParamsProof::verify(&keys.0, &new_coin.coin, proof, &mut verifying_transcript) {
+                    if !IParamsProof::verify(
+                        &keys.0,
+                        &new_coin.coin,
+                        proof,
+                        &mut verifying_transcript,
+                    ) {
                         println!("couldn't verify MAC issuance! the mint is probably tagging!");
                         println!(
                             "suspected MAC:\nt = {}\nV = {}",
@@ -194,11 +205,14 @@ impl Wallet {
                 // Store the coins
                 self.localstore
                     .update_kvac_coins(
-                        new_coins.iter().map(|c| KvacCoinInfo {
-                            coin: c.clone(),
-                            mint_url: mint_url.clone(),
-                            state: State::Unspent,
-                        }).collect(),
+                        new_coins
+                            .iter()
+                            .map(|c| KvacCoinInfo {
+                                coin: c.clone(),
+                                mint_url: mint_url.clone(),
+                                state: State::Unspent,
+                            })
+                            .collect(),
                         ts,
                     )
                     .await?;

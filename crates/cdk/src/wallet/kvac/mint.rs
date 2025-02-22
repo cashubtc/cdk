@@ -1,6 +1,15 @@
 //! KVAC mint request
-use cashu_kvac::{kvac::{BalanceProof, IParamsProof, MacProof, RangeProof}, models::{AmountAttribute, Coin}, secp::Scalar, transcript::CashuTranscript};
-use cdk_common::{common::KvacCoinInfo, kvac::{KvacCoin, KvacCoinMessage, KvacMintBolt11Request, KvacRandomizedCoin}, Amount, State};
+use cashu_kvac::{
+    kvac::{BalanceProof, IParamsProof, MacProof, RangeProof},
+    models::{AmountAttribute, Coin},
+    secp::Scalar,
+    transcript::CashuTranscript,
+};
+use cdk_common::{
+    common::KvacCoinInfo,
+    kvac::{KvacCoin, KvacCoinMessage, KvacMintBolt11Request, KvacRandomizedCoin},
+    Amount, State,
+};
 use tracing::instrument;
 
 use crate::{Error, Wallet};
@@ -8,24 +17,18 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Compute the necessary proofs and perform a KVAC mint
     #[instrument(skip(self))]
-    pub async fn kvac_mint(
-        &self,
-        quote_id: &str,
-        amount: Amount,
-    ) -> Result<Vec<KvacCoin>, Error> {
+    pub async fn kvac_mint(&self, quote_id: &str, amount: Amount) -> Result<Vec<KvacCoin>, Error> {
         let mint_url = &self.mint_url;
         let active_keyset_id = self.get_active_mint_kvac_keyset().await?.id;
         let coins = self.get_unspent_kvac_coins().await?;
 
         if coins.len() < 2 {
-            return Err(Error::NotEnoughCoins)
+            return Err(Error::NotEnoughCoins);
         }
         let inputs = &coins[..2];
 
         // Calculate the amount in the output
-        let amount_output = inputs
-            .iter()
-            .fold(Amount::from(0), |acc, i| acc + i.amount) + amount;
+        let amount_output = inputs.iter().fold(Amount::from(0), |acc, i| acc + i.amount) + amount;
 
         // Create outputs
         let outputs = self
@@ -34,7 +37,7 @@ impl Wallet {
 
         let mut proving_transcript = CashuTranscript::new();
         let mut verifying_transcript = CashuTranscript::new();
-        
+
         // Set selected inputs as pending
         let ts: Vec<Scalar> = inputs.iter().map(|i| i.coin.mac.t.clone()).collect();
         self.localstore.set_pending_kvac_coins(&ts).await?;
@@ -123,7 +126,12 @@ impl Wallet {
                 // Verify each MAC issuance
                 for (new_coin, proof) in new_coins.iter().zip(response.proofs.into_iter()) {
                     let keys = self.get_kvac_keyset_keys(new_coin.keyset_id).await?;
-                    if !IParamsProof::verify(&keys.0, &new_coin.coin, proof, &mut verifying_transcript) {
+                    if !IParamsProof::verify(
+                        &keys.0,
+                        &new_coin.coin,
+                        proof,
+                        &mut verifying_transcript,
+                    ) {
                         println!("couldn't verify MAC issuance! the mint is probably tagging!");
                         println!(
                             "suspected MAC:\nt = {}\nV = {}",
@@ -136,11 +144,14 @@ impl Wallet {
                 // Store the coins
                 self.localstore
                     .update_kvac_coins(
-                        new_coins.iter().map(|c| KvacCoinInfo {
-                            coin: c.clone(),
-                            mint_url: mint_url.clone(),
-                            state: State::Unspent,
-                        }).collect(),
+                        new_coins
+                            .iter()
+                            .map(|c| KvacCoinInfo {
+                                coin: c.clone(),
+                                mint_url: mint_url.clone(),
+                                state: State::Unspent,
+                            })
+                            .collect(),
                         ts,
                     )
                     .await?;

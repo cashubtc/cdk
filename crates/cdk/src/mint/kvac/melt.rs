@@ -1,32 +1,24 @@
-use crate::{Mint, Error};
+use crate::{Error, Mint};
 use anyhow::bail;
-use cashu_kvac::{secp::{GroupElement, TweakKind}, transcript::CashuTranscript};
+use cashu_kvac::{
+    secp::{GroupElement, TweakKind},
+    transcript::CashuTranscript,
+};
 use cdk_common::{
     amount::to_unit,
     common::LnKey,
     kvac::{
-        KvacIssuedMac,
-        KvacMeltBolt11Request,
-        KvacMeltBolt11Response,
-        KvacNullifier,
-        KvacRandomizedCoin
+        KvacIssuedMac, KvacMeltBolt11Request, KvacMeltBolt11Response, KvacNullifier,
+        KvacRandomizedCoin,
     },
-    lightning::{
-        MintLightning,
-        PayInvoiceResponse
-    },
+    lightning::{MintLightning, PayInvoiceResponse},
     mint::MeltQuote,
-    Amount,
-    MeltQuoteState,
-    MintQuoteState,
-    PaymentMethod,
-    State
+    Amount, MeltQuoteState, MintQuoteState, PaymentMethod, State,
 };
 use tracing::instrument;
 use uuid::Uuid;
 
 impl Mint {
-
     /// Process unpaid melt request
     /// In the event that a melt request fails and the lighthing payment is not
     /// made The [`KvacCoin`]s should be returned to an unspent state and the
@@ -121,7 +113,6 @@ impl Mint {
         &self,
         melt_request: KvacMeltBolt11Request<Uuid>,
     ) -> Result<KvacMeltBolt11Response, Error> {
-
         // Define helper to check outgoing payments
         use std::sync::Arc;
         async fn check_payment_state(
@@ -154,7 +145,7 @@ impl Mint {
             } else {
                 return Err(Error::UnknownQuote);
             };
-        
+
         // Get the previous state of the melt quote
         // while simoultaneously setting it to PENDING
         let state = self
@@ -166,22 +157,20 @@ impl Mint {
         match state {
             MeltQuoteState::Pending => {
                 return Err(Error::PendingQuote);
-            },
+            }
             MeltQuoteState::Paid => {
-                self
-                    .localstore
+                self.localstore
                     .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
                     .await?;
-                return Err(Error::PaidQuote)
-            },
+                return Err(Error::PaidQuote);
+            }
             MeltQuoteState::Unknown => {
-                self
-                    .localstore
+                self.localstore
                     .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Unknown)
                     .await?;
-                return Err(Error::UnknownQuote)
-            },
-            MeltQuoteState::Unpaid | MeltQuoteState::Failed => ()
+                return Err(Error::UnknownQuote);
+            }
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => (),
         };
 
         // Peg-out should be the quote amount + lightning fee reserve.
@@ -189,37 +178,44 @@ impl Mint {
         let peg_out = i64::try_from(melt_quote.amount + melt_quote.fee_reserve)?;
 
         // Process the request
-        if let Err(e) = self.verify_kvac_request(
-            true, 
-            peg_out, 
-            &melt_request.inputs,
-            &melt_request.outputs,
-            melt_request.balance_proof,
-            melt_request.mac_proofs,
-            melt_request.script,
-            melt_request.range_proof,
-        ).await {
+        if let Err(e) = self
+            .verify_kvac_request(
+                true,
+                peg_out,
+                &melt_request.inputs,
+                &melt_request.outputs,
+                melt_request.balance_proof,
+                melt_request.mac_proofs,
+                melt_request.script,
+                melt_request.range_proof,
+            )
+            .await
+        {
             tracing::error!("KVAC verification failed");
-            self.process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote).await?;
+            self.process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote)
+                .await?;
             return Err(e);
         }
 
-        let settled_internally_amount =
-            match self.handle_internal_kvac_melt_mint(&melt_quote).await {
-                Ok(amount) => amount,
-                Err(err) => {
-                    tracing::error!("Attempting to settle internally failed");
-                    if let Err(err) = self.process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote).await {
-                        tracing::error!(
-                            "Could not reset melt quote {} state: {}",
-                            melt_request.quote,
-                            err
-                        );
-                    }
-                    return Err(err);
+        let settled_internally_amount = match self.handle_internal_kvac_melt_mint(&melt_quote).await
+        {
+            Ok(amount) => amount,
+            Err(err) => {
+                tracing::error!("Attempting to settle internally failed");
+                if let Err(err) = self
+                    .process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote)
+                    .await
+                {
+                    tracing::error!(
+                        "Could not reset melt quote {} state: {}",
+                        melt_request.quote,
+                        err
+                    );
                 }
-            };
-            
+                return Err(err);
+            }
+        };
+
         let quote = melt_quote;
         let (preimage, amount_spent_quote_unit) = match settled_internally_amount {
             Some(amount_spent) => (None, amount_spent),
@@ -256,10 +252,10 @@ impl Mint {
                     Some(ln) => ln,
                     None => {
                         tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
-                        if let Err(err) = self.process_unpaid_kvac_melt(
-                            &melt_request.inputs,
-                            &melt_request.quote
-                        ).await {
+                        if let Err(err) = self
+                            .process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote)
+                            .await
+                        {
                             tracing::error!("Could not reset melt quote state: {}", err);
                         }
 
@@ -293,10 +289,10 @@ impl Mint {
                         // hold the proofs as pending to we reset them  and return an error.
                         if matches!(err, crate::cdk_lightning::Error::InvoiceAlreadyPaid) {
                             tracing::debug!("Invoice already paid, resetting melt quote");
-                            if let Err(err) = self.process_unpaid_kvac_melt(
-                                &melt_request.inputs,
-                                &melt_request.quote,
-                            ).await {
+                            if let Err(err) = self
+                                .process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote)
+                                .await
+                            {
                                 tracing::error!("Could not reset melt quote state: {}", err);
                             }
                             return Err(Error::RequestAlreadyPaid);
@@ -324,10 +320,10 @@ impl Mint {
                             "Lightning payment for quote {} failed.",
                             melt_request.quote
                         );
-                        if let Err(err) = self.process_unpaid_kvac_melt(
-                            &melt_request.inputs,
-                            &melt_request.quote
-                        ).await {
+                        if let Err(err) = self
+                            .process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote)
+                            .await
+                        {
                             tracing::error!("Could not reset melt quote state: {}", err);
                         }
                         return Err(Error::PaymentFailed);
@@ -367,7 +363,7 @@ impl Mint {
                 (pre.payment_preimage, amount_spent)
             }
         };
-        
+
         // If we made thus far the payment has been bade
 
         // This should never underflow
@@ -384,12 +380,14 @@ impl Mint {
             outputs
                 .get_mut(0)
                 .expect("outputs have length == 2")
-                .commitments.0
+                .commitments
+                .0
                 .tweak(TweakKind::AMOUNT, overpaid as u64);
         }
 
         // Collect nullifiers
-        let nullifiers = melt_request.inputs
+        let nullifiers = melt_request
+            .inputs
             .iter()
             .map(|i| KvacNullifier::from(i).nullifier)
             .collect::<Vec<GroupElement>>();
@@ -403,10 +401,8 @@ impl Mint {
             // Set nullifiers unspent in case of error
             match result {
                 Err(e) => {
-                    self.process_unpaid_kvac_melt(
-                        &melt_request.inputs,
-                        &melt_request.quote,
-                    ).await?;
+                    self.process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote)
+                        .await?;
                     return Err(e);
                 }
                 Ok((mac, proof)) => {
@@ -432,15 +428,18 @@ impl Mint {
             .await?;
 
         // Update mint quote state to issued
-        self.localstore.update_melt_quote_state(
-            &melt_request.quote,
-            MeltQuoteState::Paid
-        ).await?;
+        self.localstore
+            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
+            .await?;
 
         // Notify pubsub manager
         if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
-            self.pubsub_manager
-                .melt_quote_status(&quote, preimage.clone(), None, MeltQuoteState::Paid);
+            self.pubsub_manager.melt_quote_status(
+                &quote,
+                preimage.clone(),
+                None,
+                MeltQuoteState::Paid,
+            );
         }
 
         tracing::debug!("KVAC melt request successful");
@@ -448,8 +447,9 @@ impl Mint {
         Ok(KvacMeltBolt11Response {
             fee_return: amount_overpaid,
             preimage,
+            outputs,
             macs: issued_macs.into_iter().map(|m| m.mac).collect(),
             proofs: iparams_proofs,
         })
-    }   
+    }
 }

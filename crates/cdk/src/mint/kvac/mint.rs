@@ -1,6 +1,9 @@
-use crate::{Mint, Error};
+use crate::{Error, Mint};
 use cashu_kvac::{secp::GroupElement, transcript::CashuTranscript};
-use cdk_common::{kvac::{KvacIssuedMac, KvacMintBolt11Request, KvacMintBolt11Response, KvacNullifier}, MintQuoteState, State};
+use cdk_common::{
+    kvac::{KvacIssuedMac, KvacMintBolt11Request, KvacMintBolt11Response, KvacNullifier},
+    MintQuoteState, State,
+};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -19,7 +22,7 @@ impl Mint {
             } else {
                 return Err(Error::UnknownQuote);
             };
-        
+
         let state = self
             .localstore
             .update_mint_quote_state(&mint_request.quote, MintQuoteState::Pending)
@@ -57,23 +60,28 @@ impl Mint {
         let peg_in = -i64::try_from(mint_quote.amount)?;
 
         // Process the request
-        if let Err(e) = self.verify_kvac_request(
-            false, 
-            peg_in, 
-            &mint_request.inputs,
-            &mint_request.outputs,
-            mint_request.balance_proof,
-            mint_request.mac_proofs,
-            mint_request.script,
-            mint_request.range_proof,
-        ).await {
+        if let Err(e) = self
+            .verify_kvac_request(
+                false,
+                peg_in,
+                &mint_request.inputs,
+                &mint_request.outputs,
+                mint_request.balance_proof,
+                mint_request.mac_proofs,
+                mint_request.script,
+                mint_request.range_proof,
+            )
+            .await
+        {
             tracing::error!("KVAC verification failed");
-            self.localstore.update_mint_quote_state(&mint_request.quote, state)
+            self.localstore
+                .update_mint_quote_state(&mint_request.quote, state)
                 .await?;
             return Err(e);
         }
 
-        let nullifiers = mint_request.inputs
+        let nullifiers = mint_request
+            .inputs
             .iter()
             .map(|i| KvacNullifier::from(i).nullifier)
             .collect::<Vec<GroupElement>>();
@@ -115,16 +123,16 @@ impl Mint {
             .await?;
 
         // Update mint quote state to issued
-        self.localstore.update_mint_quote_state(
-            &mint_request.quote,
-            MintQuoteState::Issued
-        ).await?;
+        self.localstore
+            .update_mint_quote_state(&mint_request.quote, MintQuoteState::Issued)
+            .await?;
 
         tracing::debug!("KVAC mint request successful");
 
         Ok(KvacMintBolt11Response {
+            outputs: mint_request.outputs,
             macs: issued_macs.into_iter().map(|m| m.mac).collect(),
             proofs: iparams_proofs,
         })
-    }   
+    }
 }

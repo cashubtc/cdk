@@ -176,7 +176,8 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/kvac/bootstrap", post(cache_post_bootstrap))
         .route("/kvac/swap", post(cache_post_kvac_swap))
         .route("/kvac/mint/bolt11", post(cache_post_kvac_mint_bolt11))
-        .route("/kvac/melt/bolt11", post(cache_post_kvac_melt_bolt11));
+        .route("/kvac/melt/bolt11", post(cache_post_kvac_melt_bolt11))
+        .route("/kvac/restore", post(post_kvac_restore));
 
     let mint_router = Router::new()
         .nest("/v1", v1_router)

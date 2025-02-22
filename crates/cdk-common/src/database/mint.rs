@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use cashu::MintInfo;
 use cashu::kvac::{KvacIssuedMac, KvacNullifier};
+use cashu::MintInfo;
 use cashu_kvac::secp::{GroupElement, Scalar};
 use uuid::Uuid;
 

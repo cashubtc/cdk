@@ -1,19 +1,29 @@
 use std::collections::HashSet;
 
-use cashu_kvac::{kvac::{BalanceProof, RangeProof}, models::{RandomizedCoin, RangeZKP, ZKP}, secp::{GroupElement, Scalar}, transcript::CashuTranscript};
-use cdk_common::{kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin}, Id, State};
 use crate::Error;
+use cashu_kvac::{
+    kvac::{BalanceProof, RangeProof},
+    models::{RandomizedCoin, RangeZKP, ZKP},
+    secp::{GroupElement, Scalar},
+    transcript::CashuTranscript,
+};
+use cdk_common::{
+    kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin},
+    Id, State,
+};
 
 use super::Mint;
 
 mod bootstrap;
-mod swap;
-mod mint;
 mod melt;
+mod mint;
+mod restore;
+mod swap;
 
 impl Mint {
     /// Unified processing of a generic KVAC request
-    pub async fn verify_kvac_request(&self,
+    pub async fn verify_kvac_request(
+        &self,
         apply_fee: bool,
         delta: i64,
         inputs: &Vec<KvacRandomizedCoin>,
@@ -32,10 +42,7 @@ impl Mint {
             return Err(Error::RequestInvalidInputLength);
         }
 
-        let outputs_tags: Vec<Scalar> = outputs
-            .iter()
-            .map(|output| output.t_tag.clone())
-            .collect();
+        let outputs_tags: Vec<Scalar> = outputs.iter().map(|output| output.t_tag.clone()).collect();
 
         if self
             .localstore
@@ -117,10 +124,7 @@ impl Mint {
                 .await?;
             return Err(Error::InputsToProofsLengthMismatch);
         }
-        for (input, proof) in inputs
-            .iter()
-            .zip(mac_proofs.into_iter())
-        {
+        for (input, proof) in inputs.iter().zip(mac_proofs.into_iter()) {
             let result = self
                 .verify_mac(input, &script, proof, &mut verify_transcript)
                 .await;
@@ -141,19 +145,14 @@ impl Mint {
             .iter()
             .map(|o| o.commitments.0.clone())
             .collect::<Vec<GroupElement>>();
-        if !RangeProof::verify(
-            &mut verify_transcript,
-            &amount_commitments,
-            range_proof,
-        ) {
+        if !RangeProof::verify(&mut verify_transcript, &amount_commitments, range_proof) {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
             return Err(Error::RangeProofVerificationError);
         }
 
-        let input_keyset_ids: HashSet<Id> =
-            inputs.iter().map(|p| p.keyset_id).collect();
+        let input_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();
 
         let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
 
@@ -171,8 +170,7 @@ impl Mint {
             }
         }
 
-        let output_keyset_ids: HashSet<Id> =
-            outputs.iter().map(|p| p.keyset_id).collect();
+        let output_keyset_ids: HashSet<Id> = outputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &output_keyset_ids {
             match self.localstore.get_kvac_keyset_info(id).await? {
@@ -201,7 +199,6 @@ impl Mint {
 
         // TODO: Script validation and execution
 
-
-        Ok(())        
+        Ok(())
     }
 }

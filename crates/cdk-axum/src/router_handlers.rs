@@ -5,8 +5,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::kvac::{
-    BootstrapRequest, BootstrapResponse, KvacKeysResponse, KvacKeysetResponse, KvacSwapRequest,
-    KvacSwapResponse, KvacMintBolt11Request, KvacMintBolt11Response, KvacMeltBolt11Request, KvacMeltBolt11Response,
+    BootstrapRequest, BootstrapResponse, KvacKeysResponse, KvacKeysetResponse,
+    KvacMeltBolt11Request, KvacMeltBolt11Response, KvacMintBolt11Request, KvacMintBolt11Response,
+    KvacRestoreRequest, KvacRestoreResponse, KvacSwapRequest, KvacSwapResponse,
 };
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
@@ -611,6 +612,29 @@ pub async fn post_restore(
 ) -> Result<Json<RestoreResponse>, Response> {
     let restore_response = state.mint.restore(payload).await.map_err(|err| {
         tracing::error!("Could not process restore: {}", err);
+        into_response(err)
+    })?;
+
+    Ok(Json(restore_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/restore",
+    request_body(content = KvacRestoreRequest, description = "Restore params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacRestoreResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Restores blind signature for a set of outputs.
+pub async fn post_kvac_restore(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacRestoreRequest>,
+) -> Result<Json<KvacRestoreResponse>, Response> {
+    let restore_response = state.mint.kvac_restore(payload).await.map_err(|err| {
+        tracing::error!("Could not process KVAC restore: {}", err);
         into_response(err)
     })?;
 

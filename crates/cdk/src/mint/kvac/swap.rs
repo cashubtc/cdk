@@ -15,7 +15,7 @@ impl Mint {
         swap_request: KvacSwapRequest,
     ) -> Result<KvacSwapResponse, Error> {
         tracing::info!("KVAC swap has been called");
-        
+
         self.verify_kvac_request(
             true,
             0,
@@ -25,10 +25,12 @@ impl Mint {
             swap_request.mac_proofs,
             swap_request.script,
             swap_request.range_proof,
-        ).await?;
+        )
+        .await?;
 
         // Gather nullifiers
-        let nullifiers = swap_request.inputs
+        let nullifiers = swap_request
+            .inputs
             .iter()
             .map(|i| KvacNullifier::from(i).nullifier)
             .collect::<Vec<GroupElement>>();
@@ -72,6 +74,7 @@ impl Mint {
         tracing::debug!("KVAC swap request successful");
 
         Ok(KvacSwapResponse {
+            outputs: swap_request.outputs,
             macs: issued_macs.into_iter().map(|m| m.mac).collect(),
             proofs: iparams_proofs,
         })
