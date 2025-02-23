@@ -39,6 +39,7 @@ tti = 60
 [database]
 # Database engine (sqlite/redb) defaults to sqlite
 # engine = "sqlite"
+# backups_to_keep = 3
 
 [ln]
 # Required ln backend `cln`, `lnd`, `strike`, `fakewallet`, 'lnbits', 'phoenixd'

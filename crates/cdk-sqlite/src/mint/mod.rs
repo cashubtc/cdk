@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
@@ -18,14 +17,14 @@ use cdk_common::{
     MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
     State,
 };
-use error::Error;
 use lightning_invoice::Bolt11Invoice;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{SqlitePool, SqliteRow};
 use sqlx::Row;
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
-pub mod error;
+use crate::error::Error;
+use crate::{backup, connect_to_db};
 
 /// Mint SQLite Database
 #[derive(Debug, Clone)]
@@ -35,28 +34,24 @@ pub struct MintSqliteDatabase {
 
 impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
-    pub async fn new(path: &Path) -> Result<Self, Error> {
-        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
-        let db_options = SqliteConnectOptions::from_str(path)?
-            .busy_timeout(Duration::from_secs(5))
-            .read_only(false)
-            .create_if_missing(true)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Full);
+    ///
+    /// # Arguments
+    ///
+    /// * `work_dir`: full path to the working directory, the folder where the DB file should be located
+    /// * `backups_to_keep`: configured number of backups to keep
+    pub async fn new(work_dir: &Path, backups_to_keep: u8) -> Result<Self, Error> {
+        let db_file_path = work_dir.join("cdk-mintd.sqlite");
 
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(db_options)
-            .await?;
+        if db_file_path.exists() {
+            backup(work_dir, &db_file_path, backups_to_keep).await?;
+        }
 
-        Ok(Self { pool })
-    }
+        let pool = connect_to_db(&db_file_path).await?;
+        let db = Self { pool: pool.clone() };
 
-    /// Migrate [`MintSqliteDatabase`]
-    pub async fn migrate(&self) {
-        sqlx::migrate!("./src/mint/migrations")
-            .run(&self.pool)
-            .await
-            .expect("Could not run migrations");
+        sqlx::migrate!("./src/mint/migrations").run(&pool).await?;
+
+        Ok(db)
     }
 }
 

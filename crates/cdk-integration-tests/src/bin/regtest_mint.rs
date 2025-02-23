@@ -148,7 +148,9 @@ async fn main() -> Result<()> {
     let mint_db_kind = env::var("MINT_DATABASE")?;
 
     let lnd_mint_db_path = get_temp_dir().join("lnd_mint");
+    std::fs::create_dir_all(&lnd_mint_db_path)?;
     let cln_mint_db_path = get_temp_dir().join("cln_mint");
+    std::fs::create_dir_all(&cln_mint_db_path)?;
 
     let cln_backend = create_cln_backend(&cln_client).await?;
     let lnd_mint_port = 8087;
@@ -178,28 +180,26 @@ async fn main() -> Result<()> {
         }
         "SQLITE" => {
             tokio::spawn(async move {
-                let cln_sqlite_db = MintSqliteDatabase::new(&cln_mint_db_path)
+                let cln_sqlite_db = MintSqliteDatabase::new(&cln_mint_db_path, 0)
                     .await
                     .expect("Could not create CLN mint db");
-                cln_sqlite_db.migrate().await;
                 create_mint(mint_addr, cln_mint_port, cln_sqlite_db, cln_backend)
                     .await
                     .expect("Could not start cln mint");
             });
 
-            let lnd_sqlite_db = MintSqliteDatabase::new(&lnd_mint_db_path).await?;
-            lnd_sqlite_db.migrate().await;
+            let lnd_sqlite_db = MintSqliteDatabase::new(&lnd_mint_db_path, 0).await?;
             create_mint(mint_addr, lnd_mint_port, lnd_sqlite_db, lnd_backend).await?;
         }
         "REDB" => {
             tokio::spawn(async move {
-                let cln_redb_db = MintRedbDatabase::new(&cln_mint_db_path).unwrap();
+                let cln_redb_db = MintRedbDatabase::new(&cln_mint_db_path, 0).unwrap();
                 create_mint(mint_addr, cln_mint_port, cln_redb_db, cln_backend)
                     .await
                     .expect("Could not start cln mint");
             });
 
-            let lnd_redb_db = MintRedbDatabase::new(&lnd_mint_db_path).unwrap();
+            let lnd_redb_db = MintRedbDatabase::new(&lnd_mint_db_path, 0)?;
             create_mint(mint_addr, lnd_mint_port, lnd_redb_db, lnd_backend).await?;
         }
         _ => panic!("Unknown mint db type: {}", mint_db_kind),
