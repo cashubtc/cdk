@@ -28,7 +28,7 @@ impl Wallet {
 
         let zero_coin = coins.swap_remove(index);
 
-        // Create outputs [balance, 0]
+        // Create inputs [balance, 0]
         let inputs = vec![coin.clone(), zero_coin.clone()];
 
         // Get fee
@@ -45,10 +45,12 @@ impl Wallet {
         let keep_amount = coin.amount - send_amount - fee;
 
         // Create outputs
+        // IMPORTANT: THE BALANCE AMOUNT ALWAYS LAST
+        // SO THAT ANY POTENTIAL RECOVERY WORKS WITHOUT SPENT CHECKS
         let outputs = self
             .create_kvac_outputs(vec![send_amount, keep_amount])
             .await?;
-        //println!("swap outputs: {}", serde_json::to_string_pretty(&outputs).unwrap());
+
         // Set selected inputs as pending
         let ts: Vec<Scalar> = inputs.iter().map(|i| i.coin.mac.t.clone()).collect();
         self.localstore.set_pending_kvac_coins(&ts).await?;

@@ -5,9 +5,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::kvac::{
-    BootstrapRequest, BootstrapResponse, KvacKeysResponse, KvacKeysetResponse,
-    KvacMeltBolt11Request, KvacMeltBolt11Response, KvacMintBolt11Request, KvacMintBolt11Response,
-    KvacRestoreRequest, KvacRestoreResponse, KvacSwapRequest, KvacSwapResponse,
+    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse,
+    KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response,
+    KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse,
+    KvacSwapRequest, KvacSwapResponse,
 };
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
@@ -484,6 +485,31 @@ pub async fn post_check(
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/checkstate",
+    request_body(content = KvacCheckStateRequest, description = "State params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacCheckStateResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Check whether a proof is spent already or is pending in a transaction
+///
+/// Check whether a secret has been spent already or not.
+pub async fn post_kvac_check(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacCheckStateRequest>,
+) -> Result<Json<KvacCheckStateResponse>, Response> {
+    let state = state.mint.kvac_check_state(&payload).await.map_err(|err| {
+        tracing::error!("Could not check state of proofs");
+        into_response(err)
+    })?;
+
+    Ok(Json(state))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
     get,
     context_path = "/v1",
     path = "/info",
@@ -628,7 +654,7 @@ pub async fn post_restore(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-/// Restores blind signature for a set of outputs.
+/// Restores attributes and macs for a set of tags.
 pub async fn post_kvac_restore(
     State(state): State<MintState>,
     Json(payload): Json<KvacRestoreRequest>,

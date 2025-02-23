@@ -31,8 +31,10 @@ impl Wallet {
         let amount_output = inputs.iter().fold(Amount::from(0), |acc, i| acc + i.amount) + amount;
 
         // Create outputs
+        // IMPORTANT: THE BALANCE AMOUNT ALWAYS LAST
+        // SO THAT ANY POTENTIAL RECOVERY WORKS WITHOUT SPENT CHECKS
         let outputs = self
-            .create_kvac_outputs(vec![amount_output, Amount::from(0)])
+            .create_kvac_outputs(vec![Amount::from(0), amount_output])
             .await?;
 
         let mut proving_transcript = CashuTranscript::new();

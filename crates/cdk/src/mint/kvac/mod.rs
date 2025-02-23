@@ -15,6 +15,7 @@ use cdk_common::{
 use super::Mint;
 
 mod bootstrap;
+mod check_spendable;
 mod melt;
 mod mint;
 mod restore;

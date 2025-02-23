@@ -369,6 +369,7 @@ impl Mint {
         // This should never underflow
         let amount_overpaid = (quote.amount + quote.fee_reserve) - amount_spent_quote_unit;
         let mut outputs = melt_request.outputs;
+        let outputs_len = outputs.len();
 
         tracing::debug!("amount_overpaid: {:?}", amount_overpaid);
 
@@ -376,9 +377,9 @@ impl Mint {
             // Do this to check underflow anyway
             let overpaid = i64::try_from(amount_overpaid)?;
 
-            // Ma' = Ma + o*G_amount
+            // Get the last commitment and add the overpaid amount
             outputs
-                .get_mut(0)
+                .get_mut(outputs_len - 1)
                 .expect("outputs have length == 2")
                 .commitments
                 .0

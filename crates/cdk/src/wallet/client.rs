@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use cdk_common::kvac::{
     BootstrapRequest, BootstrapResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse,
     KvacMeltBolt11Request, KvacMeltBolt11Response, KvacMintBolt11Request, KvacMintBolt11Response,
-    KvacSwapRequest, KvacSwapResponse,
+    KvacRestoreRequest, KvacRestoreResponse, KvacSwapRequest, KvacSwapResponse,
 };
 use reqwest::{Client, IntoUrl};
 use serde::de::DeserializeOwned;
@@ -321,6 +321,16 @@ impl MintConnector for HttpClient {
         self.http_post(url, &request).await
     }
 
+    /// KVAC Restore Request
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_kvac_restore(
+        &self,
+        request: KvacRestoreRequest,
+    ) -> Result<KvacRestoreResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "restore"])?;
+        self.http_post(url, &request).await
+    }
+
     /// KVAC Bootstrap
     async fn post_bootstrap(&self, request: BootstrapRequest) -> Result<BootstrapResponse, Error> {
         let url = self.mint_url.join_paths(&["v2", "kvac", "bootstrap"])?;
@@ -410,6 +420,11 @@ pub trait MintConnector: Debug {
     ) -> Result<CheckStateResponse, Error>;
     /// Restore request [NUT-13]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
+    /// Restore KVAC
+    async fn post_kvac_restore(
+        &self,
+        request: KvacRestoreRequest,
+    ) -> Result<KvacRestoreResponse, Error>;
 
     /// Kvac Bootstrap
     async fn post_bootstrap(&self, _request: BootstrapRequest) -> Result<BootstrapResponse, Error> {

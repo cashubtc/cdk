@@ -395,6 +395,13 @@ pub struct KvacIssuedMac {
     pub quote_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacCoinState {
+    pub nullifier: GroupElement,
+    pub state: State,
+}
+
 // --- Helpers ---
 
 fn derive_path_from_kvac_keyset_id(id: Id) -> Result<DerivationPath, Error> {
@@ -501,6 +508,15 @@ pub struct KvacRestoreRequest {
     pub tags: Vec<Scalar>,
 }
 
+/// Check spendable request
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacCheckStateRequest {
+    /// nullifiers of the coins to check
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<String>, max_items = 1_000))]
+    pub nullifiers: Vec<GroupElement>,
+}
+
 // --- Responses ---
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,4 +605,12 @@ pub struct KvacMeltBolt11Response {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacRestoreResponse {
     pub issued_macs: Vec<KvacIssuedMac>,
+}
+
+/// Check state
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct KvacCheckStateResponse {
+    /// Proof states
+    pub states: Vec<KvacCoinState>,
 }

@@ -1255,6 +1255,45 @@ WHERE quote_id=?;
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
 
+    async fn get_kvac_nullifiers_states(
+        &self,
+        nullifiers: &[GroupElement],
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let sql = format!(
+            "SELECT nullifier, state FROM kvac_nullifiers WHERE nullifier IN ({})",
+            "?,".repeat(nullifiers.len()).trim_end_matches(',')
+        );
+
+        let mut current_states = nullifiers
+            .iter()
+            .fold(sqlx::query(&sql), |query, y| {
+                query.bind(y.to_bytes().to_vec())
+            })
+            .fetch_all(&mut transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not get state of kvac coin: {err:?}");
+                Error::SQLX(err)
+            })?
+            .into_iter()
+            .map(|row| {
+                State::from_str(row.get("state"))
+                    .map_err(Error::from)
+                    .and_then(|state| {
+                        let ge = GroupElement::new(row.get("nullifier"));
+                        Ok((ge, state))
+                    })
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+        Ok(nullifiers
+            .iter()
+            .map(|nullifier| current_states.remove(nullifier))
+            .collect())
+    }
+
     async fn get_proofs_by_keyset_id(
         &self,
         keyset_id: &Id,

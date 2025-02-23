@@ -77,8 +77,10 @@ impl Wallet {
         let output_amount = coin.amount - peg_out - fee;
 
         // Create outputs
+        // IMPORTANT: THE BALANCE AMOUNT ALWAYS LAST
+        // SO THAT ANY POTENTIAL RECOVERY WORKS WITHOUT SPENT CHECKS
         let mut outputs = self
-            .create_kvac_outputs(vec![output_amount, Amount::from(0)])
+            .create_kvac_outputs(vec![Amount::from(0), output_amount])
             .await?;
 
         let mut proving_transcript = CashuTranscript::new();
@@ -156,11 +158,11 @@ impl Wallet {
                 if response.fee_return > Amount::from(0) {
                     println!("received fee return: {}", response.fee_return);
 
-                    // Apply a tweak to the first output, adding the fee return
-                    outputs.get_mut(0).expect("outputs has length 2").amount += response.fee_return;
+                    // Apply a tweak to the last output (encoding the balance), adding the fee return
+                    outputs.get_mut(1).expect("outputs has length 2").amount += response.fee_return;
 
                     outputs
-                        .get_mut(0)
+                        .get_mut(1)
                         .expect("outputs has length 2")
                         .attributes
                         .0
