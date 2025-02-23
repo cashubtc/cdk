@@ -8,7 +8,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::common::{LnKey, QuoteTTL};
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{
+    self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+    MintSignaturesDatabase,
+};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
@@ -61,7 +64,7 @@ impl MintSqliteDatabase {
 }
 
 #[async_trait]
-impl MintDatabase for MintSqliteDatabase {
+impl MintKeysDatabase for MintSqliteDatabase {
     type Err = database::Error;
 
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
@@ -199,6 +202,112 @@ WHERE active = 1
             }
         }
     }
+
+    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO keyset
+(id, unit, active, valid_from, valid_to, derivation_path, max_order, input_fee_ppk, derivation_path_index)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        "#,
+        )
+        .bind(keyset.id.to_string())
+        .bind(keyset.unit.to_string())
+        .bind(keyset.active)
+        .bind(keyset.valid_from as i64)
+        .bind(keyset.valid_to.map(|v| v as i64))
+        .bind(keyset.derivation_path.to_string())
+        .bind(keyset.max_order)
+        .bind(keyset.input_fee_ppk as i64)
+            .bind(keyset.derivation_path_index)
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not add keyset info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM keyset
+WHERE id=?;
+        "#,
+        )
+        .bind(id.to_string())
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(Some(sqlite_row_to_keyset_info(rec)?))
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Ok(None);
+                }
+                _ => {
+                    tracing::error!("SQLite could not get keyset info");
+                    if let Err(err) = transaction.rollback().await {
+                        tracing::error!("Could not rollback sql transaction: {}", err);
+                    }
+                    return Err(Error::SQLX(err).into());
+                }
+            },
+        }
+    }
+
+    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM keyset;
+        "#,
+        )
+        .fetch_all(&mut transaction)
+        .await
+        .map_err(Error::from);
+
+        match recs {
+            Ok(recs) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(recs
+                    .into_iter()
+                    .map(sqlite_row_to_keyset_info)
+                    .collect::<Result<_, _>>()?)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get keyset info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(err.into())
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl MintQuotesDatabase for MintSqliteDatabase {
+    type Err = database::Error;
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
@@ -686,24 +795,25 @@ WHERE id=?
         }
     }
 
-    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+    async fn add_melt_request(
+        &self,
+        melt_request: MeltBolt11Request<Uuid>,
+        ln_key: LnKey,
+    ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
         let res = sqlx::query(
             r#"
-INSERT OR REPLACE INTO keyset
-(id, unit, active, valid_from, valid_to, derivation_path, max_order, input_fee_ppk, derivation_path_index)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO melt_request
+(id, inputs, outputs, method, unit)
+VALUES (?, ?, ?, ?, ?);
         "#,
         )
-        .bind(keyset.id.to_string())
-        .bind(keyset.unit.to_string())
-        .bind(keyset.active)
-        .bind(keyset.valid_from as i64)
-        .bind(keyset.valid_to.map(|v| v as i64))
-        .bind(keyset.derivation_path.to_string())
-        .bind(keyset.max_order)
-        .bind(keyset.input_fee_ppk as i64)
-            .bind(keyset.derivation_path_index)
+        .bind(melt_request.quote)
+        .bind(serde_json::to_string(&melt_request.inputs)?)
+        .bind(serde_json::to_string(&melt_request.outputs)?)
+        .bind(ln_key.method.to_string())
+        .bind(ln_key.unit.to_string())
         .execute(&mut transaction)
         .await;
 
@@ -713,7 +823,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
                 Ok(())
             }
             Err(err) => {
-                tracing::error!("SQLite could not add keyset info");
+                tracing::error!("SQLite Could not update keyset");
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -723,23 +833,30 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         }
     }
 
-    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+    async fn get_melt_request(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
         let rec = sqlx::query(
             r#"
 SELECT *
-FROM keyset
+FROM melt_request
 WHERE id=?;
         "#,
         )
-        .bind(id.to_string())
+        .bind(quote_id.as_hyphenated())
         .fetch_one(&mut transaction)
         .await;
 
         match rec {
             Ok(rec) => {
                 transaction.commit().await.map_err(Error::from)?;
-                Ok(Some(sqlite_row_to_keyset_info(rec)?))
+
+                let (request, key) = sqlite_row_to_melt_request(rec)?;
+
+                Ok(Some((request, key)))
             }
             Err(err) => match err {
                 sqlx::Error::RowNotFound => {
@@ -747,45 +864,21 @@ WHERE id=?;
                     return Ok(None);
                 }
                 _ => {
-                    tracing::error!("SQLite could not get keyset info");
-                    if let Err(err) = transaction.rollback().await {
-                        tracing::error!("Could not rollback sql transaction: {}", err);
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
                     }
-                    return Err(Error::SQLX(err).into());
                 }
             },
         }
     }
+}
 
-    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-        let recs = sqlx::query(
-            r#"
-SELECT *
-FROM keyset;
-        "#,
-        )
-        .fetch_all(&mut transaction)
-        .await
-        .map_err(Error::from);
-
-        match recs {
-            Ok(recs) => {
-                transaction.commit().await.map_err(Error::from)?;
-                Ok(recs
-                    .into_iter()
-                    .map(sqlite_row_to_keyset_info)
-                    .collect::<Result<_, _>>()?)
-            }
-            Err(err) => {
-                tracing::error!("SQLite could not get keyset info");
-                if let Err(err) = transaction.rollback().await {
-                    tracing::error!("Could not rollback sql transaction: {}", err);
-                }
-                Err(err.into())
-            }
-        }
-    }
+#[async_trait]
+impl MintProofsDatabase for MintSqliteDatabase {
+    type Err = database::Error;
 
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
@@ -1053,6 +1146,11 @@ WHERE keyset_id=?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
+}
+
+#[async_trait]
+impl MintSignaturesDatabase for MintSqliteDatabase {
+    type Err = database::Error;
 
     async fn add_blind_signatures(
         &self,
@@ -1167,86 +1265,6 @@ WHERE keyset_id=?;
         }
     }
 
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltBolt11Request<Uuid>,
-        ln_key: LnKey,
-    ) -> Result<(), Self::Err> {
-        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-
-        let res = sqlx::query(
-            r#"
-INSERT OR REPLACE INTO melt_request
-(id, inputs, outputs, method, unit)
-VALUES (?, ?, ?, ?, ?);
-        "#,
-        )
-        .bind(melt_request.quote)
-        .bind(serde_json::to_string(&melt_request.inputs)?)
-        .bind(serde_json::to_string(&melt_request.outputs)?)
-        .bind(ln_key.method.to_string())
-        .bind(ln_key.unit.to_string())
-        .execute(&mut transaction)
-        .await;
-
-        match res {
-            Ok(_) => {
-                transaction.commit().await.map_err(Error::from)?;
-                Ok(())
-            }
-            Err(err) => {
-                tracing::error!("SQLite Could not update keyset");
-                if let Err(err) = transaction.rollback().await {
-                    tracing::error!("Could not rollback sql transaction: {}", err);
-                }
-
-                Err(Error::from(err).into())
-            }
-        }
-    }
-
-    async fn get_melt_request(
-        &self,
-        quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
-        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-
-        let rec = sqlx::query(
-            r#"
-SELECT *
-FROM melt_request
-WHERE id=?;
-        "#,
-        )
-        .bind(quote_id.as_hyphenated())
-        .fetch_one(&mut transaction)
-        .await;
-
-        match rec {
-            Ok(rec) => {
-                transaction.commit().await.map_err(Error::from)?;
-
-                let (request, key) = sqlite_row_to_melt_request(rec)?;
-
-                Ok(Some((request, key)))
-            }
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => {
-                    transaction.commit().await.map_err(Error::from)?;
-                    return Ok(None);
-                }
-                _ => {
-                    return {
-                        if let Err(err) = transaction.rollback().await {
-                            tracing::error!("Could not rollback sql transaction: {}", err);
-                        }
-                        Err(Error::SQLX(err).into())
-                    }
-                }
-            },
-        }
-    }
-
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
@@ -1284,8 +1302,11 @@ WHERE quote_id=?;
             }
         }
     }
+}
 
-    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
+#[async_trait]
+impl MintDatabase<database::Error> for MintSqliteDatabase {
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), database::Error> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let res = sqlx::query(
@@ -1315,7 +1336,7 @@ VALUES (?, ?);
             }
         }
     }
-    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
+    async fn get_mint_info(&self) -> Result<MintInfo, database::Error> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(
@@ -1356,7 +1377,7 @@ WHERE id=?;
         }
     }
 
-    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err> {
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), database::Error> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let res = sqlx::query(
@@ -1386,7 +1407,7 @@ VALUES (?, ?);
             }
         }
     }
-    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, database::Error> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(

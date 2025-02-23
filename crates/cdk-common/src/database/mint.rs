@@ -14,10 +14,10 @@ use crate::nuts::{
     Proofs, PublicKey, State,
 };
 
-/// Mint Database trait
+/// Mint Keys Database trait
 #[async_trait]
-pub trait Database {
-    /// Mint Database Error
+pub trait KeysDatabase {
+    /// Mint Keys Database Error
     type Err: Into<Error> + From<Error>;
 
     /// Add Active Keyset
@@ -26,6 +26,18 @@ pub trait Database {
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
     /// Get all Active Keyset
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err>;
+    /// Add [`MintKeySetInfo`]
+    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
+    /// Get [`MintKeySetInfo`]
+    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
+    /// Get [`MintKeySetInfo`]s
+    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+}
+/// Mint Quote Database trait
+#[async_trait]
+pub trait QuotesDatabase {
+    /// Mint Quotes Database Error
+    type Err: Into<Error> + From<Error>;
 
     /// Add [`MintMintQuote`]
     async fn add_mint_quote(&self, quote: MintMintQuote) -> Result<(), Self::Err>;
@@ -71,7 +83,6 @@ pub trait Database {
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
-
     /// Add melt request
     async fn add_melt_request(
         &self,
@@ -83,13 +94,12 @@ pub trait Database {
         &self,
         quote_id: &Uuid,
     ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err>;
-
-    /// Add [`MintKeySetInfo`]
-    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
-    /// Get [`MintKeySetInfo`]
-    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
-    /// Get [`MintKeySetInfo`]s
-    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+}
+/// Mint Proof Database trait
+#[async_trait]
+pub trait ProofsDatabase {
+    /// Mint Proof Database Error
+    type Err: Into<Error> + From<Error>;
 
     /// Add  [`Proofs`]
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
@@ -116,6 +126,13 @@ pub trait Database {
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
+}
+
+#[async_trait]
+/// Mint Signatures Database trait
+pub trait SignaturesDatabase {
+    /// Mint Signature Database Error
+    type Err: Into<Error> + From<Error>;
 
     /// Add [`BlindSignature`]
     async fn add_blind_signatures(
@@ -139,14 +156,23 @@ pub trait Database {
         &self,
         quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+}
 
+/// Mint Database trait
+#[async_trait]
+pub trait Database<Err>:
+    KeysDatabase<Err = Err>
+    + QuotesDatabase<Err = Err>
+    + ProofsDatabase<Err = Err>
+    + SignaturesDatabase<Err = Err>
+{
     /// Set [`MintInfo`]
-    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err>;
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Err>;
     /// Get [`MintInfo`]
-    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err>;
+    async fn get_mint_info(&self) -> Result<MintInfo, Err>;
 
     /// Set [`QuoteTTL`]
-    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err>;
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Err>;
     /// Get [`QuoteTTL`]
-    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err>;
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Err>;
 }

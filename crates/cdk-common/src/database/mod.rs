@@ -7,6 +7,10 @@ mod wallet;
 
 #[cfg(feature = "mint")]
 pub use mint::Database as MintDatabase;
+pub use mint::KeysDatabase as MintKeysDatabase;
+pub use mint::ProofsDatabase as MintProofsDatabase;
+pub use mint::QuotesDatabase as MintQuotesDatabase;
+pub use mint::SignaturesDatabase as MintSignaturesDatabase;
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 
