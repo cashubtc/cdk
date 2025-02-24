@@ -72,14 +72,15 @@ impl Mint {
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
-        
+
         let (mut active_keysets, active_keyset_units) = Mint::init_keysets(
             xpriv,
             &secp_ctx,
             &localstore,
             &supported_units,
             &custom_paths,
-        ).await?;
+        )
+        .await?;
 
         // Create new keysets for supported units that aren't covered by the current keysets
         for (unit, (fee, max_order)) in supported_units {

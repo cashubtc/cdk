@@ -1,6 +1,13 @@
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use bitcoin::{bip32::{DerivationPath, Xpriv}, key::Secp256k1, secp256k1::All};
+use bitcoin::{
+    bip32::{DerivationPath, Xpriv},
+    key::Secp256k1,
+    secp256k1::All,
+};
 use cdk_common::database::{self, MintDatabase};
 use tracing::instrument;
 
@@ -11,7 +18,6 @@ use super::{
 use crate::Error;
 
 impl Mint {
-
     /// Initialize keysets and returns a [`Result`] with a tuple of the following:
     /// * a [`HashMap`] mapping each `Id` to `MintKeySet`
     /// * a [`Vec`] of `CurrencyUnit` containing each active keyset
@@ -20,9 +26,8 @@ impl Mint {
         secp_ctx: &Secp256k1<All>,
         localstore: &Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
         supported_units: &HashMap<CurrencyUnit, (u64, u8)>,
-        custom_paths: &HashMap<CurrencyUnit, DerivationPath>
+        custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<(HashMap<Id, MintKeySet>, Vec<CurrencyUnit>), Error> {
-
         let mut active_keysets: HashMap<Id, MintKeySet> = HashMap::new();
         let mut active_keyset_units: Vec<CurrencyUnit> = vec![];
 
@@ -66,7 +71,7 @@ impl Mint {
                     {
                         let id = highest_index_keyset.id;
                         let keyset = MintKeySet::generate_from_xpriv(
-                            &secp_ctx,
+                            secp_ctx,
                             xpriv,
                             highest_index_keyset.max_order,
                             highest_index_keyset.unit.clone(),
@@ -90,9 +95,9 @@ impl Mint {
                             None => derivation_path_from_unit(unit.clone(), derivation_path_index)
                                 .ok_or(Error::UnsupportedUnit)?,
                         };
-            
+
                         let (keyset, keyset_info) = create_new_keyset(
-                            &secp_ctx,
+                            secp_ctx,
                             xpriv,
                             derivation_path,
                             Some(derivation_path_index),
@@ -100,7 +105,7 @@ impl Mint {
                             *max_order,
                             *input_fee_ppk,
                         );
-            
+
                         let id = keyset_info.id;
                         localstore.add_keyset_info(keyset_info).await?;
                         localstore.set_active_keyset(unit.clone(), id).await?;
