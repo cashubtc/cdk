@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
-use bitcoin::bip32::DerivationPath;
+use bitcoin::{bip32::{DerivationPath, Xpriv}, key::Secp256k1, secp256k1::All};
+use cdk_common::database::{self, MintDatabase};
 use tracing::instrument;
 
 use super::{
@@ -10,6 +11,109 @@ use super::{
 use crate::Error;
 
 impl Mint {
+
+    /// Initialize keysets and returns a [`Result`] with a tuple of the following:
+    /// * a [`HashMap`] mapping each `Id` to `MintKeySet`
+    /// * a [`Vec`] of `CurrencyUnit` containing each active keyset
+    pub async fn init_keysets(
+        xpriv: Xpriv,
+        secp_ctx: &Secp256k1<All>,
+        localstore: &Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        supported_units: &HashMap<CurrencyUnit, (u64, u8)>,
+        custom_paths: &HashMap<CurrencyUnit, DerivationPath>
+    ) -> Result<(HashMap<Id, MintKeySet>, Vec<CurrencyUnit>), Error> {
+
+        let mut active_keysets: HashMap<Id, MintKeySet> = HashMap::new();
+        let mut active_keyset_units: Vec<CurrencyUnit> = vec![];
+
+        // Get keysets info from DB
+        let keysets_infos = localstore.get_keyset_infos().await?;
+
+        if !keysets_infos.is_empty() {
+            tracing::debug!("Setting all saved keysets to inactive");
+            for keyset in keysets_infos.clone() {
+                // Set all to in active
+                let mut keyset = keyset;
+                keyset.active = false;
+                localstore.add_keyset_info(keyset).await?;
+            }
+
+            let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
+                keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
+                    acc.entry(ks.unit.clone()).or_default().push(ks.clone());
+                    acc
+                });
+
+            for (unit, keysets) in keysets_by_unit {
+                let mut keysets = keysets;
+                keysets.sort_by(|a, b| b.derivation_path_index.cmp(&a.derivation_path_index));
+
+                // Get the keyset with the highest counter
+                let highest_index_keyset = keysets
+                    .first()
+                    .cloned()
+                    .expect("unit will not be added to hashmap if empty");
+
+                let keysets: Vec<MintKeySetInfo> = keysets
+                    .into_iter()
+                    .filter(|ks| ks.derivation_path_index.is_some())
+                    .collect();
+
+                if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
+                    if !keysets.is_empty()
+                        && &highest_index_keyset.input_fee_ppk == input_fee_ppk
+                        && &highest_index_keyset.max_order == max_order
+                    {
+                        let id = highest_index_keyset.id;
+                        let keyset = MintKeySet::generate_from_xpriv(
+                            &secp_ctx,
+                            xpriv,
+                            highest_index_keyset.max_order,
+                            highest_index_keyset.unit.clone(),
+                            highest_index_keyset.derivation_path.clone(),
+                        );
+                        active_keysets.insert(id, keyset);
+                        let mut keyset_info = highest_index_keyset;
+                        keyset_info.active = true;
+                        localstore.add_keyset_info(keyset_info).await?;
+                        localstore.set_active_keyset(unit, id).await?;
+                    } else {
+                        // Check to see if there are not keysets by this unit
+                        let derivation_path_index = if keysets.is_empty() {
+                            1
+                        } else {
+                            highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
+                        };
+
+                        let derivation_path = match custom_paths.get(&unit) {
+                            Some(path) => path.clone(),
+                            None => derivation_path_from_unit(unit.clone(), derivation_path_index)
+                                .ok_or(Error::UnsupportedUnit)?,
+                        };
+            
+                        let (keyset, keyset_info) = create_new_keyset(
+                            &secp_ctx,
+                            xpriv,
+                            derivation_path,
+                            Some(derivation_path_index),
+                            unit.clone(),
+                            *max_order,
+                            *input_fee_ppk,
+                        );
+            
+                        let id = keyset_info.id;
+                        localstore.add_keyset_info(keyset_info).await?;
+                        localstore.set_active_keyset(unit.clone(), id).await?;
+                        active_keysets.insert(id, keyset);
+                        active_keyset_units.push(unit.clone());
+                    };
+                }
+            }
+        }
+
+        Ok((active_keysets, active_keyset_units))
+    }
+
     /// Retrieve the public keys of the active keyset for distribution to wallet
     /// clients
     #[instrument(skip(self))]
