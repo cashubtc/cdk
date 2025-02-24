@@ -803,6 +803,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         };
 
         let http_client = HttpClient::new(MINT_URL.parse()?);
+
         let response = http_client.post_melt(melt_request.clone()).await;
 
         match response {

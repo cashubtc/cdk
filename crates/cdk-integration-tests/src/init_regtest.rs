@@ -3,12 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning::{self, MintLightning};
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::types::QuoteTTL;
+use cdk::mint::FeeReserve;
 use cdk_cln::Cln as CdkCln;
 use cdk_lnd::Lnd as CdkLnd;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
@@ -18,9 +13,6 @@ use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::Notify;
-use tracing::instrument;
-
-use crate::init_mint::start_mint;
 
 pub const BITCOIND_ADDR: &str = "127.0.0.1:18443";
 pub const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
@@ -153,43 +145,6 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
         fee_reserve,
     )
     .await?)
-}
-
-#[instrument(skip_all)]
-pub async fn create_mint<D, L>(addr: &str, port: u16, database: D, lighting: L) -> Result<()>
-where
-    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
-    L: MintLightning<Err = cdk_lightning::Error> + Send + Sync + 'static,
-{
-    let mut mint_builder = MintBuilder::new();
-    let localstore = Arc::new(database);
-    mint_builder = mint_builder.with_localstore(localstore.clone());
-
-    mint_builder = mint_builder.add_ln_backend(
-        CurrencyUnit::Sat,
-        PaymentMethod::Bolt11,
-        MintMeltLimits::new(1, 5_000),
-        Arc::new(lighting),
-    );
-
-    let mnemonic = Mnemonic::generate(12)?;
-
-    mint_builder = mint_builder
-        .with_name("regtest mint".to_string())
-        .with_description("regtest mint".to_string())
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
-
-    let mint = mint_builder.build().await?;
-
-    localstore
-        .set_mint_info(mint_builder.mint_info.clone())
-        .await?;
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-    localstore.set_quote_ttl(quote_ttl).await?;
-
-    start_mint(addr, port, mint).await?;
-
-    Ok(())
 }
 
 pub async fn fund_ln<C>(bitcoin_client: &BitcoinClient, ln_client: &C) -> Result<()>

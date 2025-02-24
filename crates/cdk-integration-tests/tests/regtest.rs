@@ -141,8 +141,6 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         _ => panic!("Wrong payload"),
     };
 
-    println!("{:?}", payload);
-
     assert_eq!(payload.amount + payload.fee_reserve, 50.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Unpaid);

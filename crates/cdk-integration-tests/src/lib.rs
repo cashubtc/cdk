@@ -17,8 +17,6 @@ use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
 use tokio::time::{timeout, Duration};
 
-pub mod init_fake_wallet;
-pub mod init_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
 
