@@ -57,6 +57,7 @@ impl Mint {
         }
 
         for public_key in ys {
+            tracing::debug!("proof: {} set to {}", public_key.to_hex(), proof_state);
             self.pubsub_manager.proof_state((*public_key, proof_state));
         }
 

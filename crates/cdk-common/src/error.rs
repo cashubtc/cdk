@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use cashu::{CurrencyUnit, PaymentMethod};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
@@ -51,6 +52,12 @@ pub enum Error {
     /// Amountless Invoice Not supported
     #[error("Amount Less Invoice is not allowed")]
     AmountLessNotAllowed,
+    /// Multi-Part Internal Melt Quotes are not supported
+    #[error("Multi-Part Internal Melt Quotes are not supported")]
+    InternalMultiPartMeltQuote,
+    /// Multi-Part Payment not supported for unit and method
+    #[error("Multi-Part payment is not supported for unit `{0}` and method `{1}`")]
+    MppUnitMethodNotSupported(CurrencyUnit, PaymentMethod),
 
     // Mint Errors
     /// Minting is disabled
@@ -96,11 +103,17 @@ pub enum Error {
     #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
     TransactionUnbalanced(u64, u64, u64),
     /// Duplicate proofs provided
-    #[error("Duplicate proofs")]
-    DuplicateProofs,
+    #[error("Duplicate Inputs")]
+    DuplicateInputs,
+    /// Duplicate output
+    #[error("Duplicate outputs")]
+    DuplicateOutputs,
     /// Multiple units provided
     #[error("Cannot have multiple units")]
     MultipleUnits,
+    /// Unit mismatch
+    #[error("Input unit must match output")]
+    UnitMismatch,
     /// Sig all cannot be used in melt
     #[error("Sig all cannot be used in melt")]
     SigAllUsedInMelt,
@@ -150,9 +163,6 @@ pub enum Error {
     /// Receive can only be used with tokens from single mint
     #[error("Multiple mint tokens not supported by receive. Please deconstruct the token and use receive with_proof")]
     MultiMintTokenNotSupported,
-    /// Unit Not supported
-    #[error("Unit not supported for method")]
-    UnitUnsupported,
     /// Preimage not provided
     #[error("Preimage not provided")]
     PreimageNotProvided,
@@ -226,6 +236,9 @@ pub enum Error {
     /// NUT03 error
     #[error(transparent)]
     NUT03(#[from] crate::nuts::nut03::Error),
+    /// NUT04 error
+    #[error(transparent)]
+    NUT04(#[from] crate::nuts::nut04::Error),
     /// NUT05 error
     #[error(transparent)]
     NUT05(#[from] crate::nuts::nut05::Error),
@@ -322,7 +335,7 @@ impl From<Error> for ErrorResponse {
                 detail: None,
             },
             Error::UnsupportedUnit => ErrorResponse {
-                code: ErrorCode::UnitUnsupported,
+                code: ErrorCode::UnsupportedUnit,
                 error: Some(err.to_string()),
                 detail: None,
             },
@@ -386,6 +399,26 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::DuplicateInputs => ErrorResponse {
+                code: ErrorCode::DuplicateInputs,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::DuplicateOutputs => ErrorResponse {
+                code: ErrorCode::DuplicateOutputs,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::MultipleUnits => ErrorResponse {
+                code: ErrorCode::MultipleUnits,
+                error: Some(err.to_string()),
+                detail: None,
+            },
+            Error::UnitMismatch => ErrorResponse {
+                code: ErrorCode::UnitMismatch,
+                error: Some(err.to_string()),
+                detail: None,
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),
@@ -405,7 +438,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::KeysetNotFound => Self::UnknownKeySet,
             ErrorCode::KeysetInactive => Self::InactiveKeyset,
             ErrorCode::BlindedMessageAlreadySigned => Self::BlindedMessageAlreadySigned,
-            ErrorCode::UnitUnsupported => Self::UnitUnsupported,
+            ErrorCode::UnsupportedUnit => Self::UnsupportedUnit,
             ErrorCode::TransactionUnbalanced => Self::TransactionUnbalanced(0, 0, 0),
             ErrorCode::MintingDisabled => Self::MintingDisabled,
             ErrorCode::InvoiceAlreadyPaid => Self::RequestAlreadyPaid,
@@ -416,6 +449,10 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::TokenPending => Self::TokenPending,
             ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
+            ErrorCode::DuplicateInputs => Self::DuplicateInputs,
+            ErrorCode::DuplicateOutputs => Self::DuplicateOutputs,
+            ErrorCode::MultipleUnits => Self::MultipleUnits,
+            ErrorCode::UnitMismatch => Self::UnitMismatch,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -442,7 +479,7 @@ pub enum ErrorCode {
     /// Blinded Message Already signed
     BlindedMessageAlreadySigned,
     /// Unsupported unit
-    UnitUnsupported,
+    UnsupportedUnit,
     /// Token already issed for quote
     TokensAlreadyIssued,
     /// Minting Disabled
@@ -459,6 +496,14 @@ pub enum ErrorCode {
     AmountOutofLimitRange,
     /// Witness missing or invalid
     WitnessMissingOrInvalid,
+    /// Duplicate Inputs
+    DuplicateInputs,
+    /// Duplicate Outputs
+    DuplicateOutputs,
+    /// Multiple Units
+    MultipleUnits,
+    /// Input unit does not match output
+    UnitMismatch,
     /// Unknown error code
     Unknown(u16),
 }
@@ -471,9 +516,13 @@ impl ErrorCode {
             10003 => Self::TokenNotVerified,
             11001 => Self::TokenAlreadySpent,
             11002 => Self::TransactionUnbalanced,
-            11005 => Self::UnitUnsupported,
+            11005 => Self::UnsupportedUnit,
             11006 => Self::AmountOutofLimitRange,
-            11007 => Self::TokenPending,
+            11007 => Self::DuplicateInputs,
+            11008 => Self::DuplicateOutputs,
+            11009 => Self::MultipleUnits,
+            11010 => Self::UnitMismatch,
+            11012 => Self::TokenPending,
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
             20000 => Self::LightningError,
@@ -495,9 +544,13 @@ impl ErrorCode {
             Self::TokenNotVerified => 10003,
             Self::TokenAlreadySpent => 11001,
             Self::TransactionUnbalanced => 11002,
-            Self::UnitUnsupported => 11005,
+            Self::UnsupportedUnit => 11005,
             Self::AmountOutofLimitRange => 11006,
-            Self::TokenPending => 11007,
+            Self::DuplicateInputs => 11007,
+            Self::DuplicateOutputs => 11008,
+            Self::MultipleUnits => 11009,
+            Self::UnitMismatch => 11010,
+            Self::TokenPending => 11012,
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
             Self::LightningError => 20000,

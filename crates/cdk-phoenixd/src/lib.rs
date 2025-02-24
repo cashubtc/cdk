@@ -176,7 +176,7 @@ impl MintLightning for Phoenixd {
         };
 
         // Fee in phoenixd is always 0.04 + 4 sat
-        fee += 4;
+        fee = fee.checked_add(4).ok_or(Error::AmountOverflow)?;
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: melt_quote_request.request.payment_hash().to_string(),

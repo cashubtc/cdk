@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::MintInfo;
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::LnKey;
+use crate::common::{LnKey, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
@@ -48,6 +49,11 @@ pub trait Database {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+    /// Get Mint Quotes with state
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintMintQuote>, Self::Err>;
     /// Remove [`MintMintQuote`]
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
 
@@ -85,8 +91,14 @@ pub trait Database {
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
-    /// Add spent [`Proofs`]
+    /// Add  [`Proofs`]
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
+    /// Remove [`Proofs`]
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err>;
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get ys by quote id
@@ -127,4 +139,14 @@ pub trait Database {
         &self,
         quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+
+    /// Set [`MintInfo`]
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err>;
+    /// Get [`MintInfo`]
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err>;
+
+    /// Set [`QuoteTTL`]
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err>;
+    /// Get [`QuoteTTL`]
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err>;
 }

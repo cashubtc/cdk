@@ -23,10 +23,8 @@ use thiserror::Error;
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
-use crate::amount::AmountStr;
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
-#[cfg(feature = "mint")]
 use crate::Amount;
 
 /// NUT02 Error
@@ -51,7 +49,6 @@ pub enum Error {
 
 /// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Current Version 00
     Version00,
@@ -86,9 +83,8 @@ impl fmt::Display for KeySetVersion {
 /// anyone who knows the set of public keys of a mint. The keyset ID **CAN**
 /// be stored in a Cashu token such that the token can be used to identify
 /// which mint or keyset it was generated from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = String))]
 pub struct Id {
     version: KeySetVersion,
     id: [u8; Self::BYTELEN],
@@ -138,6 +134,12 @@ impl fmt::Display for Id {
     }
 }
 
+impl fmt::Debug for Id {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&format!("{}{}", self.version, hex::encode(self.id)))
+    }
+}
+
 impl TryFrom<String> for Id {
     type Error = Error;
 
@@ -177,7 +179,7 @@ impl From<&Keys> for Id {
     ///   4. take the first 14 characters of the hex-encoded hash
     ///   5. prefix it with a keyset ID version byte
     fn from(map: &Keys) -> Self {
-        let mut keys: Vec<(&AmountStr, &super::PublicKey)> = map.iter().collect();
+        let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
         let pubkeys_concat: Vec<u8> = keys
@@ -215,6 +217,7 @@ pub struct KeysetResponse {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySet {
     /// Keyset [`Id`]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
@@ -251,6 +254,7 @@ impl From<MintKeySet> for KeySet {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySetInfo {
     /// Keyset [`Id`]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
@@ -375,7 +379,7 @@ impl From<&MintKeys> for Id {
 mod test {
     use std::str::FromStr;
 
-    use rand::RngCore;
+    use bitcoin::secp256k1::rand::{self, RngCore};
 
     use super::{KeySetInfo, Keys, KeysetResponse};
     use crate::nuts::nut02::{Error, Id};

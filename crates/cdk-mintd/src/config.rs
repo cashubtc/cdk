@@ -1,12 +1,13 @@
 use std::path::PathBuf;
 
+use bitcoin::hashes::{sha256, Hash};
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Info {
     pub url: String,
     pub listen_host: String,
@@ -21,6 +22,23 @@ pub struct Info {
     ///
     /// This requires `mintd` was built with the `swagger` feature flag.
     pub enable_swagger_ui: Option<bool>,
+}
+
+impl std::fmt::Debug for Info {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mnemonic_hash = sha256::Hash::from_slice(&self.mnemonic.clone().into_bytes())
+            .map_err(|_| std::fmt::Error)?;
+
+        f.debug_struct("Info")
+            .field("url", &self.url)
+            .field("listen_host", &self.listen_host)
+            .field("listen_port", &self.listen_port)
+            .field("mnemonic", &format!("<hashed: {}>", mnemonic_hash))
+            .field("input_fee_ppk", &self.input_fee_ppk)
+            .field("http_cache", &self.http_cache)
+            .field("enable_swagger_ui", &self.enable_swagger_ui)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -187,6 +205,8 @@ pub struct Settings {
     pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
+    #[cfg(feature = "management-rpc")]
+    pub mint_management_rpc: Option<MintManagementRpc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -207,6 +227,17 @@ pub struct MintInfo {
     pub contact_nostr_public_key: Option<String>,
     /// Contact email
     pub contact_email: Option<String>,
+}
+
+#[cfg(feature = "management-rpc")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MintManagementRpc {
+    /// When this is set to `true` the mint use the config file for the initial set up on first start.
+    /// Changes to the `[mint_info]` after this **MUST** be made via the RPC changes to the config file or env vars will be ignored.
+    pub enabled: bool,
+    pub address: Option<String>,
+    pub port: Option<u16>,
+    pub tls_dir_path: Option<PathBuf>,
 }
 
 impl Settings {

@@ -15,6 +15,7 @@ use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::subscription::SubscriptionManager;
 use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
+use tokio::time::{timeout, Duration};
 
 pub mod init_fake_wallet;
 pub mod init_mint;
@@ -153,21 +154,32 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     Ok(())
 }
 
-// Keep polling the state of the mint quote id until it's paid
-pub async fn wait_for_mint_to_be_paid(wallet: &Wallet, mint_quote_id: &str) -> Result<()> {
+pub async fn wait_for_mint_to_be_paid(
+    wallet: &Wallet,
+    mint_quote_id: &str,
+    timeout_secs: u64,
+) -> Result<()> {
     let mut subscription = wallet
         .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![
             mint_quote_id.to_owned(),
         ]))
         .await;
 
-    while let Some(msg) = subscription.recv().await {
-        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-            if response.state == MintQuoteState::Paid {
-                break;
+    // Create the timeout future
+    let wait_future = async {
+        while let Some(msg) = subscription.recv().await {
+            if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
+                if response.state == MintQuoteState::Paid {
+                    return Ok(());
+                }
             }
         }
-    }
+        Ok(())
+    };
 
-    Ok(())
+    // Wait for either the payment to complete or timeout
+    match timeout(Duration::from_secs(timeout_secs), wait_future).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("Timeout waiting for mint quote to be paid")),
+    }
 }

@@ -12,11 +12,11 @@ cleanup() {
     wait $CDK_ITEST_MINT_BIN_PID
 
     echo "Mint binary terminated"
-    
     # Kill processes
-    lncli --lnddir="$cdk_itests/lnd" --network=regtest stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/one/" stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/two/" stop
+    lncli --lnddir="$cdk_itests/lnd/one" --network=regtest stop
+    lncli --lnddir="$cdk_itests/lnd/two" --network=regtest --rpcserver=localhost:10010 stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/one/" stop
+    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/two/" stop
     bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
 
     # Remove the temporary directory
@@ -33,9 +33,10 @@ trap cleanup EXIT
 # Create a temporary directory
 export cdk_itests=$(mktemp -d)
 export cdk_itests_mint_addr="127.0.0.1";
-export cdk_itests_mint_port=8085;
+export cdk_itests_mint_port_0=8085;
+export cdk_itests_mint_port_1=8087;
 
-URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port/v1/info"
+URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0/v1/info"
 # Check if the temporary directory was created successfully
 if [[ ! -d "$cdk_itests" ]]; then
     echo "Failed to create temp directory"
@@ -47,7 +48,10 @@ export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
 cargo build --bin regtest_mint 
+# cargo run --bin regtest_mint > "$cdk_itests/mint.log" 2>&1 &
 cargo run --bin regtest_mint &
+
+echo $cdk_itests
 # Capture its PID
 CDK_ITEST_MINT_BIN_PID=$!
 
@@ -84,8 +88,13 @@ done
 # Run cargo test
 cargo test -p cdk-integration-tests --test regtest
 
-# Run cargo test with the http_subscription feature
+# # Run cargo test with the http_subscription feature
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
+
+# Switch Mints: Run tests with LND mint
+export cdk_itests_mint_port_0=8087;
+export cdk_itests_mint_port_1=8085;
+cargo test -p cdk-integration-tests --test regtest
 
 # Capture the exit status of cargo test
 test_status=$?

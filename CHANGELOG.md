@@ -23,17 +23,49 @@
 
 #[Unrelased]
 
+#[cdk-mintd:v0.7.2]
+### Fixed
+-cdk-mintd: Fixed mint and melt error on mint initialized with RPC interface disabled ([ok300]).
+
+
+#[v0.7.1]
 ### Changed
+- cdk: Debug print of `Id` is hex ([thesimplekid]).
+- cdk: Debug print of mint secret is the hash ([thesimplekid]).
+- cdk: Use check_incoming payment on attempted mint or check mint qutoe ([thesimplekid]).
+- cdk-cln: Use `call_typed` for cln rpc calls ([daywalker90]).
+
+### Added
+- cdk: Mint builder add ability to set custom derivation paths ([thesimplekid]).
+
+### Fixed
+- cdk-cln: return error on stream error ([thesimplekid]).
+
+
+#[v0.7.0]
+### Changed
+* Moved db traits to `cdk-common` ([crodas]).
+* Moved other commin types to `cdk-common` ([crodas]).
+* `Wallet::mint` returns the minted `Proofs` and not just the amount ([dacidcaseria]).
 
 ### Added
 * `Token::to_raw_bytes` serializes generic token to raw bytes ([lollerfirst]).
 * `Token::try_from` for `Vec<u8>` constructs a generic token from raw bytes ([lollerfirst]).
 * `TokenV4::to_raw_bytes()` serializes a TokenV4 to raw bytes following the spec ([lollerfirst]).
 * `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
+* cdk-mint-rpc: Mint management gRPC client and server ([thesimpekid]).
+* cdk-common: cdk specific types and traits ([crodas]).
+* cashu: Core types and functions defined in NUTs ([crodas]).
 
 ### Fixed
+* Multimint unit check when wallet receiving token ([thesimplekid]).
+* Mint start up with most recent keyset after a rotation ([thesimplekid]).
 
-### Removed
+
+#[cdk:v0.6.1,cdk-mintd:v0.6.2]
+### Fixed
+cdk: Missing check on mint that outputs equals the quote amount ([thesimplekid]).
+cdk: Reset mint quote status if in state that cannot continue ([thesimplekid]).
 
 #[0.6.1]
 ### Added
@@ -242,4 +274,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [vnprc]: https://github.com/vnprc
 [crodas]: https://github.com/crodas
 [tdelabro]: https://github.com/tdelabro
-
+[daywalker90]: https://github.com/daywalker90

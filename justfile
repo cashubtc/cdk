@@ -47,6 +47,10 @@ test: build
   fi
   cargo test --lib
 
+  # Run pure integration tests
+  cargo test -p cdk-integration-tests --test integration_tests_pure
+  cargo test -p cdk-integration-tests --test mint
+
 # run `cargo clippy` on everything
 clippy *ARGS="--locked --offline --workspace --all-targets":
   cargo clippy {{ARGS}}

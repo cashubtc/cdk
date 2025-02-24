@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
 
 use super::nut17::SupportedMethods;
@@ -16,22 +17,20 @@ use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod,
 };
-use crate::types::{LnKey, QuoteTTL};
+use crate::types::LnKey;
 
 /// Cashu Mint
 #[derive(Default)]
 pub struct MintBuilder {
-    /// Mint Url
-    mint_url: Option<String>,
     /// Mint Info
-    mint_info: MintInfo,
+    pub mint_info: MintInfo,
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
-    quote_ttl: Option<QuoteTTL>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+    custom_paths: HashMap<CurrencyUnit, DerivationPath>,
 }
 
 impl MintBuilder {
@@ -60,12 +59,6 @@ impl MintBuilder {
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
-        self
-    }
-
-    /// Set mint url
-    pub fn with_mint_url(mut self, mint_url: String) -> Self {
-        self.mint_url = Some(mint_url);
         self
     }
 
@@ -183,15 +176,6 @@ impl MintBuilder {
         self
     }
 
-    /// Set quote ttl
-    pub fn with_quote_ttl(mut self, mint_ttl: u64, melt_ttl: u64) -> Self {
-        let quote_ttl = QuoteTTL { mint_ttl, melt_ttl };
-
-        self.quote_ttl = Some(quote_ttl);
-
-        self
-    }
-
     /// Set pubkey
     pub fn with_pubkey(mut self, pubkey: crate::nuts::PublicKey) -> Self {
         self.mint_info.pubkey = Some(pubkey);
@@ -224,26 +208,35 @@ impl MintBuilder {
         self
     }
 
+    /// Set custom derivation paths for mint units
+    pub fn add_custom_derivation_paths(
+        mut self,
+        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    ) -> Self {
+        self.custom_paths = custom_paths;
+        self
+    }
+
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
+        let localstore = self
+            .localstore
+            .clone()
+            .ok_or(anyhow!("Localstore not set"))?;
+
         Ok(Mint::new(
-            self.mint_url.as_ref().ok_or(anyhow!("Mint url not set"))?,
             self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
-            self.mint_info.clone(),
-            self.quote_ttl.ok_or(anyhow!("Quote ttl not set"))?,
-            self.localstore
-                .clone()
-                .ok_or(anyhow!("Localstore not set"))?,
+            localstore,
             self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
             self.supported_units.clone(),
-            HashMap::new(),
+            self.custom_paths.clone(),
         )
         .await?)
     }
 }
 
-/// Mint Melt Limits
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// Mint and Melt Limits
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MintMeltLimits {
     /// Min mint amount
     pub mint_min: Amount,
@@ -256,7 +249,7 @@ pub struct MintMeltLimits {
 }
 
 impl MintMeltLimits {
-    /// Create new [`MintMeltLimits`]
+    /// Create new [`MintMeltLimits`]. The `min` and `max` limits apply to both minting and melting.
     pub fn new(min: u64, max: u64) -> Self {
         Self {
             mint_min: min.into(),

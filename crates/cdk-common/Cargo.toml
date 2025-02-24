@@ -1,9 +1,13 @@
 [package]
 name = "cdk-common"
-version = "0.6.0"
+version = "0.7.1"
 edition = "2021"
+authors = ["CDK Developers"]
 description = "CDK common types and traits"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.63.0"                     # MSRV
+license = "MIT"
 
 [features]
 default = ["mint", "wallet"]
@@ -20,7 +24,7 @@ bitcoin = { version = "0.32.2", features = [
     "rand",
     "rand-std",
 ] }
-cashu = { path = "../cashu", default-features = false, version = "0.6.0" }
+cashu = { path = "../cashu", default-features = false, version = "0.7.1" }
 cbor-diag = "0.1.12"
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
@@ -28,7 +32,7 @@ lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 thiserror = "2"
 tracing = "0.1"
 url = "2.3"
-uuid = { version = "1", features = ["v4", "serde"], optional = true }
+uuid = { version = "=1.12.1", features = ["v4", "serde"], optional = true }
 utoipa = { version = "4", optional = true }
 futures = "0.3.31"
 anyhow = "1.0"

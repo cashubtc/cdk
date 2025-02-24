@@ -4,7 +4,6 @@ use bitcoin::bip32::DerivationPath;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::mint_url::MintUrl;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::{Amount, CurrencyUnit, Id, KeySetInfo, PublicKey};
 
@@ -13,8 +12,6 @@ use crate::{Amount, CurrencyUnit, Id, KeySetInfo, PublicKey};
 pub struct MintQuote {
     /// Quote id
     pub id: Uuid,
-    /// Mint Url
-    pub mint_url: MintUrl,
     /// Amount of quote
     pub amount: Amount,
     /// Unit of quote
@@ -34,7 +31,6 @@ pub struct MintQuote {
 impl MintQuote {
     /// Create new [`MintQuote`]
     pub fn new(
-        mint_url: MintUrl,
         request: String,
         unit: CurrencyUnit,
         amount: Amount,
@@ -45,7 +41,6 @@ impl MintQuote {
         let id = Uuid::new_v4();
 
         Self {
-            mint_url,
             id,
             amount,
             unit,

@@ -52,9 +52,15 @@ pub enum Error {
     /// Unknown Mint Info
     #[error("Unknown mint info")]
     UnknownMintInfo,
+    /// Unknown quote ttl
+    #[error("Unknown quote ttl")]
+    UnknownQuoteTTL,
     /// Unknown Proof Y
     #[error("Unknown proof Y")]
     UnknownY,
+    /// Unknown Quote
+    #[error("Unknown quote")]
+    UnknownQuote,
     /// Unknown Database Version
     #[error("Unknown database version")]
     UnknownDatabaseVersion,

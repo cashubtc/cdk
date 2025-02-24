@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk_common::common::QuoteTTL;
 use cdk_common::database::{Error, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::MintInfo;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -33,6 +35,8 @@ pub struct MintMemoryDatabase {
     blinded_signatures: Arc<RwLock<HashMap<[u8; 33], BlindSignature>>>,
     quote_signatures: Arc<RwLock<HashMap<Uuid, Vec<BlindSignature>>>>,
     melt_requests: Arc<RwLock<HashMap<Uuid, (MeltBolt11Request<Uuid>, LnKey)>>>,
+    mint_info: Arc<RwLock<MintInfo>>,
+    quote_ttl: Arc<RwLock<QuoteTTL>>,
 }
 
 impl MintMemoryDatabase {
@@ -49,6 +53,8 @@ impl MintMemoryDatabase {
         blinded_signatures: HashMap<[u8; 33], BlindSignature>,
         quote_signatures: HashMap<Uuid, Vec<BlindSignature>>,
         melt_request: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
+        mint_info: MintInfo,
+        quote_ttl: QuoteTTL,
     ) -> Result<Self, Error> {
         let mut proofs = HashMap::new();
         let mut proof_states = HashMap::new();
@@ -87,6 +93,8 @@ impl MintMemoryDatabase {
             quote_proofs: Arc::new(Mutex::new(quote_proofs)),
             quote_signatures: Arc::new(RwLock::new(quote_signatures)),
             melt_requests: Arc::new(RwLock::new(melt_requests)),
+            mint_info: Arc::new(RwLock::new(mint_info)),
+            quote_ttl: Arc::new(RwLock::new(quote_ttl)),
         })
     }
 }
@@ -186,6 +194,21 @@ impl MintDatabase for MintMemoryDatabase {
         Ok(self.mint_quotes.read().await.values().cloned().collect())
     }
 
+    async fn get_mint_quotes_with_state(
+        &self,
+        state: MintQuoteState,
+    ) -> Result<Vec<MintQuote>, Self::Err> {
+        let mint_quotes = self.mint_quotes.read().await;
+
+        let pending_quotes = mint_quotes
+            .values()
+            .filter(|q| q.state == state)
+            .cloned()
+            .collect();
+
+        Ok(pending_quotes)
+    }
+
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         self.mint_quotes.write().await.remove(quote_id);
 
@@ -271,6 +294,35 @@ impl MintDatabase for MintMemoryDatabase {
             let mut db_quote_proofs = self.quote_proofs.lock().await;
 
             db_quote_proofs.insert(quote_id, ys);
+        }
+
+        Ok(())
+    }
+
+    async fn remove_proofs(
+        &self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        {
+            let mut db_proofs = self.proofs.write().await;
+
+            ys.iter().for_each(|y| {
+                db_proofs.remove(&y.to_bytes());
+            });
+        }
+
+        {
+            let mut db_proofs_state = self.proof_state.lock().await;
+
+            ys.iter().for_each(|y| {
+                db_proofs_state.remove(&y.to_bytes());
+            });
+        }
+
+        if let Some(quote_id) = quote_id {
+            let mut quote_proofs = self.quote_proofs.lock().await;
+            quote_proofs.remove(&quote_id);
         }
 
         Ok(())
@@ -411,5 +463,31 @@ impl MintDatabase for MintMemoryDatabase {
         let ys = self.quote_signatures.read().await;
 
         Ok(ys.get(quote_id).cloned().unwrap_or_default())
+    }
+
+    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
+        let mut current_mint_info = self.mint_info.write().await;
+
+        *current_mint_info = mint_info;
+
+        Ok(())
+    }
+    async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
+        let mint_info = self.mint_info.read().await;
+
+        Ok(mint_info.clone())
+    }
+
+    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err> {
+        let mut current_quote_ttl = self.quote_ttl.write().await;
+
+        *current_quote_ttl = quote_ttl;
+
+        Ok(())
+    }
+    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
+        let quote_ttl = self.quote_ttl.read().await;
+
+        Ok(*quote_ttl)
     }
 }
