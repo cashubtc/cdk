@@ -29,9 +29,19 @@ pub async fn start_mint(addr: &str, port: u16, mint: Mint) -> Result<()> {
     });
 
     tracing::info!("Staring Axum server");
-    axum::Server::bind(&format!("{}:{}", addr, port).as_str().parse().unwrap())
+
+    let server = axum::Server::bind(&format!("{}:{}", addr, port).as_str().parse().unwrap())
         .serve(mint_service.into_make_service())
-        .await?;
+        .with_graceful_shutdown(shutdown_signal());
+
+    server.await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install CTRL+C handler");
+    tracing::info!("Shutdown signal received");
 }

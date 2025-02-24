@@ -11,13 +11,12 @@ cleanup() {
     # Wait for the Rust binary to terminate
     wait $CDK_ITEST_MINT_BIN_PID
 
+    echo "Killing the cdk regtest"
+    kill -2 $cdk_regtest_pid
+    wait $cdk_regtest_pid
+
+
     echo "Mint binary terminated"
-    # Kill processes
-    lncli --lnddir="$cdk_itests/lnd/one" --network=regtest stop
-    lncli --lnddir="$cdk_itests/lnd/two" --network=regtest --rpcserver=localhost:10010 stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/one/" stop
-    lightning-cli --regtest --lightning-dir="$cdk_itests/cln/two/" stop
-    bitcoin-cli --datadir="$cdk_itests/bitcoin"  -rpcuser=testuser -rpcpassword=testpass -rpcport=18443 stop
 
     # Remove the temporary directory
     rm -rf "$cdk_itests"
@@ -47,8 +46,33 @@ echo "Temp directory created: $cdk_itests"
 export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
-cargo build --bin regtest_mint 
-# cargo run --bin regtest_mint > "$cdk_itests/mint.log" 2>&1 &
+
+cargo run --bin start_regtest &
+
+cdk_regtest_pid=$!
+mkfifo "$cdk_itests/progress_pipe"
+rm -f "$cdk_itests/signal_received"  # Ensure clean state
+# Start reading from pipe in background
+(while read line; do
+    case "$line" in
+        "checkpoint1")
+            echo "Reached first checkpoint"
+            touch "$cdk_itests/signal_received"
+            exit 0
+            ;;
+    esac
+done < "$cdk_itests/progress_pipe") &
+# Wait for up to 120 seconds
+for ((i=0; i<120; i++)); do
+    if [ -f "$cdk_itests/signal_received" ]; then
+        echo "break signal received"
+        break
+    fi
+    sleep 1
+done
+echo "Regtest set up continuing"
+
+echo "Starting regtest mint"
 cargo run --bin regtest_mint &
 
 echo $cdk_itests
