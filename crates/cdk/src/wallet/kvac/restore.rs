@@ -1,5 +1,5 @@
 //! Restore coins from seed
-
+/*
 use crate::{Error, Wallet};
 use cashu_kvac::{recovery::recover_amounts, secp::Scalar};
 use cdk_common::{
@@ -8,7 +8,7 @@ use cdk_common::{
 };
 
 impl Wallet {
-    /*
+    
     /// Restores the one-coin balance for each keyset of the wallet's Mint
     pub async fn kvac_restore(&self, expected_maximum_amount: u64) -> Result<(), Error> {
         // Check that mint is in store of mints
@@ -82,5 +82,6 @@ impl Wallet {
 
         Ok(())
     }
-    */
+    
 }
+*/

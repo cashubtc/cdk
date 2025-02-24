@@ -423,9 +423,10 @@ pub trait MintConnector: Debug {
     /// Restore KVAC
     async fn post_kvac_restore(
         &self,
-        request: KvacRestoreRequest,
-    ) -> Result<KvacRestoreResponse, Error>;
-
+        _request: KvacRestoreRequest,
+    ) -> Result<KvacRestoreResponse, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Kvac Bootstrap
     async fn post_bootstrap(&self, _request: BootstrapRequest) -> Result<BootstrapResponse, Error> {
         Err(Error::NotImplemented)
