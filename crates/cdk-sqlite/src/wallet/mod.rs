@@ -1,6 +1,7 @@
 //! SQLite Wallet Database
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -16,9 +17,11 @@ use cdk_common::{
     SpendingConditions, State,
 };
 use error::Error;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
-use sqlx::{ConnectOptions, Row};
+use sqlx::sqlite::SqliteRow;
+use sqlx::Row;
 use tracing::instrument;
+
+use crate::common::{create_sqlite_pool, SqlitePool};
 
 pub mod error;
 pub mod memory;
@@ -32,24 +35,15 @@ pub struct WalletSqliteDatabase {
 impl WalletSqliteDatabase {
     /// Create new [`WalletSqliteDatabase`]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let path = path.as_ref().to_str().ok_or(Error::InvalidDbPath)?;
-        let _conn = SqliteConnectOptions::from_str(path)?
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .read_only(false)
-            .create_if_missing(true)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Full)
-            .connect()
-            .await?;
-
-        let pool = SqlitePool::connect(path).await?;
-
-        Ok(Self { pool })
+        Ok(Self {
+            pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
+        })
     }
 
     /// Migrate [`WalletSqliteDatabase`]
     pub async fn migrate(&self) {
         sqlx::migrate!("./src/wallet/migrations")
-            .run(&self.pool)
+            .run(self.pool.deref())
             .await
             .expect("Could not run migrations");
     }
@@ -64,7 +58,7 @@ impl WalletSqliteDatabase {
         )
         .bind(state.to_string())
         .bind(y.to_bytes().to_vec())
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -161,7 +155,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
         .bind(urls)
         .bind(motd)
         .bind(time.map(|v| v as i64))
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -177,7 +171,7 @@ WHERE mint_url=?
         "#,
         )
         .bind(mint_url.to_string())
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -194,7 +188,7 @@ WHERE mint_url=?;
         "#,
         )
         .bind(mint_url.to_string())
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.deref())
         .await;
 
         let rec = match rec {
@@ -216,7 +210,7 @@ SELECT *
 FROM mint
         "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -257,7 +251,7 @@ FROM mint
             sqlx::query(&query)
                 .bind(new_mint_url.to_string())
                 .bind(old_mint_url.to_string())
-                .execute(&self.pool)
+                .execute(self.pool.deref())
                 .await
                 .map_err(Error::from)?;
         }
@@ -288,7 +282,7 @@ FROM mint
             .bind(keyset.unit.to_string())
             .bind(keyset.active)
             .bind(keyset.input_fee_ppk as i64)
-            .execute(&self.pool)
+            .execute(self.pool.deref())
             .await
             .map_err(Error::from)?;
         }
@@ -309,7 +303,7 @@ WHERE mint_url=?
         "#,
         )
         .bind(mint_url.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.deref())
         .await;
 
         let recs = match recs {
@@ -341,7 +335,7 @@ WHERE id=?
         "#,
         )
         .bind(keyset_id.to_string())
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.deref())
         .await;
 
         let rec = match rec {
@@ -381,7 +375,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .bind(quote.secret_key.map(|p| p.to_string()))
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -398,7 +392,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.deref())
         .await;
 
         let rec = match rec {
@@ -420,7 +414,7 @@ SELECT *
 FROM mint_quote
         "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -441,7 +435,7 @@ WHERE id=?
         "#,
         )
         .bind(quote_id)
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -472,7 +466,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(u64::from(quote.fee_reserve) as i64)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -489,7 +483,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.deref())
         .await;
 
         let rec = match rec {
@@ -512,7 +506,7 @@ WHERE id=?
         "#,
         )
         .bind(quote_id)
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -533,7 +527,7 @@ ON CONFLICT(id) DO UPDATE SET
         )
         .bind(Id::from(&keys).to_string())
         .bind(serde_json::to_string(&keys).map_err(Error::from)?)
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -550,7 +544,7 @@ WHERE id=?;
         "#,
         )
         .bind(keyset_id.to_string())
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.deref())
         .await;
 
         let rec = match rec {
@@ -575,7 +569,7 @@ WHERE id=?
         "#,
         )
         .bind(id.to_string())
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 
@@ -625,7 +619,7 @@ WHERE id=?
                     .witness
                     .map(|w| serde_json::to_string(&w).unwrap()),
             )
-            .execute(&self.pool)
+            .execute(self.pool.deref())
             .await
             .map_err(Error::from)?;
         }
@@ -639,7 +633,7 @@ WHERE id=?
             "#,
             )
             .bind(y.to_bytes().to_vec())
-            .execute(&self.pool)
+            .execute(self.pool.deref())
             .await
             .map_err(Error::from)?;
         }
@@ -685,7 +679,7 @@ SELECT *
 FROM proof;
         "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.deref())
         .await;
 
         let recs = match recs {
@@ -755,7 +749,7 @@ WHERE id=?;
         "#,
         )
         .bind(keyset_id.to_string())
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.deref())
         .await;
 
         let count = match rec {
@@ -785,7 +779,7 @@ WHERE key=?;
         "#,
         )
         .bind(verifying_key.to_bytes().to_vec())
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.deref())
         .await;
 
         let count = match rec {
@@ -820,7 +814,7 @@ ON CONFLICT(key) DO UPDATE SET
         )
         .bind(verifying_key.to_bytes().to_vec())
         .bind(last_checked)
-        .execute(&self.pool)
+        .execute(self.pool.deref())
         .await
         .map_err(Error::from)?;
 

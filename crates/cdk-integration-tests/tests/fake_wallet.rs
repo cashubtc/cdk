@@ -881,7 +881,6 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
-
     let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
 
     let inputs = proofs;

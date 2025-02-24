@@ -31,7 +31,7 @@ impl Wallet {
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = memory::empty().await?();
+    ///     let localstore = memory::empty().await?;
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
     ///     let amount = Amount::from(100);
     ///
@@ -156,7 +156,7 @@ impl Wallet {
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = memory::empty().await?();
+    ///     let localstore = memory::empty().await?;
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
