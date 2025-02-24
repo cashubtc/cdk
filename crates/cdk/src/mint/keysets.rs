@@ -4,7 +4,6 @@ use std::sync::Arc;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1::All;
-
 use cdk_common::database::{self, MintDatabase};
 use tracing::instrument;
 
