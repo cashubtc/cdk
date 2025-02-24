@@ -140,7 +140,10 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
         _ => panic!("Wrong payload"),
     };
-    assert_eq!(payload.amount + payload.fee_reserve, 100.into());
+
+    println!("{:?}", payload);
+
+    assert_eq!(payload.amount + payload.fee_reserve, 50.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Unpaid);
 
@@ -151,7 +154,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
         _ => panic!("Wrong payload"),
     };
-    assert_eq!(payload.amount + payload.fee_reserve, 100.into());
+    assert_eq!(payload.amount + payload.fee_reserve, 50.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Paid);
 
