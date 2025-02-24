@@ -19,8 +19,8 @@ use crate::Error;
 
 impl Mint {
     /// Initialize keysets and returns a [`Result`] with a tuple of the following:
-    /// * a [`HashMap`] mapping each `Id` to `MintKeySet`
-    /// * a [`Vec`] of `CurrencyUnit` containing each active keyset
+    /// * a [`HashMap`] mapping each active keyset `Id` to `MintKeySet`
+    /// * a [`Vec`] of `CurrencyUnit` containing active keysets units
     pub async fn init_keysets(
         xpriv: Xpriv,
         secp_ctx: &Secp256k1<All>,
