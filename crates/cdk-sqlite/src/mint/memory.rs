@@ -30,7 +30,6 @@ pub async fn new_with_state(
     mint_info: MintInfo,
 ) -> Result<MintSqliteDatabase, database::Error> {
     let db = empty().await?;
-    db.migrate().await;
 
     for active_keyset in active_keysets {
         db.set_active_keyset(active_keyset.0, active_keyset.1)

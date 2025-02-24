@@ -1,9 +1,9 @@
 //! SQLite Mint
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::Path;
 use std::str::FromStr;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
@@ -20,10 +20,12 @@ use cdk_common::{
 };
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
+
+use crate::common::{create_sqlite_pool, SqlitePool};
 
 pub mod error;
 pub mod memory;
@@ -37,25 +39,15 @@ pub struct MintSqliteDatabase {
 impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let path = path.as_ref().to_str().ok_or(Error::InvalidDbPath)?;
-        let db_options = SqliteConnectOptions::from_str(path)?
-            .busy_timeout(Duration::from_secs(5))
-            .read_only(false)
-            .create_if_missing(true)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Full);
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(db_options)
-            .await?;
-
-        Ok(Self { pool })
+        Ok(Self {
+            pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
+        })
     }
 
     /// Migrate [`MintSqliteDatabase`]
     pub async fn migrate(&self) {
         sqlx::migrate!("./src/mint/migrations")
-            .run(&self.pool)
+            .run(self.pool.deref())
             .await
             .expect("Could not run migrations");
     }
