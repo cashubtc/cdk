@@ -143,7 +143,6 @@ jobs:
           [
             REDB,
             SQLITE,
-            MEMORY,
           ]
     steps:
       - name: checkout
@@ -173,7 +172,6 @@ jobs:
           [
           REDB,
           SQLITE,
-          MEMORY,
           ]
     steps:
       - name: checkout
