@@ -378,6 +378,25 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_database_type() -> Result<()> {
+    // Get the database type from environment
+    let db_type = std::env::var("MINT_DATABASE").expect("MINT_DATABASE env var should be set");
+    
+    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let info = http_client.get_info().await?;
+    
+    // Check that the database type in the mint info matches what we expect
+    match db_type.as_str() {
+        "REDB" => assert!(info.database_type.contains("redb"), "Expected redb database"),
+        "SQLITE" => assert!(info.database_type.contains("sqlite"), "Expected sqlite database"),
+        "MEMORY" => assert!(info.database_type.contains("memory"), "Expected memory database"),
+        _ => bail!("Unknown database type: {}", db_type),
+    }
+    
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_witness() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
