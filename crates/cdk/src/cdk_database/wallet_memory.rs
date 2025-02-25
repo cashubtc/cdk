@@ -4,10 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cashu_kvac::secp::Scalar;
+use cashu_kvac::secp::GroupElement;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::database::{Error, WalletDatabase};
-use cdk_common::kvac::KvacKeys;
+use cdk_common::kvac::{KvacKeys, KvacRandomizedCoin};
 use tokio::sync::RwLock;
 
 use crate::mint_url::MintUrl;
@@ -32,7 +32,7 @@ pub struct WalletMemoryDatabase {
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
     mint_kvac_keys: Arc<RwLock<HashMap<Id, KvacKeys>>>,
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
-    kvac_coins: Arc<RwLock<HashMap<Scalar, KvacCoinInfo>>>,
+    kvac_coins: Arc<RwLock<HashMap<GroupElement, KvacCoinInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
     kvac_keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
     nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
@@ -342,15 +342,18 @@ impl WalletDatabase for WalletMemoryDatabase {
     async fn update_kvac_coins(
         &self,
         added: Vec<KvacCoinInfo>,
-        removed_ts: Vec<Scalar>,
+        removed_nullifiers: Vec<GroupElement>,
     ) -> Result<(), Self::Err> {
         let mut all_coins = self.kvac_coins.write().await;
 
         for coin_info in added.into_iter() {
-            all_coins.insert(coin_info.coin.coin.mac.t.clone(), coin_info);
+            all_coins.insert(
+                KvacRandomizedCoin::from(&coin_info.coin).get_nullifier(),
+                coin_info
+            );
         }
 
-        for t in removed_ts.into_iter() {
+        for t in removed_nullifiers.into_iter() {
             all_coins.remove(&t);
         }
 
@@ -369,11 +372,11 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn set_pending_kvac_coins(&self, ts: &[Scalar]) -> Result<(), Self::Err> {
+    async fn set_pending_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
         let mut all_coins = self.kvac_coins.write().await;
 
-        for t in ts.iter() {
-            if let Some(kvac_coin_info) = all_coins.get_mut(&t) {
+        for n in nullifiers.iter() {
+            if let Some(kvac_coin_info) = all_coins.get_mut(&n) {
                 kvac_coin_info.state = State::Pending;
             }
         }
@@ -393,11 +396,11 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn reserve_kvac_coins(&self, ts: &[Scalar]) -> Result<(), Error> {
+    async fn reserve_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Error> {
         let mut all_coins = self.kvac_coins.write().await;
 
-        for t in ts.iter() {
-            if let Some(coin_info) = all_coins.get_mut(t) {
+        for n in nullifiers.iter() {
+            if let Some(coin_info) = all_coins.get_mut(n) {
                 coin_info.state = State::Reserved;
             }
         }
@@ -417,11 +420,11 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
-    async fn set_unspent_kvac_coins(&self, ts: &[Scalar]) -> Result<(), Error> {
+    async fn set_unspent_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Error> {
         let mut all_coins = self.kvac_coins.write().await;
 
-        for t in ts.iter() {
-            if let Some(coin_info) = all_coins.get_mut(t) {
+        for n in nullifiers.iter() {
+            if let Some(coin_info) = all_coins.get_mut(n) {
                 coin_info.state = State::Unspent;
             }
         }

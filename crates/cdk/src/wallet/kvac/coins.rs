@@ -1,6 +1,6 @@
 //! Operations on KVAC coins
-use cashu_kvac::secp::Scalar;
-use cdk_common::kvac::KvacCoin;
+use cashu_kvac::secp::GroupElement;
+use cdk_common::kvac::{KvacCheckStateRequest, KvacCoin, KvacCoinState, KvacRandomizedCoin};
 use tracing::instrument;
 
 use crate::nuts::State;
@@ -46,16 +46,52 @@ impl Wallet {
 
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
-    pub async fn unreserve_kvac_coins(&self, ts: &[Scalar]) -> Result<(), Error> {
-        Ok(self.localstore.set_unspent_kvac_coins(ts).await?)
+    pub async fn unreserve_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Error> {
+        Ok(self.localstore.set_unspent_kvac_coins(nullifiers).await?)
     }
 
+    /// Check the state of a [`KvacCoin`] with the mint
+    #[instrument(skip(self, coins))]
+    pub async fn check_coins_spent(&self, coins: Vec<KvacCoin>) -> Result<Vec<KvacCoinState>, Error> {
+        
+        // Get the randomized coins
+        let randomized_coins: Vec<KvacRandomizedCoin> = coins
+            .iter()
+            .map(|c| KvacRandomizedCoin::from(c))
+            .collect();
+
+        // Get the nullifiers
+        let nullifiers = randomized_coins.iter().map(
+            |c| c.get_nullifier()
+        )
+        .collect();
+
+        // Call the endpoint
+        let result = self
+            .client
+            .post_kvac_check_state(KvacCheckStateRequest {nullifiers})
+            .await?;
+
+        // 
+        let spent_nullifiers: Vec<_> = result
+            .states
+            .iter()
+            .filter_map(|s| match s.state {
+                State::Spent => Some(s.nullifier.clone()),
+                _ => None,
+            })
+            .collect();
+
+        self.localstore.update_kvac_coins(vec![], spent_nullifiers).await?;
+
+        Ok(result.states)
+    }
     /*
-    /// Reclaim unspent proofs
+    /// Reclaim unspent KVAC coins
     ///
-    /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
+    /// Checks the stats of [`KvacCoin`] swapping for a new [`KvacCoin`] if unspent
     #[instrument(skip(self, proofs))]
-    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
+    pub async fn reclaim_unspent_coins(&self, proofs: Proofs) -> Result<(), Error> {
         let proof_ys = proofs.ys()?;
 
         let spendable = self
@@ -75,7 +111,7 @@ impl Wallet {
 
         Ok(())
     }
-
+    
     /// NUT-07 Check the state of a [`Proof`] with the mint
     #[instrument(skip(self, proofs))]
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {

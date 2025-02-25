@@ -343,6 +343,12 @@ pub struct KvacRandomizedCoin {
     pub randomized_coin: RandomizedCoin,
 }
 
+impl KvacRandomizedCoin {
+    pub fn get_nullifier(&self) -> GroupElement {
+        self.randomized_coin.Ca.clone()
+    }
+}
+
 impl From<&KvacCoin> for KvacRandomizedCoin {
     fn from(coin: &KvacCoin) -> Self {
         Self {

@@ -2,7 +2,7 @@
 use cashu_kvac::{
     kvac::{BalanceProof, IParamsProof, MacProof, RangeProof},
     models::{AmountAttribute, Coin},
-    secp::Scalar,
+    secp::GroupElement,
     transcript::CashuTranscript,
 };
 use cdk_common::{
@@ -87,8 +87,10 @@ impl Wallet {
         let mut verifying_transcript = CashuTranscript::new();
 
         // Set selected inputs as pending
-        let ts: Vec<Scalar> = inputs.iter().map(|i| i.coin.mac.t.clone()).collect();
-        self.localstore.set_pending_kvac_coins(&ts).await?;
+        let nullifiers: Vec<GroupElement> = inputs
+            .iter().map(|i| KvacRandomizedCoin::from(i).get_nullifier() )
+            .collect();
+        self.localstore.set_pending_kvac_coins(&nullifiers).await?;
 
         // BalanceProof
         let input_attributes: Vec<AmountAttribute> = inputs
@@ -150,7 +152,7 @@ impl Wallet {
             Err(e) => {
                 tracing::error!("Mint has failed");
                 // Mark coins as spendable
-                self.localstore.set_unspent_kvac_coins(&ts).await?;
+                self.localstore.set_unspent_kvac_coins(&nullifiers).await?;
                 Err(e)
             }
             Ok(response) => {
@@ -215,7 +217,7 @@ impl Wallet {
                                 state: State::Unspent,
                             })
                             .collect(),
-                        ts,
+                        nullifiers,
                     )
                     .await?;
 

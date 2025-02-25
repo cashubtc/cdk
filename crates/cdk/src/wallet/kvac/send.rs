@@ -1,7 +1,7 @@
 //! Send coins
 
-use cashu_kvac::secp::Scalar;
-use cdk_common::{common::KvacCoinInfo, error::Error, kvac::KvacCoin, Amount, State};
+use cashu_kvac::secp::GroupElement;
+use cdk_common::{common::KvacCoinInfo, error::Error, kvac::{KvacCoin, KvacRandomizedCoin}, Amount, State};
 
 use crate::Wallet;
 
@@ -52,8 +52,8 @@ impl Wallet {
             .await?;
 
         // Set selected inputs as pending
-        let ts: Vec<Scalar> = inputs.iter().map(|i| i.coin.mac.t.clone()).collect();
-        self.localstore.set_pending_kvac_coins(&ts).await?;
+        let nullifiers: Vec<GroupElement> = inputs.iter().map(|i| KvacRandomizedCoin::from(i).get_nullifier()).collect();
+        self.localstore.set_pending_kvac_coins(&nullifiers).await?;
 
         let result = self.kvac_swap(&inputs, &outputs).await;
 
@@ -61,7 +61,7 @@ impl Wallet {
             Err(e) => {
                 tracing::error!("Send has failed");
                 // Mark coins as spendable
-                self.localstore.set_unspent_kvac_coins(&ts).await?;
+                self.localstore.set_unspent_kvac_coins(&nullifiers).await?;
                 Err(e)
             }
             Ok(new_coins) => {
@@ -76,7 +76,7 @@ impl Wallet {
                             mint_url: mint_url.clone(),
                             state: State::Unspent,
                         }],
-                        ts,
+                        nullifiers,
                     )
                     .await?;
 

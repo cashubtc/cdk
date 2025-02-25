@@ -4,9 +4,7 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cdk_common::kvac::{
-    BootstrapRequest, BootstrapResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse,
-    KvacMeltBolt11Request, KvacMeltBolt11Response, KvacMintBolt11Request, KvacMintBolt11Response,
-    KvacRestoreRequest, KvacRestoreResponse, KvacSwapRequest, KvacSwapResponse,
+    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response, KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse, KvacSwapRequest, KvacSwapResponse
 };
 use reqwest::{Client, IntoUrl};
 use serde::de::DeserializeOwned;
@@ -314,7 +312,17 @@ impl MintConnector for HttpClient {
         self.http_post(url, &request).await
     }
 
-    /// Restore request [NUT-13]
+    /// KVAC Spendable check
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_kvac_check_state(
+        &self,
+        request: KvacCheckStateRequest,
+    ) -> Result<KvacCheckStateResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "checkstate"])?;
+        self.http_post(url, &request).await
+    }
+
+    /// Restore request
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "restore"])?;
@@ -418,6 +426,13 @@ pub trait MintConnector: Debug {
         &self,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error>;
+    /// KVAC Spendable check
+    async fn post_kvac_check_state(
+        &self,
+        _request: KvacCheckStateRequest,
+    ) -> Result<KvacCheckStateResponse, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Restore request [NUT-13]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
     /// Restore KVAC

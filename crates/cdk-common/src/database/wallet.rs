@@ -5,7 +5,7 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cashu::kvac::KvacKeys;
-use cashu_kvac::secp::Scalar;
+use cashu_kvac::secp::GroupElement;
 
 use super::Error;
 use crate::common::{KvacCoinInfo, ProofInfo};
@@ -124,7 +124,7 @@ pub trait Database: Debug {
     async fn update_kvac_coins(
         &self,
         _added: Vec<KvacCoinInfo>,
-        _removed_ts: Vec<Scalar>,
+        _removed_nullifier: Vec<GroupElement>,
     ) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
@@ -133,20 +133,20 @@ pub trait Database: Debug {
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Set coins as pending in storage. Coins are identified by their `t`
     /// value.
-    async fn set_pending_kvac_coins(&self, _ts: &[Scalar]) -> Result<(), Self::Err> {
+    async fn set_pending_kvac_coins(&self, _nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Reserve proofs in storage. Proofs are identified by their Y value.
     async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Reserve kvac coins in storage. Coins are identified by their tag `t`.
-    async fn reserve_kvac_coins(&self, _ts: &[Scalar]) -> Result<(), Self::Err> {
+    async fn reserve_kvac_coins(&self, _nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Set proofs as unspent in storage. Proofs are identified by their Y
     /// value.
     async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Set kvac coins as unspent in storage. Coins are identified by their tag `t`
-    async fn set_unspent_kvac_coins(&self, _ts: &[Scalar]) -> Result<(), Self::Err> {
+    async fn set_unspent_kvac_coins(&self, _nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get proofs from storage
