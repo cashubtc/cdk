@@ -13,6 +13,7 @@ jobs:
   self-care:
     name: Flake self-check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Check Nix flake inputs
@@ -23,6 +24,7 @@ jobs:
   pre-commit-checks:
     name: "Cargo fmt, typos"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -45,6 +47,7 @@ jobs:
   examples:
     name: "Run examples"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -69,6 +72,7 @@ jobs:
   clippy:
     name: "Stable build, clippy and test"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -128,6 +132,7 @@ jobs:
   itest:
     name: "Integration regtest tests"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -157,6 +162,7 @@ jobs:
   fake-wallet-itest:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -186,6 +192,7 @@ jobs:
   pure-itest:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -201,6 +208,7 @@ jobs:
   msrv-build:
     name: "MSRV build"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -233,6 +241,7 @@ jobs:
   db-msrv-build:
     name: "DB MSRV build"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -255,6 +264,7 @@ jobs:
   check-wasm:
     name: Check WASM
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         rust:
@@ -283,6 +293,7 @@ jobs:
   check-wasm-msrv:
     name: Check WASM
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         rust:
