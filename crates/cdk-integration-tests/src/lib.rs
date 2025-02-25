@@ -1,18 +1,9 @@
-use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::dhke::construct_proofs;
-use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::nut17::Params;
-use cdk::nuts::{
-    CurrencyUnit, Id, KeySet, MintBolt11Request, MintQuoteBolt11Request, MintQuoteState,
-    NotificationPayload, PreMintSecrets, Proofs, State,
-};
-use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::subscription::SubscriptionManager;
+use cdk::nuts::{MintQuoteState, NotificationPayload, State};
 use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
 use tokio::time::{sleep, timeout, Duration};
@@ -28,19 +19,7 @@ pub async fn wallet_mint(
 ) -> Result<()> {
     let quote = wallet.mint_quote(amount, description).await?;
 
-    let mut subscription = wallet
-        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
-            .id
-            .clone()]))
-        .await;
-
-    while let Some(msg) = subscription.recv().await {
-        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-            if response.state == MintQuoteState::Paid {
-                break;
-            }
-        }
-    }
+    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     let proofs = wallet.mint(&quote.id, split_target, None).await?;
 
@@ -49,70 +28,6 @@ pub async fn wallet_mint(
     println!("Minted: {}", receive_amount);
 
     Ok(())
-}
-
-pub async fn mint_proofs(
-    mint_url: &str,
-    amount: Amount,
-    keyset_id: Id,
-    mint_keys: &KeySet,
-    description: Option<String>,
-) -> anyhow::Result<Proofs> {
-    println!("Minting for ecash");
-    println!();
-
-    let wallet_client = HttpClient::new(MintUrl::from_str(mint_url)?);
-
-    let request = MintQuoteBolt11Request {
-        amount,
-        unit: CurrencyUnit::Sat,
-        description,
-        pubkey: None,
-    };
-
-    let mint_quote = wallet_client.post_mint_quote(request).await?;
-
-    println!("Please pay: {}", mint_quote.request);
-
-    let subscription_client = SubscriptionManager::new(Arc::new(wallet_client.clone()));
-
-    let mut subscription = subscription_client
-        .subscribe(
-            mint_url.parse()?,
-            Params {
-                filters: vec![mint_quote.quote.clone()],
-                kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
-                id: "sub".into(),
-            },
-        )
-        .await;
-
-    while let Some(msg) = subscription.recv().await {
-        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-            if response.state == MintQuoteState::Paid {
-                break;
-            }
-        }
-    }
-
-    let premint_secrets = PreMintSecrets::random(keyset_id, amount, &SplitTarget::default())?;
-
-    let request = MintBolt11Request {
-        quote: mint_quote.quote,
-        outputs: premint_secrets.blinded_messages(),
-        signature: None,
-    };
-
-    let mint_response = wallet_client.post_mint(request).await?;
-
-    let pre_swap_proofs = construct_proofs(
-        mint_response.signatures,
-        premint_secrets.rs(),
-        premint_secrets.secrets(),
-        &mint_keys.clone().keys,
-    )?;
-
-    Ok(pre_swap_proofs)
 }
 
 // Get all pending from wallet and attempt to swap
