@@ -380,8 +380,8 @@ impl MintAuthDatabase for MintRedbAuthDatabase {
 
         for (endpoint, auth) in (table.iter().map_err(Error::from)?).flatten() {
             let endpoint: ProtectedEndpoint =
-                serde_json::from_str(&endpoint.value()).map_err(Error::from)?;
-            let auth: AuthRequired = serde_json::from_str(&auth.value()).map_err(Error::from)?;
+                serde_json::from_str(endpoint.value()).map_err(Error::from)?;
+            let auth: AuthRequired = serde_json::from_str(auth.value()).map_err(Error::from)?;
 
             protected.insert(endpoint, Some(auth));
         }

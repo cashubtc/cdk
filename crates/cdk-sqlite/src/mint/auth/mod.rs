@@ -438,7 +438,7 @@ VALUES (?, ?);
 
         let endpoints = protected_endpoints
             .iter()
-            .map(|p| serde_json::to_string(p))
+            .map(serde_json::to_string)
             .collect::<Result<Vec<_>, _>>()?;
 
         endpoints
