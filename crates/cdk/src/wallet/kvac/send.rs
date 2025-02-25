@@ -1,7 +1,12 @@
 //! Send coins
 
 use cashu_kvac::secp::GroupElement;
-use cdk_common::{common::KvacCoinInfo, error::Error, kvac::{KvacCoin, KvacRandomizedCoin}, Amount, State};
+use cdk_common::{
+    common::KvacCoinInfo,
+    error::Error,
+    kvac::{KvacCoin, KvacRandomizedCoin},
+    Amount, State,
+};
 
 use crate::Wallet;
 
@@ -52,7 +57,10 @@ impl Wallet {
             .await?;
 
         // Set selected inputs as pending
-        let nullifiers: Vec<GroupElement> = inputs.iter().map(|i| KvacRandomizedCoin::from(i).get_nullifier()).collect();
+        let nullifiers: Vec<GroupElement> = inputs
+            .iter()
+            .map(|i| KvacRandomizedCoin::from(i).get_nullifier())
+            .collect();
         self.localstore.set_pending_kvac_coins(&nullifiers).await?;
 
         let result = self.kvac_swap(&inputs, &outputs).await;

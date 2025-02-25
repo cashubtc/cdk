@@ -52,27 +52,24 @@ impl Wallet {
 
     /// Check the state of a [`KvacCoin`] with the mint
     #[instrument(skip(self, coins))]
-    pub async fn check_coins_spent(&self, coins: Vec<KvacCoin>) -> Result<Vec<KvacCoinState>, Error> {
-        
+    pub async fn check_coins_spent(
+        &self,
+        coins: Vec<KvacCoin>,
+    ) -> Result<Vec<KvacCoinState>, Error> {
         // Get the randomized coins
-        let randomized_coins: Vec<KvacRandomizedCoin> = coins
-            .iter()
-            .map(|c| KvacRandomizedCoin::from(c))
-            .collect();
+        let randomized_coins: Vec<KvacRandomizedCoin> =
+            coins.iter().map(|c| KvacRandomizedCoin::from(c)).collect();
 
         // Get the nullifiers
-        let nullifiers = randomized_coins.iter().map(
-            |c| c.get_nullifier()
-        )
-        .collect();
+        let nullifiers = randomized_coins.iter().map(|c| c.get_nullifier()).collect();
 
         // Call the endpoint
         let result = self
             .client
-            .post_kvac_check_state(KvacCheckStateRequest {nullifiers})
+            .post_kvac_check_state(KvacCheckStateRequest { nullifiers })
             .await?;
 
-        // 
+        //
         let spent_nullifiers: Vec<_> = result
             .states
             .iter()
@@ -82,7 +79,9 @@ impl Wallet {
             })
             .collect();
 
-        self.localstore.update_kvac_coins(vec![], spent_nullifiers).await?;
+        self.localstore
+            .update_kvac_coins(vec![], spent_nullifiers)
+            .await?;
 
         Ok(result.states)
     }
@@ -111,7 +110,7 @@ impl Wallet {
 
         Ok(())
     }
-    
+
     /// NUT-07 Check the state of a [`Proof`] with the mint
     #[instrument(skip(self, proofs))]
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {

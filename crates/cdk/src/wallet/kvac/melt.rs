@@ -88,7 +88,8 @@ impl Wallet {
 
         // Set selected inputs as pending
         let nullifiers: Vec<GroupElement> = inputs
-            .iter().map(|i| KvacRandomizedCoin::from(i).get_nullifier() )
+            .iter()
+            .map(|i| KvacRandomizedCoin::from(i).get_nullifier())
             .collect();
         self.localstore.set_pending_kvac_coins(&nullifiers).await?;
 

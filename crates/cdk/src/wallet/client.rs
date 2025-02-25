@@ -4,7 +4,10 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cdk_common::kvac::{
-    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse, KvacKeySet, KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response, KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse, KvacSwapRequest, KvacSwapResponse
+    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse, KvacKeySet,
+    KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response,
+    KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse,
+    KvacSwapRequest, KvacSwapResponse,
 };
 use reqwest::{Client, IntoUrl};
 use serde::de::DeserializeOwned;

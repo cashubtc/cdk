@@ -194,8 +194,10 @@ impl Mint {
 
                         let derivation_path = match custom_paths.get(&unit) {
                             Some(path) => path.clone(),
-                            None => kvac_derivation_path_from_unit(unit.clone(), derivation_path_index)
-                                .ok_or(Error::UnsupportedUnit)?,
+                            None => {
+                                kvac_derivation_path_from_unit(unit.clone(), derivation_path_index)
+                                    .ok_or(Error::UnsupportedUnit)?
+                            }
                         };
 
                         let (keyset, keyset_info) = create_new_kvac_keyset(

@@ -349,7 +349,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         for coin_info in added.into_iter() {
             all_coins.insert(
                 KvacRandomizedCoin::from(&coin_info.coin).get_nullifier(),
-                coin_info
+                coin_info,
             );
         }
 
