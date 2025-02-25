@@ -336,7 +336,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Start Keycloak with Backup
         run: |
-          docker compose -f misc/keycloak/keycloak_data/docker-compose-restore.yml up -d
+          docker compose -f misc/keycloak/docker-compose-recover.yml up -d
           until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do sleep 1; done
 
       - name: Verify Keycloak Import
@@ -346,5 +346,5 @@ jobs:
         run: nix develop -i -L .#stable --command just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
       - name: Stop and clean up Docker Compose
         run: |
-          docker compose -f tests/keycloak_data/docker-compose-restore.yml down
+          docker compose -f misc/keycloak/docker-compose-recover.yml down
 
