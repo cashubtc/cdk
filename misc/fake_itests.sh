@@ -47,6 +47,7 @@ export CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS="sat,usd";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
 export CDK_MINTD_FAKE_WALLET_FEE_PERCENT="0";
 export CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN="1";
+export CDK_MINTD_DATABASE=$MINT_DATABASE;
 
 
 echo "Starting fake mintd";

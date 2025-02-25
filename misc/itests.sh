@@ -85,6 +85,7 @@ export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
 export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port_0;
 export CDK_MINTD_LN_BACKEND="cln";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
+export CDK_MINTD_DATABASE=$MINT_DATABASE;
 
 echo "Starting cln mintd";
 cargo run --bin cdk-mintd &
