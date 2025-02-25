@@ -4,6 +4,7 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
+use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
@@ -148,9 +149,18 @@ pub async fn post_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
+        )
+        .await
+        .map_err(into_response)?;
+
     let quote = state
         .mint
-        .get_mint_bolt11_quote(auth.into(), payload)
+        .get_mint_bolt11_quote(payload)
         .await
         .map_err(into_response)?;
 
