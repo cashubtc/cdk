@@ -14,7 +14,7 @@ use cdk::nuts::{
     PreMintSecrets, State,
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::Wallet;
 use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
@@ -423,19 +423,7 @@ async fn test_cached_mint() -> Result<()> {
     let quote = wallet.mint_quote(mint_amount, None).await?;
     lnd_client.pay_invoice(quote.request).await?;
 
-    let mut subscription = wallet
-        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
-            .id
-            .clone()]))
-        .await;
-
-    while let Some(msg) = subscription.recv().await {
-        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-            if response.state == MintQuoteState::Paid {
-                break;
-            }
-        }
-    }
+    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
     let http_client = HttpClient::new(get_mint_url("0").as_str().parse()?);
