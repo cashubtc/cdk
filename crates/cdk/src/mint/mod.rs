@@ -82,16 +82,17 @@ impl Mint {
         )
         .await?;
 
-        let (mut active_kvac_keysets, mut active_kvac_keyset_units) = Mint::init_kvac_keysets(
+        let (mut active_kvac_keysets, active_kvac_keyset_units) = Mint::init_kvac_keysets(
             xpriv,
             &secp_ctx,
             &localstore,
             &supported_units,
             &custom_paths,
         )
+        .await?;
 
         // Create new keysets for supported units that aren't covered by the current keysets
-        for (unit, (fee, max_order)) in supported_units {
+        for (unit, (fee, max_order)) in supported_units.iter() {
             if !active_keyset_units.contains(&unit) {
                 let derivation_path = match custom_paths.get(&unit) {
                     Some(path) => path.clone(),
@@ -117,7 +118,7 @@ impl Mint {
             }
         }
 
-        // Create new keysets for supported units that aren't covered by the current keysets
+        // Create new KVAC keysets for supported units that aren't covered by the current keysets
         for (unit, (fee, _max_order)) in supported_units {
             if !active_kvac_keyset_units.contains(&unit) {
                 tracing::debug!("Creating new kvac keyset");
