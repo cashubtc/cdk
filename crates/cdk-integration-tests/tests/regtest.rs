@@ -15,6 +15,7 @@ use cdk::nuts::{
 };
 use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::Wallet;
+use cdk::WalletSubscription;
 use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
@@ -445,6 +446,59 @@ async fn test_cached_mint() -> Result<()> {
 
     assert!(response == response1);
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_websocket_connection() -> Result<()> {
+    let wallet = Wallet::new(
+        &get_mint_url("0"),
+        CurrencyUnit::Sat,
+        Arc::new(WalletMemoryDatabase::default()),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    // Create a small mint quote to test notifications
+    let mint_quote = wallet.mint_quote(10.into(), None).await?;
+
+    // Subscribe to notifications for this quote
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![mint_quote
+            .id
+            .clone()]))
+        .await;
+
+    // First check we get the unpaid state
+    let msg = timeout(Duration::from_secs(10), subscription.recv())
+        .await
+        .expect("timeout waiting for unpaid notification")
+        .ok_or_else(|| anyhow::anyhow!("No unpaid notification received"))?;
+
+    match msg {
+        NotificationPayload::MintQuoteBolt11Response(response) => {
+            assert_eq!(response.quote.to_string(), mint_quote.id);
+            assert_eq!(response.state, MintQuoteState::Unpaid);
+        }
+        _ => bail!("Unexpected notification type"),
+    }
+
+    let lnd_client = init_lnd_client().await;
+    lnd_client.pay_invoice(mint_quote.request).await?;
+
+    // Wait for paid notification with 10 second timeout
+    let msg = timeout(Duration::from_secs(10), subscription.recv())
+        .await
+        .expect("timeout waiting for paid notification")
+        .ok_or_else(|| anyhow::anyhow!("No paid notification received"))?;
+
+    match msg {
+        NotificationPayload::MintQuoteBolt11Response(response) => {
+            assert_eq!(response.quote.to_string(), mint_quote.id);
+            assert_eq!(response.state, MintQuoteState::Paid);
+            Ok(())
+        }
+        _ => bail!("Unexpected notification type"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
