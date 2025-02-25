@@ -3,21 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning::{self, MintLightning};
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::types::QuoteTTL;
+use cdk::mint::FeeReserve;
 use cdk_cln::Cln as CdkCln;
 use cdk_lnd::Lnd as CdkLnd;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
+use ln_regtest_rs::cln::Clnd;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::lnd::Lnd;
-use tracing::instrument;
-
-use crate::init_mint::start_mint;
+use tokio::sync::oneshot::Sender;
+use tokio::sync::Notify;
 
 pub const BITCOIND_ADDR: &str = "127.0.0.1:18443";
 pub const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";
@@ -32,6 +27,9 @@ pub const LND_RPC_ADDR: &str = "localhost:10009";
 
 pub const LND_TWO_ADDR: &str = "0.0.0.0:18410";
 pub const LND_TWO_RPC_ADDR: &str = "localhost:10010";
+
+pub const CLN_ADDR: &str = "127.0.0.1:19846";
+pub const CLN_TWO_ADDR: &str = "127.0.0.1:19847";
 
 pub fn get_mint_addr() -> String {
     env::var("cdk_itests_mint_addr").expect("Temp dir set")
@@ -149,43 +147,6 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
     .await?)
 }
 
-#[instrument(skip_all)]
-pub async fn create_mint<D, L>(addr: &str, port: u16, database: D, lighting: L) -> Result<()>
-where
-    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
-    L: MintLightning<Err = cdk_lightning::Error> + Send + Sync + 'static,
-{
-    let mut mint_builder = MintBuilder::new();
-    let localstore = Arc::new(database);
-    mint_builder = mint_builder.with_localstore(localstore.clone());
-
-    mint_builder = mint_builder.add_ln_backend(
-        CurrencyUnit::Sat,
-        PaymentMethod::Bolt11,
-        MintMeltLimits::new(1, 5_000),
-        Arc::new(lighting),
-    );
-
-    let mnemonic = Mnemonic::generate(12)?;
-
-    mint_builder = mint_builder
-        .with_name("regtest mint".to_string())
-        .with_description("regtest mint".to_string())
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
-
-    let mint = mint_builder.build().await?;
-
-    localstore
-        .set_mint_info(mint_builder.mint_info.clone())
-        .await?;
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-    localstore.set_quote_ttl(quote_ttl).await?;
-
-    start_mint(addr, port, mint).await?;
-
-    Ok(())
-}
-
 pub async fn fund_ln<C>(bitcoin_client: &BitcoinClient, ln_client: &C) -> Result<()>
 where
     C: LightningClient,
@@ -227,6 +188,126 @@ where
         .open_channel(1_500_000, &cln_pubkey.to_string(), Some(750_000))
         .await
         .unwrap();
+
+    Ok(())
+}
+
+pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyhow::Result<()> {
+    let mut bitcoind = init_bitcoind();
+    bitcoind.start_bitcoind()?;
+
+    let bitcoin_client = init_bitcoin_client()?;
+    bitcoin_client.create_wallet().ok();
+    bitcoin_client.load_wallet()?;
+
+    let new_add = bitcoin_client.get_new_address()?;
+    bitcoin_client.generate_blocks(&new_add, 200).unwrap();
+
+    let cln_one_dir = get_cln_dir("one");
+    let mut clnd = Clnd::new(
+        get_bitcoin_dir(),
+        cln_one_dir.clone(),
+        CLN_ADDR.into(),
+        BITCOIN_RPC_USER.to_string(),
+        BITCOIN_RPC_PASS.to_string(),
+    );
+    clnd.start_clnd()?;
+
+    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+
+    cln_client.wait_chain_sync().await.unwrap();
+
+    fund_ln(&bitcoin_client, &cln_client).await.unwrap();
+
+    // Create second cln
+    let cln_two_dir = get_cln_dir("two");
+    let mut clnd_two = Clnd::new(
+        get_bitcoin_dir(),
+        cln_two_dir.clone(),
+        CLN_TWO_ADDR.into(),
+        BITCOIN_RPC_USER.to_string(),
+        BITCOIN_RPC_PASS.to_string(),
+    );
+    clnd_two.start_clnd()?;
+
+    let cln_two_client = ClnClient::new(cln_two_dir.clone(), None).await?;
+
+    cln_two_client.wait_chain_sync().await.unwrap();
+
+    fund_ln(&bitcoin_client, &cln_two_client).await.unwrap();
+
+    let lnd_dir = get_lnd_dir("one");
+    println!("{}", lnd_dir.display());
+
+    let mut lnd = init_lnd(lnd_dir.clone(), LND_ADDR, LND_RPC_ADDR).await;
+    lnd.start_lnd().unwrap();
+    tracing::info!("Started lnd node");
+
+    let lnd_client = LndClient::new(
+        format!("https://{}", LND_RPC_ADDR),
+        get_lnd_cert_file_path(&lnd_dir),
+        get_lnd_macaroon_path(&lnd_dir),
+    )
+    .await?;
+
+    lnd_client.wait_chain_sync().await.unwrap();
+
+    fund_ln(&bitcoin_client, &lnd_client).await.unwrap();
+
+    // create second lnd node
+    let lnd_two_dir = get_lnd_dir("two");
+    let mut lnd_two = init_lnd(lnd_two_dir.clone(), LND_TWO_ADDR, LND_TWO_RPC_ADDR).await;
+    lnd_two.start_lnd().unwrap();
+    tracing::info!("Started second lnd node");
+
+    let lnd_two_client = LndClient::new(
+        format!("https://{}", LND_TWO_RPC_ADDR),
+        get_lnd_cert_file_path(&lnd_two_dir),
+        get_lnd_macaroon_path(&lnd_two_dir),
+    )
+    .await?;
+
+    lnd_two_client.wait_chain_sync().await.unwrap();
+
+    fund_ln(&bitcoin_client, &lnd_two_client).await.unwrap();
+
+    // Open channels concurrently
+    // Open channels
+    {
+        open_channel(&cln_client, &lnd_client).await.unwrap();
+        tracing::info!("Opened channel between cln and lnd one");
+        generate_block(&bitcoin_client)?;
+        // open_channel(&bitcoin_client, &cln_client, &cln_two_client)
+        //     .await
+        //     .unwrap();
+        // tracing::info!("Opened channel between cln and cln two");
+
+        open_channel(&lnd_client, &lnd_two_client).await.unwrap();
+        tracing::info!("Opened channel between lnd and lnd two");
+        generate_block(&bitcoin_client)?;
+
+        // open_channel(&cln_client, &lnd_two_client).await.unwrap();
+        // tracing::info!("Opened channel between cln and lnd two");
+        open_channel(&cln_two_client, &lnd_client).await.unwrap();
+        tracing::info!("Opened channel between cln two and lnd");
+        generate_block(&bitcoin_client)?;
+
+        open_channel(&cln_client, &lnd_two_client).await.unwrap();
+        tracing::info!("Opened channel between cln and lnd two");
+        generate_block(&bitcoin_client)?;
+
+        cln_client.wait_channels_active().await?;
+        cln_two_client.wait_channels_active().await?;
+        lnd_client.wait_channels_active().await?;
+        lnd_two_client.wait_channels_active().await?;
+    }
+
+    // Send notification that regtest set up is complete
+    sender.send(()).expect("Could not send oneshot");
+
+    // Wait until we are told to shutdown
+    // If we return the bitcoind, lnd, and cln will be dropped and shutdown
+    notify.notified().await;
 
     Ok(())
 }

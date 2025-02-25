@@ -55,6 +55,32 @@ impl Lnd {
         macaroon_file: PathBuf,
         fee_reserve: FeeReserve,
     ) -> Result<Self, Error> {
+        // Validate address is not empty
+        if address.is_empty() {
+            return Err(Error::InvalidConfig("LND address cannot be empty".into()));
+        }
+
+        // Validate cert_file exists and is not empty
+        if !cert_file.exists() || cert_file.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+            return Err(Error::InvalidConfig(format!(
+                "LND certificate file not found or empty: {:?}",
+                cert_file
+            )));
+        }
+
+        // Validate macaroon_file exists and is not empty
+        if !macaroon_file.exists()
+            || macaroon_file
+                .metadata()
+                .map(|m| m.len() == 0)
+                .unwrap_or(true)
+        {
+            return Err(Error::InvalidConfig(format!(
+                "LND macaroon file not found or empty: {:?}",
+                macaroon_file
+            )));
+        }
+
         let client = fedimint_tonic_lnd::connect(address.to_string(), &cert_file, &macaroon_file)
             .await
             .map_err(|err| {

@@ -42,7 +42,7 @@ bitcoin = { version = "0.32.2", features = [
     "rand",
     "rand-std",
 ] }
-tokio = { version = "1", default-features = false }
+tokio = { version = "1", default-features = false, features = ["signal"] }
 tracing = { version = "0.1", default-features = false, features = [
     "attributes",
     "log",

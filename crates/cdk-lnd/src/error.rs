@@ -33,6 +33,9 @@ pub enum Error {
     /// Errors coming from the backend
     #[error("LND error: `{0}`")]
     LndError(Status),
+    /// Errors invalid config
+    #[error("LND invalid config: `{0}`")]
+    InvalidConfig(String),
 }
 
 impl From<Error> for cdk::cdk_lightning::Error {

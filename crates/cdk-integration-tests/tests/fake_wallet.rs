@@ -378,6 +378,41 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_database_type() -> Result<()> {
+    // Get the database type and work dir from environment
+    let db_type = std::env::var("MINT_DATABASE").expect("MINT_DATABASE env var should be set");
+    let work_dir =
+        std::env::var("CDK_MINTD_WORK_DIR").expect("CDK_MINTD_WORK_DIR env var should be set");
+
+    // Check that the correct database file exists
+    match db_type.as_str() {
+        "REDB" => {
+            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.redb");
+            assert!(
+                db_path.exists(),
+                "Expected redb database file to exist at {:?}",
+                db_path
+            );
+        }
+        "SQLITE" => {
+            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.sqlite");
+            assert!(
+                db_path.exists(),
+                "Expected sqlite database file to exist at {:?}",
+                db_path
+            );
+        }
+        "MEMORY" => {
+            // Memory database has no file to check
+            println!("Memory database in use - no file to check");
+        }
+        _ => bail!("Unknown database type: {}", db_type),
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_witness() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
@@ -803,6 +838,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         };
 
         let http_client = HttpClient::new(MINT_URL.parse()?);
+
         let response = http_client.post_melt(melt_request.clone()).await;
 
         match response {
