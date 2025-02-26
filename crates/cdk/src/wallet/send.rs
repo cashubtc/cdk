@@ -356,6 +356,8 @@ pub struct SendOptions {
     /// Send kind
     pub send_kind: SendKind,
     /// Include fee
+    ///
+    /// When this is true the token created will include the amount of fees needed to redeem the token (amount + fee_to_redeem)
     pub include_fee: bool,
 }
 
