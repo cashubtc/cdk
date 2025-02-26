@@ -203,6 +203,9 @@ pub(crate) async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
@@ -254,6 +257,9 @@ pub(crate) async fn post_mint_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,
 ) -> Result<Json<MintBolt11Response>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
@@ -295,6 +301,9 @@ pub(crate) async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
@@ -337,6 +346,9 @@ pub(crate) async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
@@ -380,6 +392,9 @@ pub(crate) async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
@@ -419,6 +434,9 @@ pub(crate) async fn post_check(
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
@@ -485,6 +503,9 @@ pub(crate) async fn post_swap(
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
@@ -525,6 +546,9 @@ pub(crate) async fn post_restore(
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     {
         state
