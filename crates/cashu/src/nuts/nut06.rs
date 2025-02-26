@@ -2,12 +2,16 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
-use super::{nut04, nut05, nut15, nut19, nut21, nut22, MppMethodSettings};
+use super::{
+    nut04, nut05, nut15, nut19, nut21, nut22, AuthRequired, MppMethodSettings, ProtectedEndpoint,
+};
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -196,6 +200,24 @@ impl MintInfo {
             time: Some(time.into()),
             ..self
         }
+    }
+
+    /// Get protected endpoints
+    pub fn protected_endpoints(&self) -> HashMap<ProtectedEndpoint, AuthRequired> {
+        let mut protected_endpoints = HashMap::new();
+
+        if let Some(nutxx_settings) = &self.nuts.nut21 {
+            for endpoint in nutxx_settings.protected_endpoints.iter() {
+                protected_endpoints.insert(*endpoint, AuthRequired::Clear);
+            }
+        }
+
+        if let Some(nut22_settings) = &self.nuts.nut22 {
+            for endpoint in nut22_settings.protected_endpoints.iter() {
+                protected_endpoints.insert(*endpoint, AuthRequired::Blind);
+            }
+        }
+        protected_endpoints
     }
 }
 

@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let localstore = WalletMemoryDatabase::default();
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None).unwrap();
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
     // Amount to mint
     for amount in [64] {

@@ -7,7 +7,6 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::types::WalletKey;
 use cdk::wallet::{MultiMintWallet, Wallet};
-use cdk::Amount;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -34,35 +33,29 @@ pub async fn mint_blind_auth(
     let mint_url = sub_command_args.mint_url.clone();
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
 
-    let wallet = match multi_mint_wallet
+    let _wallet = match multi_mint_wallet
         .get_wallet(&WalletKey::new(mint_url.clone(), unit.clone()))
         .await
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None, None)?;
+            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None)?;
 
             multi_mint_wallet.add_wallet(wallet.clone()).await;
             wallet
         }
     };
 
-    wallet.get_mint_info().await?;
+    todo!()
 
-    {
-        let mut cat = wallet.cat.write().await;
+    // let proofs = wallet
+    //     .mint_blind_auth(Amount::from(sub_command_args.amount))
+    //     .await?;
 
-        *cat = Some(sub_command_args.cat.clone());
-    }
+    // println!(
+    //     "Received {} from auth proofs for mint {mint_url}",
+    //     proofs.len()
+    // );
 
-    let proofs = wallet
-        .mint_blind_auth(Amount::from(sub_command_args.amount))
-        .await?;
-
-    println!(
-        "Received {} from auth proofs for mint {mint_url}",
-        proofs.len()
-    );
-
-    Ok(())
+    // Ok(())
 }

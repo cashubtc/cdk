@@ -7,10 +7,7 @@ use tokio::time;
 
 use super::WsSubscriptionBody;
 use crate::nuts::nut17::Kind;
-use crate::nuts::{
-    nut01, nut04, nut05, nut07, CheckStateRequest, Method, NotificationPayload, ProtectedEndpoint,
-    RoutePath,
-};
+use crate::nuts::{nut01, nut04, nut05, nut07, CheckStateRequest, NotificationPayload};
 use crate::pub_sub::SubId;
 use crate::wallet::MintConnector;
 use crate::Wallet;
@@ -82,7 +79,7 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
     subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
     mut new_subscription_recv: mpsc::Receiver<SubId>,
     mut on_drop: mpsc::Receiver<SubId>,
-    wallet: Arc<Wallet>,
+    _wallet: Arc<Wallet>,
 ) {
     let mut interval = time::interval(Duration::from_secs(2));
     let mut subscribed_to = HashMap::<UrlType, (mpsc::Sender<_>, _, AnyState)>::new();
@@ -99,13 +96,7 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
                     match url {
                         UrlType::Mint(id) => {
 
-        let auth_token = wallet
-            .get_auth_for_request(&ProtectedEndpoint::new(
-                Method::Post,
-                RoutePath::MeltBolt11,
-            ))
-            .await.unwrap();
-                            let response = http_client.get_mint_quote_status(id, auth_token).await;
+                            let response = http_client.get_mint_quote_status(id).await;
                             if let Ok(response) = response {
                                 if *last_state == AnyState::MintQuoteState(response.state) {
                                     continue;
@@ -117,14 +108,8 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
                             }
                         }
                         UrlType::Melt(id) => {
-        let auth_token = wallet
-            .get_auth_for_request(&ProtectedEndpoint::new(
-                Method::Post,
-                RoutePath::MeltQuoteBolt11
-            ))
-            .await.unwrap();
 
-                            let response = http_client.get_melt_quote_status(id, auth_token).await;
+                            let response = http_client.get_melt_quote_status(id).await;
                             if let Ok(response) = response {
                                 if *last_state == AnyState::MeltQuoteState(response.state) {
                                     continue;
@@ -136,15 +121,9 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
                             }
                         }
                         UrlType::PublicKey(id) => {
-        let auth_token = wallet
-            .get_auth_for_request(&ProtectedEndpoint::new(
-                Method::Post,
-                RoutePath::MeltQuoteBolt11
-            ))
-            .await.unwrap();
                             let responses = http_client.post_check_state(CheckStateRequest {
                                 ys: vec![*id],
-                            }, auth_token
+                            }
                             ).await;
                             if let Ok(mut responses) = responses {
                                 let response = if let Some(state) = responses.states.pop() {

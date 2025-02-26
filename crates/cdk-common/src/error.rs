@@ -76,6 +76,9 @@ pub enum Error {
     /// Wallet cat not set
     #[error("Wallet cat not set")]
     CatNotSet,
+    /// Could not get mint info
+    #[error("Could not get mint info")]
+    CouldNotGetMintInfo,
 
     // Mint Errors
     /// Minting is disabled

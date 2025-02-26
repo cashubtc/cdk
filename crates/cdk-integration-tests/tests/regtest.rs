@@ -84,7 +84,6 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
-        None,
     )?;
 
     let (ws_stream, _) = connect_async(get_mint_ws_url("0"))
@@ -169,7 +168,6 @@ async fn test_regtest_mint_melt() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
-        None,
     )?;
 
     let mint_amount = Amount::from(100);
@@ -204,7 +202,6 @@ async fn test_restore() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &seed,
         None,
-        None,
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -224,7 +221,6 @@ async fn test_restore() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &seed,
-        None,
         None,
     )?;
 
@@ -264,7 +260,6 @@ async fn test_pay_invoice_twice() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &seed,
-        None,
         None,
     )?;
 
@@ -325,7 +320,6 @@ async fn test_internal_payment() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &seed,
         None,
-        None,
     )?;
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -347,7 +341,6 @@ async fn test_internal_payment() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &seed,
-        None,
         None,
     )?;
 
@@ -422,7 +415,6 @@ async fn test_cached_mint() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
-        None,
     )?;
 
     let mint_amount = Amount::from(100);
@@ -433,7 +425,7 @@ async fn test_cached_mint() -> Result<()> {
     wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let http_client = HttpClient::new(get_mint_url("0").as_str().parse()?);
+    let http_client = HttpClient::new(get_mint_url("0").as_str().parse()?, None);
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
@@ -447,8 +439,8 @@ async fn test_cached_mint() -> Result<()> {
 
     request.sign(secret_key.expect("Secret key on quote"))?;
 
-    let response = http_client.post_mint(request.clone(), None).await?;
-    let response1 = http_client.post_mint(request, None).await?;
+    let response = http_client.post_mint(request.clone()).await?;
+    let response1 = http_client.post_mint(request).await?;
 
     assert!(response == response1);
     Ok(())
@@ -461,7 +453,6 @@ async fn test_websocket_connection() -> Result<()> {
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
         None,
     )?;
 
@@ -518,14 +509,12 @@ async fn test_multimint_melt() -> Result<()> {
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
-        None,
     )?;
     let wallet2 = Wallet::new(
         &get_mint_url("1"),
         CurrencyUnit::Sat,
         Arc::new(WalletMemoryDatabase::default()),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
         None,
     )?;
 

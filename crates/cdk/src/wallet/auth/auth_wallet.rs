@@ -1,6 +1,14 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use cdk_common::database::{self, WalletDatabase};
+use cdk_common::mint_url::MintUrl;
+use cdk_common::util::unix_time;
+use cdk_common::{Id, Keys, MintInfo};
+use tokio::sync::RwLock;
 use tracing::instrument;
 
-use super::Wallet;
+use super::AuthMintConnector;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
@@ -10,9 +18,97 @@ use crate::nuts::{
     ProtectedEndpoint, State,
 };
 use crate::types::ProofInfo;
+use crate::wallet::mint_connector::AuthHttpClient;
 use crate::{Amount, Error};
+/// CDK Auth Wallet
+///
+/// A [`AuthWallet`] is for auth operations with a single mint.
+#[derive(Debug, Clone)]
+pub struct AuthWallet {
+    /// Mint Url
+    pub mint_url: MintUrl,
+    /// Storage backend
+    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    /// Clear Auth token
+    pub cat: Arc<RwLock<Option<String>>>,
+    /// Protected methods
+    pub protected_endpoints: Arc<RwLock<HashMap<ProtectedEndpoint, AuthRequired>>>,
+    client: Arc<dyn AuthMintConnector + Send + Sync>,
+}
 
-impl Wallet {
+impl AuthWallet {
+    /// Create a new [`AuthWallet`] instance
+    pub fn new(
+        mint_url: MintUrl,
+        // TODO: This should be changed to support adding user password and then that will get the cat
+        cat: AuthToken,
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+    ) -> Self {
+        let http_client = Arc::new(AuthHttpClient::new(mint_url.clone(), cat.clone()));
+        Self {
+            mint_url,
+            localstore,
+            cat: Arc::new(RwLock::new(Some(cat.to_string()))),
+            protected_endpoints: Arc::new(RwLock::new(protected_endpoints)),
+            client: http_client,
+        }
+    }
+
+    /// Query mint for current mint information
+    #[instrument(skip(self))]
+    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
+        match self.client.get_mint_info().await {
+            Ok(mint_info) => {
+                // If mint provides time make sure it is accurate
+                if let Some(mint_unix_time) = mint_info.time {
+                    let current_unix_time = unix_time();
+                    if current_unix_time.abs_diff(mint_unix_time) > 30 {
+                        tracing::warn!(
+                            "Mint time does match wallet time. Mint: {}, Wallet: {}",
+                            mint_unix_time,
+                            current_unix_time
+                        );
+                        return Err(Error::MintTimeExceedsTolerance);
+                    }
+                }
+
+                self.localstore
+                    .add_mint(self.mint_url.clone(), Some(mint_info.clone()))
+                    .await?;
+
+                tracing::trace!("Mint info updated for {}", self.mint_url);
+
+                Ok(Some(mint_info))
+            }
+            Err(err) => {
+                tracing::warn!("Could not get mint info {}", err);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Get keys for mint keyset
+    ///
+    /// Selected keys from localstore if they are already known
+    /// If they are not known queries mint for keyset id and stores the [`Keys`]
+    #[instrument(skip(self))]
+    pub async fn get_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
+        let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
+            keys
+        } else {
+            let keys = self.client.get_mint_blind_auth_keyset(keyset_id).await?;
+
+            keys.verify_id()?;
+
+            self.localstore.add_keys(keys.keys.clone()).await?;
+
+            keys.keys
+        };
+
+        Ok(keys)
+    }
+
     /// Get active keyset for mint
     ///
     /// Queries mint for current keysets then gets [`Keys`] for any unknown
@@ -86,7 +182,7 @@ impl Wallet {
     }
 
     /// Check if and what kind of auth is required for a method
-    pub async fn protected(&self, method: &ProtectedEndpoint) -> Option<AuthRequired> {
+    pub async fn is_protected(&self, method: &ProtectedEndpoint) -> Option<AuthRequired> {
         let protected_endpoints = self.protected_endpoints.read().await;
         protected_endpoints.get(method).copied()
     }
@@ -115,9 +211,7 @@ impl Wallet {
         &self,
         method: &ProtectedEndpoint,
     ) -> Result<Option<AuthToken>, Error> {
-        let protected_endpoints = self.protected_endpoints.read().await;
-
-        match protected_endpoints.get(method) {
+        match self.is_protected(method).await {
             Some(auth) => match auth {
                 AuthRequired::Clear => Ok(Some(AuthToken::ClearAuth(
                     self.cat
@@ -125,7 +219,7 @@ impl Wallet {
                         .read()
                         .await
                         .as_ref()
-                        .ok_or(Error::AuthRequired)?
+                        .ok_or(Error::CatNotSet)?
                         .clone(),
                 ))),
                 AuthRequired::Blind => {
@@ -145,7 +239,6 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, Error> {
         tracing::debug!("Minting {} blind auth proofs", amount);
-        let cat = self.cat.read().await.clone().ok_or(Error::CatNotSet)?;
         // Check that mint is in store of mints
         if self
             .localstore
@@ -165,10 +258,7 @@ impl Wallet {
             outputs: premint_secrets.blinded_messages(),
         };
 
-        let mint_res = self
-            .client
-            .post_mint_blind_auth(request, AuthToken::ClearAuth(cat))
-            .await?;
+        let mint_res = self.client.post_mint_blind_auth(request).await?;
 
         let keys = self.get_keyset_keys(active_keyset_id).await?;
 

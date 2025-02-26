@@ -102,6 +102,7 @@ jobs:
             -p cdk-axum --no-default-features --features swagger,
             -p cdk-axum --no-default-features --features redis,
             -p cdk-axum --no-default-features --features "redis swagger",
+            -p cdk-axum --no-default-features --features "auth redis",
             -p cdk-axum,
             -p cdk-cln,
             -p cdk-lnd,

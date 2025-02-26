@@ -1,17 +1,25 @@
 use std::str::FromStr;
 
-use axum::extract::{FromRequestParts, State};
+use axum::async_trait;
+use axum::extract::FromRequestParts;
+#[cfg(feature = "auth")]
+use axum::extract::State;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
+#[cfg(feature = "auth")]
 use axum::response::Response;
+#[cfg(feature = "auth")]
 use axum::routing::{get, post};
-use axum::{async_trait, Json, Router};
+#[cfg(feature = "auth")]
+use axum::{Json, Router};
+#[cfg(feature = "auth")]
 use cdk::error::{ErrorCode, ErrorResponse};
-use cdk::nuts::{
-    AuthToken, BlindAuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintBolt11Response,
-};
+use cdk::nuts::BlindAuthToken;
+#[cfg(feature = "auth")]
+use cdk::nuts::{AuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintBolt11Response};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "auth")]
 use crate::{get_keyset_pubkeys, into_response, MintState};
 
 const CLEAR_AUTH_KEY: &str = "Clear-auth";
@@ -27,6 +35,7 @@ pub enum AuthHeader {
     None,
 }
 
+#[cfg(feature = "auth")]
 impl From<AuthHeader> for Option<AuthToken> {
     fn from(value: AuthHeader) -> Option<AuthToken> {
         match value {

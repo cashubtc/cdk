@@ -242,6 +242,8 @@
               cargo update -p backtrace --precise 0.3.58
               cargo update -p async-compression --precise 0.4.3
               cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
+              cargo update -p flate2 --precise 1.0.35
+
 
               cargo update -p clap_lex --precise 0.3.0
               cargo update -p regex --precise 1.9.6

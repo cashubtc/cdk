@@ -11,7 +11,6 @@ use cdk_common::subscription::Params;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
 use subscription::{ActiveSubscription, SubscriptionManager};
-use tokio::sync::RwLock;
 use tracing::instrument;
 pub use types::{MeltQuote, MintQuote, SendKind};
 
@@ -23,8 +22,8 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, AuthRequired, CurrencyUnit, Id, Keys, Method, MintInfo, MintQuoteState, PreMintSecrets,
-    Proof, Proofs, ProtectedEndpoint, RestoreRequest, RoutePath, SpendingConditions, State,
+    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proof, Proofs,
+    RestoreRequest, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -44,6 +43,7 @@ pub mod subscription;
 mod swap;
 pub mod util;
 
+pub use auth::AuthWallet;
 pub use cdk_common::wallet as types;
 pub use mint_connector::{HttpClient, MintConnector};
 
@@ -64,10 +64,7 @@ pub struct Wallet {
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    /// Clear Auth token
-    pub cat: Arc<RwLock<Option<String>>>,
-    /// Protected methods
-    pub protected_endpoints: Arc<RwLock<HashMap<ProtectedEndpoint, AuthRequired>>>,
+    auth_wallet: Option<AuthWallet>,
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
@@ -144,14 +141,11 @@ impl Wallet {
         localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
         target_proof_count: Option<usize>,
-        cat: Option<String>,
     ) -> Result<Self, Error> {
         let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
         let mint_url = MintUrl::from_str(mint_url)?;
 
-        let http_client = Arc::new(HttpClient::new(mint_url.clone()));
-
-        let cat = Arc::new(RwLock::new(cat));
+        let http_client = Arc::new(HttpClient::new(mint_url.clone(), None));
 
         Ok(Self {
             mint_url: mint_url.clone(),
@@ -161,8 +155,7 @@ impl Wallet {
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
-            cat,
-            protected_endpoints: Arc::new(RwLock::new(HashMap::new())),
+            auth_wallet: None,
         })
     }
 
@@ -242,7 +235,6 @@ impl Wallet {
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
         match self.client.get_mint_info().await {
             Ok(mint_info) => {
-                println!("{:?}", mint_info);
                 // If mint provides time make sure it is accurate
                 if let Some(mint_unix_time) = mint_info.time {
                     let current_unix_time = unix_time();
@@ -259,20 +251,6 @@ impl Wallet {
                 self.localstore
                     .add_mint(self.mint_url.clone(), Some(mint_info.clone()))
                     .await?;
-
-                let mut protected_endpoints = self.protected_endpoints.write().await;
-
-                if let Some(nutxx_settings) = &mint_info.nuts.nut21 {
-                    for endpoint in nutxx_settings.protected_endpoints.iter() {
-                        protected_endpoints.insert(*endpoint, AuthRequired::Clear);
-                    }
-                }
-
-                if let Some(nut22_settings) = &mint_info.nuts.nut22 {
-                    for endpoint in nut22_settings.protected_endpoints.iter() {
-                        protected_endpoints.insert(*endpoint, AuthRequired::Blind);
-                    }
-                }
 
                 tracing::trace!("Mint info updated for {}", self.mint_url);
 
@@ -382,14 +360,7 @@ impl Wallet {
                     outputs: premint_secrets.blinded_messages(),
                 };
 
-                let auth_token = self
-                    .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::Restore))
-                    .await?;
-
-                let response = self
-                    .client
-                    .post_restore(restore_request, auth_token)
-                    .await?;
+                let response = self.client.post_restore(restore_request).await?;
 
                 if response.signatures.is_empty() {
                     empty_batch += 1;

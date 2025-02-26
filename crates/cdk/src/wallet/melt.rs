@@ -8,7 +8,7 @@ use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    Method, PreMintSecrets, Proofs, ProofsMethods, ProtectedEndpoint, RoutePath, State,
+    PreMintSecrets, Proofs, ProofsMethods, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
@@ -60,17 +60,7 @@ impl Wallet {
             options,
         };
 
-        let auth_token = self
-            .get_auth_for_request(&ProtectedEndpoint::new(
-                Method::Post,
-                RoutePath::MeltQuoteBolt11,
-            ))
-            .await?;
-
-        let quote_res = self
-            .client
-            .post_melt_quote(quote_request, auth_token)
-            .await?;
+        let quote_res = self.client.post_melt_quote(quote_request).await?;
 
         if quote_res.amount != amount_quote_unit {
             tracing::warn!(
@@ -103,17 +93,7 @@ impl Wallet {
         &self,
         quote_id: &str,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let auth_token = self
-            .get_auth_for_request(&ProtectedEndpoint::new(
-                Method::Get,
-                RoutePath::MeltQuoteBolt11,
-            ))
-            .await?;
-
-        let response = self
-            .client
-            .get_melt_quote_status(quote_id, auth_token)
-            .await?;
+        let response = self.client.get_melt_quote_status(quote_id).await?;
 
         match self.localstore.get_melt_quote(quote_id).await? {
             Some(quote) => {
@@ -174,11 +154,7 @@ impl Wallet {
             outputs: Some(premint_secrets.blinded_messages()),
         };
 
-        let auth_token = self
-            .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11))
-            .await?;
-
-        let melt_response = self.client.post_melt(request, auth_token).await;
+        let melt_response = self.client.post_melt(request).await;
 
         let melt_response = match melt_response {
             Ok(melt_response) => melt_response,

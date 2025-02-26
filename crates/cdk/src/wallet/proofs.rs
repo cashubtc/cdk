@@ -5,8 +5,7 @@ use tracing::instrument;
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    CheckStateRequest, Method, Proof, ProofState, Proofs, ProtectedEndpoint, PublicKey, RoutePath,
-    SpendingConditions, State,
+    CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::{Amount, Error, Wallet};
@@ -64,13 +63,9 @@ impl Wallet {
     pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
         let proof_ys = proofs.ys()?;
 
-        let auth_token = self
-            .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::Restore))
-            .await?;
-
         let spendable = self
             .client
-            .post_check_state(CheckStateRequest { ys: proof_ys }, auth_token)
+            .post_check_state(CheckStateRequest { ys: proof_ys })
             .await?
             .states;
 
@@ -89,13 +84,9 @@ impl Wallet {
     /// NUT-07 Check the state of a [`Proof`] with the mint
     #[instrument(skip(self, proofs))]
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
-        let auth_token = self
-            .get_auth_for_request(&ProtectedEndpoint::new(Method::Post, RoutePath::Restore))
-            .await?;
-
         let spendable = self
             .client
-            .post_check_state(CheckStateRequest { ys: proofs.ys()? }, auth_token)
+            .post_check_state(CheckStateRequest { ys: proofs.ys()? })
             .await?;
 
         let spent_ys: Vec<_> = spendable

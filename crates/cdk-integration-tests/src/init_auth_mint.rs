@@ -7,8 +7,7 @@ use cashu::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::Wallet;
-use cdk::OidcClient;
+use cdk::wallet::AuthWallet;
 use cdk_fake_wallet::FakeWallet;
 
 pub async fn start_fake_mint_with_auth<D, A>(
@@ -92,38 +91,8 @@ where
     todo!("Need to start this a cdk mintd keeping as ref for now");
 }
 
-pub async fn top_up_blind_auth_proofs(
-    wallet: Arc<Wallet>,
-    count: u64,
-    oidc_user: &str,
-    oidc_pass: &str,
-) {
-    let mint_info = wallet
-        .get_mint_info()
-        .await
-        .expect("Mint info not found")
-        .expect("Mint info not found");
-
-    let openid_discovery = mint_info
-        .nuts
-        .nut21
-        .expect("NUT21 is not defined")
-        .openid_discovery;
-
-    let oidc_client = OidcClient::new(openid_discovery);
-
-    let access_token = oidc_client
-        .get_access_token_with_user_password(oidc_user.to_string(), oidc_pass.to_string())
-        .await
-        .expect("Could not get cat");
-
-    {
-        let mut cat = wallet.cat.write().await;
-
-        *cat = Some(access_token);
-    }
-
-    let _proofs = wallet
+pub async fn top_up_blind_auth_proofs(auth_wallet: Arc<AuthWallet>, count: u64) {
+    let _proofs = auth_wallet
         .mint_blind_auth(count.into())
         .await
         .expect("could not mint blind auth");
