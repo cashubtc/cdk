@@ -149,14 +149,17 @@ pub async fn post_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let quote = state
         .mint
@@ -187,14 +190,17 @@ pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let quote = state
         .mint
@@ -232,14 +238,17 @@ pub async fn post_mint_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,
 ) -> Result<Json<MintBolt11Response>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let res = state
         .mint
@@ -270,14 +279,17 @@ pub async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let quote = state
         .mint
@@ -309,14 +321,17 @@ pub async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let quote = state
         .mint
@@ -349,14 +364,17 @@ pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let res = state
         .mint
@@ -385,14 +403,17 @@ pub async fn post_check(
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let state = state.mint.check_state(&payload).await.map_err(|err| {
         tracing::error!("Could not check state of proofs");
@@ -446,14 +467,17 @@ pub async fn post_swap(
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let swap_response = state
         .mint
@@ -483,14 +507,17 @@ pub async fn post_restore(
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
-        )
-        .await
-        .map_err(into_response)?;
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
     let restore_response = state.mint.restore(payload).await.map_err(|err| {
         tracing::error!("Could not process restore: {}", err);
