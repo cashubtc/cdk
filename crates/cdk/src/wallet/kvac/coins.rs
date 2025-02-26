@@ -25,7 +25,7 @@ impl Wallet {
         self.get_kvac_coins_with(Some(vec![State::Reserved])).await
     }
 
-    /// Get this wallet's [`KvacCoin`]s that match the args
+    /// Get this wallet's [`KvacCoin`]s that match the state
     pub async fn get_kvac_coins_with(
         &self,
         state: Option<Vec<State>>,
@@ -69,7 +69,7 @@ impl Wallet {
             .post_kvac_check_state(KvacCheckStateRequest { nullifiers })
             .await?;
 
-        //
+        // Filter spent nullifiers
         let spent_nullifiers: Vec<_> = result
             .states
             .iter()
@@ -109,27 +109,6 @@ impl Wallet {
             .await?;
 
         Ok(())
-    }
-
-    /// NUT-07 Check the state of a [`Proof`] with the mint
-    #[instrument(skip(self, proofs))]
-    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
-        let spendable = self
-            .client
-            .post_check_state(CheckStateRequest { ys: proofs.ys()? })
-            .await?;
-        let spent_ys: Vec<_> = spendable
-            .states
-            .iter()
-            .filter_map(|p| match p.state {
-                State::Spent => Some(p.y),
-                _ => None,
-            })
-            .collect();
-
-        self.localstore.update_proofs(vec![], spent_ys).await?;
-
-        Ok(spendable.states)
     }
 
     /// Checks pending proofs for spent status
