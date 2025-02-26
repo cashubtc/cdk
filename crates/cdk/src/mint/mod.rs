@@ -23,8 +23,11 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
 use crate::util::unix_time;
-use crate::{Amount, OidcClient};
+use crate::Amount;
+#[cfg(feature = "auth")]
+use crate::OidcClient;
 
+#[cfg(feature = "auth")]
 pub(crate) mod auth;
 mod builder;
 mod check_spendable;
@@ -52,6 +55,7 @@ pub struct Mint {
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
+    #[cfg(feature = "auth")]
     oidc_client: Option<OidcClient>,
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: Xpriv,
@@ -111,6 +115,7 @@ impl Mint {
             }
         }
 
+        #[cfg(feature = "auth")]
         let oidc_client = if let Some(openid_discovery) = open_id_discovery {
             tracing::info!("Auth enabled creating auth keysets");
             let auth_localstore = auth_localstore
@@ -145,6 +150,14 @@ impl Mint {
             None
         };
 
+        #[cfg(not(feature = "auth"))]
+        if open_id_discovery.is_some() {
+            tracing::error!("CDK must be compiled with auth feature to be used with auth.");
+            return Err(Error::Custom(
+                "Openid passed but cdk compiled without auth.".to_string(),
+            ));
+        }
+
         let keysets = Arc::new(RwLock::new(active_keysets));
 
         Ok(Self {
@@ -152,6 +165,7 @@ impl Mint {
             secp_ctx,
             xpriv,
             localstore,
+            #[cfg(feature = "auth")]
             oidc_client,
             ln,
             custom_paths,

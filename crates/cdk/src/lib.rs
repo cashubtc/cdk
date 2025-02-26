@@ -11,10 +11,10 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
-#[cfg(any(feature = "wallet", feature = "mint"))]
+#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
 mod oidc_client;
 
-#[cfg(any(feature = "wallet", feature = "mint"))]
+#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
 pub use oidc_client::OidcClient;
 
 pub mod pub_sub;

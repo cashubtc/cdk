@@ -13,6 +13,7 @@ use super::{
 };
 use crate::Error;
 
+#[cfg(feature = "auth")]
 mod auth;
 
 impl Mint {
