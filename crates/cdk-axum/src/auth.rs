@@ -1,3 +1,5 @@
+#![cfg(feature = "auth")]
+
 use std::str::FromStr;
 
 use axum::extract::{FromRequestParts, State};

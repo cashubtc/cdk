@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+#[cfg(feature = "auth")]
 use auth::create_auth_router;
 use axum::routing::{get, post};
 use axum::Router;
@@ -169,12 +170,15 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let auth_router = create_auth_router(state.clone());
+    let mut mint_router = Router::new().nest("/v1", v1_router);
 
-    let mint_router = Router::new()
-        .nest("/v1", v1_router)
-        .nest("/v1", auth_router)
-        .with_state(state);
+    #[cfg(feature = "auth")]
+    {
+        let auth_router = create_auth_router(state.clone());
+        mint_router = mint_router.nest("/v1", auth_router);
+    }
+
+    let mint_router = mint_router.with_state(state);
 
     Ok(mint_router)
 }
