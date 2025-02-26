@@ -442,17 +442,7 @@ impl Mint {
 
     /// Restore
     #[instrument(skip_all)]
-    pub async fn restore(
-        &self,
-        auth_token: Option<AuthToken>,
-        request: RestoreRequest,
-    ) -> Result<RestoreResponse, Error> {
-        self.verify_auth(
-            auth_token,
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
-        )
-        .await?;
-
+    pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let output_len = request.outputs.len();
 
         let mut outputs = Vec::with_capacity(output_len);

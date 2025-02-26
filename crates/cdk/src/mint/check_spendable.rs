@@ -2,11 +2,7 @@ use std::collections::HashSet;
 
 use tracing::instrument;
 
-use super::{
-    AuthToken, CheckStateRequest, CheckStateResponse, Method, Mint, ProofState, PublicKey,
-    RoutePath, State,
-};
-use crate::nuts::ProtectedEndpoint;
+use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, PublicKey, State};
 use crate::Error;
 
 impl Mint {
@@ -14,14 +10,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn check_state(
         &self,
-        auth_token: Option<AuthToken>,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        self.verify_auth(
-            auth_token,
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
-        )
-        .await?;
         let states = self.localstore.get_proofs_states(&check_state.ys).await?;
 
         let states = states

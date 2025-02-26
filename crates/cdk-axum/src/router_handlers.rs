@@ -362,19 +362,15 @@ pub async fn post_check(
         .mint
         .verify_auth(
             auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::CheckState),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
         )
         .await
         .map_err(into_response)?;
 
-    let state = state
-        .mint
-        .check_state(&payload)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not check state of proofs");
-            into_response(err)
-        })?;
+    let state = state.mint.check_state(&payload).await.map_err(|err| {
+        tracing::error!("Could not check state of proofs");
+        into_response(err)
+    })?;
 
     Ok(Json(state))
 }
@@ -469,14 +465,10 @@ pub async fn post_restore(
         .await
         .map_err(into_response)?;
 
-    let restore_response = state
-        .mint
-        .restore(payload)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not process restore: {}", err);
-            into_response(err)
-        })?;
+    let restore_response = state.mint.restore(payload).await.map_err(|err| {
+        tracing::error!("Could not process restore: {}", err);
+        into_response(err)
+    })?;
 
     Ok(Json(restore_response))
 }

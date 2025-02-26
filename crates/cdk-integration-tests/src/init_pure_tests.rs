@@ -75,10 +75,10 @@ impl MintConnector for DirectMintConnection {
     async fn post_mint_quote(
         &self,
         request: MintQuoteBolt11Request,
-        auth_token: Option<AuthToken>,
+        _auth_token: Option<AuthToken>,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         self.mint
-            .get_mint_bolt11_quote(auth_token, request)
+            .get_mint_bolt11_quote(request)
             .await
             .map(Into::into)
     }
@@ -101,9 +101,7 @@ impl MintConnector for DirectMintConnection {
         auth_token: Option<AuthToken>,
     ) -> Result<MintBolt11Response, Error> {
         let request_uuid = request.try_into().unwrap();
-        self.mint
-            .process_mint_request(auth_token, request_uuid)
-            .await
+        self.mint.process_mint_request(request_uuid).await
     }
 
     async fn post_melt_quote(
@@ -135,10 +133,7 @@ impl MintConnector for DirectMintConnection {
         auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
-        self.mint
-            .melt_bolt11(auth_token, &request_uuid)
-            .await
-            .map(Into::into)
+        self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
     }
 
     async fn post_swap(
@@ -146,9 +141,7 @@ impl MintConnector for DirectMintConnection {
         swap_request: SwapRequest,
         auth_token: Option<AuthToken>,
     ) -> Result<SwapResponse, Error> {
-        self.mint
-            .process_swap_request(auth_token, swap_request)
-            .await
+        self.mint.process_swap_request(swap_request).await
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
@@ -160,7 +153,7 @@ impl MintConnector for DirectMintConnection {
         request: CheckStateRequest,
         auth_token: Option<AuthToken>,
     ) -> Result<CheckStateResponse, Error> {
-        self.mint.check_state(auth_token, &request).await
+        self.mint.check_state(&request).await
     }
 
     async fn post_restore(
@@ -168,7 +161,7 @@ impl MintConnector for DirectMintConnection {
         request: RestoreRequest,
         auth_token: Option<AuthToken>,
     ) -> Result<RestoreResponse, Error> {
-        self.mint.restore(auth_token, request).await
+        self.mint.restore(request).await
     }
 
     /// Get Blind Auth keys

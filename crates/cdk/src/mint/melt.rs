@@ -400,15 +400,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn melt_bolt11(
         &self,
-        auth_token: Option<AuthToken>,
         melt_request: &MeltBolt11Request<Uuid>,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
-        self.verify_auth(
-            auth_token,
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
-        )
-        .await?;
-
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,

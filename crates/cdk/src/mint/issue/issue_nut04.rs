@@ -60,15 +60,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn get_mint_bolt11_quote(
         &self,
-        auth_token: Option<AuthToken>,
         mint_quote_request: MintQuoteBolt11Request,
     ) -> Result<MintQuoteBolt11Response<Uuid>, Error> {
-        self.verify_auth(
-            auth_token,
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
-        )
-        .await?;
-
         let MintQuoteBolt11Request {
             amount,
             unit,
@@ -274,15 +267,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_mint_request(
         &self,
-        auth_token: Option<AuthToken>,
         mint_request: MintBolt11Request<Uuid>,
     ) -> Result<MintBolt11Response, Error> {
-        self.verify_auth(
-            auth_token,
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
-        )
-        .await?;
-
         let mint_quote =
             if let Some(mint_quote) = self.localstore.get_mint_quote(&mint_request.quote).await? {
                 mint_quote
