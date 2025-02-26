@@ -118,17 +118,10 @@ impl Wallet {
 
     /// Get keyset fees for mint by keyset id
     pub async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Error> {
-        let keysets = self
-            .localstore
-            .get_mint_keysets(self.mint_url.clone())
+        self.get_keyset_fees()
             .await?
-            .ok_or(Error::UnknownKeySet)?;
-
-        let keyset = keysets
-            .iter()
-            .find(|k| k.id == keyset_id)
-            .ok_or(Error::UnknownKeySet)?;
-
-        Ok(keyset.input_fee_ppk)
+            .get(&keyset_id)
+            .cloned()
+            .ok_or(Error::UnknownKeySet)
     }
 }
