@@ -75,7 +75,7 @@ post_cache_wrapper!(
 /// Get the public keys of the newest mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
-pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
+pub(crate) async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
     let pubkeys = state.mint.pubkeys().await.map_err(|err| {
         tracing::error!("Could not get keys: {}", err);
         into_response(err)
@@ -99,7 +99,7 @@ pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysRespons
 /// Get the public keys of a specific keyset
 ///
 /// Get the public keys of the mint from a specific keyset ID.
-pub async fn get_keyset_pubkeys(
+pub(crate) async fn get_keyset_pubkeys(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
 ) -> Result<Json<KeysResponse>, Response> {
@@ -123,7 +123,7 @@ pub async fn get_keyset_pubkeys(
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
-pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetResponse>, Response> {
+pub(crate) async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetResponse>, Response> {
     let keysets = state.mint.keysets().await.map_err(|err| {
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)
@@ -145,7 +145,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 /// Request a quote for minting of new tokens
 ///
 /// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
-pub async fn post_mint_bolt11_quote(
+pub(crate) async fn post_mint_bolt11_quote(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
@@ -184,7 +184,7 @@ pub async fn post_mint_bolt11_quote(
 /// Get mint quote by ID
 ///
 /// Get mint quote state.
-pub async fn get_check_mint_bolt11_quote(
+pub(crate) async fn get_check_mint_bolt11_quote(
     auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
@@ -213,7 +213,7 @@ pub async fn get_check_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
-pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+pub(crate) async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(|ws| main_websocket(ws, state))
 }
 
@@ -232,7 +232,7 @@ pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) ->
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-pub async fn post_mint_bolt11(
+pub(crate) async fn post_mint_bolt11(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,
@@ -273,7 +273,7 @@ pub async fn post_mint_bolt11(
 ))]
 #[instrument(skip_all)]
 /// Request a quote for melting tokens
-pub async fn post_melt_bolt11_quote(
+pub(crate) async fn post_melt_bolt11_quote(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
@@ -315,7 +315,7 @@ pub async fn post_melt_bolt11_quote(
 ///
 /// Get melt quote state.
 #[instrument(skip_all)]
-pub async fn get_check_melt_bolt11_quote(
+pub(crate) async fn get_check_melt_bolt11_quote(
     auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
@@ -358,7 +358,7 @@ pub async fn get_check_melt_bolt11_quote(
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
 #[instrument(skip_all)]
-pub async fn post_melt_bolt11(
+pub(crate) async fn post_melt_bolt11(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
@@ -397,7 +397,7 @@ pub async fn post_melt_bolt11(
 /// Check whether a proof is spent already or is pending in a transaction
 ///
 /// Check whether a secret has been spent already or not.
-pub async fn post_check(
+pub(crate) async fn post_check(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
@@ -431,7 +431,7 @@ pub async fn post_check(
     )
 ))]
 /// Mint information, operator contact information, and other info
-pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
+pub(crate) async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
     Ok(Json(
         state
             .mint
@@ -461,7 +461,7 @@ pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintIn
 /// Requests a set of Proofs to be swapped for another set of BlindSignatures.
 ///
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
-pub async fn post_swap(
+pub(crate) async fn post_swap(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
@@ -501,7 +501,7 @@ pub async fn post_swap(
     )
 ))]
 /// Restores blind signature for a set of outputs.
-pub async fn post_restore(
+pub(crate) async fn post_restore(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
@@ -526,7 +526,7 @@ pub async fn post_restore(
     Ok(Json(restore_response))
 }
 
-pub fn into_response<T>(error: T) -> Response
+pub(crate) fn into_response<T>(error: T) -> Response
 where
     T: Into<ErrorResponse>,
 {
