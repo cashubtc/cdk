@@ -27,7 +27,7 @@ macro_rules! post_cache_wrapper {
             /// Cache wrapper function for $handler:
             /// Wrap $handler into a function that caches responses using the request as key
             pub async fn [<cache_ $handler>](
-                auth: AuthHeader,
+                #[cfg(feature = "auth")] auth: AuthHeader,
                 state: State<MintState>,
                 payload: Json<$request_type>
             ) -> Result<Json<$response_type>, Response> {
@@ -38,13 +38,19 @@ macro_rules! post_cache_wrapper {
                     Some(key) => key,
                     None => {
                         // Could not calculate key, just return the handler result
+                        #[cfg(feature = "auth")]
                         return $handler(auth, state, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler(state, payload).await;
                     }
                 };
                 if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
                     return Ok(Json(cached_response));
                 }
+                #[cfg(feature = "auth")]
                 let response = $handler(auth, state, payload).await?;
+                #[cfg(not(feature = "auth"))]
+                let response = $handler(state, payload).await?;
                 mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
             }
@@ -146,7 +152,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 ///
 /// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
 pub async fn post_mint_bolt11_quote(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
