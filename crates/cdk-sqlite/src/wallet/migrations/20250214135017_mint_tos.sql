@@ -1,0 +1,1 @@
+ALTER TABLE mint ADD tos TEXT;
