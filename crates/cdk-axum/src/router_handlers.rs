@@ -161,6 +161,9 @@ pub(crate) async fn post_mint_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(not(feature = "auth"))]
+    check_unused_auth(&auth);
+
     #[cfg(feature = "auth")]
     state
         .mint
