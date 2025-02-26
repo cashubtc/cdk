@@ -4,6 +4,7 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
+#[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
@@ -16,6 +17,7 @@ use paste::paste;
 use tracing::instrument;
 use uuid::Uuid;
 
+#[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
