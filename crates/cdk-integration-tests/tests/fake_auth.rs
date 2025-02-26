@@ -29,6 +29,37 @@ fn get_oidc_credentials() -> (String, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_quote_status_without_auth() {
+    let client = HttpClient::new(MintUrl::from_str(MINT_URL).expect("Valid mint url"));
+
+    // Test mint quote status
+    {
+        let quote_res = client
+            .get_mint_quote_status("123e4567-e89b-12d3-a456-426614174000", None)
+            .await;
+
+        assert!(
+            matches!(quote_res, Err(Error::AuthRequired)),
+            "Expected AuthRequired error, got {:?}",
+            quote_res
+        );
+    }
+
+    // Test melt quote status
+    {
+        let quote_res = client
+            .get_melt_quote_status("123e4567-e89b-12d3-a456-426614174000", None)
+            .await;
+
+        assert!(
+            matches!(quote_res, Err(Error::AuthRequired)),
+            "Expected AuthRequired error, got {:?}",
+            quote_res
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_without_auth() {
     let client = HttpClient::new(MintUrl::from_str(MINT_URL).expect("Valid mint url"));
     {
@@ -98,6 +129,23 @@ async fn test_swap_without_auth() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_melt_without_auth() {
     let client = HttpClient::new(MintUrl::from_str(MINT_URL).expect("Valid mint url"));
+
+    // Test melt quote request
+    {
+        let request = MeltQuoteBolt11Request {
+            request: create_fake_invoice(100, "".to_string()),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        };
+
+        let quote_res = client.post_melt_quote(request, None).await;
+
+        assert!(
+            matches!(quote_res, Err(Error::AuthRequired)),
+            "Expected AuthRequired error, got {:?}",
+            quote_res
+        );
+    }
 
     // Test melt quote
     {
