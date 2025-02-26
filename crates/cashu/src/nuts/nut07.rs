@@ -35,6 +35,8 @@ pub enum State {
     ///
     /// i.e. used to create a token
     Reserved,
+    /// Pending spent (i.e., spent but not yet swapped by receiver)
+    PendingSpent,
 }
 
 impl fmt::Display for State {
@@ -44,6 +46,7 @@ impl fmt::Display for State {
             Self::Unspent => "UNSPENT",
             Self::Pending => "PENDING",
             Self::Reserved => "RESERVED",
+            Self::PendingSpent => "PENDING_SPENT",
         };
 
         write!(f, "{}", s)
