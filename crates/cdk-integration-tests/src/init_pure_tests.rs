@@ -10,12 +10,13 @@ use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_database::{MintDatabase, WalletMemoryDatabase};
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintAuthRequest,
     MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
     MintQuoteBolt11Response, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest,
-    SwapResponse, nut21::{Method, ProtectedEndpoint, RoutePath},
+    SwapResponse,
 };
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
@@ -88,6 +89,13 @@ impl MintConnector for DirectMintConnection {
         quote_id: &str,
         auth_token: Option<AuthToken>,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
+        self.mint
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
+            )
+            .await?;
+
         let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
         self.mint
             .check_mint_quote(&quote_id_uuid)
@@ -134,7 +142,13 @@ impl MintConnector for DirectMintConnection {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
         self.mint
-            .check_melt_quote(auth_token, &quote_id_uuid)
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
+            )
+            .await?;
+        self.mint
+            .check_melt_quote(&quote_id_uuid)
             .await
             .map(Into::into)
     }
