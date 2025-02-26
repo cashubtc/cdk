@@ -19,6 +19,7 @@ anyhow = "1"
 axum = "0.6.20"
 cdk = { path = "../cdk", version = "0.7.1", default-features = false, features = [
     "mint",
+    "auth"
 ] }
 cdk-redb = { path = "../cdk-redb", version = "0.7.1", default-features = false, features = [
     "mint",
@@ -32,7 +33,7 @@ cdk-phoenixd = { path = "../cdk-phoenixd", version = "0.7.1", default-features =
 cdk-lnd = { path = "../cdk-lnd", version = "0.7.1", default-features = false }
 cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.7.1", default-features = false }
 cdk-strike = { path = "../cdk-strike", version = "0.7.1" }
-cdk-axum = { path = "../cdk-axum", version = "0.7.1", default-features = false }
+cdk-axum = { path = "../cdk-axum", version = "0.7.1", default-features = false, features = ["auth"] }
 cdk-mint-rpc = { path = "../cdk-mint-rpc", version = "0.7.1", default-features = false, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
 clap = { version = "~4.0.32", features = ["derive"] }

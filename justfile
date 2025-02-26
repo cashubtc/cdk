@@ -38,7 +38,7 @@ format:
   cargo fmt --all
   nixpkgs-fmt $(echo **.nix)
 
-# run tests
+# run doc tests
 test: build
   #!/usr/bin/env bash
   set -euo pipefail
@@ -50,6 +50,13 @@ test: build
   # Run pure integration tests
   cargo test -p cdk-integration-tests --test integration_tests_pure
   cargo test -p cdk-integration-tests --test mint
+
+test-all db:
+    #!/usr/bin/env bash
+    just test
+    ./misc/itests.sh "{{db}}"
+    ./misc/fake_itests.sh "{{db}}"
+    
 
 # run `cargo clippy` on everything
 clippy *ARGS="--locked --offline --workspace --all-targets":

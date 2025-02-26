@@ -1,6 +1,6 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::wallet::client::MintConnector;
+use cdk::wallet::MintConnector;
 use cdk::HttpClient;
 use clap::Args;
 use url::Url;
