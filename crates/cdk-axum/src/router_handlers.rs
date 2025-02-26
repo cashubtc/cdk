@@ -270,9 +270,18 @@ pub async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
+        )
+        .await
+        .map_err(into_response)?;
+
     let quote = state
         .mint
-        .get_melt_bolt11_quote(auth.into(), &payload)
+        .get_melt_bolt11_quote(&payload)
         .await
         .map_err(into_response)?;
 
@@ -300,9 +309,18 @@ pub async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
+        )
+        .await
+        .map_err(into_response)?;
+
     let quote = state
         .mint
-        .check_melt_quote(auth.into(), &quote_id)
+        .check_melt_quote(&quote_id)
         .await
         .map_err(|err| {
             tracing::error!("Could not check melt quote: {}", err);
