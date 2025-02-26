@@ -223,9 +223,18 @@ pub async fn post_mint_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,
 ) -> Result<Json<MintBolt11Response>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+        )
+        .await
+        .map_err(into_response)?;
+
     let res = state
         .mint
-        .process_mint_request(auth.into(), payload)
+        .process_mint_request(payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process mint: {}", err);
@@ -313,9 +322,18 @@ pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+        )
+        .await
+        .map_err(into_response)?;
+
     let res = state
         .mint
-        .melt_bolt11(auth.into(), &payload)
+        .melt_bolt11(&payload)
         .await
         .map_err(into_response)?;
 
@@ -340,9 +358,18 @@ pub async fn post_check(
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::CheckState),
+        )
+        .await
+        .map_err(into_response)?;
+
     let state = state
         .mint
-        .check_state(auth.into(), &payload)
+        .check_state(&payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not check state of proofs");
@@ -396,9 +423,18 @@ pub async fn post_swap(
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
+        )
+        .await
+        .map_err(into_response)?;
+
     let swap_response = state
         .mint
-        .process_swap_request(auth.into(), payload)
+        .process_swap_request(payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process swap request: {}", err);
@@ -424,9 +460,18 @@ pub async fn post_restore(
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
+        )
+        .await
+        .map_err(into_response)?;
+
     let restore_response = state
         .mint
-        .restore(auth.into(), payload)
+        .restore(payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process restore: {}", err);
