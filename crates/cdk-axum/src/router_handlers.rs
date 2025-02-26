@@ -21,6 +21,13 @@ use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
+#[cfg(not(feature = "auth"))]
+fn check_unused_auth(auth: &AuthHeader) {
+    if !matches!(auth, AuthHeader::None) {
+        tracing::info!("Auth header provided but auth feature is disabled");
+    }
+}
+
 macro_rules! post_cache_wrapper {
     ($handler:ident, $request_type:ty, $response_type:ty) => {
         paste! {
