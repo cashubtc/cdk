@@ -108,17 +108,7 @@ impl Wallet {
             _ => None,
         };
         if let Some(tolerance) = tolerance {
-            if selected_total - amount <= tolerance {
-                return self
-                    .internal_prepare_send(
-                        amount,
-                        opts,
-                        selected_proofs,
-                        active_keyset_id,
-                        force_swap,
-                    )
-                    .await;
-            } else if opts.send_kind.is_offline() {
+            if selected_total - amount > tolerance && opts.send_kind.is_offline() {
                 return Err(Error::InsufficientFunds);
             }
         }
