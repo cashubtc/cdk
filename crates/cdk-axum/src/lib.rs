@@ -170,13 +170,13 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mut mint_router = Router::new().nest("/v1", v1_router);
+    let mint_router = Router::new().nest("/v1", v1_router);
 
     #[cfg(feature = "auth")]
-    {
+    let mint_router = {
         let auth_router = create_auth_router(state.clone());
-        mint_router = mint_router.nest("/v1", auth_router);
-    }
+        mint_router.nest("/v1", auth_router)
+    };
 
     let mint_router = mint_router.with_state(state);
 

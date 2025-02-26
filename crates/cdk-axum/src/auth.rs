@@ -101,7 +101,7 @@ where
 #[cfg(feature = "auth")]
 pub async fn get_auth_keysets(
     State(state): State<MintState>,
-) -> Result<Json<KeysetRsponse>, Response> {
+) -> Result<Json<KeysetResponse>, Response> {
     let keysets = state.mint.auth_keysets().await.map_err(|err| {
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)

@@ -151,16 +151,14 @@ pub async fn post_mint_bolt11_quote(
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
     #[cfg(feature = "auth")]
-    if let Some(auth_token) = auth.into() {
-        state
-            .mint
-            .verify_auth(
-                auth_token,
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
-            )
-            .await
-            .map_err(into_response)?;
-    }
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
+        )
+        .await
+        .map_err(into_response)?;
 
     let quote = state
         .mint
