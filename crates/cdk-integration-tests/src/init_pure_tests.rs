@@ -15,7 +15,7 @@ use cdk::nuts::{
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintAuthRequest,
     MintBolt11Request, MintBolt11Response, MintInfo, MintQuoteBolt11Request,
     MintQuoteBolt11Response, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest,
-    SwapResponse,
+    SwapResponse, nut21::{Method, ProtectedEndpoint, RoutePath},
 };
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
@@ -100,6 +100,12 @@ impl MintConnector for DirectMintConnection {
         request: MintBolt11Request<String>,
         auth_token: Option<AuthToken>,
     ) -> Result<MintBolt11Response, Error> {
+        self.mint
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+            )
+            .await?;
         let request_uuid = request.try_into().unwrap();
         self.mint.process_mint_request(request_uuid).await
     }
@@ -110,7 +116,13 @@ impl MintConnector for DirectMintConnection {
         auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         self.mint
-            .get_melt_bolt11_quote(auth_token, &request)
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
+            )
+            .await?;
+        self.mint
+            .get_melt_bolt11_quote(&request)
             .await
             .map(Into::into)
     }
@@ -132,6 +144,12 @@ impl MintConnector for DirectMintConnection {
         request: MeltBolt11Request<String>,
         auth_token: Option<AuthToken>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        self.mint
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+            )
+            .await?;
         let request_uuid = request.try_into().unwrap();
         self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
     }
@@ -141,6 +159,12 @@ impl MintConnector for DirectMintConnection {
         swap_request: SwapRequest,
         auth_token: Option<AuthToken>,
     ) -> Result<SwapResponse, Error> {
+        self.mint
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
+            )
+            .await?;
         self.mint.process_swap_request(swap_request).await
     }
 
@@ -153,6 +177,12 @@ impl MintConnector for DirectMintConnection {
         request: CheckStateRequest,
         auth_token: Option<AuthToken>,
     ) -> Result<CheckStateResponse, Error> {
+        self.mint
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
+            )
+            .await?;
         self.mint.check_state(&request).await
     }
 
@@ -161,6 +191,12 @@ impl MintConnector for DirectMintConnection {
         request: RestoreRequest,
         auth_token: Option<AuthToken>,
     ) -> Result<RestoreResponse, Error> {
+        self.mint
+            .verify_auth(
+                auth_token,
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
+            )
+            .await?;
         self.mint.restore(request).await
     }
 
