@@ -5,7 +5,7 @@ use crate::mint::{
     CurrencyUnit, MintBolt11Request, MintBolt11Response, MintQuote, MintQuoteBolt11Request,
     MintQuoteBolt11Response, MintQuoteState, NotificationPayload, PublicKey, Verification,
 };
-use crate::nuts::{AuthToken, Method, PaymentMethod, ProtectedEndpoint, RoutePath};
+use crate::nuts::PaymentMethod;
 use crate::types::LnKey;
 use crate::util::unix_time;
 use crate::{Amount, Error, Mint};
@@ -133,15 +133,8 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn check_mint_quote(
         &self,
-        auth_token: Option<AuthToken>,
         quote_id: &Uuid,
     ) -> Result<MintQuoteBolt11Response<Uuid>, Error> {
-        self.verify_auth(
-            auth_token,
-            &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
-        )
-        .await?;
-
         let quote = self
             .localstore
             .get_mint_quote(quote_id)

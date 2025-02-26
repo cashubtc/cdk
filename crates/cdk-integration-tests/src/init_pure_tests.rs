@@ -90,7 +90,7 @@ impl MintConnector for DirectMintConnection {
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
         self.mint
-            .check_mint_quote(auth_token, &quote_id_uuid)
+            .check_mint_quote(&quote_id_uuid)
             .await
             .map(Into::into)
     }

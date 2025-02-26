@@ -98,7 +98,7 @@ async fn mint_proofs(
         signature: None,
     };
 
-    let after_mint = mint.process_mint_request(None, mint_request).await?;
+    let after_mint = mint.process_mint_request(mint_request).await?;
 
     let proofs = construct_proofs(
         after_mint.signatures,

@@ -187,9 +187,18 @@ pub async fn get_check_mint_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
+        )
+        .await
+        .map_err(into_response)?;
+
     let quote = state
         .mint
-        .check_mint_quote(auth.into(), &quote_id)
+        .check_mint_quote(&quote_id)
         .await
         .map_err(|err| {
             tracing::error!("Could not check mint quote {}: {}", quote_id, err);
