@@ -75,7 +75,9 @@ post_cache_wrapper!(
 /// Get the public keys of the newest mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
-pub(crate) async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
+pub(crate) async fn get_keys(
+    State(state): State<MintState>,
+) -> Result<Json<KeysResponse>, Response> {
     let pubkeys = state.mint.pubkeys().await.map_err(|err| {
         tracing::error!("Could not get keys: {}", err);
         into_response(err)
@@ -123,7 +125,9 @@ pub(crate) async fn get_keyset_pubkeys(
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
-pub(crate) async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetResponse>, Response> {
+pub(crate) async fn get_keysets(
+    State(state): State<MintState>,
+) -> Result<Json<KeysetResponse>, Response> {
     let keysets = state.mint.keysets().await.map_err(|err| {
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)
@@ -213,7 +217,10 @@ pub(crate) async fn get_check_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
-pub(crate) async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+pub(crate) async fn ws_handler(
+    State(state): State<MintState>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
     ws.on_upgrade(|ws| main_websocket(ws, state))
 }
 
@@ -431,7 +438,9 @@ pub(crate) async fn post_check(
     )
 ))]
 /// Mint information, operator contact information, and other info
-pub(crate) async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
+pub(crate) async fn get_mint_info(
+    State(state): State<MintState>,
+) -> Result<Json<MintInfo>, Response> {
     Ok(Json(
         state
             .mint
