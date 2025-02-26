@@ -28,12 +28,11 @@ cdk-sqlite = { path = "../cdk-sqlite", version = "0.7.1", default-features = fal
 ] }
 cdk-cln = { path = "../cdk-cln", version = "0.7.1", default-features = false }
 cdk-lnbits = { path = "../cdk-lnbits", version = "0.7.1", default-features = false }
-cdk-phoenixd = { path = "../cdk-phoenixd", version = "0.7.1", default-features = false }
 cdk-lnd = { path = "../cdk-lnd", version = "0.7.1", default-features = false }
 cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.7.1", default-features = false }
-cdk-strike = { path = "../cdk-strike", version = "0.7.1" }
 cdk-axum = { path = "../cdk-axum", version = "0.7.1", default-features = false }
 cdk-mint-rpc = { path = "../cdk-mint-rpc", version = "0.7.1", default-features = false, optional = true }
+cdk-payment-processor = { path = "../cdk-payment-processor", version = "0.7.1", default-features = false }
 config = { version = "0.13.3", features = ["toml"] }
 clap = { version = "~4.0.32", features = ["derive"] }
 bitcoin = { version = "0.32.2", features = [

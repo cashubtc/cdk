@@ -27,7 +27,7 @@ impl Mint {
         };
 
         let ln_status = ln
-            .check_incoming_invoice_status(&quote.request_lookup_id)
+            .check_incoming_payment_status(&quote.request_lookup_id)
             .await?;
 
         if ln_status != quote.state && quote.state != MintQuoteState::Issued {

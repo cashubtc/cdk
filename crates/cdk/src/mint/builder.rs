@@ -6,12 +6,14 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::error::Error;
+use cdk_common::payment::Bolt11Settings;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
 use super::Nuts;
 use crate::amount::Amount;
-use crate::cdk_lightning::{self, MintLightning};
+use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
@@ -27,7 +29,7 @@ pub struct MintBuilder {
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
-    ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
+    ln: Option<HashMap<LnKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>>,
     seed: Option<Vec<u8>>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -113,13 +115,13 @@ impl MintBuilder {
     }
 
     /// Add ln backend
-    pub fn add_ln_backend(
+    pub async fn add_ln_backend(
         mut self,
         unit: CurrencyUnit,
         method: PaymentMethod,
         limits: MintMeltLimits,
-        ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-    ) -> Self {
+        ln_backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+    ) -> Result<Self, Error> {
         let ln_key = LnKey {
             unit: unit.clone(),
             method,
@@ -127,7 +129,9 @@ impl MintBuilder {
 
         let mut ln = self.ln.unwrap_or_default();
 
-        let settings = ln_backend.get_settings();
+        let settings = ln_backend.get_settings().await?;
+
+        let settings: Bolt11Settings = settings.try_into()?;
 
         if settings.mpp {
             let mpp_settings = MppMethodSettings {
@@ -173,7 +177,7 @@ impl MintBuilder {
 
         self.ln = Some(ln);
 
-        self
+        Ok(self)
     }
 
     /// Set pubkey
