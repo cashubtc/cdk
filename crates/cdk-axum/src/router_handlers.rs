@@ -17,7 +17,6 @@ use paste::paste;
 use tracing::instrument;
 use uuid::Uuid;
 
-#[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;

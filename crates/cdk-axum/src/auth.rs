@@ -1,5 +1,3 @@
-#![cfg(feature = "auth")]
-
 use std::str::FromStr;
 
 use axum::extract::{FromRequestParts, State};
@@ -100,9 +98,10 @@ where
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
+#[cfg(feature = "auth")]
 pub async fn get_auth_keysets(
     State(state): State<MintState>,
-) -> Result<Json<KeysetResponse>, Response> {
+) -> Result<Json<KeysetRsponse>, Response> {
     let keysets = state.mint.auth_keysets().await.map_err(|err| {
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)
@@ -122,6 +121,7 @@ pub async fn get_auth_keysets(
 /// Get the public keys of the newest blind auth mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
+#[cfg(feature = "auth")]
 pub async fn get_blind_auth_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
@@ -148,6 +148,7 @@ pub async fn get_blind_auth_keys(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "auth")]
 pub async fn post_mint_auth(
     auth: AuthHeader,
     State(state): State<MintState>,
@@ -177,6 +178,7 @@ pub async fn post_mint_auth(
     Ok(Json(res))
 }
 
+#[cfg(feature = "auth")]
 pub fn create_auth_router(state: MintState) -> Router<MintState> {
     Router::new()
         .nest(
