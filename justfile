@@ -35,7 +35,7 @@ format:
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo fmt --all
+  cargo +nightly fmt --all
   nixpkgs-fmt $(echo **.nix)
 
 # run tests
