@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let localstore = WalletMemoryDatabase::default();
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), &seed, None)?;
 
     println!("Bootstrapping to mint {}\n", mint_url);
 
@@ -66,6 +66,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "remaining: {}\n",
         serde_json::to_string_pretty(&coins).unwrap()
+    );
+
+
+    // Create a new wallet and try to restore
+    let localstore1 = WalletMemoryDatabase::default();
+    let wallet1 = Wallet::new(mint_url, unit.clone(), Arc::new(localstore1), &seed, None)?;
+
+    // Restore
+    let restored_balances = wallet1.kvac_restore(100_000).await?;
+
+    println!("restored balances: {}\n",
+        serde_json::to_string_pretty(&restored_balances).unwrap()
     );
 
     Ok(())
