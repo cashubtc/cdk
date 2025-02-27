@@ -1279,9 +1279,9 @@ WHERE quote_id=?;
             .map(|row| {
                 State::from_str(row.get("state"))
                     .map_err(Error::from)
-                    .and_then(|state| {
+                    .map(|state| {
                         let ge = GroupElement::new(row.get("nullifier"));
-                        Ok((ge, state))
+                        (ge, state)
                     })
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
@@ -1655,7 +1655,7 @@ WHERE keyset_id=?;
                 transaction.commit().await.map_err(Error::from)?;
                 let sigs = rec
                     .into_iter()
-                    .map(|row| sqlite_row_to_kvac_issued_mac(row))
+                    .map(sqlite_row_to_kvac_issued_mac)
                     .collect::<Result<Vec<KvacIssuedMac>, _>>()?;
 
                 Ok(sigs)

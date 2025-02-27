@@ -39,7 +39,7 @@ impl Wallet {
         let mut proving_transcript = CashuTranscript::new();
         for _ in 0..n {
             let pre_coin = KvacPreCoin::new(
-                active_keyset_id.clone(),
+                active_keyset_id,
                 Amount::from(0),
                 self.unit.clone(),
                 script.clone(),

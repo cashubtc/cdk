@@ -73,7 +73,7 @@ impl Wallet {
                 Err(e)
             }
             Ok(new_coins) => {
-                let sent = new_coins.get(0).expect("always two outputs").clone();
+                let sent = new_coins.first().expect("always two outputs").clone();
                 let kept = new_coins.get(1).expect("always two outputs").clone();
 
                 // Store the coin encoding the kept balance

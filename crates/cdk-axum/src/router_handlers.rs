@@ -221,7 +221,7 @@ pub async fn get_kvac_keysets(
         .mint
         .kvac_keysets()
         .await
-        .map_err(|err| into_response(err))?;
+        .map_err(into_response)?;
     Ok(Json(keysets))
 }
 

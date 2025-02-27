@@ -48,9 +48,7 @@ impl Mint {
         if self
             .localstore
             .get_kvac_issued_macs_by_tags(&outputs_tags)
-            .await?
-            .iter()
-            .next()
+            .await?.first()
             .is_some()
         {
             tracing::error!("Outputs have already been issued a MAC",);
@@ -59,7 +57,7 @@ impl Mint {
         }
 
         let fee = if apply_fee {
-            i64::try_from(self.get_kvac_inputs_fee(&inputs).await?)?
+            i64::try_from(self.get_kvac_inputs_fee(inputs).await?)?
         } else {
             0
         };
@@ -88,7 +86,7 @@ impl Mint {
 
         let nullifiers = inputs
             .iter()
-            .map(|i| KvacNullifier::from(i))
+            .map(KvacNullifier::from)
             .collect::<Vec<KvacNullifier>>();
         self.localstore.add_kvac_nullifiers(&nullifiers).await?;
         self.check_nullifiers_spendable(&nullifiers, State::Pending)
@@ -112,11 +110,7 @@ impl Mint {
         }
 
         // Extract script if present
-        let script = if let Some(scr) = script {
-            scr
-        } else {
-            String::new()
-        };
+        let script = script.unwrap_or_default();
 
         // Check the MAC proofs for valid MAC issuance on the inputs
         if inputs.len() != mac_proofs.len() {

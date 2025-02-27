@@ -669,12 +669,10 @@ WHERE id=?;
         let cw: Vec<u8> = rec.try_get("Cw").map_err(Error::from)?;
         let i: Vec<u8> = rec.try_get("I").map_err(Error::from)?;
 
-        let mint_key = KvacKeys {
-            0: MintPublicKey {
+        let mint_key = KvacKeys(MintPublicKey {
                 Cw: GroupElement::new(&cw),
                 I: GroupElement::new(&i),
-            },
-        };
+            });
 
         Ok(Some(mint_key))
     }

@@ -376,7 +376,7 @@ impl WalletDatabase for WalletMemoryDatabase {
         let mut all_coins = self.kvac_coins.write().await;
 
         for n in nullifiers.iter() {
-            if let Some(kvac_coin_info) = all_coins.get_mut(&n) {
+            if let Some(kvac_coin_info) = all_coins.get_mut(n) {
                 kvac_coin_info.state = State::Pending;
             }
         }

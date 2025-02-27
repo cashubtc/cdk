@@ -58,7 +58,7 @@ impl Wallet {
     ) -> Result<Vec<KvacCoinState>, Error> {
         // Get the randomized coins
         let randomized_coins: Vec<KvacRandomizedCoin> =
-            coins.iter().map(|c| KvacRandomizedCoin::from(c)).collect();
+            coins.iter().map(KvacRandomizedCoin::from).collect();
 
         // Get the nullifiers
         let nullifiers = randomized_coins.iter().map(|c| c.get_nullifier()).collect();

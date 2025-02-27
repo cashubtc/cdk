@@ -93,8 +93,8 @@ impl Mint {
 
         // Create new keysets for supported units that aren't covered by the current keysets
         for (unit, (fee, max_order)) in supported_units.iter() {
-            if !active_keyset_units.contains(&unit) {
-                let derivation_path = match custom_paths.get(&unit) {
+            if !active_keyset_units.contains(unit) {
+                let derivation_path = match custom_paths.get(unit) {
                     Some(path) => path.clone(),
                     None => {
                         derivation_path_from_unit(unit.clone(), 0).ok_or(Error::UnsupportedUnit)?
@@ -107,8 +107,8 @@ impl Mint {
                     derivation_path,
                     Some(0),
                     unit.clone(),
-                    max_order.clone(),
-                    fee.clone(),
+                    *max_order,
+                    *fee,
                 );
 
                 let id = keyset_info.id;
@@ -385,7 +385,7 @@ impl Mint {
             &key_pair.private_key,
             &commitments.0,
             Some(&commitments.1),
-            Some(&t_tag),
+            Some(t_tag),
         )
         .expect("MAC generate");
         let iparams_proof = IParamsProof::create(
