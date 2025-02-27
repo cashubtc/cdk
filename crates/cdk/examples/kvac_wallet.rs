@@ -6,7 +6,6 @@ use std::{sync::Arc, thread::sleep, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     // Generate a random seed for the wallet
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
@@ -54,7 +53,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check the state of the Minted coin: should be spent
     let states = wallet.check_coins_spent(coins).await?;
 
-    println!("checked states of minted kvac tokens after send:\n {:?}\n", states);
+    println!(
+        "checked states of minted kvac tokens after send:\n {:?}\n",
+        states
+    );
 
     println!("sent: {}\n", serde_json::to_string_pretty(&sent).unwrap());
     println!("kept: {}\n", serde_json::to_string_pretty(&kept).unwrap());
@@ -73,7 +75,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_string_pretty(&coins).unwrap()
     );
 
-
     // Create a new wallet and try to restore
     let localstore1 = WalletMemoryDatabase::default();
     let wallet1 = Wallet::new(mint_url, unit.clone(), Arc::new(localstore1), &seed, None)?;
@@ -81,7 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Restore
     let restored_balances = wallet1.kvac_restore(100_000).await?;
 
-    println!("restored balances: {}\n",
+    println!(
+        "restored balances: {}\n",
         serde_json::to_string_pretty(&restored_balances).unwrap()
     );
 

@@ -34,7 +34,7 @@ impl Mint {
                 }
             })
             .collect();
-        
+
         tracing::debug!("KVAC checkstate successful!");
         Ok(KvacCheckStateResponse { states })
     }

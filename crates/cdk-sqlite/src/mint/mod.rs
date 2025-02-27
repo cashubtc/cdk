@@ -1268,9 +1268,7 @@ WHERE quote_id=?;
 
         let mut current_states = nullifiers
             .iter()
-            .fold(sqlx::query(&sql), |query, n| {
-                query.bind(n.to_bytes())
-            })
+            .fold(sqlx::query(&sql), |query, n| query.bind(n.to_bytes()))
             .fetch_all(&mut transaction)
             .await
             .map_err(|err| {

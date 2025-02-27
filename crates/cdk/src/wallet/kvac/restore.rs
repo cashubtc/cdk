@@ -42,7 +42,6 @@ impl Wallet {
             let mut start_counter = 0;
 
             while empty_batch.lt(&3) {
-
                 // Generate the pre-coins for this batch
                 let pre_coins = (start_counter..start_counter + 100)
                     .map(|counter| {
@@ -57,7 +56,7 @@ impl Wallet {
                         .expect("RNG busted")
                     })
                     .collect::<Vec<KvacPreCoin>>();
-            
+
                 //println!("restore pre_coins: {}", serde_json::to_string(&pre_coins).unwrap());
 
                 tracing::debug!(
@@ -90,7 +89,15 @@ impl Wallet {
                 let coins: Vec<(KvacPreCoin, KvacIssuedMac)> = pre_coins
                     .into_iter()
                     .filter(|p| issued_macs_map.contains_key(&p.t_tag))
-                    .map(|p| (p.clone(), issued_macs_map.get(&p.t_tag).expect("issued macs contains the key").clone()))
+                    .map(|p| {
+                        (
+                            p.clone(),
+                            issued_macs_map
+                                .get(&p.t_tag)
+                                .expect("issued macs contains the key")
+                                .clone(),
+                        )
+                    })
                     .collect();
 
                 // Extract amount commitments
@@ -135,21 +142,20 @@ impl Wallet {
                 let coins: Vec<KvacCoin> = filtered
                     .into_iter()
                     .map(|(amount, (pre_coin, issued_macs))| {
-                            let bytes_blinding_factor = pre_coin.attributes.0.r.to_bytes();
-                            let amount = amount.expect("amount is not None");
-                            KvacCoin {
-                                keyset_id: keyset.id,
-                                amount: Amount::from(amount),
-                                script: None,   // TODO: FIX THIS ONCE SCRIPTS ARE USED/AVAILABLE
-                                unit: keyset.unit.clone(),
-                                coin: Coin::new(
-                                    AmountAttribute::new(amount, Some(&bytes_blinding_factor)),
-                                    Some(pre_coin.attributes.1),
-                                    issued_macs.mac,
-                                ),
-                            }
+                        let bytes_blinding_factor = pre_coin.attributes.0.r.to_bytes();
+                        let amount = amount.expect("amount is not None");
+                        KvacCoin {
+                            keyset_id: keyset.id,
+                            amount: Amount::from(amount),
+                            script: None, // TODO: FIX THIS ONCE SCRIPTS ARE USED/AVAILABLE
+                            unit: keyset.unit.clone(),
+                            coin: Coin::new(
+                                AmountAttribute::new(amount, Some(&bytes_blinding_factor)),
+                                Some(pre_coin.attributes.1),
+                                issued_macs.mac,
+                            ),
                         }
-                    )
+                    })
                     .collect();
 
                 tracing::debug!("Restored {} coins", coins.len());
@@ -169,7 +175,10 @@ impl Wallet {
                     .cloned()
                     .collect();
 
-                println!("unspent_coins: {}", serde_json::to_string_pretty(&unspent_coins).unwrap());
+                println!(
+                    "unspent_coins: {}",
+                    serde_json::to_string_pretty(&unspent_coins).unwrap()
+                );
 
                 // Fold the amount in each coin and calculate a total for this keyset
                 let restored_value = unspent_coins
