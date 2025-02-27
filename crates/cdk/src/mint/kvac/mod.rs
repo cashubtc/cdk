@@ -130,6 +130,7 @@ impl Mint {
                 .verify_mac(input, &script, proof, &mut verify_transcript)
                 .await;
             if let Err(e) = result {
+                tracing::error!("MAC verification failure");
                 self.localstore
                     .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                     .await?;
@@ -147,6 +148,7 @@ impl Mint {
             .map(|o| o.commitments.0.clone())
             .collect::<Vec<GroupElement>>();
         if !RangeProof::verify(&mut verify_transcript, &amount_commitments, range_proof) {
+            tracing::error!("Range proof failed to verify");
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
@@ -163,10 +165,11 @@ impl Mint {
                     keyset_units.insert(keyset.unit);
                 }
                 None => {
-                    tracing::info!("Request with unknown keyset in inputs");
+                    tracing::error!("Request with unknown keyset in inputs");
                     self.localstore
                         .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                         .await?;
+                    return Err(Error::UnknownKeySet);
                 }
             }
         }
@@ -179,10 +182,11 @@ impl Mint {
                     keyset_units.insert(keyset.unit);
                 }
                 None => {
-                    tracing::info!("Request with unknown keyset in outputs");
+                    tracing::error!("Request with unknown keyset in outputs");
                     self.localstore
                         .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                         .await?;
+                    return Err(Error::UnknownKeySet);
                 }
             }
         }
@@ -199,7 +203,6 @@ impl Mint {
         }
 
         // TODO: Script validation and execution
-
         Ok(())
     }
 }

@@ -92,6 +92,9 @@ impl Mint {
         }
 
         if nullifiers_states.contains(&State::Spent) {
+            self.localstore
+                .update_kvac_nullifiers_states(&nullifiers_inner, State::Spent)
+                .await?;
             return Err(Error::TokenAlreadySpent);
         }
 

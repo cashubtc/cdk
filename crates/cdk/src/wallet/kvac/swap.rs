@@ -2,9 +2,7 @@
 use std::collections::HashSet;
 
 use cashu_kvac::{
-    kvac::{BalanceProof, IParamsProof, MacProof, RangeProof},
-    models::{AmountAttribute, Coin},
-    transcript::CashuTranscript,
+    kvac::{BalanceProof, IParamsProof, MacProof, RangeProof}, models::{AmountAttribute, Coin}, secp::GroupElement, transcript::CashuTranscript
 };
 use cdk_common::{
     kvac::{KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest},

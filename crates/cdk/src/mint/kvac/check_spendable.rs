@@ -13,6 +13,7 @@ impl Mint {
         &self,
         check_state: &KvacCheckStateRequest,
     ) -> Result<KvacCheckStateResponse, Error> {
+        tracing::info!("KVAC checkstate has been called");
         let states = self
             .localstore
             .get_kvac_nullifiers_states(&check_state.nullifiers)
@@ -33,7 +34,8 @@ impl Mint {
                 }
             })
             .collect();
-
+        
+        tracing::debug!("KVAC checkstate successful!");
         Ok(KvacCheckStateResponse { states })
     }
 }

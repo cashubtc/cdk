@@ -6,6 +6,7 @@ use std::{sync::Arc, thread::sleep, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+
     // Generate a random seed for the wallet
     let seed = rand::thread_rng().gen::<[u8; 32]>();
 
@@ -42,14 +43,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Mint
     let coins = wallet.kvac_mint(&mint_quote.id, Amount::from(1337)).await?;
 
-    for coin in coins {
-        println!("coin: {}\n", serde_json::to_string_pretty(&coin).unwrap(),);
+    for coin in coins.iter() {
+        println!("coin: {}\n", serde_json::to_string_pretty(&coin).unwrap());
     }
 
     // Send 19 sats
     println!("Sending 19 sats...\n");
-
     let (sent, kept) = wallet.kvac_send(Amount::from(19)).await?;
+
+    // Check the state of the Minted coin: should be spent
+    let states = wallet.check_coins_spent(coins).await?;
+
+    println!("checked states of minted kvac tokens after send:\n {:?}\n", states);
 
     println!("sent: {}\n", serde_json::to_string_pretty(&sent).unwrap());
     println!("kept: {}\n", serde_json::to_string_pretty(&kept).unwrap());

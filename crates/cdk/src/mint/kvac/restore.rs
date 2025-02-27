@@ -12,10 +12,12 @@ impl Mint {
         &self,
         request: KvacRestoreRequest,
     ) -> Result<KvacRestoreResponse, Error> {
+        tracing::info!("KVAC restore called!");
         let tags = request.tags;
 
         let issued_macs = self.localstore.get_kvac_issued_macs_by_tags(&tags).await?;
 
+        tracing::debug!("KVAC restore successful!");
         Ok(KvacRestoreResponse { issued_macs })
     }
 }

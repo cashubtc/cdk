@@ -1096,7 +1096,7 @@ INSERT INTO kvac_nullifiers
 VALUES (?, ?, ?, ?);
         "#,
             )
-            .bind(nullifier.nullifier.to_bytes().to_vec())
+            .bind(nullifier.nullifier.to_bytes())
             .bind(nullifier.keyset_id.to_string())
             .bind(nullifier.quote_id.map(|q| q.hyphenated()))
             .bind(nullifier.state.to_string())
@@ -1268,8 +1268,8 @@ WHERE quote_id=?;
 
         let mut current_states = nullifiers
             .iter()
-            .fold(sqlx::query(&sql), |query, y| {
-                query.bind(y.to_bytes().to_vec())
+            .fold(sqlx::query(&sql), |query, n| {
+                query.bind(n.to_bytes())
             })
             .fetch_all(&mut transaction)
             .await
@@ -1411,7 +1411,7 @@ WHERE keyset_id=?;
         let mut current_states = nullifiers
             .iter()
             .fold(sqlx::query(&sql), |query, nullifier| {
-                query.bind(nullifier.to_bytes().to_vec())
+                query.bind(nullifier.to_bytes())
             })
             .fetch_all(&mut transaction)
             .await
@@ -1441,7 +1441,7 @@ WHERE keyset_id=?;
                 sqlx::query(&update_sql)
                     .bind(state.to_string())
                     .bind(State::Spent.to_string()),
-                |query, y| query.bind(y.to_bytes().to_vec()),
+                |query, n| query.bind(n.to_bytes()),
             )
             .execute(&mut transaction)
             .await
@@ -1449,6 +1449,8 @@ WHERE keyset_id=?;
                 tracing::error!("SQLite could not update kvac nullifier state: {err:?}");
                 Error::SQLX(err)
             })?;
+
+        transaction.commit().await.map_err(Error::from)?;
 
         Ok(nullifiers
             .iter()

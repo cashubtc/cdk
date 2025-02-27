@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::{Error, Wallet};
 use cashu_kvac::{
-    models::Coin,
+    models::{AmountAttribute, Coin},
     recovery::recover_amounts,
     secp::{GroupElement, Scalar},
 };
@@ -42,6 +42,8 @@ impl Wallet {
             let mut start_counter = 0;
 
             while empty_batch.lt(&3) {
+
+                // Generate the pre-coins for this batch
                 let pre_coins = (start_counter..start_counter + 100)
                     .map(|counter| {
                         KvacPreCoin::from_xpriv(
@@ -55,6 +57,8 @@ impl Wallet {
                         .expect("RNG busted")
                     })
                     .collect::<Vec<KvacPreCoin>>();
+            
+                //println!("restore pre_coins: {}", serde_json::to_string(&pre_coins).unwrap());
 
                 tracing::debug!(
                     "Attempting to restore counter {}-{} for mint {} keyset {}",
@@ -76,38 +80,31 @@ impl Wallet {
                     continue;
                 }
 
-                // Get the tags from the response
-                let pre_coins_tags: Vec<Scalar> =
-                    pre_coins.iter().map(|i| i.t_tag.clone()).collect();
-                let issued_tags: Vec<Scalar> = response
+                let issued_macs_map: HashMap<Scalar, KvacIssuedMac> = response
                     .issued_macs
-                    .iter()
-                    .map(|i| i.mac.t.clone())
+                    .into_iter()
+                    .map(|issued| (issued.mac.t.clone(), issued))
                     .collect();
 
                 // Filter the [`KvacPreCoin`]s and get only the ones that were issued a [`MAC`]
-                let issued_macs: Vec<KvacIssuedMac> = response
-                    .issued_macs
+                let coins: Vec<(KvacPreCoin, KvacIssuedMac)> = pre_coins
                     .into_iter()
-                    .filter(|p| pre_coins_tags.contains(&p.mac.t))
-                    .collect();
-
-                // Filter the [`KvacPreCoin`]s and get only the ones that were issued a [`MAC`]
-                let pre_coins: Vec<KvacPreCoin> = pre_coins
-                    .into_iter()
-                    .filter(|p| issued_tags.contains(&p.t_tag))
+                    .filter(|p| issued_macs_map.contains_key(&p.t_tag))
+                    .map(|p| (p.clone(), issued_macs_map.get(&p.t_tag).expect("issued macs contains the key").clone()))
                     .collect();
 
                 // Extract amount commitments
-                let amount_commitments = pre_coins
+                let amount_commitments = coins
                     .iter()
-                    .map(|p| p.attributes.0.commitment())
+                    .map(|(_, issued_mac)| issued_mac.commitments.0.clone())
                     .collect::<Vec<GroupElement>>();
 
+                // println!("amount_commitments: {:?}", amount_commitments);
+
                 // Exctract blinding factors
-                let blinding_factors = pre_coins
+                let blinding_factors = coins
                     .iter()
-                    .map(|p| p.attributes.0.r.clone())
+                    .map(|(pre_coin, _)| pre_coin.attributes.0.r.clone())
                     .collect::<Vec<Scalar>>();
 
                 // Recover the amounts
@@ -120,14 +117,14 @@ impl Wallet {
                 // Filter out any [`KvacPreCoin`] for which amount wasn't found
                 let filtered: Vec<(Option<u64>, (KvacPreCoin, KvacIssuedMac))> = amounts
                     .into_iter()
-                    .zip(pre_coins.into_iter().zip(issued_macs))
-                    .filter(|(amount, k)| {
+                    .zip(coins.into_iter())
+                    .filter(|(amount, (pre_coin, _))| {
                         if amount.is_some() {
                             true
                         } else {
                             tracing::error!(
                                 "Amount was not found for KvacPreCoin with tag: {:?}",
-                                k.0.t_tag
+                                pre_coin.t_tag
                             );
                             false
                         }
@@ -137,17 +134,22 @@ impl Wallet {
                 // Construct coins
                 let coins: Vec<KvacCoin> = filtered
                     .into_iter()
-                    .map(|(amount, (pre_coin, issued_macs))| KvacCoin {
-                        keyset_id: keyset.id,
-                        amount: Amount::from(amount.expect("amount is not None")),
-                        script: None,
-                        unit: keyset.unit.clone(),
-                        coin: Coin::new(
-                            pre_coin.attributes.0,
-                            Some(pre_coin.attributes.1),
-                            issued_macs.mac,
-                        ),
-                    })
+                    .map(|(amount, (pre_coin, issued_macs))| {
+                            let bytes_blinding_factor = pre_coin.attributes.0.r.to_bytes();
+                            let amount = amount.expect("amount is not None");
+                            KvacCoin {
+                                keyset_id: keyset.id,
+                                amount: Amount::from(amount),
+                                script: None,   // TODO: FIX THIS ONCE SCRIPTS ARE USED/AVAILABLE
+                                unit: keyset.unit.clone(),
+                                coin: Coin::new(
+                                    AmountAttribute::new(amount, Some(&bytes_blinding_factor)),
+                                    Some(pre_coin.attributes.1),
+                                    issued_macs.mac,
+                                ),
+                            }
+                        }
+                    )
                     .collect();
 
                 tracing::debug!("Restored {} coins", coins.len());
@@ -167,6 +169,9 @@ impl Wallet {
                     .cloned()
                     .collect();
 
+                println!("unspent_coins: {}", serde_json::to_string_pretty(&unspent_coins).unwrap());
+
+                // Fold the amount in each coin and calculate a total for this keyset
                 let restored_value = unspent_coins
                     .iter()
                     .fold(Amount::ZERO, |acc, c| acc + c.amount);

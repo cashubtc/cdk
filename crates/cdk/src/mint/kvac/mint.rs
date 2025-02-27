@@ -95,6 +95,7 @@ impl Mint {
             // Set nullifiers unspent in case of error
             match result {
                 Err(e) => {
+                    tracing::error!("Failure to issue MACs");
                     self.localstore
                         .update_kvac_nullifiers_states(&nullifiers, State::Unspent)
                         .await?;

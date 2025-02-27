@@ -222,8 +222,8 @@ pub struct KvacPreCoin {
     /// Pair of attributes
     ///
     /// Pair ([`AmountAttribute`], [`ScriptAttribute`]) that represent:
-    /// 1) Value: encoding value 0
-    /// 2) Script: encoding a custom script
+    /// 1) Value: holds the [`Scalar`] of the amount and its blinding factor
+    /// 2) Script: holds the [`Scalar`] of the scripthash and its blinding factor
     pub attributes: (AmountAttribute, ScriptAttribute),
 }
 

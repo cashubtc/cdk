@@ -62,6 +62,7 @@ impl Wallet {
 
         // Get the nullifiers
         let nullifiers = randomized_coins.iter().map(|c| c.get_nullifier()).collect();
+        //println!("check_coins_spent: nullifiers: {}", serde_json::to_string_pretty(&nullifiers).unwrap());
 
         // Call the endpoint
         let result = self
