@@ -113,7 +113,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
     }
 
     let wallet_bal = wallet.total_balance().await?;
-    assert!(wallet_bal == 100.into());
+    assert_eq!(wallet_bal, 100.into());
 
     Ok(())
 }
@@ -256,7 +256,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
-    assert!(melt.is_err());
+    assert_eq!(melt.unwrap_err().to_string(), "Payment failed");
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -271,7 +271,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
-    assert!(melt.is_err());
+    assert_eq!(melt.unwrap_err().to_string(), "Payment failed");
 
     let pending = wallet
         .localstore

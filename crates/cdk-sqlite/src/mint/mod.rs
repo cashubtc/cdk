@@ -1,7 +1,6 @@
 //! SQLite Mint
 
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -21,11 +20,11 @@ use cdk_common::{
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::SqliteRow;
-use sqlx::Row;
+use sqlx::{Pool, Row, Sqlite};
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
-use crate::common::{create_sqlite_pool, SqlitePool};
+use crate::common::create_sqlite_pool;
 
 pub mod error;
 pub mod memory;
@@ -33,7 +32,7 @@ pub mod memory;
 /// Mint SQLite Database
 #[derive(Debug, Clone)]
 pub struct MintSqliteDatabase {
-    pool: SqlitePool,
+    pool: Pool<Sqlite>,
 }
 
 impl MintSqliteDatabase {
@@ -47,7 +46,7 @@ impl MintSqliteDatabase {
     /// Migrate [`MintSqliteDatabase`]
     pub async fn migrate(&self) {
         sqlx::migrate!("./src/mint/migrations")
-            .run(self.pool.deref())
+            .run(&self.pool)
             .await
             .expect("Could not run migrations");
     }
