@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::str::FromStr;
-use std::{cmp::Ordering, i64};
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

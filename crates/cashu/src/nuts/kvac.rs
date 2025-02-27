@@ -384,7 +384,7 @@ impl KvacNullifier {
 impl From<&KvacRandomizedCoin> for KvacNullifier {
     fn from(coin: &KvacRandomizedCoin) -> Self {
         Self {
-            keyset_id: coin.keyset_id.clone(),
+            keyset_id: coin.keyset_id,
             nullifier: coin.randomized_coin.Ca.clone(),
             quote_id: None,
             state: State::Unspent,

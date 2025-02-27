@@ -73,7 +73,7 @@ pub struct KvacCoinInfo {
 }
 
 impl KvacCoinInfo {
-    ///! Check if [`KvacCoinInfo`] matches conditions
+    /// Check if [`KvacCoinInfo`] matches conditions
     pub fn matches_conditions(
         &self,
         mint_url: &Option<MintUrl>,
