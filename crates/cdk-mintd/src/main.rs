@@ -1,6 +1,4 @@
-//! CDK Mint Server
-
-#![warn(missing_docs)]
+//! CDK NUT21 is not defined#![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
 use std::collections::HashMap;
@@ -15,13 +13,16 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::{middleware, Router};
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase};
+use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
 use cdk::cdk_lightning;
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
-use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
+use cdk::nuts::{
+    AuthRequired, ContactInfo, CurrencyUnit, MintVersion, PaymentMethod, ProtectedEndpoint,
+    RoutePath,
+};
 use cdk::types::{LnKey, QuoteTTL};
 use cdk_axum::cache::HttpCache;
 #[cfg(feature = "management-rpc")]
@@ -30,7 +31,9 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
+use cdk_redb::mint::MintRedbAuthDatabase;
 use cdk_redb::MintRedbDatabase;
+use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
@@ -317,6 +320,123 @@ async fn main() -> anyhow::Result<()> {
     let cache: HttpCache = settings.info.http_cache.into();
 
     mint_builder = mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints);
+
+    // Add auth to mint
+    if let Some(auth_settings) = settings.auth {
+        tracing::info!("Auth settings are defined. {:?}", auth_settings);
+        let auth_localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync> =
+            match settings.database.engine {
+                DatabaseEngine::Sqlite => {
+                    let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+                    let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+
+                    sqlite_db.migrate().await;
+
+                    Arc::new(sqlite_db)
+                }
+                DatabaseEngine::Redb => {
+                    let redb_path = work_dir.join("cdk-mintd-auth.redb");
+                    Arc::new(MintRedbAuthDatabase::new(&redb_path)?)
+                }
+            };
+
+        mint_builder = mint_builder.with_auth_localstore(auth_localstore.clone());
+
+        let mint_blind_auth_endpoint =
+            ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintBlindAuth);
+
+        mint_builder = mint_builder.set_clear_auth_settings(
+            auth_settings.openid_discovery,
+            auth_settings.openid_client_id,
+        );
+
+        let mut protected_endpoints = HashMap::new();
+
+        protected_endpoints.insert(mint_blind_auth_endpoint, AuthRequired::Clear);
+
+        let mut blind_auth_endpoints = vec![];
+
+        if auth_settings.enabled_mint {
+            let mint_quote_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Post,
+                cdk::nuts::RoutePath::MintQuoteBolt11,
+            );
+            protected_endpoints.insert(mint_quote_protected_endpoint, AuthRequired::Blind);
+            let mint_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MintBolt11);
+
+            protected_endpoints.insert(mint_protected_endpoint, AuthRequired::Blind);
+
+            blind_auth_endpoints.push(mint_quote_protected_endpoint);
+            blind_auth_endpoints.push(mint_protected_endpoint);
+        }
+
+        if auth_settings.enabled_melt {
+            let melt_quote_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Post,
+                cdk::nuts::RoutePath::MeltQuoteBolt11,
+            );
+
+            protected_endpoints.insert(melt_quote_protected_endpoint, AuthRequired::Blind);
+
+            let melt_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MeltBolt11);
+            protected_endpoints.insert(melt_protected_endpoint, AuthRequired::Blind);
+
+            blind_auth_endpoints.push(melt_quote_protected_endpoint);
+            blind_auth_endpoints.push(melt_protected_endpoint);
+        }
+
+        if auth_settings.enabled_swap {
+            let swap_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::Swap);
+            protected_endpoints.insert(swap_protected_endpoint, AuthRequired::Blind);
+
+            blind_auth_endpoints.push(swap_protected_endpoint);
+        }
+
+        if auth_settings.enabled_check_mint_quote {
+            let check_mint_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Get,
+                cdk::nuts::RoutePath::MintQuoteBolt11,
+            );
+            protected_endpoints.insert(check_mint_protected_endpoint, AuthRequired::Blind);
+
+            blind_auth_endpoints.push(check_mint_protected_endpoint);
+        }
+
+        if auth_settings.enabled_check_melt_quote {
+            let check_melt_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Get,
+                cdk::nuts::RoutePath::MeltQuoteBolt11,
+            );
+            protected_endpoints.insert(check_melt_protected_endpoint, AuthRequired::Blind);
+
+            blind_auth_endpoints.push(check_melt_protected_endpoint);
+        }
+
+        if auth_settings.enabled_restore {
+            let restore_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::Restore);
+            protected_endpoints.insert(restore_protected_endpoint, AuthRequired::Blind);
+
+            blind_auth_endpoints.push(restore_protected_endpoint);
+        }
+
+        if auth_settings.enabled_check_proof_state {
+            let state_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::Checkstate);
+            protected_endpoints.insert(state_protected_endpoint, AuthRequired::Blind);
+
+            blind_auth_endpoints.push(state_protected_endpoint);
+        }
+
+        mint_builder = mint_builder.set_blind_auth_settings(auth_settings.mint_max_bat);
+
+        auth_localstore
+            .add_protected_endpoints(protected_endpoints)
+            .await?;
+    }
 
     let mint = mint_builder.build().await?;
 

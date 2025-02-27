@@ -8,7 +8,6 @@ use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::Params;
-use client::MintConnector;
 use getrandom::getrandom;
 pub use multi_mint_wallet::MultiMintWallet;
 use subscription::{ActiveSubscription, SubscriptionManager};
@@ -27,13 +26,15 @@ use crate::nuts::{
     RestoreRequest, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
-use crate::{Amount, HttpClient};
+use crate::util::unix_time;
+use crate::Amount;
 
+mod auth;
 mod balance;
-pub mod client;
 mod keysets;
 mod melt;
 mod mint;
+mod mint_connector;
 pub mod multi_mint_wallet;
 mod proofs;
 mod receive;
@@ -42,7 +43,9 @@ pub mod subscription;
 mod swap;
 pub mod util;
 
+pub use auth::AuthWallet;
 pub use cdk_common::wallet as types;
+pub use mint_connector::{HttpClient, MintConnector};
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -61,6 +64,7 @@ pub struct Wallet {
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
+    auth_wallet: Option<AuthWallet>,
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
@@ -141,7 +145,7 @@ impl Wallet {
         let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
         let mint_url = MintUrl::from_str(mint_url)?;
 
-        let http_client = Arc::new(HttpClient::new(mint_url.clone()));
+        let http_client = Arc::new(HttpClient::new(mint_url.clone(), None));
 
         Ok(Self {
             mint_url: mint_url.clone(),
@@ -151,6 +155,7 @@ impl Wallet {
             localstore,
             xpriv,
             target_proof_count: target_proof_count.unwrap_or(3),
+            auth_wallet: None,
         })
     }
 
@@ -163,7 +168,7 @@ impl Wallet {
     /// Subscribe to events
     pub async fn subscribe<T: Into<Params>>(&self, query: T) -> ActiveSubscription {
         self.subscription
-            .subscribe(self.mint_url.clone(), query.into())
+            .subscribe(self.mint_url.clone(), query.into(), Arc::new(self.clone()))
             .await
     }
 
@@ -228,21 +233,34 @@ impl Wallet {
     /// Query mint for current mint information
     #[instrument(skip(self))]
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = match self.client.get_mint_info().await {
-            Ok(mint_info) => Some(mint_info),
+        match self.client.get_mint_info().await {
+            Ok(mint_info) => {
+                // If mint provides time make sure it is accurate
+                if let Some(mint_unix_time) = mint_info.time {
+                    let current_unix_time = unix_time();
+                    if current_unix_time.abs_diff(mint_unix_time) > 30 {
+                        tracing::warn!(
+                            "Mint time does match wallet time. Mint: {}, Wallet: {}",
+                            mint_unix_time,
+                            current_unix_time
+                        );
+                        return Err(Error::MintTimeExceedsTolerance);
+                    }
+                }
+
+                self.localstore
+                    .add_mint(self.mint_url.clone(), Some(mint_info.clone()))
+                    .await?;
+
+                tracing::trace!("Mint info updated for {}", self.mint_url);
+
+                Ok(Some(mint_info))
+            }
             Err(err) => {
                 tracing::warn!("Could not get mint info {}", err);
-                None
+                Ok(None)
             }
-        };
-
-        self.localstore
-            .add_mint(self.mint_url.clone(), mint_info.clone())
-            .await?;
-
-        tracing::trace!("Mint info updated for {}", self.mint_url);
-
-        Ok(mint_info)
+        }
     }
 
     /// Get amounts needed to refill proof state

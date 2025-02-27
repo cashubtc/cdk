@@ -9,7 +9,8 @@ use super::WsSubscriptionBody;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{nut01, nut04, nut05, nut07, CheckStateRequest, NotificationPayload};
 use crate::pub_sub::SubId;
-use crate::wallet::client::MintConnector;
+use crate::wallet::MintConnector;
+use crate::Wallet;
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 enum UrlType {
@@ -78,6 +79,7 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
     subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
     mut new_subscription_recv: mpsc::Receiver<SubId>,
     mut on_drop: mpsc::Receiver<SubId>,
+    _wallet: Arc<Wallet>,
 ) {
     let mut interval = time::interval(Duration::from_secs(2));
     let mut subscribed_to = HashMap::<UrlType, (mpsc::Sender<_>, _, AnyState)>::new();
@@ -93,6 +95,7 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
                     tracing::debug!("Polling: {:?}", url);
                     match url {
                         UrlType::Mint(id) => {
+
                             let response = http_client.get_mint_quote_status(id).await;
                             if let Ok(response) = response {
                                 if *last_state == AnyState::MintQuoteState(response.state) {
@@ -105,6 +108,7 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
                             }
                         }
                         UrlType::Melt(id) => {
+
                             let response = http_client.get_melt_quote_status(id).await;
                             if let Ok(response) = response {
                                 if *last_state == AnyState::MeltQuoteState(response.state) {
@@ -119,7 +123,8 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
                         UrlType::PublicKey(id) => {
                             let responses = http_client.post_check_state(CheckStateRequest {
                                 ys: vec![*id],
-                            }).await;
+                            }
+                            ).await;
                             if let Ok(mut responses) = responses {
                                 let response = if let Some(state) = responses.states.pop() {
                                     state

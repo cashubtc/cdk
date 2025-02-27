@@ -8,8 +8,7 @@ use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
-use cdk::wallet::client::HttpClient;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::wallet::{HttpClient, MultiMintWallet, Wallet};
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
@@ -78,6 +77,10 @@ enum Commands {
     PayRequest(sub_commands::pay_request::PayRequestSubCommand),
     /// Create Payment request
     CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
+    /// Mint blind auth proofs
+    MintBlindAuth(sub_commands::mint_blind_auth::MintBlindAuthSubCommand),
+    /// Cat login
+    CatLogin(sub_commands::cat_login::CatLoginSubCommand),
 }
 
 #[tokio::main]
@@ -227,6 +230,24 @@ async fn main() -> Result<()> {
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::MintBlindAuth(sub_command_args) => {
+            sub_commands::mint_blind_auth::mint_blind_auth(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+            )
+            .await
+        }
+        Commands::CatLogin(sub_command_args) => {
+            sub_commands::cat_login::cat_login(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+            )
+            .await
         }
     }
 }

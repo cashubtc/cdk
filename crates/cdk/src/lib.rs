@@ -11,6 +11,12 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+mod oidc_client;
+
+#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+pub use oidc_client::OidcClient;
+
 pub mod pub_sub;
 
 /// Re-export amount type
@@ -37,7 +43,7 @@ pub use wallet::{Wallet, WalletSubscription};
 pub use self::util::SECP256K1;
 #[cfg(feature = "wallet")]
 #[doc(hidden)]
-pub use self::wallet::client::HttpClient;
+pub use self::wallet::HttpClient;
 
 /// Result
 #[doc(hidden)]

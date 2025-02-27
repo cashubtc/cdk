@@ -30,6 +30,7 @@ impl Wallet {
     /// Queries mint for all keysets
     #[instrument(skip(self))]
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+        // REVIEW: Should these be authed
         let keysets = self.client.get_mint_keysets().await?;
 
         self.localstore
@@ -45,6 +46,7 @@ impl Wallet {
     /// keysets
     #[instrument(skip(self))]
     pub async fn get_active_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+        // REVIEW: Should these be authed
         let keysets = self.client.get_mint_keysets().await?;
         let keysets = keysets.keysets;
 

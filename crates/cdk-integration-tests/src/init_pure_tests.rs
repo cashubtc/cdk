@@ -18,8 +18,7 @@ use cdk::nuts::{
 };
 use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
-use cdk::wallet::client::MintConnector;
-use cdk::wallet::Wallet;
+use cdk::wallet::{MintConnector, Wallet};
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::Notify;
