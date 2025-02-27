@@ -18,5 +18,5 @@ The CDK [`Wallet`] is a high level Cashu wallet. The [`Wallet`] is for a single 
   let unit = CurrencyUnit::Sat;
 
   let localstore = WalletMemoryDatabase::default();
-  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None);
+  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
 ```
