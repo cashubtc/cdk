@@ -20,7 +20,7 @@ use cdk_integration_tests::init_regtest::{
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
 use cdk_integration_tests::wait_for_mint_to_be_paid;
-use cdk_sqlite::wallet::memory;
+use cdk_sqlite::wallet::{self, memory};
 use futures::{join, SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
@@ -453,7 +453,7 @@ async fn test_websocket_connection() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(wallet::memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
