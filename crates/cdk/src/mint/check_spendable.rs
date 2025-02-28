@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use cashu_kvac::secp::GroupElement;
+use cdk_common::kvac::KvacNullifier;
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, PublicKey, State};
@@ -59,6 +61,41 @@ impl Mint {
         for public_key in ys {
             tracing::debug!("proof: {} set to {}", public_key.to_hex(), proof_state);
             self.pubsub_manager.proof_state((*public_key, proof_state));
+        }
+
+        Ok(())
+    }
+
+    /// Check KVAC nullifiers are not spent or pending
+    pub async fn check_nullifiers_spendable(
+        &self,
+        nullifiers: &[KvacNullifier],
+        state: State,
+    ) -> Result<(), Error> {
+        let nullifiers_inner = nullifiers
+            .iter()
+            .map(|n| n.nullifier.clone())
+            .collect::<Vec<GroupElement>>();
+
+        let nullifiers_states = self
+            .localstore
+            .update_kvac_nullifiers_states(&nullifiers_inner, state)
+            .await?;
+
+        let nullifiers_states = nullifiers_states
+            .iter()
+            .flatten()
+            .collect::<HashSet<&State>>();
+
+        if nullifiers_states.contains(&State::Pending) {
+            return Err(Error::TokenPending);
+        }
+
+        if nullifiers_states.contains(&State::Spent) {
+            self.localstore
+                .update_kvac_nullifiers_states(&nullifiers_inner, State::Spent)
+                .await?;
+            return Err(Error::TokenAlreadySpent);
         }
 
         Ok(())

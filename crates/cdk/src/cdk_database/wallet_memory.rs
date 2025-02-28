@@ -4,7 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cashu_kvac::secp::GroupElement;
+use cdk_common::common::KvacCoinInfo;
 use cdk_common::database::{Error, WalletDatabase};
+use cdk_common::kvac::{KvacKeys, KvacRandomizedCoin};
 use tokio::sync::RwLock;
 
 use crate::mint_url::MintUrl;
@@ -21,12 +24,17 @@ use crate::wallet::types::MintQuote;
 pub struct WalletMemoryDatabase {
     mints: Arc<RwLock<HashMap<MintUrl, Option<MintInfo>>>>,
     mint_keysets: Arc<RwLock<HashMap<MintUrl, HashSet<Id>>>>,
+    mint_kvac_keysets: Arc<RwLock<HashMap<MintUrl, HashSet<Id>>>>,
     keysets: Arc<RwLock<HashMap<Id, KeySetInfo>>>,
+    kvac_keysets: Arc<RwLock<HashMap<Id, KeySetInfo>>>,
     mint_quotes: Arc<RwLock<HashMap<String, MintQuote>>>,
     melt_quotes: Arc<RwLock<HashMap<String, wallet::MeltQuote>>>,
     mint_keys: Arc<RwLock<HashMap<Id, Keys>>>,
+    mint_kvac_keys: Arc<RwLock<HashMap<Id, KvacKeys>>>,
     proofs: Arc<RwLock<HashMap<PublicKey, ProofInfo>>>,
+    kvac_coins: Arc<RwLock<HashMap<GroupElement, KvacCoinInfo>>>,
     keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
+    kvac_keyset_counter: Arc<RwLock<HashMap<Id, u32>>>,
     nostr_last_checked: Arc<RwLock<HashMap<PublicKey, u32>>>,
 }
 
@@ -36,13 +44,17 @@ impl WalletMemoryDatabase {
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<wallet::MeltQuote>,
         mint_keys: Vec<Keys>,
+        mint_kvac_keys: Vec<KvacKeys>,
         keyset_counter: HashMap<Id, u32>,
+        kvac_keyset_counter: HashMap<Id, u32>,
         nostr_last_checked: HashMap<PublicKey, u32>,
     ) -> Self {
         Self {
             mints: Arc::new(RwLock::new(HashMap::new())),
             mint_keysets: Arc::new(RwLock::new(HashMap::new())),
+            mint_kvac_keysets: Arc::new(RwLock::new(HashMap::new())),
             keysets: Arc::new(RwLock::new(HashMap::new())),
+            kvac_keysets: Arc::new(RwLock::new(HashMap::new())),
             mint_quotes: Arc::new(RwLock::new(
                 mint_quotes.into_iter().map(|q| (q.id.clone(), q)).collect(),
             )),
@@ -52,8 +64,16 @@ impl WalletMemoryDatabase {
             mint_keys: Arc::new(RwLock::new(
                 mint_keys.into_iter().map(|k| (Id::from(&k), k)).collect(),
             )),
+            mint_kvac_keys: Arc::new(RwLock::new(
+                mint_kvac_keys
+                    .into_iter()
+                    .map(|k| (Id::from(&k), k))
+                    .collect(),
+            )),
             proofs: Arc::new(RwLock::new(HashMap::new())),
+            kvac_coins: Arc::new(RwLock::new(HashMap::new())),
             keyset_counter: Arc::new(RwLock::new(keyset_counter)),
+            kvac_keyset_counter: Arc::new(RwLock::new(kvac_keyset_counter)),
             nostr_last_checked: Arc::new(RwLock::new(nostr_last_checked)),
         }
     }
@@ -158,6 +178,28 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn add_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Error> {
+        let mut current_mint_keysets = self.mint_kvac_keysets.write().await;
+        let mut current_keysets = self.kvac_keysets.write().await;
+
+        for keyset in keysets {
+            current_mint_keysets
+                .entry(mint_url.clone())
+                .and_modify(|ks| {
+                    ks.insert(keyset.id);
+                })
+                .or_insert(HashSet::from_iter(vec![keyset.id]));
+
+            current_keysets.insert(keyset.id, keyset);
+        }
+
+        Ok(())
+    }
+
     async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Option<Vec<KeySetInfo>>, Error> {
         match self.mint_keysets.read().await.get(&mint_url) {
             Some(keyset_ids) => {
@@ -177,8 +219,34 @@ impl WalletDatabase for WalletMemoryDatabase {
         }
     }
 
+    async fn get_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Error> {
+        match self.mint_kvac_keysets.read().await.get(&mint_url) {
+            Some(keyset_ids) => {
+                let mut keysets = vec![];
+
+                let db_keysets = self.kvac_keysets.read().await;
+
+                for id in keyset_ids {
+                    if let Some(keyset) = db_keysets.get(id) {
+                        keysets.push(keyset.clone());
+                    }
+                }
+
+                Ok(Some(keysets))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error> {
         Ok(self.keysets.read().await.get(keyset_id).cloned())
+    }
+
+    async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error> {
+        Ok(self.kvac_keysets.read().await.get(keyset_id).cloned())
     }
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
@@ -227,12 +295,29 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn add_kvac_keys(&self, keys: KvacKeys) -> Result<(), Error> {
+        self.mint_kvac_keys
+            .write()
+            .await
+            .insert(Id::from(&keys), keys);
+        Ok(())
+    }
+
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Error> {
         Ok(self.mint_keys.read().await.get(id).cloned())
     }
 
+    async fn get_kvac_keys(&self, id: &Id) -> Result<Option<KvacKeys>, Error> {
+        Ok(self.mint_kvac_keys.read().await.get(id).cloned())
+    }
+
     async fn remove_keys(&self, id: &Id) -> Result<(), Error> {
         self.mint_keys.write().await.remove(id);
+        Ok(())
+    }
+
+    async fn remove_kvac_keys(&self, id: &Id) -> Result<(), Error> {
+        self.mint_kvac_keys.write().await.remove(id);
         Ok(())
     }
 
@@ -254,12 +339,45 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn update_kvac_coins(
+        &self,
+        added: Vec<KvacCoinInfo>,
+        removed_nullifiers: Vec<GroupElement>,
+    ) -> Result<(), Self::Err> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for coin_info in added.into_iter() {
+            all_coins.insert(
+                KvacRandomizedCoin::from(&coin_info.coin).get_nullifier(),
+                coin_info,
+            );
+        }
+
+        for t in removed_nullifiers.into_iter() {
+            all_coins.remove(&t);
+        }
+
+        Ok(())
+    }
+
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
         let mut all_proofs = self.proofs.write().await;
 
         for y in ys.into_iter() {
             if let Some(proof_info) = all_proofs.get_mut(&y) {
                 proof_info.state = State::Pending;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_pending_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for n in nullifiers.iter() {
+            if let Some(kvac_coin_info) = all_coins.get_mut(n) {
+                kvac_coin_info.state = State::Pending;
             }
         }
 
@@ -278,12 +396,36 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn reserve_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Error> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for n in nullifiers.iter() {
+            if let Some(coin_info) = all_coins.get_mut(n) {
+                coin_info.state = State::Reserved;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
         let mut all_proofs = self.proofs.write().await;
 
         for y in ys.into_iter() {
             if let Some(proof_info) = all_proofs.get_mut(&y) {
                 proof_info.state = State::Unspent;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_unspent_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Error> {
+        let mut all_coins = self.kvac_coins.write().await;
+
+        for n in nullifiers.iter() {
+            if let Some(coin_info) = all_coins.get_mut(n) {
+                coin_info.state = State::Unspent;
             }
         }
 
@@ -314,6 +456,29 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(proofs)
     }
 
+    async fn get_kvac_coins(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+        script: Option<String>,
+    ) -> Result<Vec<KvacCoinInfo>, Error> {
+        let coins = self.kvac_coins.read().await;
+
+        let coins: Vec<KvacCoinInfo> = coins
+            .clone()
+            .into_values()
+            .filter_map(|coin_info| {
+                match coin_info.matches_conditions(&mint_url, &unit, &state, &script) {
+                    true => Some(coin_info),
+                    false => None,
+                }
+            })
+            .collect();
+
+        Ok(coins)
+    }
+
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error> {
         let keyset_counter = self.keyset_counter.read().await;
         let current_counter = keyset_counter.get(keyset_id).cloned().unwrap_or(0);
@@ -326,8 +491,24 @@ impl WalletDatabase for WalletMemoryDatabase {
         Ok(())
     }
 
+    async fn increment_kvac_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Error> {
+        let keyset_counter = self.kvac_keyset_counter.read().await;
+        let current_counter = keyset_counter.get(keyset_id).cloned().unwrap_or(0);
+        drop(keyset_counter);
+
+        self.kvac_keyset_counter
+            .write()
+            .await
+            .insert(*keyset_id, current_counter + count);
+        Ok(())
+    }
+
     async fn get_keyset_counter(&self, id: &Id) -> Result<Option<u32>, Error> {
         Ok(self.keyset_counter.read().await.get(id).cloned())
+    }
+
+    async fn get_kvac_keyset_counter(&self, id: &Id) -> Result<Option<u32>, Error> {
+        Ok(self.kvac_keyset_counter.read().await.get(id).cloned())
     }
 
     async fn get_nostr_last_checked(

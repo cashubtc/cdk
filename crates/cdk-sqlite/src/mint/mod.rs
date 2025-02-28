@@ -7,8 +7,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
+use cashu_kvac::models::MAC;
+use cashu_kvac::secp::{GroupElement, Scalar};
 use cdk_common::common::{LnKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::kvac::{KvacIssuedMac, KvacNullifier};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
@@ -120,6 +123,62 @@ AND id IS ?;
         Ok(())
     }
 
+    async fn set_active_kvac_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let update_res = sqlx::query(
+            r#"
+UPDATE kvac_keyset
+SET active=TRUE
+WHERE unit IS ?;
+        "#,
+        )
+        .bind(unit.to_string())
+        .execute(&mut transaction)
+        .await;
+
+        match update_res {
+            Ok(_) => (),
+            Err(err) => {
+                tracing::error!("SQLite Could not update keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                return Err(Error::from(err).into());
+            }
+        };
+
+        let update_res = sqlx::query(
+            r#"
+UPDATE kvac_keyset
+SET active=TRUE
+WHERE unit IS ?
+AND id IS ?;
+        "#,
+        )
+        .bind(unit.to_string())
+        .bind(id.to_string())
+        .execute(&mut transaction)
+        .await;
+
+        match update_res {
+            Ok(_) => (),
+            Err(err) => {
+                tracing::error!("SQLite Could not update keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                return Err(Error::from(err).into());
+            }
+        };
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -161,6 +220,50 @@ AND unit IS ?
         ))
     }
 
+    async fn get_active_kvac_keyset_id(
+        &self,
+        unit: &CurrencyUnit,
+    ) -> Result<Option<Id>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT id
+FROM kvac_keyset
+WHERE active = 1
+AND unit IS ?
+        "#,
+        )
+        .bind(unit.to_string())
+        .fetch_one(&mut transaction)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+                rec
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Ok(None);
+                }
+                _ => {
+                    return {
+                        if let Err(err) = transaction.rollback().await {
+                            tracing::error!("Could not rollback sql transaction: {}", err);
+                        }
+                        Err(Error::SQLX(err).into())
+                    }
+                }
+            },
+        };
+
+        Ok(Some(
+            Id::from_str(rec.try_get("id").map_err(Error::from)?).map_err(Error::from)?,
+        ))
+    }
+
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -168,6 +271,45 @@ AND unit IS ?
             r#"
 SELECT id, unit
 FROM keyset
+WHERE active = 1
+        "#,
+        )
+        .fetch_all(&mut transaction)
+        .await;
+
+        match recs {
+            Ok(recs) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let keysets = recs
+                    .iter()
+                    .filter_map(|r| match Id::from_str(r.get("id")) {
+                        Ok(id) => Some((
+                            CurrencyUnit::from_str(r.get::<'_, &str, &str>("unit")).unwrap(),
+                            id,
+                        )),
+                        Err(_) => None,
+                    })
+                    .collect();
+                Ok(keysets)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get active keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let recs = sqlx::query(
+            r#"
+SELECT id, unit
+FROM kvac_keyset
 WHERE active = 1
         "#,
         )
@@ -765,6 +907,42 @@ ON CONFLICT(id) DO UPDATE SET
         }
     }
 
+    async fn add_kvac_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let res = sqlx::query(
+            r#"
+INSERT OR REPLACE INTO kvac_keyset
+(id, unit, active, valid_from, valid_to, derivation_path, input_fee_ppk, derivation_path_index)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        "#,
+        )
+        .bind(keyset.id.to_string())
+        .bind(keyset.unit.to_string())
+        .bind(keyset.active)
+        .bind(keyset.valid_from as i64)
+        .bind(keyset.valid_to.map(|v| v as i64))
+        .bind(keyset.derivation_path.to_string())
+        .bind(keyset.input_fee_ppk as i64)
+        .bind(keyset.derivation_path_index)
+        .execute(&mut transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not add keyset info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
@@ -782,6 +960,40 @@ WHERE id=?;
             Ok(rec) => {
                 transaction.commit().await.map_err(Error::from)?;
                 Ok(Some(sqlite_row_to_keyset_info(rec)?))
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => {
+                    transaction.commit().await.map_err(Error::from)?;
+                    return Ok(None);
+                }
+                _ => {
+                    tracing::error!("SQLite could not get keyset info");
+                    if let Err(err) = transaction.rollback().await {
+                        tracing::error!("Could not rollback sql transaction: {}", err);
+                    }
+                    return Err(Error::SQLX(err).into());
+                }
+            },
+        }
+    }
+
+    async fn get_kvac_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset
+WHERE id=?;
+        "#,
+        )
+        .bind(id.to_string())
+        .fetch_one(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(Some(sqlite_row_to_kvac_keyset_info(rec)?))
             }
             Err(err) => match err {
                 sqlx::Error::RowNotFound => {
@@ -817,6 +1029,36 @@ FROM keyset;
                 Ok(recs
                     .into_iter()
                     .map(sqlite_row_to_keyset_info)
+                    .collect::<Result<_, _>>()?)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get keyset info");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(err.into())
+            }
+        }
+    }
+
+    async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset;
+        "#,
+        )
+        .fetch_all(&mut transaction)
+        .await
+        .map_err(Error::from);
+
+        match recs {
+            Ok(recs) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(recs
+                    .into_iter()
+                    .map(sqlite_row_to_kvac_keyset_info)
                     .collect::<Result<_, _>>()?)
             }
             Err(err) => {
@@ -886,6 +1128,37 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         Ok(())
     }
 
+    async fn add_kvac_nullifiers(&self, nullifiers: &[KvacNullifier]) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for nullifier in nullifiers.iter() {
+            let res = sqlx::query(
+                r#"
+INSERT INTO kvac_nullifiers
+(nullifier, keyset_id, quote_id, state)
+VALUES (?, ?, ?, ?);
+        "#,
+            )
+            .bind(nullifier.nullifier.to_bytes())
+            .bind(nullifier.keyset_id.to_string())
+            .bind(nullifier.quote_id.map(|q| q.hyphenated()))
+            .bind(nullifier.state.to_string())
+            .execute(&mut transaction)
+            .await;
+
+            if let Err(err) = res {
+                tracing::error!("SQLite could not add kvac nullifiers");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                return Err(Error::SQLX(err).into());
+            }
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -914,6 +1187,36 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         Ok(ys.iter().map(|y| proofs.remove(y)).collect())
+    }
+
+    /// Get kvac nullifiers
+    async fn get_kvac_nullifiers(
+        &self,
+        nullifiers: &[GroupElement],
+    ) -> Result<Vec<KvacNullifier>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let sql = format!(
+            "SELECT * FROM kvac_nullifiers WHERE nullifier IN ({})",
+            "?,".repeat(nullifiers.len()).trim_end_matches(',')
+        );
+
+        let nullifiers_obj = nullifiers
+            .iter()
+            .fold(sqlx::query(&sql), |query, nullifier| {
+                query.bind(nullifier.to_bytes())
+            })
+            .fetch_all(&mut transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not get the state of kvac nullifier: {err:?}");
+                Error::SQLX(err)
+            })?
+            .into_iter()
+            .map(sqlite_row_to_kvac_nullifier)
+            .collect::<Result<Vec<KvacNullifier>, _>>()?;
+
+        Ok(nullifiers_obj)
     }
 
     async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err> {
@@ -992,6 +1295,43 @@ WHERE quote_id=?;
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
+    }
+
+    async fn get_kvac_nullifiers_states(
+        &self,
+        nullifiers: &[GroupElement],
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let sql = format!(
+            "SELECT nullifier, state FROM kvac_nullifiers WHERE nullifier IN ({})",
+            "?,".repeat(nullifiers.len()).trim_end_matches(',')
+        );
+
+        let mut current_states = nullifiers
+            .iter()
+            .fold(sqlx::query(&sql), |query, n| query.bind(n.to_bytes()))
+            .fetch_all(&mut transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not get state of kvac coin: {err:?}");
+                Error::SQLX(err)
+            })?
+            .into_iter()
+            .map(|row| {
+                State::from_str(row.get("state"))
+                    .map_err(Error::from)
+                    .map(|state| {
+                        let ge = GroupElement::new(row.get("nullifier"));
+                        (ge, state)
+                    })
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+        Ok(nullifiers
+            .iter()
+            .map(|nullifier| current_states.remove(nullifier))
+            .collect())
     }
 
     async fn get_proofs_by_keyset_id(
@@ -1096,6 +1436,68 @@ WHERE keyset_id=?;
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
 
+    async fn update_kvac_nullifiers_states(
+        &self,
+        nullifiers: &[GroupElement],
+        state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let sql = format!(
+            "SELECT nullifier, state FROM kvac_nullifiers WHERE nullifier IN ({})",
+            "?,".repeat(nullifiers.len()).trim_end_matches(',')
+        );
+
+        let mut current_states = nullifiers
+            .iter()
+            .fold(sqlx::query(&sql), |query, nullifier| {
+                query.bind(nullifier.to_bytes())
+            })
+            .fetch_all(&mut transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not get state of proof: {err:?}");
+                Error::SQLX(err)
+            })?
+            .into_iter()
+            .map(|row| {
+                let row_n: Vec<u8> = row.get("nullifier");
+                let n = GroupElement::new(&row_n);
+                let row_state: String = row.get("state");
+                State::from_str(&row_state)
+                    .map_err(Error::from)
+                    .map(|state| (n, state))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+        let update_sql = format!(
+            "UPDATE kvac_nullifiers SET state = ? WHERE state != ? AND nullifier IN ({})",
+            "?,".repeat(nullifiers.len()).trim_end_matches(',')
+        );
+
+        nullifiers
+            .iter()
+            .fold(
+                sqlx::query(&update_sql)
+                    .bind(state.to_string())
+                    .bind(State::Spent.to_string()),
+                |query, n| query.bind(n.to_bytes()),
+            )
+            .execute(&mut transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not update kvac nullifier state: {err:?}");
+                Error::SQLX(err)
+            })?;
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(nullifiers
+            .iter()
+            .map(|n| current_states.remove(n))
+            .collect())
+    }
+
     async fn add_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
@@ -1123,6 +1525,43 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 
             if let Err(err) = res {
                 tracing::error!("SQLite could not add blind signature");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                return Err(Error::SQLX(err).into());
+            }
+        }
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    async fn add_kvac_issued_macs(
+        &self,
+        macs: &[KvacIssuedMac],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        for issued in macs.iter() {
+            let res = sqlx::query(
+                r#"
+INSERT INTO kvac_issued_macs
+(t, V, amount_commitment, script_commitment, keyset_id, quote_id)
+VALUES (?, ?, ?, ?, ?, ?);
+        "#,
+            )
+            .bind(Vec::<u8>::from(&issued.mac.t))
+            .bind(issued.mac.V.to_bytes())
+            .bind(issued.commitments.0.to_bytes())
+            .bind(issued.commitments.1.to_bytes())
+            .bind(issued.keyset_id.to_string())
+            .bind(quote_id.map(|q| q.hyphenated()))
+            .execute(&mut transaction)
+            .await;
+
+            if let Err(err) = res {
+                tracing::error!("SQLite could not add issued macs");
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -1171,6 +1610,33 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .collect())
     }
 
+    async fn get_kvac_issued_macs_by_tags(
+        &self,
+        tags: &[Scalar],
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let sql = format!(
+            "SELECT * FROM kvac_issued_macs WHERE t IN ({})",
+            "?,".repeat(tags.len()).trim_end_matches(',')
+        );
+
+        let issued_macs: Vec<KvacIssuedMac> = tags
+            .iter()
+            .fold(sqlx::query(&sql), |query, t| query.bind(Vec::<u8>::from(t)))
+            .fetch_all(&mut transaction)
+            .await
+            .map_err(|err| {
+                tracing::error!("SQLite could not get the state: {err:?}");
+                Error::SQLX(err)
+            })?
+            .into_iter()
+            .map(|row| sqlite_row_to_kvac_issued_mac(row).map_err(Error::from))
+            .collect::<Result<Vec<KvacIssuedMac>, Error>>()?;
+
+        Ok(issued_macs)
+    }
+
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
@@ -1200,6 +1666,44 @@ WHERE keyset_id=?;
             }
             Err(err) => {
                 tracing::error!("SQLite could not get vlinf signatures for keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                return Err(Error::from(err).into());
+            }
+        }
+    }
+
+    async fn get_kvac_issued_macs_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_issued_macs
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_all(&mut transaction)
+        .await;
+
+        match rec {
+            Ok(rec) => {
+                transaction.commit().await.map_err(Error::from)?;
+                let sigs = rec
+                    .into_iter()
+                    .map(sqlite_row_to_kvac_issued_mac)
+                    .collect::<Result<Vec<KvacIssuedMac>, _>>()?;
+
+                Ok(sigs)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get issued macs for keyset");
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -1332,6 +1836,44 @@ WHERE quote_id=?;
         }
     }
 
+    /// Get [`KvacIssuedMac`]s for quote
+    async fn get_kvac_issued_macs_for_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_issued_macs
+WHERE quote_id=?;
+        "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .fetch_all(&mut transaction)
+        .await;
+
+        match recs {
+            Ok(recs) => {
+                transaction.commit().await.map_err(Error::from)?;
+
+                let keysets = recs
+                    .into_iter()
+                    .map(sqlite_row_to_kvac_issued_mac)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(keysets)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get active keyset");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
     async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -1365,6 +1907,7 @@ ON CONFLICT(id) DO UPDATE SET
             }
         }
     }
+
     async fn get_mint_info(&self) -> Result<MintInfo, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -1439,6 +1982,7 @@ ON CONFLICT(id) DO UPDATE SET
             }
         }
     }
+
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -1479,6 +2023,30 @@ WHERE id=?;
             },
         }
     }
+}
+
+fn sqlite_row_to_kvac_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
+    let row_id: String = row.try_get("id").map_err(Error::from)?;
+    let row_unit: String = row.try_get("unit").map_err(Error::from)?;
+    let row_active: bool = row.try_get("active").map_err(Error::from)?;
+    let row_valid_from: i64 = row.try_get("valid_from").map_err(Error::from)?;
+    let row_valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
+    let row_derivation_path: String = row.try_get("derivation_path").map_err(Error::from)?;
+    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
+    let row_derivation_path_index: Option<i64> =
+        row.try_get("derivation_path_index").map_err(Error::from)?;
+
+    Ok(MintKeySetInfo {
+        id: Id::from_str(&row_id).map_err(Error::from)?,
+        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
+        active: row_active,
+        valid_from: row_valid_from as u64,
+        valid_to: row_valid_to.map(|v| v as u64),
+        derivation_path: DerivationPath::from_str(&row_derivation_path).map_err(Error::from)?,
+        derivation_path_index: row_derivation_path_index.map(|d| d as u32),
+        max_order: 0,
+        input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
+    })
 }
 
 fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
@@ -1654,4 +2222,43 @@ fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request<Uuid>
     };
 
     Ok((melt_request, ln_key))
+}
+
+fn sqlite_row_to_kvac_nullifier(row: SqliteRow) -> Result<KvacNullifier, Error> {
+    let nullifier: Vec<u8> = row.try_get("nullifier").map_err(Error::from)?;
+    let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
+    let quote_id: Option<Uuid> = row.try_get("quote_id").map_err(Error::from)?;
+    let row_state: String = row.try_get("state").map_err(Error::from)?;
+
+    let state = State::from_str(&row_state)?;
+
+    Ok(KvacNullifier {
+        nullifier: GroupElement::new(&nullifier),
+        keyset_id: Id::from_str(&keyset_id)?,
+        quote_id,
+        state,
+    })
+}
+
+fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error> {
+    let row_t: Vec<u8> = row.try_get("t").map_err(Error::from)?;
+    let row_v: Vec<u8> = row.try_get("V").map_err(Error::from)?;
+    let row_amount_commitment: Vec<u8> = row.try_get("amount_commitment").map_err(Error::from)?;
+    let row_script_commitment: Vec<u8> = row.try_get("script_commitment").map_err(Error::from)?;
+    let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
+    let quote_id: Option<Uuid> = row.try_get("quote_id").map_err(Error::from)?;
+
+    let mac = MAC {
+        t: Scalar::new(&row_t),
+        V: GroupElement::new(&row_v),
+    };
+    let com_a = GroupElement::new(&row_amount_commitment);
+    let com_s = GroupElement::new(&row_script_commitment);
+    let keyset_id = Id::from_str(&keyset_id)?;
+    Ok(KvacIssuedMac {
+        commitments: (com_a, com_s),
+        mac,
+        keyset_id,
+        quote_id,
+    })
 }

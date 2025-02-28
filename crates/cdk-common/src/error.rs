@@ -126,6 +126,44 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
+    /// KVAC Request Invalid Length
+    #[error("Invalid input length for this request")]
+    RequestInvalidInputLength,
+    /// KVAC Request Invalid Length
+    #[error("Invalid output length for this request")]
+    RequestInvalidOutputLength,
+    /// KVAC Proofs and inputs mismatch
+    #[error("Number of inputs does not match number of proofs provided")]
+    InputsToProofsLengthMismatch,
+    /// KVAC Bootstrap proofs failed to verify
+    #[error("Failed to verify one of the provided proofs")]
+    BootstrapVerificationError,
+    /// KVAC IParams proofs failed to verify
+    #[error("Failed to verify one of the provided proofs")]
+    IParamsVerificationError,
+    /// Out of bounds
+    #[error("Out of bounds")]
+    OutOfBounds,
+    /// KVAC Mac was already issued for outputs
+    #[error("MAC was already issued for these outputs")]
+    MacAlreadyIssued,
+    /// KVAC BalanceProof failed to verify
+    #[error("Balance proof failed to verify with delta = `{0}` and fee `{1}`")]
+    BalanceVerificationError(i64, i64),
+    /// KVAC MacProof failed to verify
+    #[error("Mac proof failed to verify")]
+    MacVerificationError,
+    /// KVAC RangeProof failed to verify
+    #[error("Range proof failed to verify. One of the outputs is not within range")]
+    RangeProofVerificationError,
+    /// KVAC Script is not the same for all coins
+    #[error("Script is not the same across all coins")]
+    DifferentScriptsError,
+
+    // Implementation Status
+    /// Not yet implemented
+    #[error("This is not yet implemented")]
+    NotImplemented,
 
     // Wallet Errors
     /// P2PK spending conditions not met
@@ -178,6 +216,12 @@ pub enum Error {
     /// Invoice Description not supported
     #[error("Invoice Description not supported")]
     InvoiceDescriptionUnsupported,
+    /// KVAC No zero-value coins available
+    #[error("No zero valued coins available: mint some with a bootstrap request")]
+    NoZeroValueCoins,
+    /// KVAC Not enough coins available
+    #[error("Not enough coins available")]
+    NotEnoughCoins,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
@@ -268,6 +312,10 @@ pub enum Error {
     #[error(transparent)]
     #[cfg(feature = "mint")]
     Lightning(#[from] crate::lightning::Error),
+    /// KVAC Error
+    #[error(transparent)]
+    #[cfg(feature = "wallet")]
+    Kvac(#[from] crate::nuts::kvac::Error),
 }
 
 /// CDK Error Response

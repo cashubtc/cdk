@@ -2,9 +2,9 @@
 //!
 //! Is any unit and will be treated as the unit of the wallet
 
-use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -32,7 +32,7 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(transparent)]
-pub struct Amount(u64);
+pub struct Amount(pub u64);
 
 impl FromStr for Amount {
     type Err = Error;
@@ -177,6 +177,18 @@ impl From<&u64> for Amount {
 impl From<Amount> for u64 {
     fn from(value: Amount) -> Self {
         value.0
+    }
+}
+
+impl TryFrom<Amount> for i64 {
+    type Error = Error;
+
+    fn try_from(value: Amount) -> Result<Self, Error> {
+        if value.0 < (i64::MAX as u64) {
+            Ok(value.0 as i64)
+        } else {
+            Err(Error::AmountOverflow)
+        }
     }
 }
 

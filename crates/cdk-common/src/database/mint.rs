@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::kvac::{KvacIssuedMac, KvacNullifier};
 use cashu::MintInfo;
+use cashu_kvac::secp::{GroupElement, Scalar};
 use uuid::Uuid;
 
 use super::Error;
@@ -22,10 +24,25 @@ pub trait Database {
 
     /// Add Active Keyset
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
+    /// Add Active KVAC Keyset
+    async fn set_active_kvac_keyset(&self, _unit: CurrencyUnit, _id: Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get Active Keyset
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
+    /// Get Active KVAC Keyset
+    async fn get_active_kvac_keyset_id(
+        &self,
+        _unit: &CurrencyUnit,
+    ) -> Result<Option<Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get all Active Keyset
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err>;
+    /// Get all Active KVAC Keysets
+    async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add [`MintMintQuote`]
     async fn add_mint_quote(&self, quote: MintMintQuote) -> Result<(), Self::Err>;
@@ -86,10 +103,22 @@ pub trait Database {
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
+    /// Add KVAC [`MintKeySetInfo`]
+    async fn add_kvac_keyset_info(&self, _keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`MintKeySetInfo`]
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
+    /// Get KVAC [`MintKeySetInfo`]
+    async fn get_kvac_keyset_info(&self, _id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+    /// Get KVAC [`MintKeySetInfo`]s
+    async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add  [`Proofs`]
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
@@ -99,23 +128,63 @@ pub trait Database {
         ys: &[PublicKey],
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err>;
+    /// Add kvac nullifiers
+    async fn add_kvac_nullifiers(&self, _nullifiers: &[KvacNullifier]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    /// Get kvac nullifiers
+    async fn get_kvac_nullifiers(
+        &self,
+        _nullifiers: &[GroupElement],
+    ) -> Result<Vec<KvacNullifier>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err>;
+    /// Get nullifiers by quote id
+    async fn get_kvac_nullifiers_by_quote_id(
+        &self,
+        _quote_id: &Uuid,
+    ) -> Result<Vec<KvacNullifier>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get kvac nullifiers state
+    async fn get_kvac_nullifiers_states(
+        &self,
+        _nullifiers: &[GroupElement],
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] state
     async fn update_proofs_states(
         &self,
         ys: &[PublicKey],
         proofs_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err>;
+    /// Get [`KvacNullifier`] state
+    async fn update_kvac_nullifiers_states(
+        &self,
+        _nullifiers: &[GroupElement],
+        _state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Proofs`] by state
     async fn get_proofs_by_keyset_id(
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
+    /// Get [`KvacNullifier`] by state
+    async fn get_kvac_nullifiers_by_keyset_id(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<(Vec<KvacNullifier>, Vec<Option<State>>), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add [`BlindSignature`]
     async fn add_blind_signatures(
@@ -124,16 +193,38 @@ pub trait Database {
         blind_signatures: &[BlindSignature],
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err>;
+    /// Add [`KvacIssuedMac`]
+    async fn add_kvac_issued_macs(
+        &self,
+        _mac: &[KvacIssuedMac],
+        _quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
+    /// Get [`KvacIssuedMac`]
+    async fn get_kvac_issued_macs_by_tags(
+        &self,
+        _tags: &[Scalar],
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`BlindSignature`]s for keyset_id
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+    /// Get [`KvacIssuedMac`] for keyset_id
+    async fn get_kvac_issued_macs_for_keyset(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
@@ -149,4 +240,11 @@ pub trait Database {
     async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Self::Err>;
     /// Get [`QuoteTTL`]
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err>;
+    /// Get [`KvacIssuedMac`]s for quote
+    async fn get_kvac_issued_macs_for_quote(
+        &self,
+        _quote_id: &Uuid,
+    ) -> Result<Vec<KvacIssuedMac>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 }

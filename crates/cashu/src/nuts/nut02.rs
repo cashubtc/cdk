@@ -86,8 +86,8 @@ impl fmt::Display for KeySetVersion {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub struct Id {
-    version: KeySetVersion,
-    id: [u8; Self::BYTELEN],
+    pub(crate) version: KeySetVersion,
+    pub(crate) id: [u8; Self::BYTELEN],
 }
 
 impl Id {
@@ -310,7 +310,6 @@ impl MintKeySet {
                 },
             );
         }
-
         let keys = MintKeys::new(map);
         Self {
             id: (&keys).into(),
