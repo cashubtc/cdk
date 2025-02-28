@@ -47,11 +47,10 @@ pub enum LnBackend {
     #[default]
     None,
     Cln,
-    Strike,
     LNbits,
     FakeWallet,
-    Phoenixd,
     Lnd,
+    GrpcProcessor,
 }
 
 impl std::str::FromStr for LnBackend {
@@ -60,11 +59,10 @@ impl std::str::FromStr for LnBackend {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "cln" => Ok(LnBackend::Cln),
-            "strike" => Ok(LnBackend::Strike),
             "lnbits" => Ok(LnBackend::LNbits),
             "fakewallet" => Ok(LnBackend::FakeWallet),
-            "phoenixd" => Ok(LnBackend::Phoenixd),
             "lnd" => Ok(LnBackend::Lnd),
+            "grpc" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
     }
@@ -94,12 +92,6 @@ impl Default for Ln {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Strike {
-    pub api_key: String,
-    pub supported_units: Option<Vec<CurrencyUnit>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
@@ -122,15 +114,6 @@ pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
     pub macaroon_file: PathBuf,
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Phoenixd {
-    pub api_password: String,
-    pub api_url: String,
-    pub bolt12: bool,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
 }
@@ -168,6 +151,14 @@ fn default_max_delay_time() -> u64 {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+pub struct GrpcProcessor {
+    pub supported_units: Vec<CurrencyUnit>,
+    pub addr: String,
+    pub port: u16,
+    pub tls_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseEngine {
     #[default]
@@ -199,11 +190,10 @@ pub struct Settings {
     pub mint_info: MintInfo,
     pub ln: Ln,
     pub cln: Option<Cln>,
-    pub strike: Option<Strike>,
     pub lnbits: Option<LNbits>,
-    pub phoenixd: Option<Phoenixd>,
     pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
+    pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
@@ -291,17 +281,9 @@ impl Settings {
                 settings.cln.is_some(),
                 "CLN backend requires a valid config."
             ),
-            LnBackend::Strike => assert!(
-                settings.strike.is_some(),
-                "Strike backend requires a valid config."
-            ),
             LnBackend::LNbits => assert!(
                 settings.lnbits.is_some(),
                 "LNbits backend requires a valid config"
-            ),
-            LnBackend::Phoenixd => assert!(
-                settings.phoenixd.is_some(),
-                "Phoenixd backend requires a valid config"
             ),
             LnBackend::Lnd => {
                 assert!(
@@ -313,6 +295,12 @@ impl Settings {
                 settings.fake_wallet.is_some(),
                 "FakeWallet backend requires a valid config."
             ),
+            LnBackend::GrpcProcessor => {
+                assert!(
+                    settings.grpc_processor.is_some(),
+                    "GRPC backend requires a valid config."
+                )
+            }
         }
 
         Ok(settings)
