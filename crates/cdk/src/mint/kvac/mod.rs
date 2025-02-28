@@ -48,7 +48,8 @@ impl Mint {
         if self
             .localstore
             .get_kvac_issued_macs_by_tags(&outputs_tags)
-            .await?.first()
+            .await?
+            .first()
             .is_some()
         {
             tracing::error!("Outputs have already been issued a MAC",);

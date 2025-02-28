@@ -76,6 +76,11 @@ impl Wallet {
                 let sent = new_coins.first().expect("always two outputs").clone();
                 let kept = new_coins.get(1).expect("always two outputs").clone();
 
+                // Increase keyset counter
+                self.localstore
+                    .increment_kvac_keyset_counter(&active_keyset_id, outputs.len() as u32)
+                    .await?;
+
                 // Store the coin encoding the kept balance
                 self.localstore
                     .update_kvac_coins(
@@ -86,11 +91,6 @@ impl Wallet {
                         }],
                         nullifiers,
                     )
-                    .await?;
-
-                // Increase keyset counter
-                self.localstore
-                    .increment_kvac_keyset_counter(&active_keyset_id, outputs.len() as u32)
                     .await?;
 
                 tracing::info!("Send succeeded");

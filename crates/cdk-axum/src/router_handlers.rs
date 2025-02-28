@@ -217,11 +217,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 pub async fn get_kvac_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KvacKeysetResponse>, Response> {
-    let keysets = state
-        .mint
-        .kvac_keysets()
-        .await
-        .map_err(into_response)?;
+    let keysets = state.mint.kvac_keysets().await.map_err(into_response)?;
     Ok(Json(keysets))
 }
 

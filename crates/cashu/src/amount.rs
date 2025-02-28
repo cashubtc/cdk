@@ -2,9 +2,9 @@
 //!
 //! Is any unit and will be treated as the unit of the wallet
 
+use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
-use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
