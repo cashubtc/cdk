@@ -7,7 +7,6 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::{MeltOptions, Mpp};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
@@ -21,6 +20,7 @@ use cdk_integration_tests::init_regtest::{
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
 use cdk_integration_tests::wait_for_mint_to_be_paid;
+use cdk_sqlite::wallet::{self, memory};
 use futures::{join, SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
@@ -83,7 +83,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -167,7 +167,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -201,7 +201,7 @@ async fn test_restore() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -221,7 +221,7 @@ async fn test_restore() -> Result<()> {
     let wallet_2 = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -260,7 +260,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -319,7 +319,7 @@ async fn test_internal_payment() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -341,7 +341,7 @@ async fn test_internal_payment() -> Result<()> {
     let wallet_2 = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -414,7 +414,7 @@ async fn test_cached_mint() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -453,7 +453,7 @@ async fn test_websocket_connection() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(wallet::memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -508,14 +508,14 @@ async fn test_multimint_melt() -> Result<()> {
     let wallet1 = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
     let wallet2 = Wallet::new(
         &get_mint_url("1"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;

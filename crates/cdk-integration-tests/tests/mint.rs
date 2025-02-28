@@ -7,7 +7,6 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::construct_proofs;
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits, MintQuote};
@@ -21,12 +20,10 @@ use cdk::types::QuoteTTL;
 use cdk::util::unix_time;
 use cdk::Mint;
 use cdk_fake_wallet::FakeWallet;
-use tokio::sync::OnceCell;
+use cdk_sqlite::mint::memory;
 use tokio::time::sleep;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
-
-static INSTANCE: OnceCell<Mint> = OnceCell::const_new();
 
 async fn new_mint(fee: u64) -> Mint {
     let mut supported_units = HashMap::new();
@@ -43,7 +40,7 @@ async fn new_mint(fee: u64) -> Mint {
 
     let mint_info = MintInfo::new().nuts(nuts);
 
-    let localstore = MintMemoryDatabase::default();
+    let localstore = memory::empty().await.expect("valid db instance");
 
     localstore
         .set_mint_info(mint_info)
@@ -62,8 +59,8 @@ async fn new_mint(fee: u64) -> Mint {
     .unwrap()
 }
 
-async fn initialize() -> &'static Mint {
-    INSTANCE.get_or_init(|| new_mint(0)).await
+async fn initialize() -> Mint {
+    new_mint(0).await
 }
 
 async fn mint_proofs(
@@ -115,7 +112,7 @@ async fn test_mint_double_spend() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 100.into(), &SplitTarget::default())?;
 
@@ -149,7 +146,7 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let amount = 2_u64.pow(63);
 
@@ -188,7 +185,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let secret = SecretKey::generate();
 
@@ -306,7 +303,7 @@ async fn test_swap_unbalanced() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 95.into(), &SplitTarget::default())?;
 
@@ -450,7 +447,7 @@ async fn test_correct_keyset() -> Result<()> {
         percent_fee_reserve: 1.0,
     };
 
-    let database = MintMemoryDatabase::default();
+    let database = memory::empty().await.expect("valid db instance");
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
