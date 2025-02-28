@@ -205,9 +205,23 @@ WHERE active = 1
 
         let res = sqlx::query(
             r#"
-INSERT OR REPLACE INTO mint_quote
+INSERT INTO mint_quote
 (id, amount, unit, request, state, expiry, request_lookup_id, pubkey)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    amount = excluded.amount,
+    unit = excluded.unit,
+    request = excluded.request,
+    state = excluded.state,
+    expiry = excluded.expiry,
+    request_lookup_id = excluded.request_lookup_id
+ON CONFLICT(request_lookup_id) DO UPDATE SET
+    amount = excluded.amount,
+    unit = excluded.unit,
+    request = excluded.request,
+    state = excluded.state,
+    expiry = excluded.expiry,
+    id = excluded.id
         "#,
         )
         .bind(quote.id.to_string())
@@ -438,8 +452,8 @@ FROM mint_quote
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
             r#"
-SELECT * 
-FROM mint_quote 
+SELECT *
+FROM mint_quote
 WHERE state = ?
         "#,
         )
@@ -502,9 +516,28 @@ WHERE id=?
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let res = sqlx::query(
             r#"
-INSERT OR REPLACE INTO melt_quote
+INSERT INTO melt_quote
 (id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    unit = excluded.unit,
+    amount = excluded.amount,
+    request = excluded.request,
+    fee_reserve = excluded.fee_reserve,
+    state = excluded.state,
+    expiry = excluded.expiry,
+    payment_preimage = excluded.payment_preimage,
+    request_lookup_id = excluded.request_lookup_id,
+    msat_to_pay = excluded.msat_to_pay
+ON CONFLICT(request_lookup_id) DO UPDATE SET
+    unit = excluded.unit,
+    amount = excluded.amount,
+    request = excluded.request,
+    fee_reserve = excluded.fee_reserve,
+    state = excluded.state,
+    expiry = excluded.expiry,
+    payment_preimage = excluded.payment_preimage,
+    id = excluded.id;
         "#,
         )
         .bind(quote.id.to_string())
@@ -690,9 +723,18 @@ WHERE id=?
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let res = sqlx::query(
             r#"
-INSERT OR REPLACE INTO keyset
+INSERT INTO keyset
 (id, unit, active, valid_from, valid_to, derivation_path, max_order, input_fee_ppk, derivation_path_index)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    unit = excluded.unit,
+    active = excluded.active,
+    valid_from = excluded.valid_from,
+    valid_to = excluded.valid_to,
+    derivation_path = excluded.derivation_path,
+    max_order = excluded.max_order,
+    input_fee_ppk = excluded.input_fee_ppk,
+    derivation_path_index = excluded.derivation_path_index
         "#,
         )
         .bind(keyset.id.to_string())
@@ -1176,9 +1218,14 @@ WHERE keyset_id=?;
 
         let res = sqlx::query(
             r#"
-INSERT OR REPLACE INTO melt_request
+INSERT INTO melt_request
 (id, inputs, outputs, method, unit)
-VALUES (?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    inputs = excluded.inputs,
+    outputs = excluded.outputs,
+    method = excluded.method,
+    unit = excluded.unit
         "#,
         )
         .bind(melt_request.quote)
@@ -1290,9 +1337,12 @@ WHERE quote_id=?;
 
         let res = sqlx::query(
             r#"
-INSERT OR REPLACE INTO config
+INSERT INTO config
 (id, value)
-VALUES (?, ?);
+VALUES (?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    value = excluded.value
+;
         "#,
         )
         .bind("mint_info")
@@ -1361,9 +1411,12 @@ WHERE id=?;
 
         let res = sqlx::query(
             r#"
-INSERT OR REPLACE INTO config
+INSERT INTO config
 (id, value)
-VALUES (?, ?);
+VALUES (?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    value = excluded.value
+;
         "#,
         )
         .bind("quote_ttl")

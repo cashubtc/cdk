@@ -130,9 +130,22 @@ impl WalletDatabase for WalletSqliteDatabase {
 
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO mint
+INSERT INTO mint
 (mint_url, name, pubkey, version, description, description_long, contact, nuts, icon_url, urls, motd, mint_time)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(mint_url) DO UPDATE SET
+    name = excluded.name,
+    pubkey = excluded.pubkey,
+    version = excluded.version,
+    description = excluded.description,
+    description_long = excluded.description_long,
+    contact = excluded.contact,
+    nuts = excluded.nuts,
+    icon_url = excluded.icon_url,
+    urls = excluded.urls,
+    motd = excluded.motd,
+    mint_time = excluded.mint_time
+;
         "#,
         )
         .bind(mint_url.to_string())
@@ -345,9 +358,18 @@ WHERE id=?
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO mint_quote
+INSERT INTO mint_quote
 (id, mint_url, amount, unit, request, state, expiry, secret_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    mint_url = excluded.mint_url,
+    amount = excluded.amount,
+    unit = excluded.unit,
+    request = excluded.request,
+    state = excluded.state,
+    expiry = excluded.expiry,
+    secret_key = excluded.secret_key
+;
         "#,
         )
         .bind(quote.id.to_string())
@@ -429,9 +451,17 @@ WHERE id=?
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO melt_quote
+INSERT INTO melt_quote
 (id, unit, amount, request, fee_reserve, state, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    unit = excluded.unit,
+    amount = excluded.amount,
+    request = excluded.request,
+    fee_reserve = excluded.fee_reserve,
+    state = excluded.state,
+    expiry = excluded.expiry
+;
         "#,
         )
         .bind(quote.id.to_string())
@@ -492,9 +522,12 @@ WHERE id=?
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO key
+INSERT INTO key
 (id, keys)
-VALUES (?, ?);
+VALUES (?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    keys = excluded.keys
+;
         "#,
         )
         .bind(Id::from(&keys).to_string())
@@ -556,9 +589,20 @@ WHERE id=?
         for proof in added {
             sqlx::query(
                 r#"
-    INSERT OR REPLACE INTO proof
+    INSERT INTO proof
     (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(y) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        state = excluded.state,
+        spending_condition = excluded.spending_condition,
+        unit = excluded.unit,
+        amount = excluded.amount,
+        keyset_id = excluded.keyset_id,
+        secret = excluded.secret,
+        c = excluded.c,
+        witness = excluded.witness
+    ;
             "#,
             )
             .bind(proof.y.to_bytes().to_vec())
@@ -765,9 +809,12 @@ WHERE key=?;
     ) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO nostr_last_checked
+INSERT INTO nostr_last_checked
 (key, last_check)
-VALUES (?, ?);
+VALUES (?, ?)
+ON CONFLICT(key) DO UPDATE SET
+    last_check = excluded.last_check
+;
         "#,
         )
         .bind(verifying_key.to_bytes().to_vec())
