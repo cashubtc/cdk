@@ -61,6 +61,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("sent: {}\n", serde_json::to_string_pretty(&sent).unwrap());
     println!("kept: {}\n", serde_json::to_string_pretty(&kept).unwrap());
 
+    // Receive 19 sats
+    println!("Receiving 19 sats...\n");
+    let received = wallet.kvac_receive_coins(vec![sent]).await?;
+
+    println!("received: {}\n", serde_json::to_string_pretty(&received).unwrap());
+
     // Melt 986 sats
     println!("Melting 986 sats...\n");
     let invoice = String::from("lnbc9860n1pn6892cpp54np6ukttc43sev95wtd6mxr2rld7k5rfgcsz2xnw0a6hjmr6a6fsdqqcqzzsxqyz5vqsp528cg50helvnlwgzt9dwsr86ma6eh6czup4c4ge4rs3grrshhzshs9p4gqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpqysgqqer3ddg2wzctu4emspeyngncnx06ne9rsltekd0ffnkmf69ax0estgh93jjyyvdlyh05mvng532tlj6phyzemf7evywuygu08a52augp09lm0f");
