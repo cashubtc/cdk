@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cashu_kvac::kvac::{IParamsProof, MacProof};
+use cashu_kvac::kvac::IParamsProof;
 use cashu_kvac::models::{MAC, ZKP};
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::{LnKey, QuoteTTL};
@@ -397,34 +397,6 @@ impl Mint {
         );
 
         Ok((c, iparams_proof))
-    }
-
-    /// Verify [`MAC`]
-    pub async fn verify_mac(
-        &self,
-        input: &KvacRandomizedCoin,
-        script: &String,
-        proof: ZKP,
-        verifying_transcript: &mut CashuTranscript,
-    ) -> Result<(), Error> {
-        self.ensure_kvac_keyset_loaded(&input.keyset_id).await?;
-
-        let keysets = &self.kvac_keysets.read().await;
-        let keyset = keysets.get(&input.keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        let private_key = &keyset.kvac_keys.private_key;
-
-        if !MacProof::verify(
-            private_key,
-            &input.randomized_coin,
-            Some(script.as_bytes()),
-            proof,
-            verifying_transcript,
-        ) {
-            return Err(Error::MacVerificationError);
-        }
-
-        Ok(())
     }
 
     /// Verify [`Proof`] meets conditions and is signed

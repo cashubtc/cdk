@@ -157,7 +157,10 @@ impl From<MintKvacKeySet> for KvacKeySet {
 
 /// Kvac Coin Message
 ///
-/// A kvac coin as intended to be seen by the Mint.
+/// A kvac coin to be sent as an output:
+///     * keyset ID
+///     * commitments
+///     * identifying tag
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacCoinMessage {
@@ -321,7 +324,7 @@ pub struct KvacCoin {
 
 /// Kvac Coin
 ///
-/// A KVAC coin as intended to be saved in the wallet.
+/// A KVAC coin to be sent as input.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacRandomizedCoin {

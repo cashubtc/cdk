@@ -2,12 +2,125 @@
 
 use std::collections::HashSet;
 
-use cashu_kvac::{kvac::{BalanceProof, RangeProof}, models::{RandomizedCoin, RangeZKP, ZKP}, secp::{GroupElement, Scalar}, transcript::CashuTranscript};
+use cashu_kvac::{kvac::{BalanceProof, MacProof, RangeProof}, models::{RandomizedCoin, RangeZKP, ZKP}, secp::{GroupElement, Scalar}, transcript::CashuTranscript};
 use cdk_common::{kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin}, Id, State};
 
 use crate::{Mint, Error};
 
 impl Mint {
+    /// Checks that the outputs have not already been issued a MAC
+    pub async fn verify_kvac_outputs_issuance_state(&self, outputs_tags: &[Scalar]) -> Result<(), Error>{
+        // Check that outputs are not already issued. USER PROTECTION.
+        if self
+            .localstore
+            .get_kvac_issued_macs_by_tags(outputs_tags)
+            .await?
+            .first()
+            .is_some()
+        {
+            tracing::error!("Outputs have already been issued a MAC",);
+            return Err(Error::MacAlreadyIssued);
+        }
+
+        Ok(())
+    }
+
+    /// Checks the provided balance proof with inputs, outputs and delta amount
+    pub fn verify_kvac_inputs_outputs_balanced(
+        &self,
+        inputs: &[KvacRandomizedCoin],
+        outputs: &[KvacCoinMessage],
+        delta: i64,
+        fee: i64,
+        balance_proof: ZKP,
+        transcript: &mut CashuTranscript,
+    ) -> Result<(), Error> {
+        let input_coins = inputs
+            .iter()
+            .map(|i| i.randomized_coin.clone())
+            .collect::<Vec<RandomizedCoin>>();
+        let output_coins = outputs
+            .iter()
+            .map(|i| i.commitments.0.clone())
+            .collect::<Vec<GroupElement>>();
+        if !BalanceProof::verify(
+            &input_coins,
+            &output_coins,
+            fee + delta,
+            balance_proof,
+            transcript,
+        ) {
+            tracing::error!("Request is unbalanced for fee {} and delta {}", fee, delta);
+
+            return Err(Error::BalanceVerificationError(delta, fee));
+        }
+
+        Ok(())
+    }
+
+    /// Checks no duplicate inputs where provided
+    pub fn check_no_kvac_duplicate_inputs(
+        &self,
+        nullifiers_inner: &[GroupElement],
+    ) -> Result<(), Error> {
+        if nullifiers_inner
+            .iter()
+            .collect::<HashSet<&GroupElement>>()
+            .len()
+            .ne(&nullifiers_inner.len())
+        {
+            return Err(Error::DuplicateInputs);
+        }
+
+        Ok(())
+    }
+
+    /// Verify [`MAC`]
+    pub async fn verify_mac(
+        &self,
+        input: &KvacRandomizedCoin,
+        script: &String,
+        proof: ZKP,
+        verifying_transcript: &mut CashuTranscript,
+    ) -> Result<(), Error> {
+        self.ensure_kvac_keyset_loaded(&input.keyset_id).await?;
+
+        let keysets = &self.kvac_keysets.read().await;
+        let keyset = keysets.get(&input.keyset_id).ok_or(Error::UnknownKeySet)?;
+
+        let private_key = &keyset.kvac_keys.private_key;
+
+        if !MacProof::verify(
+            private_key,
+            &input.randomized_coin,
+            Some(script.as_bytes()),
+            proof,
+            verifying_transcript,
+        ) {
+            return Err(Error::MacVerificationError);
+        }
+
+        Ok(())
+    }
+
+    /// Check that the outputs are within a certain amount each
+    pub fn verify_kvac_outputs_in_range(
+        &self,
+        outputs: &[KvacCoinMessage],
+        range_proof: RangeZKP,
+        transcript: &mut CashuTranscript,
+    ) -> Result<(), Error> {
+        let amount_commitments = outputs
+            .iter()
+            .map(|o| o.commitments.0.clone())
+            .collect::<Vec<GroupElement>>();
+        if !RangeProof::verify(transcript, &amount_commitments, range_proof) {
+            tracing::error!("Range proof failed to verify");
+            return Err(Error::RangeProofVerificationError);
+        }
+        Ok(())
+    }
+
     /// Unified processing of a generic KVAC request
     pub async fn verify_kvac_request(
         &self,
@@ -22,6 +135,7 @@ impl Mint {
     ) -> Result<(), Error> {
         let inputs_len = inputs.len();
 
+        // Inputs/outputs length constraints requirements
         if outputs.len() != 2 {
             return Err(Error::RequestInvalidOutputLength);
         }
@@ -29,75 +143,54 @@ impl Mint {
             return Err(Error::RequestInvalidInputLength);
         }
 
+        // Extract identifiers for the outputs
         let outputs_tags: Vec<Scalar> = outputs.iter().map(|output| output.t_tag.clone()).collect();
 
-        if self
-            .localstore
-            .get_kvac_issued_macs_by_tags(&outputs_tags)
-            .await?
-            .first()
-            .is_some()
-        {
-            tracing::error!("Outputs have already been issued a MAC",);
+        // Verify the state of issuance of the outputs
+        self.verify_kvac_outputs_issuance_state(&outputs_tags).await?;
 
-            return Err(Error::MacAlreadyIssued);
-        }
-
+        // Do we need to apply a fee to this request?
         let fee = if apply_fee {
             i64::try_from(self.get_kvac_inputs_fee(inputs).await?)?
         } else {
             0
         };
 
-        // Verify Balance Proof with fee as the difference amount
-        let input_coins = inputs
-            .iter()
-            .map(|i| i.randomized_coin.clone())
-            .collect::<Vec<RandomizedCoin>>();
-        let output_coins = outputs
-            .iter()
-            .map(|i| i.commitments.0.clone())
-            .collect::<Vec<GroupElement>>();
+        // Instantiate verification transcript
         let mut verify_transcript = CashuTranscript::new();
-        if !BalanceProof::verify(
-            &input_coins,
-            &output_coins,
-            fee + delta,
-            balance_proof,
-            &mut verify_transcript,
-        ) {
-            tracing::error!("Request is unbalanced for fee {} and delta {}", fee, delta);
 
-            return Err(Error::BalanceVerificationError(delta, fee));
-        }
+        // Verify balance proof with fee as the difference amount
+        self.verify_kvac_inputs_outputs_balanced(&inputs, &outputs, delta, fee, balance_proof, &mut verify_transcript)?;
 
+        // Extract nullifiers
         let nullifiers = inputs
             .iter()
             .map(KvacNullifier::from)
             .collect::<Vec<KvacNullifier>>();
+    
+        // Add the nullifiers to DB. From this point on every failure has to be followed
+        // by a reset of the states of these nullifiers
         self.localstore.add_kvac_nullifiers(&nullifiers).await?;
         self.check_nullifiers_spendable(&nullifiers, State::Pending)
             .await?;
 
-        // Check that there are no duplicate proofs in request
         let nullifiers_inner = nullifiers
             .iter()
             .map(|n| n.nullifier.clone())
             .collect::<Vec<GroupElement>>();
-        if nullifiers_inner
-            .iter()
-            .collect::<HashSet<&GroupElement>>()
-            .len()
-            .ne(&inputs_len)
-        {
+
+        // Check that there are no duplicate proofs in request
+        let ok = self.check_no_kvac_duplicate_inputs(&nullifiers_inner);
+        if let Err(e) = ok {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
-            return Err(Error::DuplicateInputs);
+            return Err(e);
         }
 
         // Extract script if present
         let script = script.unwrap_or_default();
+        // TODO: Script validation is not yet implemented.
 
         // Check the MAC proofs for valid MAC issuance on the inputs
         if inputs.len() != mac_proofs.len() {
@@ -124,20 +217,15 @@ impl Mint {
         //tracing::debug!("test challenge: {}", String::from(&test));
 
         // Verify the outputs are within range
-        let amount_commitments = outputs
-            .iter()
-            .map(|o| o.commitments.0.clone())
-            .collect::<Vec<GroupElement>>();
-        if !RangeProof::verify(&mut verify_transcript, &amount_commitments, range_proof) {
-            tracing::error!("Range proof failed to verify");
+        let ok = self.verify_kvac_outputs_in_range(outputs, range_proof, &mut verify_transcript);
+        if let Err(e) = ok {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
-            return Err(Error::RangeProofVerificationError);
+            return Err(e);
         }
 
         let input_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();
-
         let mut keyset_units = HashSet::with_capacity(input_keyset_ids.capacity());
 
         for id in input_keyset_ids {
@@ -183,7 +271,6 @@ impl Mint {
             return Err(Error::MultipleUnits);
         }
 
-        // TODO: Script validation and execution
         Ok(())
     }
 }
