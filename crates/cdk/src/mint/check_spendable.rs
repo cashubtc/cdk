@@ -89,10 +89,7 @@ impl Mint {
 
         if nullifiers_states.contains(&State::Pending) {
             // Reset states before returning error
-            for (n, state) in nullifiers
-                .iter()
-                .zip(original_nullifiers_states.iter())
-            {
+            for (n, state) in nullifiers.iter().zip(original_nullifiers_states.iter()) {
                 if let Some(original_state) = state {
                     self.localstore
                         .update_kvac_nullifiers_states(&[n.nullifier.clone()], *original_state)
@@ -104,10 +101,7 @@ impl Mint {
 
         if nullifiers_states.contains(&State::Spent) {
             // Reset states before returning error
-            for (n, state) in nullifiers
-                .iter()
-                .zip(original_nullifiers_states.iter())
-            {
+            for (n, state) in nullifiers.iter().zip(original_nullifiers_states.iter()) {
                 if let Some(original_state) = state {
                     self.localstore
                         .update_kvac_nullifiers_states(&[n.nullifier.clone()], *original_state)
