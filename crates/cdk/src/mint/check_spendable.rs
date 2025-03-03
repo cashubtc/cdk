@@ -77,24 +77,37 @@ impl Mint {
             .map(|n| n.nullifier.clone())
             .collect::<Vec<GroupElement>>();
 
-        let nullifiers_states = self
+        let original_nullifiers_states = self
             .localstore
             .update_kvac_nullifiers_states(&nullifiers_inner, state)
             .await?;
 
-        let nullifiers_states = nullifiers_states
+        let nullifiers_states = original_nullifiers_states
             .iter()
             .flatten()
             .collect::<HashSet<&State>>();
 
         if nullifiers_states.contains(&State::Pending) {
+            // Reset states before returning error
+            for (n, state) in nullifiers.into_iter().zip(original_nullifiers_states.iter()) {
+                if let Some(original_state) = state {
+                    self.localstore
+                        .update_kvac_nullifiers_states(&[n.nullifier.clone()], *original_state)
+                        .await?;
+                }
+            }
             return Err(Error::TokenPending);
         }
 
         if nullifiers_states.contains(&State::Spent) {
-            self.localstore
-                .update_kvac_nullifiers_states(&nullifiers_inner, State::Spent)
-                .await?;
+            // Reset states before returning error
+            for (n, state) in nullifiers.into_iter().zip(original_nullifiers_states.iter()) {
+                if let Some(original_state) = state {
+                    self.localstore
+                        .update_kvac_nullifiers_states(&[n.nullifier.clone()], *original_state)
+                        .await?;
+                }
+            }
             return Err(Error::TokenAlreadySpent);
         }
 
