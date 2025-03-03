@@ -265,7 +265,7 @@ impl Mint {
     /// Fee required for kvac inputs
     pub async fn get_kvac_inputs_fee(
         &self,
-        inputs: &Vec<KvacRandomizedCoin>,
+        inputs: &[KvacRandomizedCoin],
     ) -> Result<Amount, Error> {
         let mut coins_per_keyset = HashMap::new();
         let mut fee_per_keyset = HashMap::new();
