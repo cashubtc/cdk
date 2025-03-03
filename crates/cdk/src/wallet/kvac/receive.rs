@@ -1,10 +1,8 @@
 //! Send coins
 
-use cdk_common::{
-    common::KvacCoinInfo,
-    kvac::{KvacCoin, KvacRandomizedCoin},
-    Amount, State,
-};
+use cdk_common::common::KvacCoinInfo;
+use cdk_common::kvac::{KvacCoin, KvacRandomizedCoin};
+use cdk_common::{Amount, State};
 
 use crate::{Error, Wallet};
 

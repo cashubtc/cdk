@@ -1,12 +1,10 @@
 //! Send coins
 
 use cashu_kvac::secp::GroupElement;
-use cdk_common::{
-    common::KvacCoinInfo,
-    error::Error,
-    kvac::{KvacCoin, KvacRandomizedCoin},
-    Amount, State,
-};
+use cdk_common::common::KvacCoinInfo;
+use cdk_common::error::Error;
+use cdk_common::kvac::{KvacCoin, KvacRandomizedCoin};
+use cdk_common::{Amount, State};
 
 use crate::Wallet;
 

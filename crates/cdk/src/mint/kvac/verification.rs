@@ -2,16 +2,12 @@
 
 use std::collections::HashSet;
 
-use cashu_kvac::{
-    kvac::{BalanceProof, MacProof, RangeProof},
-    models::{RandomizedCoin, RangeZKP, ZKP},
-    secp::{GroupElement, Scalar},
-    transcript::CashuTranscript,
-};
-use cdk_common::{
-    kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin},
-    Id, State,
-};
+use cashu_kvac::kvac::{BalanceProof, MacProof, RangeProof};
+use cashu_kvac::models::{RandomizedCoin, RangeZKP, ZKP};
+use cashu_kvac::secp::{GroupElement, Scalar};
+use cashu_kvac::transcript::CashuTranscript;
+use cdk_common::kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin};
+use cdk_common::{Id, State};
 
 use crate::{Error, Mint};
 

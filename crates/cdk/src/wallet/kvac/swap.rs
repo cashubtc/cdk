@@ -1,15 +1,13 @@
 //! KVAC Swap request
 use std::collections::HashSet;
 
-use cashu_kvac::{
-    kvac::{BalanceProof, IParamsProof, MacProof, RangeProof},
-    models::{AmountAttribute, Coin},
-    transcript::CashuTranscript,
+use cashu_kvac::kvac::{BalanceProof, IParamsProof, MacProof, RangeProof};
+use cashu_kvac::models::{AmountAttribute, Coin};
+use cashu_kvac::transcript::CashuTranscript;
+use cdk_common::kvac::{
+    KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest,
 };
-use cdk_common::{
-    kvac::{KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest},
-    Amount,
-};
+use cdk_common::Amount;
 use tracing::instrument;
 
 use crate::{Error, Wallet};

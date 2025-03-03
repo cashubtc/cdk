@@ -1,14 +1,4 @@
-use super::nut02::KeySetVersion;
-use super::CurrencyUnit;
-use super::Id;
-use super::KeySetInfo;
-use super::State;
-use crate::util::hex;
-use crate::Amount;
-use crate::SECP256K1;
-use bitcoin::bip32::ChildNumber;
-use bitcoin::bip32::DerivationPath;
-use bitcoin::bip32::Xpriv;
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::key::Secp256k1;
@@ -20,10 +10,14 @@ use cashu_kvac::models::{
 use cashu_kvac::secp::{GroupElement, Scalar};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use serde_with::VecSkipError;
+use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 use uuid::Uuid;
+
+use super::nut02::KeySetVersion;
+use super::{CurrencyUnit, Id, KeySetInfo, State};
+use crate::util::hex;
+use crate::{Amount, SECP256K1};
 
 #[derive(Debug, Error)]
 pub enum Error {

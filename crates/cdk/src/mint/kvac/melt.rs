@@ -1,22 +1,18 @@
-use crate::{Error, Mint};
 use anyhow::bail;
-use cashu_kvac::{
-    secp::{GroupElement, TweakKind},
-    transcript::CashuTranscript,
+use cashu_kvac::secp::{GroupElement, TweakKind};
+use cashu_kvac::transcript::CashuTranscript;
+use cdk_common::amount::to_unit;
+use cdk_common::common::LnKey;
+use cdk_common::kvac::{
+    KvacIssuedMac, KvacMeltBolt11Request, KvacMeltBolt11Response, KvacNullifier, KvacRandomizedCoin,
 };
-use cdk_common::{
-    amount::to_unit,
-    common::LnKey,
-    kvac::{
-        KvacIssuedMac, KvacMeltBolt11Request, KvacMeltBolt11Response, KvacNullifier,
-        KvacRandomizedCoin,
-    },
-    lightning::{MintLightning, PayInvoiceResponse},
-    mint::MeltQuote,
-    Amount, MeltQuoteState, MintQuoteState, PaymentMethod, State,
-};
+use cdk_common::lightning::{MintLightning, PayInvoiceResponse};
+use cdk_common::mint::MeltQuote;
+use cdk_common::{Amount, MeltQuoteState, MintQuoteState, PaymentMethod, State};
 use tracing::instrument;
 use uuid::Uuid;
+
+use crate::{Error, Mint};
 
 impl Mint {
     /// Process unpaid melt request

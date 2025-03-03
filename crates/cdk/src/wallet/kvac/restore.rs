@@ -2,17 +2,14 @@
 
 use std::collections::HashMap;
 
+use cashu_kvac::models::{AmountAttribute, Coin};
+use cashu_kvac::recovery::recover_amounts;
+use cashu_kvac::secp::{GroupElement, Scalar};
+use cdk_common::common::KvacCoinInfo;
+use cdk_common::kvac::{KvacCoin, KvacIssuedMac, KvacPreCoin, KvacRestoreRequest};
+use cdk_common::{Amount, Id, State};
+
 use crate::{Error, Wallet};
-use cashu_kvac::{
-    models::{AmountAttribute, Coin},
-    recovery::recover_amounts,
-    secp::{GroupElement, Scalar},
-};
-use cdk_common::{
-    common::KvacCoinInfo,
-    kvac::{KvacCoin, KvacIssuedMac, KvacPreCoin, KvacRestoreRequest},
-    Amount, Id, State,
-};
 
 impl Wallet {
     /// Restores coins for each keyset of the Mint

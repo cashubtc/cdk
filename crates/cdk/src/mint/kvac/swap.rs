@@ -4,8 +4,7 @@ use cdk_common::kvac::{KvacIssuedMac, KvacNullifier, KvacSwapRequest, KvacSwapRe
 use cdk_common::State;
 use tracing::instrument;
 
-use crate::Error;
-use crate::Mint;
+use crate::{Error, Mint};
 
 impl Mint {
     /// Process Swap

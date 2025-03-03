@@ -1,9 +1,7 @@
 //! Spendable Nullifiers Checks
 
-use cdk_common::{
-    kvac::{KvacCheckStateRequest, KvacCheckStateResponse, KvacCoinState},
-    State,
-};
+use cdk_common::kvac::{KvacCheckStateRequest, KvacCheckStateResponse, KvacCoinState};
+use cdk_common::State;
 
 use crate::{Error, Mint};
 

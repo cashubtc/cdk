@@ -1,8 +1,11 @@
+use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
+
 use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::wallet::Wallet;
 use cdk_common::{Amount, CurrencyUnit, MintQuoteState};
 use rand::Rng;
-use std::{sync::Arc, thread::sleep, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

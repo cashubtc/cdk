@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
-use crate::Error;
-use cashu_kvac::{kvac::BootstrapProof, transcript::CashuTranscript};
+use cashu_kvac::kvac::BootstrapProof;
+use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::{BootstrapRequest, BootstrapResponse};
 use tracing::instrument;
 
 use super::super::Mint;
+use crate::Error;
 
 impl Mint {
     /// Processes a [`BootstrapRequest`].

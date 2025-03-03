@@ -1,16 +1,12 @@
 //! KVAC mint request
-use cashu_kvac::{
-    kvac::{BalanceProof, IParamsProof, MacProof, RangeProof},
-    models::{AmountAttribute, Coin},
-    secp::GroupElement,
-    transcript::CashuTranscript,
-};
-use cdk_common::{
-    common::KvacCoinInfo,
-    kvac::{KvacCoin, KvacCoinMessage, KvacMeltBolt11Request, KvacRandomizedCoin},
-    util::unix_time,
-    Amount, State,
-};
+use cashu_kvac::kvac::{BalanceProof, IParamsProof, MacProof, RangeProof};
+use cashu_kvac::models::{AmountAttribute, Coin};
+use cashu_kvac::secp::GroupElement;
+use cashu_kvac::transcript::CashuTranscript;
+use cdk_common::common::KvacCoinInfo;
+use cdk_common::kvac::{KvacCoin, KvacCoinMessage, KvacMeltBolt11Request, KvacRandomizedCoin};
+use cdk_common::util::unix_time;
+use cdk_common::{Amount, State};
 use tracing::instrument;
 
 use crate::{Error, Wallet};
