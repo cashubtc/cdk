@@ -1,6 +1,6 @@
 [package]
 name = "cdk-mintd"
-version = "0.7.3"
+version = "0.7.4"
 edition = "2021"
 authors = ["CDK Developers"]
 license = "MIT"
@@ -17,7 +17,7 @@ management-rpc = ["cdk-mint-rpc"]
 [dependencies]
 anyhow = "1"
 axum = "0.6.20"
-cdk = { path = "../cdk", version = "0.7.1", default-features = false, features = [
+cdk = { path = "../cdk", version = "0.7.2", default-features = false, features = [
     "mint",
 ] }
 cdk-redb = { path = "../cdk-redb", version = "0.7.1", default-features = false, features = [

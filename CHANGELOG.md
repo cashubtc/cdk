@@ -24,7 +24,7 @@
 #[Unrelased]
 
 
-#[cdk-mind:v0.7.3]
+#[cdk-mind:v0.7.4]
 ### Changed
 - cdk-mintd: update to cdk v0.7.2
 
