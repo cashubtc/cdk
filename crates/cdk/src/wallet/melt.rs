@@ -290,12 +290,17 @@ impl Wallet {
 
         let available_proofs = self.get_unspent_proofs().await?;
 
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_ids = self
+            .get_active_mint_keysets()
+            .await?
+            .into_iter()
+            .map(|k| k.id)
+            .collect();
         let keyset_fees = self.get_keyset_fees().await?;
         let input_proofs = Wallet::select_proofs(
             inputs_needed_amount,
             available_proofs,
-            active_keyset_id,
+            &active_keyset_ids,
             &keyset_fees,
             true,
         )?;

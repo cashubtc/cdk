@@ -31,9 +31,9 @@ pub enum State {
     ///
     /// Currently being used in a transaction i.e. melt in progress
     Pending,
-    /// Proof is reserved
+    /// Reserved
     ///
-    /// i.e. used to create a token
+    /// Proof is reserved for future token creation
     Reserved,
     /// Pending spent (i.e., spent but not yet swapped by receiver)
     PendingSpent,

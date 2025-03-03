@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 
-use cdk_common::Id;
 use tracing::instrument;
 
 use super::SendKind;
@@ -10,7 +9,16 @@ use crate::nuts::{Proofs, SpendingConditions, State, Token};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
-    /// Prepare send
+    /// Prepare A Send Transaction
+    ///
+    /// This function prepares a send transaction by selecting proofs to send and proofs to swap.
+    /// By doing so, it ensures that the wallet user is able to view the fees associated with the send transaction.
+    ///
+    /// ```no_run
+    /// let send = wallet.prepare_send(Amount::from(10), SendOptions::default()).await?;
+    /// assert!(send.fee() <= Amount::from(1));
+    /// let token = wallet.send(send, None).await?;
+    /// ```
     #[instrument(skip(self), err)]
     pub async fn prepare_send(
         &self,
@@ -72,16 +80,16 @@ impl Wallet {
         }
 
         // Select proofs
-        let active_keyset_id = self
+        let active_keyset_ids = self
             .get_active_mint_keysets()
             .await?
-            .first()
-            .ok_or(Error::NoActiveKeyset)?
-            .id;
+            .into_iter()
+            .map(|k| k.id)
+            .collect();
         let selected_proofs = Wallet::select_proofs(
             amount,
             available_proofs,
-            active_keyset_id,
+            &active_keyset_ids,
             &keyset_fees,
             opts.include_fee,
         )?;
@@ -95,7 +103,7 @@ impl Wallet {
         };
         if selected_total == amount + send_fee {
             return self
-                .internal_prepare_send(amount, opts, selected_proofs, active_keyset_id, force_swap)
+                .internal_prepare_send(amount, opts, selected_proofs, force_swap)
                 .await;
         } else if opts.send_kind == SendKind::OfflineExact {
             return Err(Error::InsufficientFunds);
@@ -113,7 +121,7 @@ impl Wallet {
             }
         }
 
-        self.internal_prepare_send(amount, opts, selected_proofs, active_keyset_id, force_swap)
+        self.internal_prepare_send(amount, opts, selected_proofs, force_swap)
             .await
     }
 
@@ -122,11 +130,11 @@ impl Wallet {
         amount: Amount,
         opts: SendOptions,
         proofs: Proofs,
-        active_keyset_id: Id,
         force_swap: bool,
     ) -> Result<PreparedSend, Error> {
         // Split amount with fee if necessary
         let (send_amounts, send_fee) = if opts.include_fee {
+            let active_keyset_id = self.get_active_mint_keyset().await?.id;
             let keyset_fee_ppk = self.get_keyset_fees_by_id(active_keyset_id).await?;
             tracing::debug!("Keyset fee per proof: {:?}", keyset_fee_ppk);
             let send_split = amount.split_with_fee(keyset_fee_ppk)?;
@@ -188,7 +196,10 @@ impl Wallet {
         })
     }
 
-    /// Send prepared send
+    /// Finalize A Send Transaction
+    ///
+    /// This function finalizes a send transaction by constructing a token the [`PreparedSend`].
+    /// See [`Wallet::prepare_send`] for more information.
     #[instrument(skip(self), err)]
     pub async fn send(&self, send: PreparedSend, memo: Option<SendMemo>) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
@@ -284,7 +295,7 @@ impl PreparedSend {
         &self.options
     }
 
-    /// Proofs to swap
+    /// Proofs to swap (i.e., proofs that need to be swapped before constructing the token)
     pub fn proofs_to_swap(&self) -> &Proofs {
         &self.proofs_to_swap
     }
@@ -294,7 +305,7 @@ impl PreparedSend {
         self.swap_fee
     }
 
-    /// Proofs to send
+    /// Proofs to send (i.e., proofs that will be included in the token)
     pub fn proofs_to_send(&self) -> &Proofs {
         &self.proofs_to_send
     }
