@@ -3,10 +3,12 @@
 //! <https://github.com/cashubtc/nuts/blob/main/01.md>
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::ops::{Deref, DerefMut};
 
 use bitcoin::secp256k1;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
@@ -16,7 +18,7 @@ mod secret_key;
 pub use self::public_key::PublicKey;
 pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
-use crate::amount::{Amount, AmountStr};
+use crate::amount::Amount;
 
 /// Nut01 Error
 #[derive(Debug, Error)]
@@ -42,16 +44,59 @@ pub enum Error {
 /// This is a variation of [MintKeys] that only exposes the public keys.
 ///
 /// See [NUT-01]
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct Keys(BTreeMap<AmountStr, PublicKey>);
+pub struct Keys(BTreeMap<Amount, PublicKey>);
+
+impl Serialize for Keys {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let map: BTreeMap<String, _> = self.0.iter().map(|(k, v)| (k.to_string(), v)).collect();
+        map.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Keys {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct KeysVisitor;
+
+        impl<'de> Visitor<'de> for KeysVisitor {
+            type Value = Keys;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a map with string keys representing u64 values")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Keys, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut btree_map = BTreeMap::new();
+
+                while let Some((key, value)) = map.next_entry::<String, _>()? {
+                    let parsed_key = key.parse::<Amount>().map_err(de::Error::custom)?;
+                    btree_map.insert(parsed_key, value);
+                }
+
+                Ok(Keys(btree_map))
+            }
+        }
+
+        deserializer.deserialize_map(KeysVisitor)
+    }
+}
 
 impl From<MintKeys> for Keys {
     fn from(keys: MintKeys) -> Self {
         Self(
             keys.0
                 .into_iter()
-                .map(|(amount, keypair)| (AmountStr::from(amount), keypair.public_key))
+                .map(|(amount, keypair)| (amount, keypair.public_key))
                 .collect(),
         )
     }
@@ -60,25 +105,25 @@ impl From<MintKeys> for Keys {
 impl Keys {
     /// Create new [`Keys`]
     #[inline]
-    pub fn new(keys: BTreeMap<AmountStr, PublicKey>) -> Self {
+    pub fn new(keys: BTreeMap<Amount, PublicKey>) -> Self {
         Self(keys)
     }
 
     /// Get [`Keys`]
     #[inline]
-    pub fn keys(&self) -> &BTreeMap<AmountStr, PublicKey> {
+    pub fn keys(&self) -> &BTreeMap<Amount, PublicKey> {
         &self.0
     }
 
     /// Get [`PublicKey`] for [`Amount`]
     #[inline]
     pub fn amount_key(&self, amount: Amount) -> Option<PublicKey> {
-        self.0.get(&AmountStr::from(amount)).copied()
+        self.0.get(&amount).copied()
     }
 
     /// Iterate through the (`Amount`, `PublicKey`) entries in the Map
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (&AmountStr, &PublicKey)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Amount, &PublicKey)> {
         self.0.iter()
     }
 }

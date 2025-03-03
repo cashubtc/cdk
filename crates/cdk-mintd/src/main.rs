@@ -412,7 +412,18 @@ async fn main() -> anyhow::Result<()> {
             .parse()?,
     )
     .serve(mint_service.into_make_service())
-    .await;
+    .with_graceful_shutdown(shutdown_signal());
+
+    match axum_result.await {
+        Ok(_) => {
+            tracing::info!("Axum server stopped with okay status");
+        }
+        Err(err) => {
+            tracing::warn!("Axum server stopped with error");
+            tracing::error!("{}", err);
+            bail!("Axum exited with error")
+        }
+    }
 
     shutdown.notify_waiters();
 
@@ -420,18 +431,6 @@ async fn main() -> anyhow::Result<()> {
     {
         if let Some(rpc_server) = rpc_server {
             rpc_server.stop().await?;
-        }
-    }
-
-    match axum_result {
-        Ok(_) => {
-            tracing::info!("Axum server stopped with okay status");
-        }
-        Err(err) => {
-            tracing::warn!("Axum server stopped with error");
-            tracing::error!("{}", err);
-
-            bail!("Axum exited with error")
         }
     }
 
@@ -468,4 +467,11 @@ fn work_dir() -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
 
     Ok(dir)
+}
+
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install CTRL+C handler");
+    tracing::info!("Shutdown signal received");
 }

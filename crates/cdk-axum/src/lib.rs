@@ -24,7 +24,7 @@ mod swagger_imports {
         BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proof, Witness,
     };
     pub use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
-    pub use cdk::nuts::nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
+    pub use cdk::nuts::nut02::{KeySet, KeySetInfo, KeysetResponse};
     pub use cdk::nuts::nut03::{SwapRequest, SwapResponse};
     pub use cdk::nuts::nut04::{
         MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
@@ -70,13 +70,11 @@ pub struct MintState {
         ErrorCode,
         ErrorResponse,
         HTLCWitness,
-        Id,
         Keys,
         KeysResponse,
         KeysetResponse,
         KeySet,
         KeySetInfo,
-        KeySetVersion,
         MeltBolt11Request<Uuid>,
         MeltQuoteBolt11Request,
         MeltQuoteBolt11Response<Uuid>,
