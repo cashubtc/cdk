@@ -2,14 +2,25 @@
 
 use std::collections::HashSet;
 
-use cashu_kvac::{kvac::{BalanceProof, MacProof, RangeProof}, models::{RandomizedCoin, RangeZKP, ZKP}, secp::{GroupElement, Scalar}, transcript::CashuTranscript};
-use cdk_common::{kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin}, Id, State};
+use cashu_kvac::{
+    kvac::{BalanceProof, MacProof, RangeProof},
+    models::{RandomizedCoin, RangeZKP, ZKP},
+    secp::{GroupElement, Scalar},
+    transcript::CashuTranscript,
+};
+use cdk_common::{
+    kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin},
+    Id, State,
+};
 
-use crate::{Mint, Error};
+use crate::{Error, Mint};
 
 impl Mint {
     /// Checks that the outputs have not already been issued a MAC
-    pub async fn verify_kvac_outputs_issuance_state(&self, outputs_tags: &[Scalar]) -> Result<(), Error>{
+    pub async fn verify_kvac_outputs_issuance_state(
+        &self,
+        outputs_tags: &[Scalar],
+    ) -> Result<(), Error> {
         // Check that outputs are not already issued. USER PROTECTION.
         if self
             .localstore
@@ -147,7 +158,8 @@ impl Mint {
         let outputs_tags: Vec<Scalar> = outputs.iter().map(|output| output.t_tag.clone()).collect();
 
         // Verify the state of issuance of the outputs
-        self.verify_kvac_outputs_issuance_state(&outputs_tags).await?;
+        self.verify_kvac_outputs_issuance_state(&outputs_tags)
+            .await?;
 
         // Do we need to apply a fee to this request?
         let fee = if apply_fee {
@@ -160,14 +172,21 @@ impl Mint {
         let mut verify_transcript = CashuTranscript::new();
 
         // Verify balance proof with fee as the difference amount
-        self.verify_kvac_inputs_outputs_balanced(&inputs, &outputs, delta, fee, balance_proof, &mut verify_transcript)?;
+        self.verify_kvac_inputs_outputs_balanced(
+            &inputs,
+            &outputs,
+            delta,
+            fee,
+            balance_proof,
+            &mut verify_transcript,
+        )?;
 
         // Extract nullifiers
         let nullifiers = inputs
             .iter()
             .map(KvacNullifier::from)
             .collect::<Vec<KvacNullifier>>();
-    
+
         // Add the nullifiers to DB. From this point on every failure has to be followed
         // by a reset of the states of these nullifiers
         self.localstore.add_kvac_nullifiers(&nullifiers).await?;

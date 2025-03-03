@@ -65,7 +65,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Receiving 19 sats...\n");
     let received = wallet.kvac_receive_coins(vec![sent]).await?;
 
-    println!("received: {}\n", serde_json::to_string_pretty(&received).unwrap());
+    println!(
+        "received: {}\n",
+        serde_json::to_string_pretty(&received).unwrap()
+    );
 
     // Melt 986 sats
     println!("Melting 986 sats...\n");
