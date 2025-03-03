@@ -22,7 +22,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_unpaid_kvac_melt(
         &self,
-        inputs: &Vec<KvacRandomizedCoin>,
+        inputs: &[KvacRandomizedCoin],
         quote_id: &Uuid,
     ) -> Result<(), Error> {
         // Collect nullifiers

@@ -18,12 +18,11 @@ impl Mint {
         outputs_tags: &[Scalar],
     ) -> Result<(), Error> {
         // Check that outputs are not already issued. USER PROTECTION.
-        if self
+        if !self
             .localstore
             .get_kvac_issued_macs_by_tags(outputs_tags)
             .await?
-            .first()
-            .is_some()
+            .is_empty()
         {
             tracing::error!("Outputs have already been issued a MAC",);
             return Err(Error::MacAlreadyIssued);
@@ -129,12 +128,13 @@ impl Mint {
     }
 
     /// Unified processing of a generic KVAC request
+    #[allow(clippy::too_many_arguments)]
     pub async fn verify_kvac_request(
         &self,
         apply_fee: bool,
         delta: i64,
-        inputs: &Vec<KvacRandomizedCoin>,
-        outputs: &Vec<KvacCoinMessage>,
+        inputs: &[KvacRandomizedCoin],
+        outputs: &[KvacCoinMessage],
         balance_proof: ZKP,
         mac_proofs: Vec<ZKP>,
         script: Option<String>,
@@ -169,8 +169,8 @@ impl Mint {
 
         // Verify balance proof with fee as the difference amount
         self.verify_kvac_inputs_outputs_balanced(
-            &inputs,
-            &outputs,
+            inputs,
+            outputs,
             delta,
             fee,
             balance_proof,

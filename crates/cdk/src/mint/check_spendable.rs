@@ -90,7 +90,7 @@ impl Mint {
         if nullifiers_states.contains(&State::Pending) {
             // Reset states before returning error
             for (n, state) in nullifiers
-                .into_iter()
+                .iter()
                 .zip(original_nullifiers_states.iter())
             {
                 if let Some(original_state) = state {
@@ -105,7 +105,7 @@ impl Mint {
         if nullifiers_states.contains(&State::Spent) {
             // Reset states before returning error
             for (n, state) in nullifiers
-                .into_iter()
+                .iter()
                 .zip(original_nullifiers_states.iter())
             {
                 if let Some(original_state) = state {

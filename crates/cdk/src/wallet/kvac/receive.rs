@@ -30,7 +30,7 @@ impl Wallet {
         // Get the coin encoding the most balance
         localcoins.sort_by(|a, b| b.amount.cmp(&a.amount));
         let balance_coin = localcoins.swap_remove(0);
-        let unit_balance = balance_coin.amount.clone();
+        let unit_balance = balance_coin.amount;
 
         // Create inputs
         let mut inputs = coins;

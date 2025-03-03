@@ -3,8 +3,7 @@ use tracing::instrument;
 
 use crate::{Error, Mint};
 
-/// Restore
-
+/// Restore KVAC coins
 impl Mint {
     /// Restore KVAC coins from tags
     #[instrument(skip_all)]
