@@ -325,7 +325,7 @@ impl Proof {
     }
 
     /// Check if proof is in active keyset `Id`s
-    pub fn is_active(&self, active_keyset_ids: &Vec<Id>) -> bool {
+    pub fn is_active(&self, active_keyset_ids: &[Id]) -> bool {
         active_keyset_ids.contains(&self.keyset_id)
     }
 

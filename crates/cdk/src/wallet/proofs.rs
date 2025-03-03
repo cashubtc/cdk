@@ -189,7 +189,7 @@ impl Wallet {
         // Track selected proofs and remaining amounts (include all inactive proofs first)
         let mut selected_proofs: HashSet<Proof> = proofs
             .iter()
-            .filter(|p| !p.is_active(&active_keyset_ids))
+            .filter(|p| !p.is_active(active_keyset_ids))
             .cloned()
             .collect();
         if selected_proofs.total_amount()? >= amount {
