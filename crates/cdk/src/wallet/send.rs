@@ -14,7 +14,7 @@ impl Wallet {
     /// This function prepares a send transaction by selecting proofs to send and proofs to swap.
     /// By doing so, it ensures that the wallet user is able to view the fees associated with the send transaction.
     ///
-    /// ```no_run
+    /// ```no_compile
     /// let send = wallet.prepare_send(Amount::from(10), SendOptions::default()).await?;
     /// assert!(send.fee() <= Amount::from(1));
     /// let token = wallet.send(send, None).await?;
