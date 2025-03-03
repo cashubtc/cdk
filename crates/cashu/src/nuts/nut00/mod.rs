@@ -3,6 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/00.md>
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
@@ -38,6 +39,12 @@ pub type Proofs = Vec<Proof>;
 
 /// Utility methods for [Proofs]
 pub trait ProofsMethods {
+    /// Count proofs by keyset
+    fn count_by_keyset(&self) -> HashMap<Id, u64>;
+
+    /// Sum proofs by keyset
+    fn sum_by_keyset(&self) -> HashMap<Id, Amount>;
+
     /// Try to sum up the amounts of all [Proof]s
     fn total_amount(&self) -> Result<Amount, Error>;
 
@@ -46,15 +53,63 @@ pub trait ProofsMethods {
 }
 
 impl ProofsMethods for Proofs {
+    fn count_by_keyset(&self) -> HashMap<Id, u64> {
+        count_by_keyset(self.iter())
+    }
+
+    fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
+        sum_by_keyset(self.iter())
+    }
+
     fn total_amount(&self) -> Result<Amount, Error> {
-        Amount::try_sum(self.iter().map(|p| p.amount)).map_err(Into::into)
+        total_amount(self.iter())
     }
 
     fn ys(&self) -> Result<Vec<PublicKey>, Error> {
-        self.iter()
-            .map(|p| p.y())
-            .collect::<Result<Vec<PublicKey>, _>>()
+        ys(self.iter())
     }
+}
+
+impl ProofsMethods for HashSet<Proof> {
+    fn count_by_keyset(&self) -> HashMap<Id, u64> {
+        count_by_keyset(self.iter())
+    }
+
+    fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
+        sum_by_keyset(self.iter())
+    }
+
+    fn total_amount(&self) -> Result<Amount, Error> {
+        total_amount(self.iter())
+    }
+
+    fn ys(&self) -> Result<Vec<PublicKey>, Error> {
+        ys(self.iter())
+    }
+}
+
+fn count_by_keyset<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> HashMap<Id, u64> {
+    let mut counts = HashMap::new();
+    for proof in proofs {
+        *counts.entry(proof.keyset_id).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn sum_by_keyset<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> HashMap<Id, Amount> {
+    let mut sums = HashMap::new();
+    for proof in proofs {
+        *sums.entry(proof.keyset_id).or_insert(Amount::ZERO) += proof.amount;
+    }
+    sums
+}
+
+fn total_amount<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Amount, Error> {
+    Amount::try_sum(proofs.map(|p| p.amount)).map_err(Into::into)
+}
+
+fn ys<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Vec<PublicKey>, Error> {
+    proofs.map(|p| p.y()).collect::<Result<Vec<PublicKey>, _>>()
 }
 
 /// NUT00 Error
@@ -270,6 +325,11 @@ impl Proof {
             witness: None,
             dleq: None,
         }
+    }
+
+    /// Check if proof is in active keyset `Id`s
+    pub fn is_active(&self, active_keyset_ids: &[Id]) -> bool {
+        active_keyset_ids.contains(&self.keyset_id)
     }
 
     /// Get y from proof
