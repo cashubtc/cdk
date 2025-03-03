@@ -290,7 +290,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     for keys in public_keys_to_listen {
         let statuses = msgs.remove(&keys).expect("some events");
-        assert_eq!(statuses, vec![State::Pending, State::Spent]);
+        assert_eq!(statuses, vec![State::Pending, State::Pending, State::Spent]);
     }
 
     assert!(listener.try_recv().is_err(), "no other event is happening");

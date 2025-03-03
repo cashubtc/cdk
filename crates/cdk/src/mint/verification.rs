@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods, PublicKey};
+use tracing::instrument;
 
 use super::{Error, Mint};
 
@@ -12,6 +13,7 @@ pub struct Verification {
 
 impl Mint {
     /// Verify that the inputs to the transaction are unique
+    #[instrument(skip_all)]
     pub fn check_inputs_unique(inputs: &Proofs) -> Result<(), Error> {
         let proof_count = inputs.len();
 
@@ -29,6 +31,7 @@ impl Mint {
     }
 
     /// Verify that the outputs to are unique
+    #[instrument(skip_all)]
     pub fn check_outputs_unique(outputs: &[BlindedMessage]) -> Result<(), Error> {
         let output_count = outputs.len();
 
@@ -48,6 +51,7 @@ impl Mint {
     /// Verify output keyset
     ///
     /// Checks that the outputs are all of the same unit and the keyset is active
+    #[instrument(skip_all)]
     pub async fn verify_outputs_keyset(
         &self,
         outputs: &[BlindedMessage],
@@ -88,6 +92,7 @@ impl Mint {
     /// Verify input keyset
     ///
     /// Checks that the inputs are all of the same unit
+    #[instrument(skip_all)]
     pub async fn verify_inputs_keyset(&self, inputs: &Proofs) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
 
@@ -120,6 +125,7 @@ impl Mint {
     }
 
     /// Verifies that the outputs have not already been signed
+    #[instrument(skip_all)]
     pub async fn check_output_already_signed(
         &self,
         outputs: &[BlindedMessage],
@@ -145,6 +151,7 @@ impl Mint {
 
     /// Verifies outputs
     /// Checks outputs are unique, of the same unit and not signed before
+    #[instrument(skip_all)]
     pub async fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
         Mint::check_outputs_unique(outputs)?;
         self.check_output_already_signed(outputs).await?;
@@ -159,6 +166,7 @@ impl Mint {
     /// Verifies inputs
     /// Checks that inputs are unique and of the same unit
     /// **NOTE: This does not check if inputs have been spent
+    #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
@@ -172,6 +180,7 @@ impl Mint {
     }
 
     /// Verify that inputs and outputs are valid and balanced
+    #[instrument(skip_all)]
     pub async fn verify_transaction_balanced(
         &self,
         inputs: &Proofs,
