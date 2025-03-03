@@ -694,7 +694,6 @@ impl MintDatabase for MintRedbDatabase {
 
             for y in ys {
                 let current_state;
-
                 {
                     match table.get(y.to_bytes()).map_err(Error::from)? {
                         Some(state) => {
@@ -705,8 +704,10 @@ impl MintDatabase for MintRedbDatabase {
                     }
                 }
                 states.push(current_state);
+            }
 
-                if current_state != Some(State::Spent) {
+            for (y, current_state) in ys.iter().zip(&states) {
+                if current_state != &Some(State::Spent) {
                     table
                         .insert(y.to_bytes(), state_str.as_str())
                         .map_err(Error::from)?;
