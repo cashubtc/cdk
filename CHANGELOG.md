@@ -23,6 +23,16 @@
 
 #[Unrelased]
 
+
+#[cdk-mind:v0.7.3]
+### Changed
+- cdk-mintd: update to cdk v0.7.2
+
+#[cdk:v0.7.2]
+### Fixed
+- cdk: Ordering of swap verification checks ([thesimplekid])
+
+
 #[cdk-mintd:v0.7.2]
 ### Fixed
 -cdk-mintd: Fixed mint and melt error on mint initialized with RPC interface disabled ([ok300]).
