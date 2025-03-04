@@ -10,14 +10,15 @@ rust-version = "1.63.0"                     # MSRV
 license = "MIT"
 
 [features]
-default = ["mint", "wallet"]
+default = ["mint", "wallet", "kvac"]
 swagger = ["dep:utoipa", "cashu/swagger"]
 bench = []
 wallet = ["cashu/wallet"]
+kvac = ["dep:cashu_kvac"]
 mint = ["cashu/mint", "dep:uuid"]
 
 [dependencies]
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "03bcca4997f310b4e2e1b8a3b22cf444faa41e6a" }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "03bcca4997f310b4e2e1b8a3b22cf444faa41e6a", optional = true }
 async-trait = "0.1"
 bitcoin = { version = "0.32.2", features = [
     "base64",

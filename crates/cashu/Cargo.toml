@@ -15,7 +15,7 @@ swagger = ["dep:utoipa"]
 mint = ["dep:uuid"]
 wallet = []
 bench = []
-kvac = []
+kvac = ["dep::cashu_kvac"]
 
 [dependencies]
 uuid = { version = "=1.12.1", features = ["v4", "serde"], optional = true }
@@ -36,7 +36,7 @@ url = "2.3"
 utoipa = { version = "4", optional = true }
 serde_json = "1"
 serde_with = "3"
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "03bcca4997f310b4e2e1b8a3b22cf444faa41e6a" }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "03bcca4997f310b4e2e1b8a3b22cf444faa41e6a", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
