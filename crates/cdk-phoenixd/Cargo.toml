@@ -20,5 +20,5 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-phoenixd-rs = "0.4.0"
+phoenixd-rs = "0.5.0"
 uuid.workspace = true

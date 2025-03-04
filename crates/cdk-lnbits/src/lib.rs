@@ -182,7 +182,7 @@ impl MintLightning for LNbits {
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let pay_response = self
             .lnbits_api
-            .pay_invoice(&melt_quote.request)
+            .pay_invoice(&melt_quote.request, None)
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay invoice");
