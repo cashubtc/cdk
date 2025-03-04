@@ -14,7 +14,7 @@ async-trait.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 bitcoin.workspace = true
-cdk = { path = "../cdk", version = "0.7.2", default-features = false, features = ["mint"] }
+cdk = { workspace = true, features = ["mint"] }
 futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -27,7 +27,7 @@ async-trait.workspace = true
 anyhow.workspace = true
 bitcoin.workspace = true
 ciborium.workspace = true
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+lightning-invoice.workspace = true
 regex = "1"
 reqwest = { workspace = true, default-features = false, features = [
     "json",

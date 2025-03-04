@@ -21,10 +21,7 @@ cdk = { workspace = true, features = [
 ] }
 tokio.workspace = true
 tracing.workspace = true
-utoipa = { workspace = true, features = [
-    "preserve_order", 
-    "preserve_path_order"
-], optional = true }
+utoipa = { workspace = true, optional = true }
 futures.workspace = true
 moka = { version = "0.11.1", features = ["future"] }
 serde_json.workspace = true

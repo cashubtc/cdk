@@ -14,11 +14,11 @@ rust-version = "1.75.0"                                                         
 http_subscription = ["cdk/http_subscription"]
 
 [dependencies]
-async-trait = "0.1"
-axum = "0.6.20"
+async-trait.workspace = true
+axum.workspace = true
 rand = "0.8.5"
 bip39 = { workspace = true, features = ["rand"] }
-anyhow = "1"
+anyhow.workspace = true
 cashu = { path = "../cashu", features = ["mint", "wallet"] }
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-cln = { path = "../cdk-cln" }
@@ -39,7 +39,7 @@ serde_json.workspace = true
 ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "ed24716" }
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber.workspace = true
 tower-service = "0.3.3"
 tokio-tungstenite = "0.24.0"
 

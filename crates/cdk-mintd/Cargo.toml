@@ -35,7 +35,7 @@ cdk-strike.workspace = true
 cdk-axum.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
-clap = { version = "~4.0.32", features = ["derive"] }
+clap.workspace = true
 bitcoin.workspace = true
 tokio = { workspace = true, default-features = false, features = ["signal"] }
 tracing.workspace = true

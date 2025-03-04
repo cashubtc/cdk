@@ -15,10 +15,10 @@ path = "src/bin/mint_rpc_cli.rs"
 
 [dependencies]
 anyhow.workspace = true
-cdk = { path = "../cdk", version = "0.7.1", default-features = false, features = [
+cdk = { workspace = true, features = [
     "mint",
 ] }
-clap = { version = "~4.0.32", features = ["derive"] }
+clap.workspace = true
 tonic = { version = "0.9", features = [
     "channel",
     "tls",
