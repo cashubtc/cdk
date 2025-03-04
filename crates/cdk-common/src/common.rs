@@ -1,5 +1,6 @@
 //! Types
 
+use cashu::kvac::KvacCoin;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -57,6 +58,48 @@ impl Melted {
     /// Total amount melted
     pub fn total_amount(&self) -> Amount {
         self.amount + self.fee_paid
+    }
+}
+
+/// KvacCoininfo
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvacCoinInfo {
+    /// Inner coin
+    pub coin: KvacCoin,
+    /// Mint Url
+    pub mint_url: MintUrl,
+    /// Coin State
+    pub state: State,
+}
+
+impl KvacCoinInfo {
+    /// Check if [`KvacCoinInfo`] matches conditions
+    pub fn matches_conditions(
+        &self,
+        mint_url: &Option<MintUrl>,
+        unit: &Option<CurrencyUnit>,
+        state: &Option<Vec<State>>,
+        _script: &Option<String>,
+    ) -> bool {
+        if let Some(mint_url) = mint_url {
+            if mint_url.ne(&self.mint_url) {
+                return false;
+            }
+        }
+
+        if let Some(unit) = unit {
+            if unit.ne(&self.coin.unit) {
+                return false;
+            }
+        }
+
+        if let Some(state) = state {
+            if !state.contains(&self.state) {
+                return false;
+            }
+        }
+
+        true
     }
 }
 

@@ -86,13 +86,13 @@ impl fmt::Display for KeySetVersion {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub struct Id {
-    version: KeySetVersion,
-    id: [u8; Self::BYTELEN],
+    pub(crate) version: KeySetVersion,
+    pub(crate) id: [u8; Self::BYTELEN],
 }
 
 impl Id {
-    const STRLEN: usize = 14;
-    const BYTELEN: usize = 7;
+    pub const STRLEN: usize = 14;
+    pub const BYTELEN: usize = 7;
 
     /// [`Id`] to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -310,7 +310,6 @@ impl MintKeySet {
                 },
             );
         }
-
         let keys = MintKeys::new(map);
         Self {
             id: (&keys).into(),

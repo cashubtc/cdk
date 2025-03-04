@@ -4,6 +4,12 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
+use cdk::nuts::kvac::{
+    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse,
+    KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response,
+    KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse,
+    KvacSwapRequest, KvacSwapResponse,
+};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
@@ -62,6 +68,18 @@ post_cache_wrapper!(
     MeltBolt11Request<Uuid>,
     MeltQuoteBolt11Response<Uuid>
 );
+post_cache_wrapper!(post_bootstrap, BootstrapRequest, BootstrapResponse);
+post_cache_wrapper!(post_kvac_swap, KvacSwapRequest, KvacSwapResponse);
+post_cache_wrapper!(
+    post_kvac_mint_bolt11,
+    KvacMintBolt11Request<Uuid>,
+    KvacMintBolt11Response
+);
+post_cache_wrapper!(
+    post_kvac_melt_bolt11,
+    KvacMeltBolt11Request<Uuid>,
+    KvacMeltBolt11Response
+);
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -76,6 +94,29 @@ post_cache_wrapper!(
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
 pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
     let pubkeys = state.mint.pubkeys().await.map_err(|err| {
+        tracing::error!("Could not get keys: {}", err);
+        into_response(err)
+    })?;
+
+    Ok(Json(pubkeys))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v2",
+    path = "/kvac/keys",
+    responses(
+        (status = 200, description = "Successful response", body = KvacKeysResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Get the public keys of the newest mint keyset
+///
+/// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
+pub async fn get_kvac_keys(
+    State(state): State<MintState>,
+) -> Result<Json<KvacKeysResponse>, Response> {
+    let pubkeys = state.mint.kvac_pubkeys().await.map_err(|err| {
         tracing::error!("Could not get keys: {}", err);
         into_response(err)
     })?;
@@ -112,6 +153,38 @@ pub async fn get_keyset_pubkeys(
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
+    context_path = "/v2",
+    path = "/kvac/keys/{keyset_id}",
+    params(
+        ("keyset_id" = String, description = "The keyset ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = KvacKeysResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Get the public keys of a specific keyset
+///
+/// Get the public keys of the mint from a specific keyset ID.
+pub async fn get_kvac_keyset_pubkeys(
+    State(state): State<MintState>,
+    Path(keyset_id): Path<Id>,
+) -> Result<Json<KvacKeysResponse>, Response> {
+    let pubkeys = state
+        .mint
+        .kvac_keyset_pubkeys(&keyset_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not get keyset pubkeys: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(pubkeys))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
     context_path = "/v1",
     path = "/keysets",
     responses(
@@ -127,7 +200,27 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)
     })?;
+    tracing::info!("keysets: {}", serde_json::to_string(&keysets).unwrap());
+    Ok(Json(keysets))
+}
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v2",
+    path = "/kvac/keysets",
+    responses(
+        (status = 200, description = "Successful response", body = KvacKeysetResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Get all active keyset IDs of the mint
+///
+/// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
+pub async fn get_kvac_keysets(
+    State(state): State<MintState>,
+) -> Result<Json<KvacKeysetResponse>, Response> {
+    let keysets = state.mint.kvac_keysets().await.map_err(into_response)?;
     Ok(Json(keysets))
 }
 
@@ -223,6 +316,38 @@ pub async fn post_mint_bolt11(
     Ok(Json(res))
 }
 
+/// Mint coins by paying a BOLT11 Lightning invoice.
+///
+/// Requests the minting of tokens belonging to a paid payment request.
+///
+/// Call this endpoint after `POST /v1/mint/quote`.
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/mint/bolt11",
+    request_body(content = KvacMintBolt11Request, description = "Request params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacMintBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+pub async fn post_kvac_mint_bolt11(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacMintBolt11Request<Uuid>>,
+) -> Result<Json<KvacMintBolt11Response>, Response> {
+    let res = state
+        .mint
+        .process_kvac_mint_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process kvac mint: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(res))
+}
+
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1",
@@ -309,6 +434,34 @@ pub async fn post_melt_bolt11(
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
+    context_path = "/v2",
+    path = "/kvac/melt/bolt11",
+    request_body(content = KvacMeltBolt11Request, description = "Melt params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacMeltBolt11Response, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
+///
+/// Requests tokens to be destroyed and sent out via Lightning.
+#[instrument(skip_all)]
+pub async fn post_kvac_melt_bolt11(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacMeltBolt11Request<Uuid>>,
+) -> Result<Json<KvacMeltBolt11Response>, Response> {
+    let res = state
+        .mint
+        .process_kvac_melt_request(payload)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(res))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
     context_path = "/v1",
     path = "/checkstate",
     request_body(content = CheckStateRequest, description = "State params", content_type = "application/json"),
@@ -325,6 +478,32 @@ pub async fn post_check(
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
     let state = state.mint.check_state(&payload).await.map_err(|err| {
+        tracing::error!("Could not check state of proofs");
+        into_response(err)
+    })?;
+
+    Ok(Json(state))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/checkstate",
+    request_body(content = KvacCheckStateRequest, description = "State params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacCheckStateResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Check whether a proof is spent already or is pending in a transaction
+///
+/// Check whether a secret has been spent already or not.
+pub async fn post_kvac_check(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacCheckStateRequest>,
+) -> Result<Json<KvacCheckStateResponse>, Response> {
+    let state = state.mint.kvac_check_state(&payload).await.map_err(|err| {
         tracing::error!("Could not check state of proofs");
         into_response(err)
     })?;
@@ -388,6 +567,66 @@ pub async fn post_swap(
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
+    context_path = "/v2",
+    path = "/kvac/swap",
+    request_body(content = KvacSwapRequest, description = "Swap params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacSwapResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Swap inputs for outputs of the same value
+///
+/// Requests a set of coins to be swapped for another set of coins.
+///
+/// This endpoint can be used by Alice to swap a set of coins before making a payment to Carol. It can then used by Carol to redeem the tokens for new coins.
+pub async fn post_kvac_swap(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacSwapRequest>,
+) -> Result<Json<KvacSwapResponse>, Response> {
+    let swap_response = state
+        .mint
+        .process_kvac_swap_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process kvac swap request: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(swap_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/bootstrap",
+    request_body(content = SwapRequest, description = "Swap params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = BootstrapResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Client requests a MAC for coins of zero value
+///
+/// This endpoint can be used by Alice to obtain valid zero-valued coins to be used as inputs in other requests
+pub async fn post_bootstrap(
+    State(state): State<MintState>,
+    Json(payload): Json<BootstrapRequest>,
+) -> Result<Json<BootstrapResponse>, Response> {
+    let bootstrap_response = state
+        .mint
+        .process_bootstrap_request(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process bootstrap request: {}", err);
+            into_response(err)
+        })?;
+    Ok(Json(bootstrap_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
     context_path = "/v1",
     path = "/restore",
     request_body(content = RestoreRequest, description = "Restore params", content_type = "application/json"),
@@ -403,6 +642,30 @@ pub async fn post_restore(
 ) -> Result<Json<RestoreResponse>, Response> {
     let restore_response = state.mint.restore(payload).await.map_err(|err| {
         tracing::error!("Could not process restore: {}", err);
+        into_response(err)
+    })?;
+
+    Ok(Json(restore_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v2",
+    path = "/kvac/restore",
+    request_body(content = KvacRestoreRequest, description = "Restore params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = KvacRestoreResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[cfg(feature = "kvac")]
+/// Restores attributes and macs for a set of tags.
+pub async fn post_kvac_restore(
+    State(state): State<MintState>,
+    Json(payload): Json<KvacRestoreRequest>,
+) -> Result<Json<KvacRestoreResponse>, Response> {
+    let restore_response = state.mint.kvac_restore(payload).await.map_err(|err| {
+        tracing::error!("Could not process KVAC restore: {}", err);
         into_response(err)
     })?;
 
