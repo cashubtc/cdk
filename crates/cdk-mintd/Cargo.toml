@@ -16,7 +16,8 @@ management-rpc = ["cdk-mint-rpc"]
 
 [dependencies]
 anyhow.workspace = true
-axum = "0.6.20"
+async-trait.workspace = true
+axum.workspace = true
 cdk = { workspace = true, features = [
     "mint",
 ] }
@@ -31,7 +32,6 @@ cdk-lnbits.workspace = true
 cdk-phoenixd.workspace = true
 cdk-lnd.workspace = true
 cdk-fake-wallet.workspace = true
-cdk-strike.workspace = true
 cdk-axum.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
@@ -43,7 +43,8 @@ tracing-subscriber.workspace = true
 futures.workspace = true
 serde.workspace = true
 bip39.workspace = true
-tower-http = { version = "0.4.4", features = ["cors", "compression-full"] }
+tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
+tower = "0.5.2"
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 home = "0.5.5"
 url.workspace = true

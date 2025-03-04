@@ -5,15 +5,13 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use axum::http::Request;
-use axum::middleware::Next;
-use axum::response::Response;
-use axum::{middleware, Router};
+use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
 use cdk::cdk_lightning;
@@ -34,8 +32,10 @@ use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
+use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
-use tower_http::cors::CorsLayer;
+use tower_http::decompression::RequestDecompressionLayer;
+use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
@@ -49,10 +49,11 @@ async fn main() -> anyhow::Result<()> {
     let sqlx_filter = "sqlx=warn";
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
+    let tower_http = "tower_http=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{},{}",
-        default_filter, sqlx_filter, hyper_filter, h2_filter
+        "{},{},{},{},{}",
+        default_filter, sqlx_filter, hyper_filter, h2_filter, tower_http
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -179,29 +180,6 @@ async fn main() -> anyhow::Result<()> {
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
-        }
-        LnBackend::Strike => {
-            let strike_settings = settings.clone().strike.expect("Checked on config load");
-
-            for unit in strike_settings
-                .clone()
-                .supported_units
-                .unwrap_or(vec![CurrencyUnit::Sat])
-            {
-                let strike = strike_settings
-                    .setup(&mut ln_routers, &settings, unit.clone())
-                    .await?;
-
-                mint_builder = mint_builder.add_ln_backend(
-                    unit.clone(),
-                    PaymentMethod::Bolt11,
-                    mint_melt_limits,
-                    Arc::new(strike),
-                );
-                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
-
-                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
-            }
         }
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
@@ -341,9 +319,12 @@ async fn main() -> anyhow::Result<()> {
 
     let mut mint_service = Router::new()
         .merge(v1_service)
-        .layer(CompressionLayer::new())
-        .layer(middleware::from_fn(logging_middleware))
-        .layer(CorsLayer::permissive());
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
+        )
+        .layer(TraceLayer::new_for_http());
 
     #[cfg(feature = "swagger")]
     {
@@ -406,13 +387,13 @@ async fn main() -> anyhow::Result<()> {
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     }
 
-    let axum_result = axum::Server::bind(
-        &format!("{}:{}", listen_addr, listen_port)
-            .as_str()
-            .parse()?,
-    )
-    .serve(mint_service.into_make_service())
-    .with_graceful_shutdown(shutdown_signal());
+    let socket_addr = SocketAddr::from_str(&format!("{}:{}", listen_addr, listen_port))?;
+
+    let listener = tokio::net::TcpListener::bind(socket_addr).await?;
+
+    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+
+    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal());
 
     match axum_result.await {
         Ok(_) => {
@@ -435,29 +416,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Logs infos about the request and the response
-async fn logging_middleware<B>(req: Request<B>, next: Next<B>) -> Response {
-    let start = std::time::Instant::now();
-    let path = req.uri().path().to_owned();
-    let method = req.method().clone();
-
-    let response = next.run(req).await;
-
-    let duration = start.elapsed();
-    let status = response.status();
-    let compression = response
-        .headers()
-        .get("content-encoding")
-        .map(|h| h.to_str().unwrap_or("none"))
-        .unwrap_or("none");
-
-    tracing::trace!(
-        "Request: {method} {path} | Status: {status} | Compression: {compression} | Duration: {duration:?}",
-    );
-
-    response
 }
 
 fn work_dir() -> Result<PathBuf> {

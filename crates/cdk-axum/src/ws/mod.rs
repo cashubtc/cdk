@@ -75,7 +75,7 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     }
                 };
 
-          if let Err(err)= socket.send(Message::Text(message)).await {
+          if let Err(err)= socket.send(Message::Text(message.into())).await {
                 tracing::error!("Could not send websocket message: {}", err);
                 break;
           }
@@ -92,7 +92,7 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                 match process(&mut context, request).await {
                     Ok(result) => {
                         if let Err(err) = socket
-                            .send(Message::Text(result.to_string()))
+                            .send(Message::Text(result.to_string().into()))
                             .await
                         {
                             tracing::error!("Could not send request: {}", err);

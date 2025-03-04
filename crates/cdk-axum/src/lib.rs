@@ -148,18 +148,18 @@ pub async fn create_mint_router_with_custom_cache(
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
         .route("/keysets", get(get_keysets))
-        .route("/keys/:keyset_id", get(get_keyset_pubkeys))
+        .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
         .route("/swap", post(cache_post_swap))
         .route("/mint/quote/bolt11", post(post_mint_bolt11_quote))
         .route(
-            "/mint/quote/bolt11/:quote_id",
+            "/mint/quote/bolt11/{quote_id}",
             get(get_check_mint_bolt11_quote),
         )
         .route("/mint/bolt11", post(cache_post_mint_bolt11))
         .route("/melt/quote/bolt11", post(post_melt_bolt11_quote))
         .route("/ws", get(ws_handler))
         .route(
-            "/melt/quote/bolt11/:quote_id",
+            "/melt/quote/bolt11/{quote_id}",
             get(get_check_melt_bolt11_quote),
         )
         .route("/melt/bolt11", post(cache_post_melt_bolt11))
