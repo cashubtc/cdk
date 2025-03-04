@@ -16,7 +16,7 @@ wallet = ["cdk/wallet"]
 
 [dependencies]
 rexie = "0.6.0"
-cdk = { path = "../cdk", version = "0.7.2", default-features = false }
+cdk.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 serde.workspace = true

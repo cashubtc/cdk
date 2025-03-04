@@ -17,7 +17,7 @@ wallet = []
 
 [dependencies]
 async-trait.workspace = true
-cdk-common = { path = "../cdk-common", version = "0.7.1" }
+cdk-common.workspace = true
 redb = "=2.2.0"
 thiserror.workspace = true
 tracing.workspace = true

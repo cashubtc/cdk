@@ -11,7 +11,7 @@ description = "CDK ln backend for lnd"
 [dependencies]
 async-trait.workspace = true
 anyhow.workspace = true
-cdk = { path = "../cdk", version = "0.7.2", default-features = false, features = ["mint"] }
+cdk = { workspace = true, features = ["mint"] }
 fedimint-tonic-lnd = "0.2.0"
 futures.workspace = true
 tokio.workspace = true

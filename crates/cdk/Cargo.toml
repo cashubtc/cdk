@@ -21,7 +21,7 @@ http_subscription = []
 
 
 [dependencies]
-cdk-common = { path = "../cdk-common", version = "0.7.1" }
+cdk-common.workspace = true
 cbor-diag.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
@@ -29,7 +29,7 @@ bitcoin.workspace = true
 ciborium.workspace = true
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { workspace = true, default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",
@@ -67,7 +67,7 @@ tokio-tungstenite = { version = "0.19.0", features = [
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1.21", features = ["rt", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
 
 [[example]]
@@ -88,9 +88,9 @@ required-features = ["wallet"]
 
 [dev-dependencies]
 rand = "0.8.5"
-bip39 = "2.0"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-cdk-sqlite = { path = "../cdk-sqlite" }
+cdk-sqlite.workspace = true
+bip39.workspace = true
+tracing-subscriber.workspace = true
 criterion = "0.5.1"
 
 [[bench]]

@@ -19,7 +19,7 @@ mint = ["cashu/mint", "dep:uuid"]
 [dependencies]
 async-trait.workspace = true
 bitcoin.workspace = true
-cashu = { path = "../cashu", default-features = false, version = "0.7.1" }
+cashu.workspace = true
 cbor-diag.workspace = true
 ciborium.workspace = true
 serde.workspace = true

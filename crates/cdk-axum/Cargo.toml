@@ -16,7 +16,7 @@ swagger = ["cdk/swagger", "dep:utoipa"]
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { version = "0.6.20", features = ["ws"] }
-cdk = { path = "../cdk", version = "0.7.1", default-features = false, features = [
+cdk = { workspace = true, features = [
     "mint",
 ] }
 tokio.workspace = true

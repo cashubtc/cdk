@@ -17,6 +17,19 @@ async-trait = "0.1"
 axum = { version = "0.6.20", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = { version = "2.0", features = ["rand"] }
+cashu = { path = "./crates/cashu", version = "=0.7.1" }
+cdk = { path = "./crates/cdk", default-features = false, version = "=0.7.2" }
+cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.7.1" }
+cdk-axum = { path = "./crates/cdk-axum", version = "=0.7.1" }
+cdk-cln = { path = "./crates/cdk-cln", version = "=0.7.1" }
+cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.7.1" }
+cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.7.1" }
+cdk-phoenixd = { path = "./crates/cdk-phoenixd", version = "=0.7.1" }
+cdk-strike = { path = "./crates/cdk-strike", version = "=0.7.1" }
+cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.7.1" }
+cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.7.1" }
+cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.7.1" }
+cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = "=0.7.1" }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
@@ -35,6 +48,17 @@ utoipa = { version = "4", features = [
     "preserve_path_order",
 ]}
 serde_with = "3"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "rustls-tls-native-roots",
+    "socks",
+    "zstd",
+    "brotli",
+    "gzip",
+    "deflate",
+]}
+
 
 [workspace.metadata]
 authors = ["CDK Developers"]

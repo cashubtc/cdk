@@ -12,27 +12,22 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 bip39.workspace = true
-cdk = { path = "../cdk", version = "0.7.2", default-features = false, features = ["wallet"]}
-cdk-redb = { path = "../cdk-redb", version = "0.7.1", default-features = false, features = ["wallet"] }
-cdk-sqlite = { path = "../cdk-sqlite", version = "0.7.1", default-features = false, features = ["wallet"] }
+cdk = { workspace = true, default-features = false, features = ["wallet"]}
+cdk-redb = { workspace = true, features = ["wallet"] }
+cdk-sqlite = { workspace = true, features = ["wallet"] }
 clap = { version = "~4.0.32", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber.workspace = true
 home = "0.5.5"
 nostr-sdk = { version = "0.35.0", default-features = false, features = [
     "nip04",
     "nip44",
     "nip59"
 ]}
-reqwest = { version = "0.12", default-features = false, features = [
-    "json",
-    "rustls-tls",
-    "rustls-tls-native-roots",
-    "socks",
-]}
+reqwest.workspace = true
 url.workspace = true
-serde_with = "3"
+serde_with.workspace = true
 
