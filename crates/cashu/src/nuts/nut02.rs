@@ -91,8 +91,8 @@ pub struct Id {
 }
 
 impl Id {
-    const STRLEN: usize = 14;
-    const BYTELEN: usize = 7;
+    pub const STRLEN: usize = 14;
+    pub const BYTELEN: usize = 7;
 
     /// [`Id`] to bytes
     pub fn to_bytes(&self) -> Vec<u8> {

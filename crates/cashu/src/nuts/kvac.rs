@@ -16,7 +16,6 @@ use uuid::Uuid;
 
 use super::nut02::KeySetVersion;
 use super::{CurrencyUnit, Id, KeySetInfo, State};
-use crate::util::hex;
 use crate::{Amount, SECP256K1};
 
 #[derive(Debug, Error)]
@@ -99,13 +98,11 @@ impl From<&KvacKeys> for Id {
         let mut data = kvac_keys.0.Cw.to_bytes();
         data.extend(kvac_keys.0.I.to_bytes());
         let hash = Sha256::hash(&data);
-        let hex_of_hash = hex::encode(hash.to_byte_array());
+        let hash_bytes= hash.to_byte_array()[0..Self::BYTELEN].to_vec().try_into()
+            .expect("Invalid length of hex id");
         Id {
             version: KeySetVersion::Version00,
-            id: hex::decode(&hex_of_hash[0..14])
-                .expect("Keys hash could not be hex decoded")
-                .try_into()
-                .expect("Invalid length of hex id"),
+            id: hash_bytes,
         }
     }
 }
