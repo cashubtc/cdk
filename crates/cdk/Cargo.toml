@@ -22,16 +22,11 @@ http_subscription = []
 
 [dependencies]
 cdk-common = { path = "../cdk-common", version = "0.7.1" }
-cbor-diag = "0.1.12"
-async-trait = "0.1"
-anyhow = { version = "1.0.43", features = ["backtrace"] }
-bitcoin = { version = "0.32.2", features = [
-    "base64",
-    "serde",
-    "rand",
-    "rand-std",
-] }
-ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
+cbor-diag.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+bitcoin.workspace = true
+ciborium.workspace = true
 lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -44,27 +39,22 @@ reqwest = { version = "0.12", default-features = false, features = [
     "gzip",
     "deflate",
 ], optional = true }
-serde = { version = "1", default-features = false, features = ["derive"] }
-serde_json = "1"
-serde_with = "3"
-tracing = { version = "0.1", default-features = false, features = [
-    "attributes",
-    "log",
-] }
-thiserror = "1"
-futures = { version = "0.3.28", default-features = false, optional = true, features = [
-    "alloc",
-] }
-url = "2.3"
-utoipa = { version = "4", optional = true }
-uuid = { version = "=1.12.1", features = ["v4", "serde"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+futures = { workspace = true, optional = true }
+url.workspace = true
+utoipa = { workspace = true, optional = true }
+uuid.workspace = true
 
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.21", features = [
+tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
     "macros",

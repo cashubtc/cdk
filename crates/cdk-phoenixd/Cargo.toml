@@ -17,7 +17,7 @@ bitcoin.workspace = true
 cdk = { path = "../cdk", version = "0.7.2", default-features = false, features = ["mint"] }
 futures.workspace = true
 tokio.workspace = true
-tokio-util = { version = "0.7.11", default-features = false }
+tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 phoenixd-rs = "0.4.0"
