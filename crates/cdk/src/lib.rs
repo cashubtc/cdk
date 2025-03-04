@@ -3,8 +3,10 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-#[cfg(any(feature = "wallet", feature = "mint"))]
-pub mod cdk_database;
+pub mod cdk_database {
+    //! CDK Database
+    pub use cdk_common::database::{Error, MintDatabase, WalletDatabase};
+}
 
 #[cfg(feature = "mint")]
 pub mod mint;

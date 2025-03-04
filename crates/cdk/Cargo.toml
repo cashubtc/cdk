@@ -100,6 +100,7 @@ required-features = ["wallet"]
 rand = "0.8.5"
 bip39 = "2.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+cdk-sqlite = { path = "../cdk-sqlite" }
 criterion = "0.5.1"
 
 [[bench]]

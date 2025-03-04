@@ -6,8 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk::cdk_database::{MintDatabase, WalletMemoryDatabase};
+use cdk::cdk_database::MintDatabase;
 use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -158,7 +157,9 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
 
     let mut mint_builder = MintBuilder::new();
 
-    let database = MintMemoryDatabase::default();
+    let database = cdk_sqlite::mint::memory::empty()
+        .await
+        .expect("valid db instance");
 
     let localstore = Arc::new(database);
     mint_builder = mint_builder.with_localstore(localstore.clone());
@@ -209,13 +210,15 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
     Ok(mint_arc)
 }
 
-pub fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<Wallet>> {
+pub async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<Wallet>> {
     let connector = DirectMintConnection::new(mint);
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let mint_url = "http://aa".to_string();
     let unit = CurrencyUnit::Sat;
-    let localstore = WalletMemoryDatabase::default();
+    let localstore = cdk_sqlite::wallet::memory::empty()
+        .await
+        .expect("valid db instance");
     let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None)?;
 
     wallet.set_client(connector);

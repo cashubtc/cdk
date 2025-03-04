@@ -119,17 +119,20 @@ impl Wallet {
     /// ```rust
     /// use std::sync::Arc;
     ///
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
     /// use rand::Rng;
     ///
-    /// let seed = rand::thread_rng().gen::<[u8; 32]>();
-    /// let mint_url = "https://testnut.cashu.space";
-    /// let unit = CurrencyUnit::Sat;
+    /// async fn test() -> anyhow::Result<()> {
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
     ///
-    /// let localstore = WalletMemoryDatabase::default();
-    /// let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let localstore = memory::empty().await?;
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     Ok(())
+    /// }
     /// ```
     pub fn new(
         mint_url: &str,

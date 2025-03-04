@@ -89,6 +89,8 @@ impl Wallet {
     /// keysets
     #[instrument(skip(self))]
     pub async fn get_active_mint_keyset(&self) -> Result<KeySetInfo, Error> {
+        // Important
+        let _ = self.get_mint_info().await?;
         let active_keysets = self.get_active_mint_keysets().await?;
 
         let keyset_with_lowest_fee = active_keysets

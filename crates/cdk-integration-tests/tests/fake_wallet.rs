@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, Proofs,
@@ -13,6 +12,7 @@ use cdk::wallet::client::{HttpClient, MintConnector};
 use cdk::wallet::Wallet;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::{attempt_to_swap_pending, wait_for_mint_to_be_paid};
+use cdk_sqlite::wallet::memory;
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
 
@@ -22,7 +22,7 @@ async fn test_fake_tokens_pending() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -62,7 +62,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -113,7 +113,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
     }
 
     let wallet_bal = wallet.total_balance().await?;
-    assert!(wallet_bal == 100.into());
+    assert_eq!(wallet_bal, 100.into());
 
     Ok(())
 }
@@ -125,7 +125,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -170,7 +170,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -230,7 +230,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -256,7 +256,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
-    assert!(melt.is_err());
+    assert_eq!(melt.unwrap_err().to_string(), "Payment failed");
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -271,7 +271,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
-    assert!(melt.is_err());
+    assert_eq!(melt.unwrap_err().to_string(), "Payment failed");
 
     let pending = wallet
         .localstore
@@ -291,7 +291,7 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -329,7 +329,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -417,7 +417,7 @@ async fn test_fake_mint_with_witness() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -441,7 +441,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -477,7 +477,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -517,7 +517,7 @@ async fn test_fake_mint_inflated() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -569,7 +569,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -585,7 +585,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -639,7 +639,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -653,7 +653,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -743,7 +743,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -762,7 +762,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -863,7 +863,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -877,11 +877,10 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
-
     let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
 
     let inputs = proofs;
@@ -919,7 +918,7 @@ async fn test_fake_mint_swap_inflated() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -961,7 +960,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -1041,7 +1040,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -1121,7 +1120,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -1195,7 +1194,7 @@ async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
