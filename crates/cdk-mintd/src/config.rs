@@ -1,9 +1,12 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use bitcoin::hashes::{sha256, Hash};
 use cdk::nuts::{CurrencyUnit, PublicKey};
-use cdk::Amount;
+use cdk::{cdk_database, Amount};
 use cdk_axum::cache;
+use cdk_redb::MintRedbDatabase;
+use cdk_sqlite::MintSqliteDatabase;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -187,6 +190,30 @@ impl std::str::FromStr for DatabaseEngine {
     }
 }
 
+impl DatabaseEngine {
+    /// Convert the database instance into a mint database
+    pub async fn mint<P: Into<PathBuf>>(
+        self,
+        work_dir: P,
+    ) -> Result<
+        Arc<dyn cdk_database::MintDatabase<Err = cdk_database::Error> + Sync + Send + 'static>,
+        cdk_database::Error,
+    > {
+        match self {
+            DatabaseEngine::Sqlite => {
+                let sql_db_path = work_dir.into().join("cdk-mintd.sqlite");
+                let db = MintSqliteDatabase::new(&sql_db_path).await?;
+                db.migrate().await;
+                Ok(Arc::new(db))
+            }
+            DatabaseEngine::Redb => {
+                let redb_path = work_dir.into().join("cdk-mintd.redb");
+                Ok(Arc::new(MintRedbDatabase::new(&redb_path)?))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Database {
     pub engine: DatabaseEngine,
@@ -207,6 +234,8 @@ pub struct Settings {
     pub database: Database,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
+    pub supported_units: Option<Vec<CurrencyUnit>>,
+    pub remote_signatory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
