@@ -4,6 +4,7 @@ use cashu_kvac::secp::GroupElement;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::error::Error;
 use cdk_common::kvac::{KvacCoin, KvacRandomizedCoin};
+use cdk_common::kvac::Error::NoZeroValueCoins;
 use cdk_common::{Amount, State};
 
 use crate::Wallet;
@@ -27,7 +28,7 @@ impl Wallet {
         let index = coins
             .iter()
             .position(|c| c.amount == Amount::from(0))
-            .ok_or(Error::NoZeroValueCoins)?;
+            .ok_or(Error::from(NoZeroValueCoins))?;
 
         let zero_coin = coins.swap_remove(index);
 

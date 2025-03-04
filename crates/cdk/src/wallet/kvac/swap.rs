@@ -7,6 +7,7 @@ use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::{
     KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest,
 };
+use cdk_common::kvac::Error::DifferentScriptsError;
 use cdk_common::Amount;
 use tracing::instrument;
 
@@ -67,7 +68,7 @@ impl Wallet {
         }
 
         if scripts_set.len() > 1 {
-            return Err(Error::DifferentScriptsError);
+            return Err(Error::from(DifferentScriptsError));
         }
 
         // Debug: print the state of the transcript

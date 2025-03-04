@@ -5,6 +5,7 @@ use cashu_kvac::secp::GroupElement;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::kvac::{KvacCoin, KvacCoinMessage, KvacMeltBolt11Request, KvacRandomizedCoin};
+use cdk_common::kvac::Error::{NotEnoughCoins, NoZeroValueCoins};
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, State};
 use tracing::instrument;
@@ -21,7 +22,7 @@ impl Wallet {
 
         // Cannot perform melt with less than 2 coins
         if coins.len() < 2 {
-            return Err(Error::NotEnoughCoins);
+            return Err(Error::from(NotEnoughCoins));
         }
 
         let quote_info = self.localstore.get_melt_quote(quote_id).await?;
@@ -50,7 +51,7 @@ impl Wallet {
         let index = coins
             .iter()
             .position(|c| c.amount == Amount::from(0))
-            .ok_or(Error::NoZeroValueCoins)?;
+            .ok_or(Error::from(NoZeroValueCoins))?;
 
         let zero_coin = coins.swap_remove(index);
 

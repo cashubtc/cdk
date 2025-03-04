@@ -7,6 +7,15 @@ use cashu_kvac::models::{RandomizedCoin, RangeZKP, ZKP};
 use cashu_kvac::secp::{GroupElement, Scalar};
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin};
+use cdk_common::kvac::Error::{
+    MacAlreadyIssued,
+    BalanceVerificationError,
+    MacVerificationError,
+    RangeProofVerificationError,
+    RequestInvalidInputLength,
+    RequestInvalidOutputLength,
+    InputsToProofsLengthMismatch,
+};
 use cdk_common::{Id, State};
 
 use crate::{Error, Mint};
@@ -25,7 +34,7 @@ impl Mint {
             .is_empty()
         {
             tracing::error!("Outputs have already been issued a MAC",);
-            return Err(Error::MacAlreadyIssued);
+            return Err(Error::from(MacAlreadyIssued));
         }
 
         Ok(())
@@ -58,7 +67,7 @@ impl Mint {
         ) {
             tracing::error!("Request is unbalanced for fee {} and delta {}", fee, delta);
 
-            return Err(Error::BalanceVerificationError(delta, fee));
+            return Err(Error::from(BalanceVerificationError(delta, fee)));
         }
 
         Ok(())
@@ -103,7 +112,7 @@ impl Mint {
             proof,
             verifying_transcript,
         ) {
-            return Err(Error::MacVerificationError);
+            return Err(Error::from(MacVerificationError));
         }
 
         Ok(())
@@ -122,7 +131,7 @@ impl Mint {
             .collect::<Vec<GroupElement>>();
         if !RangeProof::verify(transcript, &amount_commitments, range_proof) {
             tracing::error!("Range proof failed to verify");
-            return Err(Error::RangeProofVerificationError);
+            return Err(Error::from(RangeProofVerificationError));
         }
         Ok(())
     }
@@ -144,10 +153,10 @@ impl Mint {
 
         // Inputs/outputs length constraints requirements
         if outputs.len() != 2 {
-            return Err(Error::RequestInvalidOutputLength);
+            return Err(Error::from(RequestInvalidOutputLength));
         }
         if inputs_len < 2 {
-            return Err(Error::RequestInvalidInputLength);
+            return Err(Error::from(RequestInvalidInputLength));
         }
 
         // Extract identifiers for the outputs
@@ -212,7 +221,7 @@ impl Mint {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;
-            return Err(Error::InputsToProofsLengthMismatch);
+            return Err(Error::from(InputsToProofsLengthMismatch));
         }
         for (input, proof) in inputs.iter().zip(mac_proofs.into_iter()) {
             let result = self

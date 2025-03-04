@@ -5,10 +5,11 @@ use cashu_kvac::secp::GroupElement;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::kvac::{KvacCoin, KvacCoinMessage, KvacMintBolt11Request, KvacRandomizedCoin};
+use cdk_common::kvac::Error::NotEnoughCoins;
 use cdk_common::{Amount, State};
 use tracing::instrument;
 
-use crate::{Error, Wallet};
+use crate::{Wallet, Error};
 
 impl Wallet {
     /// Compute the necessary proofs and perform a KVAC mint
@@ -19,7 +20,7 @@ impl Wallet {
         let coins = self.get_unspent_kvac_coins().await?;
 
         if coins.len() < 2 {
-            return Err(Error::NotEnoughCoins);
+            return Err(Error::from(NotEnoughCoins));
         }
         let inputs = &coins[..2];
 

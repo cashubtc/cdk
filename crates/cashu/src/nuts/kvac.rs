@@ -21,6 +21,45 @@ use crate::{Amount, SECP256K1};
 
 #[derive(Debug, Error)]
 pub enum Error {
+    /// KVAC Request Invalid Length
+    #[error("Invalid input length for this request")]
+    RequestInvalidInputLength,
+    /// KVAC Request Invalid Length
+    #[error("Invalid output length for this request")]
+    RequestInvalidOutputLength,
+    /// KVAC Proofs and inputs mismatch
+    #[error("Number of inputs does not match number of proofs provided")]
+    InputsToProofsLengthMismatch,
+    /// KVAC Bootstrap proofs failed to verify
+    #[error("Failed to verify one of the provided proofs")]
+    BootstrapVerificationError,
+    /// KVAC IParams proofs failed to verify
+    #[error("Failed to verify one of the provided proofs")]
+    IParamsVerificationError,
+    /// Out of bounds
+    #[error("Out of bounds")]
+    OutOfBounds,
+    /// KVAC Mac was already issued for outputs
+    #[error("MAC was already issued for these outputs")]
+    MacAlreadyIssued,
+    /// KVAC BalanceProof failed to verify
+    #[error("Balance proof failed to verify with delta = `{0}` and fee `{1}`")]
+    BalanceVerificationError(i64, i64),
+    /// KVAC MacProof failed to verify
+    #[error("Mac proof failed to verify")]
+    MacVerificationError,
+    /// KVAC RangeProof failed to verify
+    #[error("Range proof failed to verify. One of the outputs is not within range")]
+    RangeProofVerificationError,
+    /// KVAC Script is not the same for all coins
+    #[error("Script is not the same across all coins")]
+    DifferentScriptsError,
+    /// KVAC No zero-value coins available
+    #[error("No zero valued coins available: mint some with a bootstrap request")]
+    NoZeroValueCoins,
+    /// KVAC Not enough coins available
+    #[error("Not enough coins available")]
+    NotEnoughCoins,
     #[error("Incorrect KVAC KeySet ID")]
     IncorrectKeySetId,
     /// Bip32 Error

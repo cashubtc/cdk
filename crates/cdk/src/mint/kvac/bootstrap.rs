@@ -3,6 +3,11 @@ use std::collections::HashSet;
 use cashu_kvac::kvac::BootstrapProof;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::{BootstrapRequest, BootstrapResponse};
+use cdk_common::kvac::Error::{
+    RequestInvalidInputLength,
+    InputsToProofsLengthMismatch,
+    BootstrapVerificationError,
+};
 use tracing::instrument;
 
 use super::super::Mint;
@@ -25,12 +30,12 @@ impl Mint {
         // (if enforced at a protocol level)
         let outputs = bootstrap_request.outputs;
         if outputs.len() < 2 {
-            return Err(Error::RequestInvalidInputLength);
+            return Err(Error::from(RequestInvalidInputLength));
         }
 
         let proofs = bootstrap_request.proofs;
         if outputs.len() != proofs.len() {
-            return Err(Error::InputsToProofsLengthMismatch);
+            return Err(Error::from(InputsToProofsLengthMismatch));
         }
 
         let mut keysets = vec![];
@@ -63,7 +68,7 @@ impl Mint {
         let mut transcript = CashuTranscript::new();
         for (input, proof) in outputs.iter().zip(proofs) {
             if !BootstrapProof::verify(&input.commitments.0, proof, &mut transcript) {
-                return Err(Error::BootstrapVerificationError);
+                return Err(Error::from(BootstrapVerificationError));
             }
         }
 
