@@ -16,33 +16,27 @@ use cdk_common::{
     SpendingConditions, State,
 };
 use error::Error;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
-use sqlx::{ConnectOptions, Row};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Pool, Row, Sqlite};
 use tracing::instrument;
 
+use crate::common::create_sqlite_pool;
+
 pub mod error;
+pub mod memory;
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
 pub struct WalletSqliteDatabase {
-    pool: SqlitePool,
+    pool: Pool<Sqlite>,
 }
 
 impl WalletSqliteDatabase {
     /// Create new [`WalletSqliteDatabase`]
-    pub async fn new(path: &Path) -> Result<Self, Error> {
-        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
-        let _conn = SqliteConnectOptions::from_str(path)?
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .read_only(false)
-            .create_if_missing(true)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Full)
-            .connect()
-            .await?;
-
-        let pool = SqlitePool::connect(path).await?;
-
-        Ok(Self { pool })
+    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        Ok(Self {
+            pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
+        })
     }
 
     /// Migrate [`WalletSqliteDatabase`]
