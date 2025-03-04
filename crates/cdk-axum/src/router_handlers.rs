@@ -109,6 +109,7 @@ pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysRespons
         (status = 200, description = "Successful response", body = KvacKeysResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Get the public keys of the newest mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
@@ -162,6 +163,7 @@ pub async fn get_keyset_pubkeys(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Get the public keys of a specific keyset
 ///
 /// Get the public keys of the mint from a specific keyset ID.
@@ -211,6 +213,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
@@ -328,6 +331,7 @@ pub async fn post_mint_bolt11(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 pub async fn post_kvac_mint_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<KvacMintBolt11Request<Uuid>>,
@@ -438,6 +442,7 @@ pub async fn post_melt_bolt11(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
@@ -490,6 +495,7 @@ pub async fn post_check(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Check whether a proof is spent already or is pending in a transaction
 ///
 /// Check whether a secret has been spent already or not.
@@ -569,6 +575,7 @@ pub async fn post_swap(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Swap inputs for outputs of the same value
 ///
 /// Requests a set of coins to be swapped for another set of coins.
@@ -599,6 +606,7 @@ pub async fn post_kvac_swap(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Client requests a MAC for coins of zero value
 ///
 /// This endpoint can be used by Alice to obtain valid zero-valued coins to be used as inputs in other requests
@@ -650,6 +658,7 @@ pub async fn post_restore(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[cfg(feature = "kvac")]
 /// Restores attributes and macs for a set of tags.
 pub async fn post_kvac_restore(
     State(state): State<MintState>,
