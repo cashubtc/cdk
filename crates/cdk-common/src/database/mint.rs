@@ -25,12 +25,14 @@ pub trait Database {
     /// Add Active Keyset
     async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err>;
     /// Add Active KVAC Keyset
+    #[cfg(feature = "kvac")]
     async fn set_active_kvac_keyset(&self, _unit: CurrencyUnit, _id: Id) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get Active Keyset
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
     /// Get Active KVAC Keyset
+    #[cfg(feature = "kvac")]
     async fn get_active_kvac_keyset_id(
         &self,
         _unit: &CurrencyUnit,
@@ -40,6 +42,7 @@ pub trait Database {
     /// Get all Active Keyset
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err>;
     /// Get all Active KVAC Keysets
+    #[cfg(feature = "kvac")]
     async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
@@ -104,18 +107,21 @@ pub trait Database {
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;
     /// Add KVAC [`MintKeySetInfo`]
+    #[cfg(feature = "kvac")]
     async fn add_kvac_keyset_info(&self, _keyset: MintKeySetInfo) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get [`MintKeySetInfo`]
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
     /// Get KVAC [`MintKeySetInfo`]
+    #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_info(&self, _id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
     /// Get KVAC [`MintKeySetInfo`]s
+    #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
@@ -129,12 +135,14 @@ pub trait Database {
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err>;
     /// Add kvac nullifiers
+    #[cfg(feature = "kvac")]
     async fn add_kvac_nullifiers(&self, _nullifiers: &[KvacNullifier]) -> Result<(), Self::Err> {
         Err(Self::Err::from(Error::Unimplemented))
     }
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get kvac nullifiers
+    #[cfg(feature = "kvac")]
     async fn get_kvac_nullifiers(
         &self,
         _nullifiers: &[GroupElement],
@@ -144,6 +152,7 @@ pub trait Database {
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get nullifiers by quote id
+    #[cfg(feature = "kvac")]
     async fn get_kvac_nullifiers_by_quote_id(
         &self,
         _quote_id: &Uuid,
@@ -153,6 +162,7 @@ pub trait Database {
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get kvac nullifiers state
+    #[cfg(feature = "kvac")]
     async fn get_kvac_nullifiers_states(
         &self,
         _nullifiers: &[GroupElement],
@@ -166,6 +176,7 @@ pub trait Database {
         proofs_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get [`KvacNullifier`] state
+    #[cfg(feature = "kvac")]
     async fn update_kvac_nullifiers_states(
         &self,
         _nullifiers: &[GroupElement],
@@ -179,6 +190,7 @@ pub trait Database {
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
     /// Get [`KvacNullifier`] by state
+    #[cfg(feature = "kvac")]
     async fn get_kvac_nullifiers_by_keyset_id(
         &self,
         _keyset_id: &Id,
@@ -194,6 +206,7 @@ pub trait Database {
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err>;
     /// Add [`KvacIssuedMac`]
+    #[cfg(feature = "kvac")]
     async fn add_kvac_issued_macs(
         &self,
         _mac: &[KvacIssuedMac],
@@ -207,6 +220,7 @@ pub trait Database {
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
     /// Get [`KvacIssuedMac`]
+    #[cfg(feature = "kvac")]
     async fn get_kvac_issued_macs_by_tags(
         &self,
         _tags: &[Scalar],
@@ -219,6 +233,7 @@ pub trait Database {
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
     /// Get [`KvacIssuedMac`] for keyset_id
+    #[cfg(feature = "kvac")]
     async fn get_kvac_issued_macs_for_keyset(
         &self,
         _keyset_id: &Id,
@@ -241,6 +256,7 @@ pub trait Database {
     /// Get [`QuoteTTL`]
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Self::Err>;
     /// Get [`KvacIssuedMac`]s for quote
+    #[cfg(feature = "kvac")]
     async fn get_kvac_issued_macs_for_quote(
         &self,
         _quote_id: &Uuid,

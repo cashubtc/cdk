@@ -123,6 +123,7 @@ AND id IS ?;
         Ok(())
     }
 
+    #[cfg(feature = "kvac")]
     async fn set_active_kvac_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -220,6 +221,7 @@ AND unit IS ?
         ))
     }
 
+    #[cfg(feature = "kvac")]
     async fn get_active_kvac_keyset_id(
         &self,
         unit: &CurrencyUnit,
@@ -303,6 +305,7 @@ WHERE active = 1
         }
     }
 
+    #[cfg(feature = "kvac")]
     async fn get_active_kvac_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -865,6 +868,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         }
     }
 
+    #[cfg(feature = "kvac")]
     async fn add_kvac_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let res = sqlx::query(
@@ -935,6 +939,7 @@ WHERE id=?;
         }
     }
 
+    #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
@@ -999,6 +1004,7 @@ FROM keyset;
         }
     }
 
+    #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let recs = sqlx::query(
@@ -1086,6 +1092,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         Ok(())
     }
 
+    #[cfg(feature = "kvac")]
     async fn add_kvac_nullifiers(&self, nullifiers: &[KvacNullifier]) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for nullifier in nullifiers.iter() {
@@ -1148,6 +1155,7 @@ VALUES (?, ?, ?, ?);
     }
 
     /// Get kvac nullifiers
+    #[cfg(feature = "kvac")]
     async fn get_kvac_nullifiers(
         &self,
         nullifiers: &[GroupElement],
@@ -1255,6 +1263,7 @@ WHERE quote_id=?;
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
 
+    #[cfg(feature = "kvac")]
     async fn get_kvac_nullifiers_states(
         &self,
         nullifiers: &[GroupElement],
@@ -1394,6 +1403,7 @@ WHERE keyset_id=?;
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
 
+    #[cfg(feature = "kvac")]
     async fn update_kvac_nullifiers_states(
         &self,
         nullifiers: &[GroupElement],
@@ -1495,6 +1505,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
         Ok(())
     }
 
+    #[cfg(feature = "kvac")]
     async fn add_kvac_issued_macs(
         &self,
         macs: &[KvacIssuedMac],
@@ -1568,6 +1579,7 @@ VALUES (?, ?, ?, ?, ?, ?);
             .collect())
     }
 
+    #[cfg(feature = "kvac")]
     async fn get_kvac_issued_macs_by_tags(
         &self,
         tags: &[Scalar],
@@ -1633,6 +1645,7 @@ WHERE keyset_id=?;
         }
     }
 
+    #[cfg(feature = "kvac")]
     async fn get_kvac_issued_macs_for_keyset(
         &self,
         keyset_id: &Id,
@@ -1790,6 +1803,7 @@ WHERE quote_id=?;
     }
 
     /// Get [`KvacIssuedMac`]s for quote
+    #[cfg(feature = "kvac")]
     async fn get_kvac_issued_macs_for_quote(
         &self,
         quote_id: &Uuid,
@@ -1972,6 +1986,7 @@ WHERE id=?;
     }
 }
 
+#[cfg(feature = "kvac")]
 fn sqlite_row_to_kvac_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
     let row_id: String = row.try_get("id").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
@@ -2171,6 +2186,7 @@ fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request<Uuid>
     Ok((melt_request, ln_key))
 }
 
+#[cfg(feature = "kvac")]
 fn sqlite_row_to_kvac_nullifier(row: SqliteRow) -> Result<KvacNullifier, Error> {
     let nullifier: Vec<u8> = row.try_get("nullifier").map_err(Error::from)?;
     let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
@@ -2187,6 +2203,7 @@ fn sqlite_row_to_kvac_nullifier(row: SqliteRow) -> Result<KvacNullifier, Error> 
     })
 }
 
+#[cfg(feature = "kvac")]
 fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error> {
     let row_t: Vec<u8> = row.try_get("t").map_err(Error::from)?;
     let row_v: Vec<u8> = row.try_get("V").map_err(Error::from)?;

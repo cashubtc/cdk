@@ -52,6 +52,7 @@ pub struct Mint {
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: Xpriv,
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
+    #[cfg(feature = "kvac")]
     kvac_keysets: Arc<RwLock<HashMap<Id, MintKvacKeySet>>>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
 }
@@ -71,15 +72,6 @@ impl Mint {
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
         let (mut active_keysets, active_keyset_units) = Mint::init_keysets(
-            xpriv,
-            &secp_ctx,
-            &localstore,
-            &supported_units,
-            &custom_paths,
-        )
-        .await?;
-
-        let (mut active_kvac_keysets, active_kvac_keyset_units) = Mint::init_kvac_keysets(
             xpriv,
             &secp_ctx,
             &localstore,
@@ -114,43 +106,66 @@ impl Mint {
                 active_keysets.insert(id, keyset);
             }
         }
-
-        // Create new KVAC keysets for supported units that aren't covered by the current keysets
-        for (unit, (fee, _max_order)) in supported_units {
-            if !active_kvac_keyset_units.contains(&unit) {
-                tracing::debug!("Creating new kvac keyset");
-                let derivation_path = kvac_derivation_path_from_unit(unit.clone(), 0)
-                    .ok_or(Error::UnsupportedUnit)?;
-
-                let (keyset, keyset_info) = create_new_kvac_keyset(
-                    &secp_ctx,
-                    xpriv,
-                    derivation_path,
-                    Some(0),
-                    unit.clone(),
-                    fee,
-                );
-
-                let id = keyset_info.id;
-                localstore.add_kvac_keyset_info(keyset_info).await?;
-                localstore.set_active_kvac_keyset(unit, id).await?;
-                active_kvac_keysets.insert(id, keyset);
-            }
-        }
-
         let keysets = Arc::new(RwLock::new(active_keysets));
-        let kvac_keysets = Arc::new(RwLock::new(active_kvac_keysets));
+        
+        #[cfg(feature = "kvac")]
+        {
+            let (mut active_kvac_keysets, active_kvac_keyset_units) = Mint::init_kvac_keysets(
+                xpriv,
+                &secp_ctx,
+                &localstore,
+                &supported_units,
+                &custom_paths,
+            )
+            .await?;
+            
+            // Create new KVAC keysets for supported units that aren't covered by the current keysets
+            for (unit, (fee, _max_order)) in supported_units {
+                if !active_kvac_keyset_units.contains(&unit) {
+                    tracing::debug!("Creating new kvac keyset");
+                    let derivation_path = kvac_derivation_path_from_unit(unit.clone(), 0)
+                        .ok_or(Error::UnsupportedUnit)?;
 
-        Ok(Self {
-            pubsub_manager: Arc::new(localstore.clone().into()),
-            secp_ctx,
-            xpriv,
-            localstore,
-            ln,
-            keysets,
-            kvac_keysets,
-            custom_paths,
-        })
+                    let (keyset, keyset_info) = create_new_kvac_keyset(
+                        &secp_ctx,
+                        xpriv,
+                        derivation_path,
+                        Some(0),
+                        unit.clone(),
+                        fee,
+                    );
+
+                    let id = keyset_info.id;
+                    localstore.add_kvac_keyset_info(keyset_info).await?;
+                    localstore.set_active_kvac_keyset(unit, id).await?;
+                    active_kvac_keysets.insert(id, keyset);
+                }
+            }
+            let kvac_keysets = Arc::new(RwLock::new(active_kvac_keysets));
+            
+            Ok(Self {
+                pubsub_manager: Arc::new(localstore.clone().into()),
+                secp_ctx,
+                xpriv,
+                localstore,
+                ln,
+                keysets,
+                kvac_keysets,
+                custom_paths,
+            })
+        }
+        #[cfg(not(feature = "kvac"))]
+        {
+            Ok(Self {
+                pubsub_manager: Arc::new(localstore.clone().into()),
+                secp_ctx,
+                xpriv,
+                localstore,
+                ln,
+                keysets,
+                custom_paths,
+            })
+        }
     }
 
     /// Get mint info
@@ -260,6 +275,7 @@ impl Mint {
     }
 
     /// Fee required for kvac inputs
+    #[cfg(feature = "kvac")]
     pub async fn get_kvac_inputs_fee(
         &self,
         inputs: &[KvacRandomizedCoin],
@@ -523,6 +539,7 @@ pub struct FeeReserve {
 }
 
 /// Generate new [`MintKeySetInfo`] from path
+#[cfg(feature = "kvac")]
 #[instrument(skip_all)]
 fn create_new_kvac_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
@@ -580,6 +597,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
     (keyset, keyset_info)
 }
 
+#[cfg(feature = "kvac")]
 fn kvac_derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
     let unit_index = unit.derivation_index()?;
 

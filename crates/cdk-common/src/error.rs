@@ -273,6 +273,7 @@ pub enum Error {
     #[cfg(feature = "mint")]
     Lightning(#[from] crate::lightning::Error),
     /// KVAC Error
+    #[cfg(feature = "kvac")]
     #[error(transparent)]
     Kvac(#[from] crate::nuts::kvac::Error),
 }

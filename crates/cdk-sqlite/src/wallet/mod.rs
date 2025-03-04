@@ -286,6 +286,7 @@ FROM mint
     }
 
     #[instrument(skip(self, keysets))]
+    #[cfg(feature = "kvac")]
     async fn add_mint_kvac_keysets(
         &self,
         mint_url: MintUrl,
@@ -353,6 +354,7 @@ WHERE mint_url=?
     }
 
     #[instrument(skip(self))]
+    #[cfg(feature = "kvac")]
     async fn get_mint_kvac_keysets(
         &self,
         mint_url: MintUrl,
@@ -412,6 +414,7 @@ WHERE id=?
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -601,6 +604,7 @@ VALUES (?, ?);
     }
 
     #[instrument(skip_all)]
+    #[cfg(feature = "kvac")]
     async fn add_kvac_keys(&self, keys: KvacKeys) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -646,6 +650,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
     async fn get_kvac_keys(&self, keyset_id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
         let rec = sqlx::query(
             r#"
@@ -694,6 +699,7 @@ WHERE id=?
     }
 
     #[instrument(skip(self))]
+    #[cfg(feature = "kvac")]
     async fn remove_kvac_keys(&self, id: &Id) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
@@ -862,6 +868,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
     async fn increment_kvac_keyset_counter(
         &self,
         keyset_id: &Id,
@@ -915,6 +922,7 @@ WHERE id=?;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let rec = sqlx::query(
             r#"

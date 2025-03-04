@@ -15,7 +15,7 @@ swagger = ["dep:utoipa"]
 mint = ["dep:uuid"]
 wallet = []
 bench = []
-kvac = ["dep::cashu_kvac"]
+kvac = ["dep:cashu_kvac"]
 
 [dependencies]
 uuid = { version = "=1.12.1", features = ["v4", "serde"], optional = true }
