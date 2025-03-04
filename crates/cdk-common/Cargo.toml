@@ -1,13 +1,13 @@
 [package]
 name = "cdk-common"
 version = "0.7.1"
-edition = "2021"
 authors = ["CDK Developers"]
 description = "CDK common types and traits"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
+edition.workspace = true
 rust-version = "1.75.0"                     # MSRV
-license = "MIT"
+license.workspace = true
 
 [features]
 default = ["mint", "wallet"]
@@ -35,8 +35,8 @@ serde_json.workspace = true
 serde_with.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
+instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
-rand = "0.8.5"
+rand.workspace = true
 bip39.workspace = true
