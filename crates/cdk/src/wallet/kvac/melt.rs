@@ -75,7 +75,7 @@ impl Wallet {
 
         // Create outputs
         // IMPORTANT: THE BALANCE AMOUNT ALWAYS LAST
-        // SO THAT ANY POTENTIAL RECOVERY WORKS WITHOUT SPENT CHECKS
+        // SO THAT THE MINT CAN RETURN OVERSPENT FEES
         let mut outputs = self
             .create_kvac_outputs(vec![Amount::from(0), output_amount])
             .await?;
