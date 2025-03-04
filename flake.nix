@@ -80,6 +80,7 @@
           clightning
           bitcoind
           sqlx-cli
+          cargo-outdated
 
           # Needed for github ci
           libz
@@ -226,12 +227,12 @@
             msrv = pkgs.mkShell ({
               shellHook = "
               ${_shellHook}
+              cargo update
               cargo update -p async-compression --precise 0.4.3
 
               cargo update -p home --precise 0.5.5
+              cargo update -p zerofrom --precise 0.1.5
 
-              cargo update -p zerofrom --precise 0.1.4
-              cargo update -p litemap --precise 0.7.4
               cargo update -p url --precise 2.5.2
 
               # For wasm32-unknown-unknown target

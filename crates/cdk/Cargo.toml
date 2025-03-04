@@ -29,16 +29,7 @@ bitcoin.workspace = true
 ciborium.workspace = true
 lightning-invoice.workspace = true
 regex = "1"
-reqwest = { workspace = true, default-features = false, features = [
-    "json",
-    "rustls-tls",
-    "rustls-tls-native-roots",
-    "socks",
-    "zstd",
-    "brotli",
-    "gzip",
-    "deflate",
-], optional = true }
+reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
@@ -61,7 +52,7 @@ tokio = { workspace = true, features = [
     "sync",
 ] }
 getrandom = { version = "0.2" }
-tokio-tungstenite = { version = "0.19.0", features = [
+tokio-tungstenite = { workspace = true, features = [
     "rustls",
     "rustls-tls-native-roots",
 ] }
