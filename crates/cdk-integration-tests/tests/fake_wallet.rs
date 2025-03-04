@@ -960,7 +960,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -1040,7 +1040,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
