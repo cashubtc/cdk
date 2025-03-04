@@ -34,7 +34,6 @@ async fn fallback_to_http<S: IntoIterator<Item = SubId>>(
     .await
 }
 
-#[allow(clippy::incompatible_msrv)]
 #[inline]
 pub async fn ws_main(
     http_client: Arc<dyn MintConnector + Send + Sync>,

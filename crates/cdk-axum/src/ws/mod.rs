@@ -46,7 +46,6 @@ pub struct WsContext {
 ///
 /// For simplicity sake this function will spawn tasks for each subscription and
 /// keep them in a hashmap, and will have a single subscriber for all of them.
-#[allow(clippy::incompatible_msrv)]
 pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
     let (publisher, mut subscriber) = mpsc::channel(100);
     let mut context = WsContext {

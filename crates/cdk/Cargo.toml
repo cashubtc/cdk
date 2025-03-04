@@ -35,7 +35,7 @@ serde_json.workspace = true
 serde_with.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-futures = { workspace = true, optional = true }
+futures = { workspace = true, optional = true, features = ["alloc"] }
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
@@ -55,6 +55,7 @@ getrandom = { version = "0.2" }
 tokio-tungstenite = { workspace = true, features = [
     "rustls",
     "rustls-tls-native-roots",
+    "connect"
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

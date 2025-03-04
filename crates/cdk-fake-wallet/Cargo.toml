@@ -12,7 +12,7 @@ description = "CDK fake ln backend"
 [dependencies]
 async-trait.workspace = true
 bitcoin.workspace = true
-cdk.workspace = true
+cdk = { workspace = true, features = ["mint"] }
 futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

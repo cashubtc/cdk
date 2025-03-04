@@ -370,7 +370,7 @@ impl Mint {
 
         if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
             self.pubsub_manager
-                .melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
+                .melt_quote_status(quote, None, None, MeltQuoteState::Unpaid);
         }
 
         for public_key in input_ys {
