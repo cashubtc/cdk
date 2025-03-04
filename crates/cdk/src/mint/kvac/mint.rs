@@ -82,6 +82,7 @@ impl Mint {
             return Err(e);
         }
 
+        // Extract the nullifiers. Equivalent to getting the `Y` of normal ecash.
         let nullifiers = mint_request
             .inputs
             .iter()

@@ -50,17 +50,17 @@ impl Mint {
         balance_proof: ZKP,
         transcript: &mut CashuTranscript,
     ) -> Result<(), Error> {
-        let input_coins = inputs
+        let input_commitments = inputs
             .iter()
             .map(|i| i.randomized_coin.clone())
             .collect::<Vec<RandomizedCoin>>();
-        let output_coins = outputs
+        let output_commitments = outputs
             .iter()
             .map(|i| i.commitments.0.clone())
             .collect::<Vec<GroupElement>>();
         if !BalanceProof::verify(
-            &input_coins,
-            &output_coins,
+            &input_commitments,
+            &output_commitments,
             fee + delta,
             balance_proof,
             transcript,
