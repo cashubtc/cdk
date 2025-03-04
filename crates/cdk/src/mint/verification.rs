@@ -24,6 +24,7 @@ impl Mint {
             .len()
             .ne(&proof_count)
         {
+            tracing::debug!("Transaction attempted with duplicate inputs");
             return Err(Error::DuplicateInputs);
         }
 
@@ -42,6 +43,7 @@ impl Mint {
             .len()
             .ne(&output_count)
         {
+            tracing::debug!("Transaction attempted with duplicate outputs");
             return Err(Error::DuplicateOutputs);
         }
 
@@ -64,12 +66,19 @@ impl Mint {
             match self.localstore.get_keyset_info(id).await? {
                 Some(keyset) => {
                     if !keyset.active {
+                        tracing::debug!(
+                            "Transaction attempted with inactive keyset in outputs: {}.",
+                            id
+                        );
                         return Err(Error::InactiveKeyset);
                     }
                     keyset_units.insert(keyset.unit);
                 }
                 None => {
-                    tracing::info!("Swap request with unknown keyset in outputs");
+                    tracing::debug!(
+                        "Transaction attempted with unknown keyset in outputs: {}.",
+                        id
+                    );
                     return Err(Error::UnknownKeySet);
                 }
             }
@@ -79,7 +88,10 @@ impl Mint {
         // in the future it maybe possible to support multiple units but unsupported for
         // now
         if keyset_units.len() != 1 {
-            tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
+            tracing::debug!(
+                "Transaction attempted with multiple units in outputs: {:?}.",
+                keyset_units
+            );
             return Err(Error::MultipleUnits);
         }
 
@@ -104,7 +116,10 @@ impl Mint {
                     keyset_units.insert(keyset.unit);
                 }
                 None => {
-                    tracing::info!("Swap request with unknown keyset in outputs");
+                    tracing::debug!(
+                        "Transaction attempted with unknown keyset in inputs: {}.",
+                        id
+                    );
                     return Err(Error::UnknownKeySet);
                 }
             }
@@ -114,7 +129,10 @@ impl Mint {
         // in the future it maybe possible to support multiple units but unsupported for
         // now
         if keyset_units.len() != 1 {
-            tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
+            tracing::debug!(
+                "Transaction attempted with multiple units in inputs: {:?}.",
+                keyset_units
+            );
             return Err(Error::MultipleUnits);
         }
 
@@ -141,7 +159,7 @@ impl Mint {
             .next()
             .is_some()
         {
-            tracing::info!("Output has already been signed",);
+            tracing::debug!("Transaction attempted where output is already signed.");
 
             return Err(Error::BlindedMessageAlreadySigned);
         }
