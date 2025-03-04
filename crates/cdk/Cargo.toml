@@ -1,12 +1,12 @@
 [package]
 name = "cdk"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0"                                                            # MSRV
+rust-version = "1.75.0"                                                            # MSRV
 license = "MIT"
 
 

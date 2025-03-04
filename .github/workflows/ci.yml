@@ -221,7 +221,10 @@ jobs:
             -p cdk-phoenixd,
             -p cdk-fake-wallet,
             -p cdk-cln,
+            -p cdk-lnd,
             -p cdk-mint-rpc,
+            -p cdk-sqlite,
+            -p cdk-mintd,
           ]
     steps:
       - name: checkout
@@ -236,29 +239,6 @@ jobs:
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
   
-  db-msrv-build:
-    name: "DB MSRV build"
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      matrix:
-        build-args:
-          [
-            -p cdk-sqlite,
-            -p cdk-redb,
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v11
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v6
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: nix develop -i -L .#db_shell --command cargo build ${{ matrix.build-args }}
-
   check-wasm:
     name: Check WASM
     runs-on: ubuntu-latest

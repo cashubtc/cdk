@@ -7,7 +7,7 @@ description = "CDK mintd mint managment RPC client and server"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0"                            # MSRV
+rust-version = "1.75.0"                            # MSRV
 
 [[bin]]
 name = "cdk-mint-cli"

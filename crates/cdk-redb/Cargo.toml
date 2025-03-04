@@ -7,7 +7,6 @@ description = "Redb storage backend for CDK"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.66.0"                            # MSRV
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
@@ -16,15 +15,12 @@ mint = []
 wallet = []
 
 [dependencies]
-async-trait = "0.1"
+async-trait.workspace = true
 cdk-common = { path = "../cdk-common", version = "0.7.1" }
 redb = "2.2.0"
-thiserror = "1"
-tracing = { version = "0.1", default-features = false, features = [
-    "attributes",
-    "log",
-] }
-serde = { version = "1", default-features = false, features = ["derive"] }
-serde_json = "1"
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lightning-invoice.workspace = true
+uuid.workspace = true
