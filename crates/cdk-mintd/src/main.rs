@@ -199,23 +199,6 @@ async fn main() -> anyhow::Result<()> {
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
-        LnBackend::Phoenixd => {
-            let phd_settings = settings.clone().phoenixd.expect("Checked at config load");
-            let phd = phd_settings
-                .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
-                .await?;
-
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(phd),
-            );
-
-            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
-
-            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
-        }
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
