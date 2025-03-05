@@ -31,4 +31,10 @@ pub enum Error {
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,
+    /// Attempt to remove spent proof
+    #[error("Attempt to remove spent proof")]
+    AttemptRemoveSpentProof,
+    /// Attempt to update state of spent proof
+    #[error("Attempt to update state of spent proof")]
+    AttemptUpdateSpentProof,
 }
