@@ -6,9 +6,10 @@ use std::sync::Arc;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::common::{LnKey, QuoteTTL};
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{self, MintAuthDatabase, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use futures::StreamExt;
+use nut21::ProtectedEndpoint;
 use serde::{Deserialize, Serialize};
 use subscription::PubSubManager;
 use tokio::sync::{Notify, RwLock};
@@ -23,13 +24,17 @@ use crate::fees::calculate_fee;
 use crate::nuts::*;
 use crate::util::unix_time;
 use crate::Amount;
+#[cfg(feature = "auth")]
+use crate::OidcClient;
 
+#[cfg(feature = "auth")]
+pub(crate) mod auth;
 mod builder;
 mod check_spendable;
+mod issue;
 mod keysets;
 mod ln;
 mod melt;
-mod mint_nut04;
 mod start_up_check;
 pub mod subscription;
 mod swap;
@@ -37,16 +42,21 @@ mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintQuote};
+pub use verification::Verification;
 
 /// Cashu Mint
 #[derive(Clone)]
 pub struct Mint {
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+    /// Mint Storage backend
+    pub auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
     pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
+    #[cfg(feature = "auth")]
+    oidc_client: Option<OidcClient>,
     secp_ctx: Secp256k1<secp256k1::All>,
     xpriv: Xpriv,
     keysets: Arc<RwLock<HashMap<Id, MintKeySet>>>,
@@ -59,10 +69,12 @@ impl Mint {
     pub async fn new(
         seed: &[u8],
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
         ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+        open_id_discovery: Option<String>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
@@ -103,6 +115,49 @@ impl Mint {
             }
         }
 
+        #[cfg(feature = "auth")]
+        let oidc_client = if let Some(openid_discovery) = open_id_discovery {
+            tracing::info!("Auth enabled creating auth keysets");
+            let auth_localstore = auth_localstore
+                .as_ref()
+                .ok_or(Error::AuthSettingsUndefined)?;
+
+            let derivation_path = match custom_paths.get(&CurrencyUnit::Auth) {
+                Some(path) => path.clone(),
+                None => derivation_path_from_unit(CurrencyUnit::Auth, 0)
+                    .ok_or(Error::UnsupportedUnit)?,
+            };
+
+            let (keyset, keyset_info) = create_new_keyset(
+                &secp_ctx,
+                xpriv,
+                derivation_path,
+                Some(0),
+                CurrencyUnit::Auth,
+                1,
+                0,
+            );
+
+            println!("{:?}", keyset_info);
+
+            let id = keyset_info.id;
+            auth_localstore.add_keyset_info(keyset_info).await?;
+            auth_localstore.set_active_keyset(id).await?;
+            active_keysets.insert(id, keyset);
+
+            Some(OidcClient::new(openid_discovery.clone()))
+        } else {
+            None
+        };
+
+        #[cfg(not(feature = "auth"))]
+        if open_id_discovery.is_some() {
+            tracing::error!("CDK must be compiled with auth feature to be used with auth.");
+            return Err(Error::Custom(
+                "Openid passed but cdk compiled without auth.".to_string(),
+            ));
+        }
+
         let keysets = Arc::new(RwLock::new(active_keysets));
 
         Ok(Self {
@@ -110,15 +165,49 @@ impl Mint {
             secp_ctx,
             xpriv,
             localstore,
+            #[cfg(feature = "auth")]
+            oidc_client,
             ln,
-            keysets,
             custom_paths,
+            auth_localstore,
+            keysets,
         })
     }
 
     /// Get mint info
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.localstore.get_mint_info().await?)
+        let mut mint_info = self.localstore.get_mint_info().await?;
+
+        if let Some(auth_db) = self.auth_localstore.as_ref() {
+            let auth_endpoints = auth_db.get_auth_for_endpoints().await?;
+
+            let mut clear_auth_endpoints: Vec<ProtectedEndpoint> = vec![];
+            let mut blind_auth_endpoints: Vec<ProtectedEndpoint> = vec![];
+
+            for (endpoint, auth) in auth_endpoints {
+                match auth {
+                    Some(AuthRequired::Clear) => {
+                        clear_auth_endpoints.push(endpoint);
+                    }
+                    Some(AuthRequired::Blind) => {
+                        blind_auth_endpoints.push(endpoint);
+                    }
+                    None => (),
+                }
+            }
+
+            mint_info.nuts.nut21 = mint_info.nuts.nut21.map(|mut a| {
+                a.protected_endpoints = clear_auth_endpoints;
+                a
+            });
+
+            mint_info.nuts.nut22 = mint_info.nuts.nut22.map(|mut a| {
+                a.protected_endpoints = blind_auth_endpoints;
+                a
+            });
+        }
+
+        Ok(mint_info)
     }
 
     /// Set mint info
@@ -627,9 +716,11 @@ mod tests {
         Mint::new(
             config.seed,
             localstore,
+            None,
             HashMap::new(),
             config.supported_units,
             HashMap::new(),
+            None,
         )
         .await
     }

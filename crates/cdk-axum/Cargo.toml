@@ -8,9 +8,12 @@ repository = "https://github.com/cashubtc/cdk.git"
 rust-version = "1.75.0"                            # MSRV
 description = "Cashu CDK axum webserver"
 
+
 [features]
+default = ["auth"]
 redis = ["dep:redis"]
 swagger = ["cdk/swagger", "dep:utoipa"]
+auth = ["cdk/auth"]
 
 [dependencies]
 anyhow.workspace = true
@@ -18,7 +21,7 @@ async-trait.workspace = true
 axum = { workspace = true, features = ["ws"] }
 cdk = { workspace = true, features = [
     "mint",
-] }
+]}
 tokio.workspace = true
 tracing.workspace = true
 utoipa = { workspace = true, optional = true }
