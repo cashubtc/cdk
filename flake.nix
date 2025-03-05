@@ -229,12 +229,9 @@
               ${_shellHook}
               cargo update
               cargo update -p async-compression --precise 0.4.3
-<<<<<<< HEAD
-=======
               cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
               cargo update -p flate2 --precise 1.0.35
 
->>>>>>> 2c8ac688 (feat: auth)
 
               cargo update -p home --precise 0.5.5
               cargo update -p zerofrom --precise 0.1.5
