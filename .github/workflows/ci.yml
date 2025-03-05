@@ -110,6 +110,7 @@ jobs:
             --bin cdk-mintd --no-default-features --features redis,
             --bin cdk-mintd --no-default-features --features "redis swagger",
             --bin cdk-mintd --no-default-features --features management-rpc,
+            --bin cdk-mintd --no-default-features --features redb,
             --bin cdk-mint-cli,
           ]
     steps:

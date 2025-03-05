@@ -28,6 +28,7 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
+#[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
@@ -101,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
 
                 Arc::new(sqlite_db)
             }
+            #[cfg(feature = "redb")]
             DatabaseEngine::Redb => {
                 let redb_path = work_dir.join("cdk-mintd.redb");
                 Arc::new(MintRedbDatabase::new(&redb_path)?)

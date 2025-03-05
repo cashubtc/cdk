@@ -7,12 +7,15 @@ license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 description = "CDK mint binary"
+rust-version = "1.75.0"
 
 [features]
 default = ["management-rpc"]
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 management-rpc = ["cdk-mint-rpc"]
+# MSRV is not commited to with redb enabled
+redb = ["dep:cdk-redb"]
 
 [dependencies]
 anyhow.workspace = true
@@ -23,7 +26,7 @@ cdk = { workspace = true, features = [
 ] }
 cdk-redb = { workspace = true, features = [
     "mint",
-] }
+], optional = true }
 cdk-sqlite = { workspace = true, features = [
     "mint",
 ] }
