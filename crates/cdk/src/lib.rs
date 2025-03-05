@@ -5,7 +5,11 @@
 
 pub mod cdk_database {
     //! CDK Database
-    pub use cdk_common::database::{Error, MintDatabase, WalletDatabase};
+    pub use cdk_common::database::Error;
+    #[cfg(feature = "mint")]
+    pub use cdk_common::database::MintDatabase;
+    #[cfg(feature = "wallet")]
+    pub use cdk_common::database::WalletDatabase;
 }
 
 #[cfg(feature = "mint")]
@@ -20,9 +24,11 @@ pub mod pub_sub;
 pub use cdk_common::{
     amount, common as types, dhke,
     error::{self, Error},
-    lightning as cdk_lightning, lightning_invoice, mint_url, nuts, secret, subscription, util, ws,
-    Amount, Bolt11Invoice,
+    lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };
+#[cfg(feature = "mint")]
+#[doc(hidden)]
+pub use cdk_common::{lightning as cdk_lightning, subscription};
 
 pub mod fees;
 

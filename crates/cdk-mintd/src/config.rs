@@ -47,7 +47,6 @@ pub enum LnBackend {
     #[default]
     None,
     Cln,
-    Strike,
     LNbits,
     FakeWallet,
     Phoenixd,
@@ -60,7 +59,6 @@ impl std::str::FromStr for LnBackend {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "cln" => Ok(LnBackend::Cln),
-            "strike" => Ok(LnBackend::Strike),
             "lnbits" => Ok(LnBackend::LNbits),
             "fakewallet" => Ok(LnBackend::FakeWallet),
             "phoenixd" => Ok(LnBackend::Phoenixd),
@@ -91,12 +89,6 @@ impl Default for Ln {
             max_melt: 500_000.into(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Strike {
-    pub api_key: String,
-    pub supported_units: Option<Vec<CurrencyUnit>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -172,6 +164,7 @@ fn default_max_delay_time() -> u64 {
 pub enum DatabaseEngine {
     #[default]
     Sqlite,
+    #[cfg(feature = "redb")]
     Redb,
 }
 
@@ -181,6 +174,7 @@ impl std::str::FromStr for DatabaseEngine {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "sqlite" => Ok(DatabaseEngine::Sqlite),
+            #[cfg(feature = "redb")]
             "redb" => Ok(DatabaseEngine::Redb),
             _ => Err(format!("Unknown database engine: {}", s)),
         }
@@ -199,7 +193,6 @@ pub struct Settings {
     pub mint_info: MintInfo,
     pub ln: Ln,
     pub cln: Option<Cln>,
-    pub strike: Option<Strike>,
     pub lnbits: Option<LNbits>,
     pub phoenixd: Option<Phoenixd>,
     pub lnd: Option<Lnd>,
@@ -290,10 +283,6 @@ impl Settings {
             LnBackend::Cln => assert!(
                 settings.cln.is_some(),
                 "CLN backend requires a valid config."
-            ),
-            LnBackend::Strike => assert!(
-                settings.strike.is_some(),
-                "Strike backend requires a valid config."
             ),
             LnBackend::LNbits => assert!(
                 settings.lnbits.is_some(),

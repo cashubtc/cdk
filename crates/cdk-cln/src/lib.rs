@@ -81,8 +81,6 @@ impl MintLightning for Cln {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    #[allow(clippy::incompatible_msrv)]
-    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {

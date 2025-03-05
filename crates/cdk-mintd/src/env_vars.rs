@@ -9,7 +9,7 @@ use cdk::nuts::CurrencyUnit;
 use crate::config::MintManagementRpc;
 use crate::config::{
     Cln, Database, DatabaseEngine, FakeWallet, Info, LNbits, Ln, LnBackend, Lnd, MintInfo,
-    Phoenixd, Settings, Strike,
+    Phoenixd, Settings,
 };
 
 pub const ENV_WORK_DIR: &str = "CDK_MINTD_WORK_DIR";
@@ -45,9 +45,6 @@ pub const ENV_CLN_RPC_PATH: &str = "CDK_MINTD_CLN_RPC_PATH";
 pub const ENV_CLN_BOLT12: &str = "CDK_MINTD_CLN_BOLT12";
 pub const ENV_CLN_FEE_PERCENT: &str = "CDK_MINTD_CLN_FEE_PERCENT";
 pub const ENV_CLN_RESERVE_FEE_MIN: &str = "CDK_MINTD_CLN_RESERVE_FEE_MIN";
-// Strike
-pub const ENV_STRIKE_API_KEY: &str = "CDK_MINTD_STRIKE_API_KEY";
-pub const ENV_STRIKE_SUPPORTED_UNITS: &str = "CDK_MINTD_STRIKE_SUPPORTED_UNITS";
 // LND environment variables
 pub const ENV_LND_ADDRESS: &str = "CDK_MINTD_LND_ADDRESS";
 pub const ENV_LND_CERT_FILE: &str = "CDK_MINTD_LND_CERT_FILE";
@@ -106,9 +103,6 @@ impl Settings {
         match self.ln.ln_backend {
             LnBackend::Cln => {
                 self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
-            }
-            LnBackend::Strike => {
-                self.strike = Some(self.strike.clone().unwrap_or_default().from_env());
             }
             LnBackend::LNbits => {
                 self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
@@ -292,27 +286,6 @@ impl Cln {
             if let Ok(reserve_fee) = reserve_fee_str.parse::<u64>() {
                 self.reserve_fee_min = reserve_fee.into();
             }
-        }
-
-        self
-    }
-}
-
-impl Strike {
-    pub fn from_env(mut self) -> Self {
-        // API Key
-        if let Ok(api_key) = env::var(ENV_STRIKE_API_KEY) {
-            self.api_key = api_key;
-        }
-
-        // Supported Units - expects comma-separated list
-        if let Ok(units_str) = env::var(ENV_STRIKE_SUPPORTED_UNITS) {
-            self.supported_units = Some(
-                units_str
-                    .split(',')
-                    .filter_map(|s| s.trim().parse().ok())
-                    .collect(),
-            );
         }
 
         self

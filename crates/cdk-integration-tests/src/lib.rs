@@ -67,7 +67,6 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::incompatible_msrv)]
 pub async fn wait_for_mint_to_be_paid(
     wallet: &Wallet,
     mint_quote_id: &str,
