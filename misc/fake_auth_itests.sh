@@ -66,7 +66,7 @@ export CDK_MINTD_AUTH_ENABLED_RESTORE="true";
 export CDK_MINTD_AUTH_ENABLED_CHECK_PROOF_STATE="true";
 
 echo "Starting auth mintd";
-cargo run --bin cdk-mintd &
+cargo run --bin cdk-mintd --features redb &
 cdk_mintd_pid=$!
 
 URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port/v1/info"
