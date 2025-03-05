@@ -49,7 +49,6 @@ pub enum LnBackend {
     Cln,
     LNbits,
     FakeWallet,
-    Phoenixd,
     Lnd,
 }
 
@@ -61,7 +60,6 @@ impl std::str::FromStr for LnBackend {
             "cln" => Ok(LnBackend::Cln),
             "lnbits" => Ok(LnBackend::LNbits),
             "fakewallet" => Ok(LnBackend::FakeWallet),
-            "phoenixd" => Ok(LnBackend::Phoenixd),
             "lnd" => Ok(LnBackend::Lnd),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
@@ -114,15 +112,6 @@ pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
     pub macaroon_file: PathBuf,
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Phoenixd {
-    pub api_password: String,
-    pub api_url: String,
-    pub bolt12: bool,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
 }
@@ -194,7 +183,6 @@ pub struct Settings {
     pub ln: Ln,
     pub cln: Option<Cln>,
     pub lnbits: Option<LNbits>,
-    pub phoenixd: Option<Phoenixd>,
     pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
@@ -287,10 +275,6 @@ impl Settings {
             LnBackend::LNbits => assert!(
                 settings.lnbits.is_some(),
                 "LNbits backend requires a valid config"
-            ),
-            LnBackend::Phoenixd => assert!(
-                settings.phoenixd.is_some(),
-                "Phoenixd backend requires a valid config"
             ),
             LnBackend::Lnd => {
                 assert!(

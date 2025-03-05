@@ -32,7 +32,6 @@ cdk-sqlite = { workspace = true, features = [
 ] }
 cdk-cln.workspace = true
 cdk-lnbits.workspace = true
-cdk-phoenixd.workspace = true
 cdk-lnd.workspace = true
 cdk-fake-wallet.workspace = true
 cdk-axum.workspace = true
