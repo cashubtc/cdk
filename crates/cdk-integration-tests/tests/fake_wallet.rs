@@ -978,7 +978,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     assert!(response.is_ok());
@@ -990,7 +990,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1015,7 +1015,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1058,7 +1058,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     assert!(response.is_ok());
@@ -1070,7 +1070,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1095,7 +1095,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
         outputs: None,
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_melt(melt_request.clone()).await;
 
     match response {

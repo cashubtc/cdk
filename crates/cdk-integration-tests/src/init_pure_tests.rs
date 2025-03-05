@@ -238,7 +238,7 @@ pub async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<
     let wallet = WalletBuilder::new()
         .mint_url(mint_url)
         .unit(unit)
-        .localstore(localstore)
+        .localstore(Arc::new(localstore))
         .seed(&seed)
         .client(connector)
         .build()?;

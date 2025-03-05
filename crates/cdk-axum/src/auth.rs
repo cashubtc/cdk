@@ -193,7 +193,7 @@ pub fn create_auth_router(state: MintState) -> Router<MintState> {
             Router::new()
                 .route("/keys", get(get_blind_auth_keys))
                 .route("/keysets", get(get_auth_keysets))
-                .route("/keys/:keyset_id", get(get_keyset_pubkeys))
+                .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
                 .route("/mint", post(post_mint_auth)),
         )
         .with_state(state)

@@ -9,7 +9,7 @@ use cdk::nuts::CurrencyUnit;
 use crate::config::MintManagementRpc;
 use crate::config::{
     Auth, Cln, Database, DatabaseEngine, FakeWallet, Info, LNbits, Ln, LnBackend, Lnd, MintInfo,
-    Settings, Strike,
+    Settings,
 };
 
 pub const ENV_WORK_DIR: &str = "CDK_MINTD_WORK_DIR";

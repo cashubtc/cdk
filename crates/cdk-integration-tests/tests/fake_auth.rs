@@ -5,7 +5,6 @@ use std::sync::Arc;
 use bip39::Mnemonic;
 use cashu::MintInfo;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -17,6 +16,7 @@ use cdk::wallet::{HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::{fund_wallet, wait_for_mint_to_be_paid};
+use cdk_sqlite::wallet::memory;
 
 const MINT_URL: &str = "http://127.0.0.1:8087";
 const ENV_OIDC_USER: &str = "CDK_TEST_OIDC_USER";
@@ -227,7 +227,7 @@ async fn test_restore_without_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_blind_auth() {
-    let db = Arc::new(WalletMemoryDatabase::default());
+    let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
@@ -257,7 +257,7 @@ async fn test_mint_blind_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_with_auth() {
-    let db = Arc::new(WalletMemoryDatabase::default());
+    let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
@@ -307,7 +307,7 @@ async fn test_mint_with_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_swap_with_auth() {
-    let db = Arc::new(WalletMemoryDatabase::default());
+    let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
@@ -360,7 +360,8 @@ async fn test_swap_with_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_melt_with_auth() {
-    let db = Arc::new(WalletMemoryDatabase::default());
+    let db = Arc::new(memory::empty().await.unwrap());
+
     let wallet = WalletBuilder::new()
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
@@ -399,7 +400,8 @@ async fn test_melt_with_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_auth_over_max() {
-    let db = Arc::new(WalletMemoryDatabase::default());
+    let db = Arc::new(memory::empty().await.unwrap());
+
     let wallet = WalletBuilder::new()
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
@@ -440,7 +442,8 @@ async fn test_mint_auth_over_max() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_reuse_auth_proof() {
-    let db = Arc::new(WalletMemoryDatabase::default());
+    let db = Arc::new(memory::empty().await.unwrap());
+
     let wallet = WalletBuilder::new()
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
@@ -491,7 +494,7 @@ async fn test_reuse_auth_proof() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_melt_with_invalid_auth() {
-    let db = Arc::new(WalletMemoryDatabase::default());
+    let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
