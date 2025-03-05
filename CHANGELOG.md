@@ -7,8 +7,15 @@
 ## [Unreleased]
 ### Fixed
 ### Changed
+- Updated MSRV to 1.75.0 ([thesimplekid]).
+- cdk-sqlite: Do not use `UPDATE OR REPLACE` ([crodas]).
+- cdk: Refactor keyset init ([lollerfirst]).
 ### Added
+- Added redb feature to mintd in order to meet MSRV target ([thesimplekid]).
+- cdk-sqlite: In memory sqlite database ([crodas]).
 ### Removed
+- Remove support for Memory Database in cdk ([crodas]).
+- Remove `AmountStr` ([crodas]).
 
 ## [cdk-mind:v0.7.4](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.7.4)
 ### Changed
