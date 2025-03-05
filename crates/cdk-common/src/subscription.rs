@@ -1,11 +1,18 @@
 //! Subscription types and traits
+#[cfg(feature = "mint")]
 use std::str::FromStr;
 
-use cashu::nut17::{self, Error, Kind, Notification};
+use cashu::nut17::{self};
+#[cfg(feature = "mint")]
+use cashu::nut17::{Error, Kind, Notification};
+#[cfg(feature = "mint")]
 use cashu::{NotificationPayload, PublicKey};
+#[cfg(feature = "mint")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "mint")]
 use uuid::Uuid;
 
+#[cfg(feature = "mint")]
 use crate::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
 use crate::pub_sub::SubId;
 
@@ -15,15 +22,18 @@ use crate::pub_sub::SubId;
 pub type Params = nut17::Params<SubId>;
 
 /// Wrapper around `nut17::Params` to implement `Indexable` for `Notification`.
+#[cfg(feature = "mint")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexableParams(Params);
 
+#[cfg(feature = "mint")]
 impl From<Params> for IndexableParams {
     fn from(params: Params) -> Self {
         Self(params)
     }
 }
 
+#[cfg(feature = "mint")]
 impl TryFrom<IndexableParams> for Vec<Index<Notification>> {
     type Error = Error;
     fn try_from(params: IndexableParams) -> Result<Self, Self::Error> {
@@ -49,12 +59,14 @@ impl TryFrom<IndexableParams> for Vec<Index<Notification>> {
     }
 }
 
+#[cfg(feature = "mint")]
 impl AsRef<SubId> for IndexableParams {
     fn as_ref(&self) -> &SubId {
         &self.0.id
     }
 }
 
+#[cfg(feature = "mint")]
 impl Indexable for NotificationPayload<Uuid> {
     type Type = Notification;
 

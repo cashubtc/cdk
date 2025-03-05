@@ -290,7 +290,6 @@ impl SubscriptionClient {
     ///
     /// This is a WebSocket based subscription, where the client will connect to
     /// the server and stay there idle waiting for server-side notifications
-    #[allow(clippy::incompatible_msrv)]
     #[cfg(all(
         not(feature = "http_subscription"),
         feature = "mint",

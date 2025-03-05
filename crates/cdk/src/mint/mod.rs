@@ -139,8 +139,6 @@ impl Mint {
     /// Wait for any invoice to be paid
     /// For each backend starts a task that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
-    #[allow(clippy::incompatible_msrv)]
-    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
     pub async fn wait_for_paid_invoices(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
         let mint_arc = Arc::new(self.clone());
 

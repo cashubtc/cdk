@@ -83,7 +83,6 @@ impl MintLightning for LNbits {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
@@ -182,7 +181,7 @@ impl MintLightning for LNbits {
     ) -> Result<PayInvoiceResponse, Self::Err> {
         let pay_response = self
             .lnbits_api
-            .pay_invoice(&melt_quote.request)
+            .pay_invoice(&melt_quote.request, None)
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay invoice");

@@ -110,19 +110,22 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let melt = wallet.melt_quote(invoice, None).await?;
 
     write
-        .send(Message::Text(serde_json::to_string(&json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "subscribe",
-                "params": {
-                  "kind": "bolt11_melt_quote",
-                  "filters": [
-                    melt.id.clone(),
-                  ],
-                  "subId": "test-sub",
-                }
+        .send(Message::Text(
+            serde_json::to_string(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "subscribe",
+                    "params": {
+                      "kind": "bolt11_melt_quote",
+                      "filters": [
+                        melt.id.clone(),
+                      ],
+                      "subId": "test-sub",
+                    }
 
-        }))?))
+            }))?
+            .into(),
+        ))
         .await?;
 
     assert_eq!(

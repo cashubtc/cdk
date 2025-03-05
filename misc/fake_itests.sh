@@ -51,7 +51,7 @@ export CDK_MINTD_DATABASE=$MINT_DATABASE;
 
 
 echo "Starting fake mintd";
-cargo run --bin cdk-mintd &
+cargo run --bin cdk-mintd --features "redb" &
 cdk_mintd_pid=$!
 
 URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port/v1/info"

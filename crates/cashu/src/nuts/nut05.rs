@@ -335,7 +335,7 @@ pub struct MeltBolt11Request<Q> {
     /// Quote ID
     pub quote: Q,
     /// Proofs
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<Proof>))]
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
     pub inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero

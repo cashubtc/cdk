@@ -89,7 +89,6 @@ impl MintLightning for Phoenixd {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_invoice(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {

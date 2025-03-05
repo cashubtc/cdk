@@ -16,6 +16,7 @@ pub struct Settings {
 
 /// List of the methods and paths for which caching is enabled
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct CachedEndpoint {
     /// HTTP Method
     pub method: Method,
@@ -33,6 +34,7 @@ impl CachedEndpoint {
 /// HTTP method
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Method {
     /// Get
     Get,
@@ -42,6 +44,7 @@ pub enum Method {
 
 /// Route path
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Path {
     /// Bolt11 Mint
     #[serde(rename = "/v1/mint/bolt11")]

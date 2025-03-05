@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
-use axum::{async_trait, Router};
+use async_trait::async_trait;
+use axum::Router;
 use bip39::rand::{thread_rng, Rng};
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::FeeReserve;
@@ -47,40 +48,6 @@ impl LnBackendSetup for config::Cln {
         let cln = cdk_cln::Cln::new(cln_socket, fee_reserve).await?;
 
         Ok(cln)
-    }
-}
-
-#[async_trait]
-impl LnBackendSetup for config::Strike {
-    async fn setup(
-        &self,
-        routers: &mut Vec<Router>,
-        settings: &Settings,
-        unit: CurrencyUnit,
-    ) -> anyhow::Result<cdk_strike::Strike> {
-        let api_key = &self.api_key;
-
-        // Channel used for strike web hook
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-        let webhook_endpoint = format!("/webhook/{}/invoice", unit);
-
-        let mint_url: MintUrl = settings.info.url.parse()?;
-        let webhook_url = mint_url.join(&webhook_endpoint)?;
-
-        let strike = cdk_strike::Strike::new(
-            api_key.clone(),
-            unit,
-            Arc::new(Mutex::new(Some(receiver))),
-            webhook_url.to_string(),
-        )
-        .await?;
-
-        let router = strike
-            .create_invoice_webhook(&webhook_endpoint, sender)
-            .await?;
-        routers.push(router);
-
-        Ok(strike)
     }
 }
 
