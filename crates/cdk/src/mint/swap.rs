@@ -14,19 +14,18 @@ impl Mint {
     ) -> Result<SwapResponse, Error> {
         let input_ys = swap_request.inputs.ys()?;
 
-        self.localstore
-            .add_proofs(swap_request.inputs.clone(), None)
-            .await?;
-        self.check_ys_spendable(&input_ys, State::Pending).await?;
-
         if let Err(err) = self
             .verify_transaction_balanced(&swap_request.inputs, &swap_request.outputs)
             .await
         {
-            tracing::debug!("Attempt to swap unbalanced transaction: {}", err);
-            self.localstore.remove_proofs(&input_ys, None).await?;
+            tracing::debug!("Attempt to swap unbalanced transaction, aborting: {err}");
             return Err(err);
         };
+
+        self.localstore
+            .add_proofs(swap_request.inputs.clone(), None)
+            .await?;
+        self.check_ys_spendable(&input_ys, State::Pending).await?;
 
         let EnforceSigFlag {
             sig_flag,
