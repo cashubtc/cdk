@@ -6,7 +6,7 @@
 pub mod cdk_database {
     //! CDK Database
     pub use cdk_common::database::Error;
-    #[cfg(feature = "auth")]
+    #[cfg(all(feature = "mint", feature = "auth"))]
     pub use cdk_common::database::MintAuthDatabase;
     #[cfg(feature = "mint")]
     pub use cdk_common::database::MintDatabase;

@@ -7,7 +7,7 @@ mod wallet;
 
 #[cfg(feature = "mint")]
 pub use mint::Database as MintDatabase;
-#[cfg(feature = "mint")]
+#[cfg(all(feature = "mint", feature = "auth"))]
 pub use mint::MintAuthDatabase;
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;

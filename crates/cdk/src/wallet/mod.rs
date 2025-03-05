@@ -147,7 +147,7 @@ impl Wallet {
     ///
     ///     let localstore = memory::empty().await?;
     ///     let wallet = WalletBuilder::new()
-    ///        .mint_url(mint_url)
+    ///        .mint_url(mint_url.parse().unwrap())
     ///        .unit(unit)
     ///        .localstore(Arc::new(localstore))
     ///        .seed(&seed)
