@@ -12,38 +12,22 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        let input_ys = swap_request.inputs.ys()?;
-
-        self.localstore
-            .add_proofs(swap_request.inputs.clone(), None)
-            .await?;
-        self.check_ys_spendable(&input_ys, State::Pending).await?;
-
         if let Err(err) = self
             .verify_transaction_balanced(&swap_request.inputs, &swap_request.outputs)
             .await
         {
-            tracing::debug!("Attempt to swap unbalanced transaction: {}", err);
-            self.localstore.remove_proofs(&input_ys, None).await?;
+            tracing::debug!("Attempt to swap unbalanced transaction, aborting: {err}");
             return Err(err);
         };
 
-        let EnforceSigFlag {
-            sig_flag,
-            pubkeys,
-            sigs_required,
-        } = enforce_sig_flag(swap_request.inputs.clone());
+        self.validate_sig_flag(&swap_request).await?;
 
-        if sig_flag.eq(&SigFlag::SigAll) {
-            let pubkeys = pubkeys.into_iter().collect();
-            for blinded_message in &swap_request.outputs {
-                if let Err(err) = blinded_message.verify_p2pk(&pubkeys, sigs_required) {
-                    tracing::info!("Could not verify p2pk in swap request");
-                    self.localstore.remove_proofs(&input_ys, None).await?;
-                    return Err(err.into());
-                }
-            }
-        }
+        // After swap request is fully validated, add the new proofs to DB
+        let input_ys = swap_request.inputs.ys()?;
+        self.localstore
+            .add_proofs(swap_request.inputs.clone(), None)
+            .await?;
+        self.check_ys_spendable(&input_ys, State::Pending).await?;
 
         let mut promises = Vec::with_capacity(swap_request.outputs.len());
 
@@ -73,5 +57,25 @@ impl Mint {
             .await?;
 
         Ok(SwapResponse::new(promises))
+    }
+
+    async fn validate_sig_flag(&self, swap_request: &SwapRequest) -> Result<(), Error> {
+        let EnforceSigFlag {
+            sig_flag,
+            pubkeys,
+            sigs_required,
+        } = enforce_sig_flag(swap_request.inputs.clone());
+
+        if sig_flag.eq(&SigFlag::SigAll) {
+            let pubkeys = pubkeys.into_iter().collect();
+            for blinded_message in &swap_request.outputs {
+                if let Err(err) = blinded_message.verify_p2pk(&pubkeys, sigs_required) {
+                    tracing::info!("Could not verify p2pk in swap request");
+                    return Err(err.into());
+                }
+            }
+        }
+
+        Ok(())
     }
 }
