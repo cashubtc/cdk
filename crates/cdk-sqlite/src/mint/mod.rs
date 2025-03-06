@@ -855,7 +855,7 @@ FROM keyset;
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for proof in proofs {
-            if let Err(err) = sqlx::query(
+            let result = sqlx::query(
                 r#"
 INSERT INTO proof
 (y, amount, keyset_id, secret, c, witness, state, quote_id)
@@ -871,10 +871,33 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .bind("UNSPENT")
             .bind(quote_id.map(|q| q.hyphenated()))
             .execute(&mut transaction)
-            .await
-            .map_err(Error::from)
-            {
-                tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
+            .await;
+
+            if let Err(err) = result {
+                // Check if this is a foreign key constraint error (keyset_id not found)
+                if let sqlx::Error::Database(db_err) = &err {
+                    if db_err.message().contains("FOREIGN KEY constraint failed") {
+                        tracing::error!(
+                            "Foreign key constraint failed when adding proof: {:?}",
+                            err
+                        );
+                        transaction.rollback().await.map_err(Error::from)?;
+                        return Err(database::Error::InvalidKeysetId);
+                    }
+                }
+
+                // If it's a unique constraint violation, it's likely a duplicate proof
+                if let sqlx::Error::Database(db_err) = &err {
+                    if db_err.message().contains("UNIQUE constraint failed") {
+                        tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
+                        continue;
+                    }
+                }
+
+                // For any other error, roll back and return the error
+                tracing::error!("Error adding proof: {:?}", err);
+                transaction.rollback().await.map_err(Error::from)?;
+                return Err(Error::from(err).into());
             }
         }
         transaction.commit().await.map_err(Error::from)?;
@@ -1077,7 +1100,7 @@ WHERE keyset_id=?;
             "?,".repeat(ys.len()).trim_end_matches(',')
         );
 
-        let mut current_states = ys
+        let rows = ys
             .iter()
             .fold(sqlx::query(&sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
@@ -1087,7 +1110,16 @@ WHERE keyset_id=?;
             .map_err(|err| {
                 tracing::error!("SQLite could not get state of proof: {err:?}");
                 Error::SQLX(err)
-            })?
+            })?;
+
+        // Check if all proofs exist
+        if rows.len() != ys.len() {
+            transaction.rollback().await.map_err(Error::from)?;
+            tracing::warn!("Attempted to update state of non-existent proof");
+            return Err(database::Error::ProofNotFound);
+        }
+
+        let mut current_states = rows
             .into_iter()
             .map(|row| {
                 PublicKey::from_slice(row.get("y"))
@@ -1694,6 +1726,7 @@ fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request<Uuid>
 
 #[cfg(test)]
 mod tests {
+    use cdk_common::mint::MintKeySetInfo;
     use cdk_common::Amount;
 
     use super::*;
@@ -1702,8 +1735,20 @@ mod tests {
     async fn test_remove_spent_proofs() {
         let db = memory::empty().await.unwrap();
 
-        // Create some test proofs
+        // Create a keyset and add it to the database
         let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+        let keyset_info = MintKeySetInfo {
+            id: keyset_id.clone(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            valid_to: None,
+            derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(0),
+            max_order: 32,
+            input_fee_ppk: 0,
+        };
+        db.add_keyset_info(keyset_info).await.unwrap();
 
         let proofs = vec![
             Proof {
@@ -1758,8 +1803,20 @@ mod tests {
     async fn test_update_spent_proofs() {
         let db = memory::empty().await.unwrap();
 
-        // Create some test proofs
+        // Create a keyset and add it to the database
         let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+        let keyset_info = MintKeySetInfo {
+            id: keyset_id.clone(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            valid_to: None,
+            derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(0),
+            max_order: 32,
+            input_fee_ppk: 0,
+        };
+        db.add_keyset_info(keyset_info).await.unwrap();
 
         let proofs = vec![
             Proof {
