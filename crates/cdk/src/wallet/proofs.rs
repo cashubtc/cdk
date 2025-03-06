@@ -8,7 +8,7 @@ use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
-use crate::{Amount, Error, Wallet};
+use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
     /// Get unspent proofs for mint
@@ -166,9 +166,7 @@ impl Wallet {
             amount,
             proofs.total_amount()?
         );
-        if proofs.total_amount()? < amount {
-            return Err(Error::InsufficientFunds);
-        }
+        ensure_cdk!(proofs.total_amount()? >= amount, Error::InsufficientFunds);
 
         let (mut proofs_larger, mut proofs_smaller): (Proofs, Proofs) =
             proofs.into_iter().partition(|p| p.amount > amount);

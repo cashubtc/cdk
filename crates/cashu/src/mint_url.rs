@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::{ParseError, Url};
 
+use crate::ensure_cdk;
+
 /// Url Error
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
@@ -27,9 +29,8 @@ pub struct MintUrl(String);
 
 impl MintUrl {
     fn format_url(url: &str) -> Result<String, Error> {
-        if url.is_empty() {
-            return Err(Error::InvalidUrl);
-        }
+        ensure_cdk!(!url.is_empty(), Error::InvalidUrl);
+
         let url = url.trim_end_matches('/');
         // https://URL.com/path/TO/resource -> https://url.com/path/TO/resource
         let protocol = url

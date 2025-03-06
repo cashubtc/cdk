@@ -19,10 +19,10 @@ use cdk::amount::{Amount, MSAT_IN_SAT};
 use cdk::cdk_lightning::{
     self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
 };
-use cdk::mint;
 use cdk::mint::FeeReserve;
 use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk::util::unix_time;
+use cdk::{ensure_cdk, mint};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
@@ -182,9 +182,7 @@ impl MintLightning for FakeWallet {
                 fail.insert(payment_hash.clone());
             }
 
-            if description.pay_err {
-                return Err(Error::UnknownInvoice.into());
-            }
+            ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
         }
 
         Ok(PayInvoiceResponse {
