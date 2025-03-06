@@ -22,7 +22,7 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
 use crate::util::unix_time;
-use crate::Amount;
+use crate::{ensure_cdk, Amount};
 
 mod builder;
 mod check_spendable;
@@ -240,24 +240,17 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownKeySet)?;
 
-        let active = self
+        // Check that the keyset is active and should be used to sign
+        let active_id = self
             .localstore
             .get_active_keyset_id(&keyset_info.unit)
             .await?
             .ok_or(Error::InactiveKeyset)?;
-
-        // Check that the keyset is active and should be used to sign
-        if keyset_info.id.ne(&active) {
-            return Err(Error::InactiveKeyset);
-        }
+        ensure_cdk!(keyset_info.id.eq(&active_id), Error::InactiveKeyset);
 
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        let key_pair = match keyset.keys.get(amount) {
-            Some(key_pair) => key_pair,
-            None => return Err(Error::AmountKey),
-        };
+        let key_pair = keyset.keys.get(amount).ok_or(Error::AmountKey)?;
 
         let c = sign_message(&key_pair.secret_key, blinded_secret)?;
 
@@ -298,11 +291,7 @@ impl Mint {
         self.ensure_keyset_loaded(&proof.keyset_id).await?;
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        let keypair = match keyset.keys.get(&proof.amount) {
-            Some(key_pair) => key_pair,
-            None => return Err(Error::AmountKey),
-        };
+        let keypair = keyset.keys.get(&proof.amount).ok_or(Error::AmountKey)?;
 
         verify_message(&keypair.secret_key, proof.c, proof.secret.as_bytes())?;
 

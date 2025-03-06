@@ -12,7 +12,7 @@ use crate::nuts::{
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
-use crate::{Error, Wallet};
+use crate::{ensure_cdk, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote
@@ -113,16 +113,16 @@ impl Wallet {
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) {
-                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
-            }
+        let quote_info = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-            quote.clone()
-        } else {
-            return Err(Error::UnknownQuote);
-        };
+        ensure_cdk!(
+            quote_info.expiry.gt(&unix_time()),
+            Error::ExpiredQuote(quote_info.expiry, unix_time())
+        );
 
         let proofs_total = proofs.total_amount()?;
         if proofs_total < quote_info.amount + quote_info.fee_reserve {
@@ -272,17 +272,16 @@ impl Wallet {
     /// }
     #[instrument(skip(self))]
     pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+        let quote_info = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) {
-                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
-            }
-
-            quote.clone()
-        } else {
-            return Err(Error::UnknownQuote);
-        };
+        ensure_cdk!(
+            quote_info.expiry.gt(&unix_time()),
+            Error::ExpiredQuote(quote_info.expiry, unix_time())
+        );
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 

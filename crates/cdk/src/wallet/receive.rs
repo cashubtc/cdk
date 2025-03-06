@@ -13,7 +13,7 @@ use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State, Token};
 use crate::types::ProofInfo;
 use crate::util::hex;
-use crate::{Amount, Error, Wallet, SECP256K1};
+use crate::{ensure_cdk, Amount, Error, Wallet, SECP256K1};
 
 impl Wallet {
     /// Receive proofs
@@ -194,21 +194,15 @@ impl Wallet {
 
         let unit = token.unit().unwrap_or_default();
 
-        if unit != self.unit {
-            return Err(Error::UnsupportedUnit);
-        }
+        ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
 
         let proofs = token.proofs();
 
         if let Token::TokenV3(token) = &token {
-            if token.is_multi_mint() {
-                return Err(Error::MultiMintTokenNotSupported);
-            }
+            ensure_cdk!(!token.is_multi_mint(), Error::MultiMintTokenNotSupported);
         }
 
-        if self.mint_url != token.mint_url()? {
-            return Err(Error::IncorrectMint);
-        }
+        ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
         let amount = self
             .receive_proofs(proofs, amount_split_target, p2pk_signing_keys, preimages)
