@@ -996,17 +996,10 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
 
     match response {
         Err(err) => match err {
-            cdk::Error::TokenAlreadySpent => (),
-            err => {
-                bail!(
-                    "Wrong mint error returned expected already spent: {}",
-                    err.to_string()
-                );
-            }
+            cdk::Error::TransactionUnbalanced(_, _, _) => (),
+            err => bail!("Wrong mint error returned expected TransactionUnbalanced, got: {err}"),
         },
-        Ok(_) => {
-            bail!("Should not have allowed swap with unbalanced");
-        }
+        Ok(_) => bail!("Should not have allowed swap with unbalanced"),
     }
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
@@ -1076,14 +1069,10 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
 
     match response {
         Err(err) => match err {
-            cdk::Error::TokenAlreadySpent => (),
-            err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
-            }
+            cdk::Error::TransactionUnbalanced(_, _, _) => (),
+            err => bail!("Wrong mint error returned expected TransactionUnbalanced, got: {err}"),
         },
-        Ok(_) => {
-            bail!("Should not have allowed to mint with multiple units");
-        }
+        Ok(_) => bail!("Should not have allowed swap with unbalanced"),
     }
 
     let input_amount: u64 = proofs.total_amount()?.into();

@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
@@ -21,7 +20,6 @@ use cdk::util::unix_time;
 use cdk::Mint;
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::mint::memory;
-use tokio::time::sleep;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
 
@@ -215,20 +213,12 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
+    // Listen for status updates on all input proof pks
     let public_keys_to_listen: Vec<_> = swap_request
         .inputs
-        .ys()
-        .expect("key")
-        .into_iter()
-        .enumerate()
-        .filter_map(|(key, pk)| {
-            if key % 2 == 0 {
-                // Only expect messages from every other key
-                Some(pk.to_string())
-            } else {
-                None
-            }
-        })
+        .ys()?
+        .iter()
+        .map(|pk| pk.to_string())
         .collect();
 
     let mut listener = mint
@@ -265,21 +255,14 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     assert!(attempt_swap.is_ok());
 
-    sleep(Duration::from_millis(10)).await;
-
     let mut msgs = HashMap::new();
     while let Ok((sub_id, msg)) = listener.try_recv() {
         assert_eq!(sub_id, "test".into());
         match msg {
             NotificationPayload::ProofState(ProofState { y, state, .. }) => {
-                let pk = y.to_string();
-                msgs.get_mut(&pk)
-                    .map(|x: &mut Vec<State>| {
-                        x.push(state);
-                    })
-                    .unwrap_or_else(|| {
-                        msgs.insert(pk, vec![state]);
-                    });
+                msgs.entry(y.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(state);
             }
             _ => bail!("Wrong message received"),
         }
@@ -287,7 +270,8 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     for keys in public_keys_to_listen {
         let statuses = msgs.remove(&keys).expect("some events");
-        assert_eq!(statuses, vec![State::Pending, State::Pending, State::Spent]);
+        // Every input pk receives two state updates, as there are only two state transitions
+        assert_eq!(statuses, vec![State::Pending, State::Spent]);
     }
 
     assert!(listener.try_recv().is_err(), "no other event is happening");

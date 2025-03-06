@@ -157,9 +157,7 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
 
     let mut mint_builder = MintBuilder::new();
 
-    let database = cdk_sqlite::mint::memory::empty()
-        .await
-        .expect("valid db instance");
+    let database = cdk_sqlite::mint::memory::empty().await?;
 
     let localstore = Arc::new(database);
     mint_builder = mint_builder.with_localstore(localstore.clone());
@@ -216,9 +214,7 @@ pub async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let mint_url = "http://aa".to_string();
     let unit = CurrencyUnit::Sat;
-    let localstore = cdk_sqlite::wallet::memory::empty()
-        .await
-        .expect("valid db instance");
+    let localstore = cdk_sqlite::wallet::memory::empty().await?;
     let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None)?;
 
     wallet.set_client(connector);
