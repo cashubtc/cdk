@@ -263,6 +263,10 @@ async fn main() -> anyhow::Result<()> {
         mint_builder = mint_builder.with_motd(motd);
     }
 
+    if let Some(tos_url) = &settings.mint_info.tos_url {
+        mint_builder = mint_builder.with_tos_url(tos_url.to_string());
+    }
+
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
     mint_builder = mint_builder

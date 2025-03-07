@@ -32,6 +32,7 @@ pub const ENV_MINT_ICON_URL: &str = "CDK_MINTD_MINT_ICON_URL";
 pub const ENV_MINT_MOTD: &str = "CDK_MINTD_MINT_MOTD";
 pub const ENV_MINT_CONTACT_NOSTR: &str = "CDK_MINTD_MINT_CONTACT_NOSTR";
 pub const ENV_MINT_CONTACT_EMAIL: &str = "CDK_MINTD_MINT_CONTACT_EMAIL";
+pub const ENV_MINT_TOS_URL: &str = "CDK_MINTD_MINT_TOS_URL";
 // LN
 pub const ENV_LN_BACKEND: &str = "CDK_MINTD_LN_BACKEND";
 pub const ENV_LN_INVOICE_DESCRIPTION: &str = "CDK_MINTD_LN_INVOICE_DESCRIPTION";
@@ -201,6 +202,10 @@ impl MintInfo {
 
         if let Ok(email) = env::var(ENV_MINT_CONTACT_EMAIL) {
             self.contact_email = Some(email);
+        }
+
+        if let Ok(tos_url) = env::var(ENV_MINT_TOS_URL) {
+            self.tos_url = Some(tos_url);
         }
 
         self

@@ -86,6 +86,12 @@ impl MintBuilder {
         self
     }
 
+    /// Set terms of service URL
+    pub fn with_tos_url(mut self, tos_url: String) -> Self {
+        self.mint_info.tos_url = Some(tos_url);
+        self
+    }
+
     /// Set description
     pub fn with_description(mut self, description: String) -> Self {
         self.mint_info.description = Some(description);
