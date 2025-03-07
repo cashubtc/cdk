@@ -2,6 +2,8 @@
 -- SQLite requires recreating tables to add foreign keys
 
 -- First, ensure we have the right schema information
+-- Start transaction to ensure all operations complete or none do
+BEGIN TRANSACTION;
 PRAGMA foreign_keys = OFF;
 
 -- Create new proof table with foreign key constraint
@@ -12,7 +14,7 @@ CREATE TABLE proof_new (
     secret TEXT NOT NULL,
     c BLOB NOT NULL,
     witness TEXT,
-    state TEXT CHECK (state IN ('SPENT', 'PENDING', 'UNSPENT')) NOT NULL,
+    state TEXT CHECK (state IN ('SPENT', 'PENDING', 'UNSPENT', 'RESERVED')) NOT NULL,
     quote_id TEXT
 );
 
@@ -34,8 +36,8 @@ CREATE TABLE blind_signature_new (
 INSERT INTO blind_signature_new SELECT * FROM blind_signature;
 
 -- Drop old tables
-DROP TABLE proof;
-DROP TABLE blind_signature;
+DROP TABLE IF EXISTS proof;
+DROP TABLE IF EXISTS blind_signature;
 
 -- Rename new tables to original names
 ALTER TABLE proof_new RENAME TO proof;
@@ -49,3 +51,6 @@ CREATE INDEX IF NOT EXISTS blind_signature_keyset_id_index ON blind_signature(ke
 
 -- Re-enable foreign keys
 PRAGMA foreign_keys = ON;
+
+-- Commit the transaction
+COMMIT;
