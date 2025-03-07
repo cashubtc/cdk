@@ -14,6 +14,7 @@ use super::nut00::Witness;
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
 use super::{Conditions, Proof};
+use crate::ensure_cdk;
 use crate::util::unix_time;
 
 pub mod serde_htlc_witness;
@@ -112,9 +113,8 @@ impl Proof {
                     .map(|s| Signature::from_str(s))
                     .collect::<Result<Vec<Signature>, _>>()?;
 
-                if valid_signatures(self.secret.as_bytes(), &pubkey, &signatures).lt(&req_sigs) {
-                    return Err(Error::IncorrectSecretKind);
-                }
+                let valid_sigs = valid_signatures(self.secret.as_bytes(), &pubkey, &signatures);
+                ensure_cdk!(valid_sigs >= req_sigs, Error::IncorrectSecretKind);
             }
         }
 

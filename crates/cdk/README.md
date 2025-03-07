@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
+use cdk_sqlite::wallet::memory;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::Wallet;
 use cdk::Amount;
@@ -42,7 +42,7 @@ async fn main() {
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
-    let localstore = WalletMemoryDatabase::default();
+    let localstore = memory::empty().await.unwrap();
 
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed);
 
@@ -94,7 +94,7 @@ cargo update -p reqwest --precise 0.12.4
 cargo update -p serde_with --precise 3.1.0
 cargo update -p regex --precise 1.9.6
 cargo update -p backtrace --precise 0.3.58
-# For wasm32-unknown-unknown target 
+# For wasm32-unknown-unknown target
 cargo update -p bumpalo --precise 3.12.0
 ```
 

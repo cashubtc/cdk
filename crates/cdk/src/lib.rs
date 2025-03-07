@@ -3,8 +3,14 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-#[cfg(any(feature = "wallet", feature = "mint"))]
-pub mod cdk_database;
+pub mod cdk_database {
+    //! CDK Database
+    pub use cdk_common::database::Error;
+    #[cfg(feature = "mint")]
+    pub use cdk_common::database::MintDatabase;
+    #[cfg(feature = "wallet")]
+    pub use cdk_common::database::WalletDatabase;
+}
 
 #[cfg(feature = "mint")]
 pub mod mint;
@@ -16,11 +22,13 @@ pub mod pub_sub;
 /// Re-export amount type
 #[doc(hidden)]
 pub use cdk_common::{
-    amount, common as types, dhke,
+    amount, common as types, dhke, ensure_cdk,
     error::{self, Error},
-    lightning as cdk_lightning, lightning_invoice, mint_url, nuts, secret, subscription, util, ws,
-    Amount, Bolt11Invoice,
+    lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };
+#[cfg(feature = "mint")]
+#[doc(hidden)]
+pub use cdk_common::{lightning as cdk_lightning, subscription};
 
 pub mod fees;
 

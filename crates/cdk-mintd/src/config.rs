@@ -47,10 +47,8 @@ pub enum LnBackend {
     #[default]
     None,
     Cln,
-    Strike,
     LNbits,
     FakeWallet,
-    Phoenixd,
     Lnd,
 }
 
@@ -60,10 +58,8 @@ impl std::str::FromStr for LnBackend {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "cln" => Ok(LnBackend::Cln),
-            "strike" => Ok(LnBackend::Strike),
             "lnbits" => Ok(LnBackend::LNbits),
             "fakewallet" => Ok(LnBackend::FakeWallet),
-            "phoenixd" => Ok(LnBackend::Phoenixd),
             "lnd" => Ok(LnBackend::Lnd),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
@@ -94,12 +90,6 @@ impl Default for Ln {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Strike {
-    pub api_key: String,
-    pub supported_units: Option<Vec<CurrencyUnit>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
@@ -122,15 +112,6 @@ pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
     pub macaroon_file: PathBuf,
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Phoenixd {
-    pub api_password: String,
-    pub api_url: String,
-    pub bolt12: bool,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
 }
@@ -172,6 +153,7 @@ fn default_max_delay_time() -> u64 {
 pub enum DatabaseEngine {
     #[default]
     Sqlite,
+    #[cfg(feature = "redb")]
     Redb,
 }
 
@@ -181,6 +163,7 @@ impl std::str::FromStr for DatabaseEngine {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "sqlite" => Ok(DatabaseEngine::Sqlite),
+            #[cfg(feature = "redb")]
             "redb" => Ok(DatabaseEngine::Redb),
             _ => Err(format!("Unknown database engine: {}", s)),
         }
@@ -199,9 +182,7 @@ pub struct Settings {
     pub mint_info: MintInfo,
     pub ln: Ln,
     pub cln: Option<Cln>,
-    pub strike: Option<Strike>,
     pub lnbits: Option<LNbits>,
-    pub phoenixd: Option<Phoenixd>,
     pub lnd: Option<Lnd>,
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
@@ -291,17 +272,9 @@ impl Settings {
                 settings.cln.is_some(),
                 "CLN backend requires a valid config."
             ),
-            LnBackend::Strike => assert!(
-                settings.strike.is_some(),
-                "Strike backend requires a valid config."
-            ),
             LnBackend::LNbits => assert!(
                 settings.lnbits.is_some(),
                 "LNbits backend requires a valid config"
-            ),
-            LnBackend::Phoenixd => assert!(
-                settings.phoenixd.is_some(),
-                "Phoenixd backend requires a valid config"
             ),
             LnBackend::Lnd => {
                 assert!(

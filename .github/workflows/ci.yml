@@ -13,6 +13,7 @@ jobs:
   self-care:
     name: Flake self-check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Check Nix flake inputs
@@ -23,6 +24,7 @@ jobs:
   pre-commit-checks:
     name: "Cargo fmt, typos"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -45,6 +47,7 @@ jobs:
   examples:
     name: "Run examples"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -69,6 +72,7 @@ jobs:
   clippy:
     name: "Stable build, clippy and test"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -97,8 +101,6 @@ jobs:
             -p cdk-axum,
             -p cdk-cln,
             -p cdk-lnd,
-            -p cdk-phoenixd,
-            -p cdk-strike,
             -p cdk-lnbits,
             -p cdk-fake-wallet,
             --bin cdk-cli,
@@ -107,6 +109,7 @@ jobs:
             --bin cdk-mintd --no-default-features --features redis,
             --bin cdk-mintd --no-default-features --features "redis swagger",
             --bin cdk-mintd --no-default-features --features management-rpc,
+            --bin cdk-mintd --no-default-features --features redb,
             --bin cdk-mint-cli,
           ]
     steps:
@@ -128,6 +131,7 @@ jobs:
   itest:
     name: "Integration regtest tests"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -138,7 +142,6 @@ jobs:
           [
             REDB,
             SQLITE,
-            MEMORY,
           ]
     steps:
       - name: checkout
@@ -157,6 +160,7 @@ jobs:
   fake-wallet-itest:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -167,7 +171,6 @@ jobs:
           [
           REDB,
           SQLITE,
-          MEMORY,
           ]
     steps:
       - name: checkout
@@ -186,6 +189,7 @@ jobs:
   pure-itest:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -201,6 +205,7 @@ jobs:
   msrv-build:
     name: "MSRV build"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         build-args:
@@ -210,12 +215,13 @@ jobs:
             -p cdk --no-default-features --features "mint mint",
             -p cdk-axum,
             -p cdk-axum --no-default-features --features redis,
-            -p cdk-strike,
             -p cdk-lnbits,
-            -p cdk-phoenixd,
             -p cdk-fake-wallet,
             -p cdk-cln,
+            -p cdk-lnd,
             -p cdk-mint-rpc,
+            -p cdk-sqlite,
+            -p cdk-mintd,
           ]
     steps:
       - name: checkout
@@ -230,31 +236,10 @@ jobs:
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
   
-  db-msrv-build:
-    name: "DB MSRV build"
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        build-args:
-          [
-            -p cdk-sqlite,
-            -p cdk-redb,
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v11
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v6
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: nix develop -i -L .#db_shell --command cargo build ${{ matrix.build-args }}
-
   check-wasm:
     name: Check WASM
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         rust:
@@ -283,6 +268,7 @@ jobs:
   check-wasm-msrv:
     name: Check WASM
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         rust:

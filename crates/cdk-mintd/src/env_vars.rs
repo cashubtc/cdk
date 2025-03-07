@@ -8,8 +8,7 @@ use cdk::nuts::CurrencyUnit;
 #[cfg(feature = "management-rpc")]
 use crate::config::MintManagementRpc;
 use crate::config::{
-    Cln, Database, DatabaseEngine, FakeWallet, Info, LNbits, Ln, LnBackend, Lnd, MintInfo,
-    Phoenixd, Settings, Strike,
+    Cln, Database, DatabaseEngine, FakeWallet, Info, LNbits, Ln, LnBackend, Lnd, MintInfo, Settings,
 };
 
 pub const ENV_WORK_DIR: &str = "CDK_MINTD_WORK_DIR";
@@ -45,21 +44,12 @@ pub const ENV_CLN_RPC_PATH: &str = "CDK_MINTD_CLN_RPC_PATH";
 pub const ENV_CLN_BOLT12: &str = "CDK_MINTD_CLN_BOLT12";
 pub const ENV_CLN_FEE_PERCENT: &str = "CDK_MINTD_CLN_FEE_PERCENT";
 pub const ENV_CLN_RESERVE_FEE_MIN: &str = "CDK_MINTD_CLN_RESERVE_FEE_MIN";
-// Strike
-pub const ENV_STRIKE_API_KEY: &str = "CDK_MINTD_STRIKE_API_KEY";
-pub const ENV_STRIKE_SUPPORTED_UNITS: &str = "CDK_MINTD_STRIKE_SUPPORTED_UNITS";
 // LND environment variables
 pub const ENV_LND_ADDRESS: &str = "CDK_MINTD_LND_ADDRESS";
 pub const ENV_LND_CERT_FILE: &str = "CDK_MINTD_LND_CERT_FILE";
 pub const ENV_LND_MACAROON_FILE: &str = "CDK_MINTD_LND_MACAROON_FILE";
 pub const ENV_LND_FEE_PERCENT: &str = "CDK_MINTD_LND_FEE_PERCENT";
 pub const ENV_LND_RESERVE_FEE_MIN: &str = "CDK_MINTD_LND_RESERVE_FEE_MIN";
-// Phoenixd environment variables
-pub const ENV_PHOENIXD_API_PASSWORD: &str = "CDK_MINTD_PHOENIXD_API_PASSWORD";
-pub const ENV_PHOENIXD_API_URL: &str = "CDK_MINTD_PHOENIXD_API_URL";
-pub const ENV_PHOENIXD_BOLT12: &str = "CDK_MINTD_PHOENIXD_BOLT12";
-pub const ENV_PHOENIXD_FEE_PERCENT: &str = "CDK_MINTD_PHOENIXD_FEE_PERCENT";
-pub const ENV_PHOENIXD_RESERVE_FEE_MIN: &str = "CDK_MINTD_PHOENIXD_RESERVE_FEE_MIN";
 // LNBits
 pub const ENV_LNBITS_ADMIN_API_KEY: &str = "CDK_MINTD_LNBITS_ADMIN_API_KEY";
 pub const ENV_LNBITS_INVOICE_API_KEY: &str = "CDK_MINTD_LNBITS_INVOICE_API_KEY";
@@ -107,17 +97,11 @@ impl Settings {
             LnBackend::Cln => {
                 self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
             }
-            LnBackend::Strike => {
-                self.strike = Some(self.strike.clone().unwrap_or_default().from_env());
-            }
             LnBackend::LNbits => {
                 self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
             }
             LnBackend::FakeWallet => {
                 self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
-            }
-            LnBackend::Phoenixd => {
-                self.phoenixd = Some(self.phoenixd.clone().unwrap_or_default().from_env());
             }
             LnBackend::Lnd => {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
@@ -298,27 +282,6 @@ impl Cln {
     }
 }
 
-impl Strike {
-    pub fn from_env(mut self) -> Self {
-        // API Key
-        if let Ok(api_key) = env::var(ENV_STRIKE_API_KEY) {
-            self.api_key = api_key;
-        }
-
-        // Supported Units - expects comma-separated list
-        if let Ok(units_str) = env::var(ENV_STRIKE_SUPPORTED_UNITS) {
-            self.supported_units = Some(
-                units_str
-                    .split(',')
-                    .filter_map(|s| s.trim().parse().ok())
-                    .collect(),
-            );
-        }
-
-        self
-    }
-}
-
 impl Lnd {
     pub fn from_env(mut self) -> Self {
         if let Ok(address) = env::var(ENV_LND_ADDRESS) {
@@ -340,38 +303,6 @@ impl Lnd {
         }
 
         if let Ok(reserve_fee_str) = env::var(ENV_LND_RESERVE_FEE_MIN) {
-            if let Ok(reserve_fee) = reserve_fee_str.parse::<u64>() {
-                self.reserve_fee_min = reserve_fee.into();
-            }
-        }
-
-        self
-    }
-}
-
-impl Phoenixd {
-    pub fn from_env(mut self) -> Self {
-        if let Ok(password) = env::var(ENV_PHOENIXD_API_PASSWORD) {
-            self.api_password = password;
-        }
-
-        if let Ok(url) = env::var(ENV_PHOENIXD_API_URL) {
-            self.api_url = url;
-        }
-
-        if let Ok(bolt12_str) = env::var(ENV_PHOENIXD_BOLT12) {
-            if let Ok(bolt12) = bolt12_str.parse() {
-                self.bolt12 = bolt12;
-            }
-        }
-
-        if let Ok(fee_str) = env::var(ENV_PHOENIXD_FEE_PERCENT) {
-            if let Ok(fee) = fee_str.parse() {
-                self.fee_percent = fee;
-            }
-        }
-
-        if let Ok(reserve_fee_str) = env::var(ENV_PHOENIXD_RESERVE_FEE_MIN) {
             if let Ok(reserve_fee) = reserve_fee_str.parse::<u64>() {
                 self.reserve_fee_min = reserve_fee.into();
             }

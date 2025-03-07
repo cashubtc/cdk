@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail};
-use axum::{async_trait, Router};
+use anyhow::anyhow;
+use async_trait::async_trait;
+use axum::Router;
 use bip39::rand::{thread_rng, Rng};
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::FeeReserve;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use tokio::sync::Mutex;
-use url::Url;
 
 use crate::config::{self, Settings};
 use crate::expand_path;
@@ -47,40 +47,6 @@ impl LnBackendSetup for config::Cln {
         let cln = cdk_cln::Cln::new(cln_socket, fee_reserve).await?;
 
         Ok(cln)
-    }
-}
-
-#[async_trait]
-impl LnBackendSetup for config::Strike {
-    async fn setup(
-        &self,
-        routers: &mut Vec<Router>,
-        settings: &Settings,
-        unit: CurrencyUnit,
-    ) -> anyhow::Result<cdk_strike::Strike> {
-        let api_key = &self.api_key;
-
-        // Channel used for strike web hook
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-        let webhook_endpoint = format!("/webhook/{}/invoice", unit);
-
-        let mint_url: MintUrl = settings.info.url.parse()?;
-        let webhook_url = mint_url.join(&webhook_endpoint)?;
-
-        let strike = cdk_strike::Strike::new(
-            api_key.clone(),
-            unit,
-            Arc::new(Mutex::new(Some(receiver))),
-            webhook_url.to_string(),
-        )
-        .await?;
-
-        let router = strike
-            .create_invoice_webhook(&webhook_endpoint, sender)
-            .await?;
-        routers.push(router);
-
-        Ok(strike)
     }
 }
 
@@ -124,53 +90,6 @@ impl LnBackendSetup for config::LNbits {
         routers.push(router);
 
         Ok(lnbits)
-    }
-}
-
-#[async_trait]
-impl LnBackendSetup for config::Phoenixd {
-    async fn setup(
-        &self,
-        routers: &mut Vec<Router>,
-        settings: &Settings,
-        _unit: CurrencyUnit,
-    ) -> anyhow::Result<cdk_phoenixd::Phoenixd> {
-        let api_password = &self.api_password;
-
-        let api_url = &self.api_url;
-
-        let fee_reserve = FeeReserve {
-            min_fee_reserve: self.reserve_fee_min,
-            percent_fee_reserve: self.fee_percent,
-        };
-
-        if fee_reserve.percent_fee_reserve < 0.04 {
-            bail!("Fee reserve is too low needs to be at least 0.02");
-        }
-
-        let webhook_endpoint = "/webhook/phoenixd";
-
-        let mint_url = Url::parse(&settings.info.url)?;
-
-        let webhook_url = mint_url.join(webhook_endpoint)?.to_string();
-
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-
-        let phoenixd = cdk_phoenixd::Phoenixd::new(
-            api_password.to_string(),
-            api_url.to_string(),
-            fee_reserve,
-            Arc::new(Mutex::new(Some(receiver))),
-            webhook_url,
-        )?;
-
-        let router = phoenixd
-            .create_invoice_webhook(webhook_endpoint, sender)
-            .await?;
-
-        routers.push(router);
-
-        Ok(phoenixd)
     }
 }
 

@@ -4,12 +4,9 @@
 cleanup() {
     echo "Cleaning up..."
 
-    # Kill the Rust binary process
-    echo "Killing the Rust binary with PID $RUST_BIN_PID"
-    kill $CDK_ITEST_MINT_BIN_PID
-
-    # Wait for the Rust binary to terminate
-    wait $CDK_ITEST_MINT_BIN_PID
+    echo "Killing the cdk mintd"
+    kill -2 $cdk_mintd_pid
+    wait $cdk_mintd_pid
 
     echo "Mint binary terminated"
     
@@ -29,7 +26,6 @@ export cdk_itests=$(mktemp -d)
 export cdk_itests_mint_addr="127.0.0.1";
 export cdk_itests_mint_port=8086;
 
-URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port/v1/info"
 # Check if the temporary directory was created successfully
 if [[ ! -d "$cdk_itests" ]]; then
     echo "Failed to create temp directory"
@@ -40,11 +36,25 @@ echo "Temp directory created: $cdk_itests"
 export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
-cargo build --bin fake_wallet 
-cargo run --bin fake_wallet &
-# Capture its PID
-CDK_ITEST_MINT_BIN_PID=$!
 
+
+export CDK_MINTD_URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port";
+export CDK_MINTD_WORK_DIR="$cdk_itests";
+export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
+export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port;
+export CDK_MINTD_LN_BACKEND="fakewallet";
+export CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS="sat,usd";
+export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
+export CDK_MINTD_FAKE_WALLET_FEE_PERCENT="0";
+export CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN="1";
+export CDK_MINTD_DATABASE=$MINT_DATABASE;
+
+
+echo "Starting fake mintd";
+cargo run --bin cdk-mintd --features "redb" &
+cdk_mintd_pid=$!
+
+URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port/v1/info"
 TIMEOUT=100
 START_TIME=$(date +%s)
 # Loop until the endpoint returns a 200 OK status or timeout is reached

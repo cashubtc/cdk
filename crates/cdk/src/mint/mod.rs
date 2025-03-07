@@ -22,7 +22,7 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
 use crate::util::unix_time;
-use crate::Amount;
+use crate::{ensure_cdk, Amount};
 
 mod builder;
 mod check_spendable;
@@ -67,91 +67,16 @@ impl Mint {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
-        let mut active_keysets = HashMap::new();
-        let keysets_infos = localstore.get_keyset_infos().await?;
+        let (mut active_keysets, active_keyset_units) = Mint::init_keysets(
+            xpriv,
+            &secp_ctx,
+            &localstore,
+            &supported_units,
+            &custom_paths,
+        )
+        .await?;
 
-        let mut active_keyset_units = vec![];
-
-        if !keysets_infos.is_empty() {
-            tracing::debug!("Setting all saved keysets to inactive");
-            for keyset in keysets_infos.clone() {
-                // Set all to in active
-                let mut keyset = keyset;
-                keyset.active = false;
-                localstore.add_keyset_info(keyset).await?;
-            }
-
-            let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
-                keysets_infos.iter().fold(HashMap::new(), |mut acc, ks| {
-                    acc.entry(ks.unit.clone()).or_default().push(ks.clone());
-                    acc
-                });
-
-            for (unit, keysets) in keysets_by_unit {
-                let mut keysets = keysets;
-                keysets.sort_by(|a, b| b.derivation_path_index.cmp(&a.derivation_path_index));
-
-                let highest_index_keyset = keysets
-                    .first()
-                    .cloned()
-                    .expect("unit will not be added to hashmap if empty");
-
-                let keysets: Vec<MintKeySetInfo> = keysets
-                    .into_iter()
-                    .filter(|ks| ks.derivation_path_index.is_some())
-                    .collect();
-
-                if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
-                    let derivation_path_index = if keysets.is_empty() {
-                        1
-                    } else if &highest_index_keyset.input_fee_ppk == input_fee_ppk
-                        && &highest_index_keyset.max_order == max_order
-                    {
-                        tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
-                        let id = highest_index_keyset.id;
-                        let keyset = MintKeySet::generate_from_xpriv(
-                            &secp_ctx,
-                            xpriv,
-                            highest_index_keyset.max_order,
-                            highest_index_keyset.unit.clone(),
-                            highest_index_keyset.derivation_path.clone(),
-                        );
-                        active_keysets.insert(id, keyset);
-                        let mut keyset_info = highest_index_keyset;
-                        keyset_info.active = true;
-                        localstore.add_keyset_info(keyset_info).await?;
-                        active_keyset_units.push(unit.clone());
-                        localstore.set_active_keyset(unit, id).await?;
-                        continue;
-                    } else {
-                        highest_index_keyset.derivation_path_index.unwrap_or(0) + 1
-                    };
-
-                    let derivation_path = match custom_paths.get(&unit) {
-                        Some(path) => path.clone(),
-                        None => derivation_path_from_unit(unit.clone(), derivation_path_index)
-                            .ok_or(Error::UnsupportedUnit)?,
-                    };
-
-                    let (keyset, keyset_info) = create_new_keyset(
-                        &secp_ctx,
-                        xpriv,
-                        derivation_path,
-                        Some(derivation_path_index),
-                        unit.clone(),
-                        *max_order,
-                        *input_fee_ppk,
-                    );
-
-                    let id = keyset_info.id;
-                    localstore.add_keyset_info(keyset_info).await?;
-                    localstore.set_active_keyset(unit.clone(), id).await?;
-                    active_keysets.insert(id, keyset);
-                    active_keyset_units.push(unit.clone());
-                }
-            }
-        }
-
+        // Create new keysets for supported units that aren't covered by the current keysets
         for (unit, (fee, max_order)) in supported_units {
             if !active_keyset_units.contains(&unit) {
                 let derivation_path = match custom_paths.get(&unit) {
@@ -214,8 +139,6 @@ impl Mint {
     /// Wait for any invoice to be paid
     /// For each backend starts a task that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
-    #[allow(clippy::incompatible_msrv)]
-    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
     pub async fn wait_for_paid_invoices(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
         let mint_arc = Arc::new(self.clone());
 
@@ -317,24 +240,17 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownKeySet)?;
 
-        let active = self
+        // Check that the keyset is active and should be used to sign
+        let active_id = self
             .localstore
             .get_active_keyset_id(&keyset_info.unit)
             .await?
             .ok_or(Error::InactiveKeyset)?;
-
-        // Check that the keyset is active and should be used to sign
-        if keyset_info.id.ne(&active) {
-            return Err(Error::InactiveKeyset);
-        }
+        ensure_cdk!(keyset_info.id.eq(&active_id), Error::InactiveKeyset);
 
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        let key_pair = match keyset.keys.get(amount) {
-            Some(key_pair) => key_pair,
-            None => return Err(Error::AmountKey),
-        };
+        let key_pair = keyset.keys.get(amount).ok_or(Error::AmountKey)?;
 
         let c = sign_message(&key_pair.secret_key, blinded_secret)?;
 
@@ -375,11 +291,7 @@ impl Mint {
         self.ensure_keyset_loaded(&proof.keyset_id).await?;
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        let keypair = match keyset.keys.get(&proof.amount) {
-            Some(key_pair) => key_pair,
-            None => return Err(Error::AmountKey),
-        };
+        let keypair = keyset.keys.get(&proof.amount).ok_or(Error::AmountKey)?;
 
         verify_message(&keypair.secret_key, proof.c, proof.secret.as_bytes())?;
 
@@ -578,12 +490,12 @@ mod tests {
     use std::str::FromStr;
 
     use bitcoin::Network;
-    use cdk_common::common::{LnKey, QuoteTTL};
+    use cdk_common::common::LnKey;
+    use cdk_sqlite::mint::memory::new_with_state;
     use secp256k1::Secp256k1;
     use uuid::Uuid;
 
     use super::*;
-    use crate::cdk_database::mint_memory::MintMemoryDatabase;
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
@@ -679,32 +591,25 @@ mod tests {
         melt_quotes: Vec<MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
-        blinded_signatures: HashMap<[u8; 33], BlindSignature>,
-        quote_proofs: HashMap<Uuid, Vec<PublicKey>>,
-        quote_signatures: HashMap<Uuid, Vec<BlindSignature>>,
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         melt_requests: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
-        quote_ttl: QuoteTTL,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
         let localstore = Arc::new(
-            MintMemoryDatabase::new(
+            new_with_state(
                 config.active_keysets,
                 config.keysets,
                 config.mint_quotes,
                 config.melt_quotes,
                 config.pending_proofs,
                 config.spent_proofs,
-                config.quote_proofs,
-                config.blinded_signatures,
-                config.quote_signatures,
                 config.melt_requests,
                 config.mint_info,
-                config.quote_ttl,
             )
+            .await
             .unwrap(),
         );
 
