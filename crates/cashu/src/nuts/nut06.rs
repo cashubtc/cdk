@@ -519,7 +519,7 @@ mod tests {
     "10": {"supported": true},
     "12": {"supported": true}
   },
-  "tos_url: "https://cashu.mint/tos"
+  "tos_url": "https://cashu.mint/tos"
 }"#;
         let info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
         let mint_info_str = r#"
