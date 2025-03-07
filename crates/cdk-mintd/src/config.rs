@@ -208,6 +208,8 @@ pub struct MintInfo {
     pub contact_nostr_public_key: Option<String>,
     /// Contact email
     pub contact_email: Option<String>,
+    /// URL to the terms of service
+    pub tos_url: Option<String>,
 }
 
 #[cfg(feature = "management-rpc")]
