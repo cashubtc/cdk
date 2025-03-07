@@ -13,6 +13,8 @@
 ### Added
 - Added redb feature to mintd in order to meet MSRV target ([thesimplekid]).
 - cdk-sqlite: In memory sqlite database ([crodas]).
+- Add `tos_url` to `MintInfo` ([nodlAndHodl]).
+- cdk: Add tos_url setter to `MintBuilder` ([thesimplekid]).
 ### Removed
 - Remove support for Memory Database in cdk ([crodas]).
 - Remove `AmountStr` ([crodas]).
@@ -276,3 +278,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [crodas]: https://github.com/crodas
 [tdelabro]: https://github.com/tdelabro
 [daywalker90]: https://github.com/daywalker90
+[nodlAndHodl]: https://github.com/nodlAndHodl
