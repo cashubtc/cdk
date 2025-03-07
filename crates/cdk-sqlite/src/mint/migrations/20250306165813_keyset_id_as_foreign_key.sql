@@ -2,9 +2,9 @@
 -- SQLite requires recreating tables to add foreign keys
 
 -- First, ensure we have the right schema information
+PRAGMA foreign_keys = OFF;
 -- Start transaction to ensure all operations complete or none do
 BEGIN TRANSACTION;
-PRAGMA foreign_keys = OFF;
 
 -- Create new proof table with foreign key constraint
 CREATE TABLE proof_new (
@@ -14,7 +14,7 @@ CREATE TABLE proof_new (
     secret TEXT NOT NULL,
     c BLOB NOT NULL,
     witness TEXT,
-    state TEXT CHECK (state IN ('SPENT', 'PENDING', 'UNSPENT', 'RESERVED')) NOT NULL,
+    state TEXT CHECK (state IN ('SPENT', 'PENDING', 'UNSPENT', 'RESERVED', 'UNKNOWN')) NOT NULL,
     quote_id TEXT
 );
 
@@ -49,8 +49,8 @@ CREATE INDEX IF NOT EXISTS state_index ON proof(state);
 CREATE INDEX IF NOT EXISTS secret_index ON proof(secret);
 CREATE INDEX IF NOT EXISTS blind_signature_keyset_id_index ON blind_signature(keyset_id);
 
--- Re-enable foreign keys
-PRAGMA foreign_keys = ON;
-
 -- Commit the transaction
 COMMIT;
+
+-- Re-enable foreign keys
+PRAGMA foreign_keys = ON;
