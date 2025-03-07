@@ -3,8 +3,6 @@
 
 -- First, ensure we have the right schema information
 PRAGMA foreign_keys = OFF;
--- Start transaction to ensure all operations complete or none do
-BEGIN TRANSACTION;
 
 -- Create new proof table with foreign key constraint
 CREATE TABLE proof_new (
@@ -48,9 +46,6 @@ CREATE INDEX IF NOT EXISTS proof_keyset_id_index ON proof(keyset_id);
 CREATE INDEX IF NOT EXISTS state_index ON proof(state);
 CREATE INDEX IF NOT EXISTS secret_index ON proof(secret);
 CREATE INDEX IF NOT EXISTS blind_signature_keyset_id_index ON blind_signature(keyset_id);
-
--- Commit the transaction
-COMMIT;
 
 -- Re-enable foreign keys
 PRAGMA foreign_keys = ON;
