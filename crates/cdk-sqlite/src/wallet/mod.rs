@@ -141,7 +141,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
     icon_url = excluded.icon_url,
     urls = excluded.urls,
     motd = excluded.motd,
-    mint_time = excluded.mint_time
+    mint_time = excluded.mint_time,
     tos_url = excluded.tos_url
 ;
         "#,
