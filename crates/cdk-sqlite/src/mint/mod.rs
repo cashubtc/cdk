@@ -885,7 +885,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                         return Err(database::Error::InvalidKeysetId);
                     }
                 }
-                
+
                 // For any other error, roll back and return the error
                 tracing::error!("Error adding proof: {:?}", err);
                 transaction.rollback().await.map_err(Error::from)?;
