@@ -4,10 +4,6 @@
 -- First, ensure we have the right schema information
 PRAGMA foreign_keys = OFF;
 
--- Create indexes for the foreign keys if they don't exist
-CREATE INDEX IF NOT EXISTS proof_keyset_id_index ON proof(keyset_id);
-CREATE INDEX IF NOT EXISTS blind_signature_keyset_id_index ON blind_signature(keyset_id);
-
 -- Create new proof table with foreign key constraint
 CREATE TABLE proof_new (
     y BLOB PRIMARY KEY,
