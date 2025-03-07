@@ -1,1 +1,1 @@
-ALTER TABLE mint ADD tos TEXT;
+ALTER TABLE mint ADD tos_url TEXT;

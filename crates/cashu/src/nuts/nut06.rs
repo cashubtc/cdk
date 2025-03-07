@@ -95,9 +95,9 @@ pub struct MintInfo {
     /// server unix timestamp
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<u64>,
-    /// terms of service of the mint
+    /// terms of url service of the mint
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tos: Option<String>,
+    pub tos_url: Option<String>,
 }
 
 impl MintInfo {
@@ -201,13 +201,13 @@ impl MintInfo {
         }
     }
 
-    /// Set tos
-    pub fn tos<S>(self, tos: S) -> Self
+    /// Set tos_url
+    pub fn tos_url<S>(self, tos_url: S) -> Self
     where
         S: Into<String>,
     {
         Self {
-            tos: Some(tos.into()),
+            tos_url: Some(tos_url.into()),
             ..self
         }
     }
@@ -447,7 +447,7 @@ mod tests {
         "10": {"supported": true},
         "11": {"supported": true}
     },
-"tos": "https://cashu.mint/tos"
+"tos_url": "https://cashu.mint/tos"
 }"#;
 
         let _mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
@@ -519,7 +519,7 @@ mod tests {
     "10": {"supported": true},
     "12": {"supported": true}
   },
-  "tos": "https://cashu.mint/tos"
+  "tos_url: "https://cashu.mint/tos"
 }"#;
         let info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
         let mint_info_str = r#"
@@ -565,7 +565,7 @@ mod tests {
             "10": {"supported": true},
             "12": {"supported": true}
         },
-        "tos": "https://cashu.mint/tos"
+        "tos_url": "https://cashu.mint/tos"
 }"#;
         let mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
 
