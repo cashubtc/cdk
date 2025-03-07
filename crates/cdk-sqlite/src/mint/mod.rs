@@ -857,7 +857,7 @@ FROM keyset;
         for proof in proofs {
             let result = sqlx::query(
                 r#"
-INSERT INTO proof
+INSERT OR IGNORE INTO proof
 (y, amount, keyset_id, secret, c, witness, state, quote_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
@@ -873,8 +873,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .execute(&mut transaction)
             .await;
 
+            // We still need to check for foreign key constraint errors
             if let Err(err) = result {
-                // Check if this is a foreign key constraint error (keyset_id not found)
                 if let sqlx::Error::Database(db_err) = &err {
                     if db_err.message().contains("FOREIGN KEY constraint failed") {
                         tracing::error!(
@@ -885,15 +885,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                         return Err(database::Error::InvalidKeysetId);
                     }
                 }
-
-                // If it's a unique constraint violation, it's likely a duplicate proof
-                if let sqlx::Error::Database(db_err) = &err {
-                    if db_err.message().contains("UNIQUE constraint failed") {
-                        tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
-                        continue;
-                    }
-                }
-
+                
                 // For any other error, roll back and return the error
                 tracing::error!("Error adding proof: {:?}", err);
                 transaction.rollback().await.map_err(Error::from)?;
