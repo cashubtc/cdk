@@ -4,15 +4,30 @@ use std::fmt;
 use std::str::FromStr;
 
 use bitcoin::secp256k1::rand::{self, RngCore};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::util::hex;
 
 /// The secret data that allows spending ecash
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct Secret(String);
+
+impl<'de> Deserialize<'de> for Secret {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        if s.len() > crate::nuts::nut00::MAX_SECRET_LENGTH {
+            return Err(serde::de::Error::custom(
+                "Secret exceeds maximum allowed length",
+            ));
+        }
+        Ok(Self(s))
+    }
+}
 
 /// Secret Errors
 #[derive(Debug, Error)]
@@ -162,15 +177,21 @@ mod tests {
         // Create a string that is exactly MAX_SECRET_LENGTH bytes
         let max_length_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH);
         let secret_result = Secret::from_str(&max_length_string);
-        assert!(secret_result.is_ok(), "Secret with max length should be valid");
+        assert!(
+            secret_result.is_ok(),
+            "Secret with max length should be valid"
+        );
 
         // Create a string that is MAX_SECRET_LENGTH + 1 bytes
         let too_long_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH + 1);
         let secret_result = Secret::from_str(&too_long_string);
-        assert!(secret_result.is_err(), "Secret exceeding max length should be rejected");
-        
+        assert!(
+            secret_result.is_err(),
+            "Secret exceeding max length should be rejected"
+        );
+
         match secret_result {
-            Err(Error::InvalidSecret) => {}, // Expected error
+            Err(Error::InvalidSecret) => {} // Expected error
             Err(e) => panic!("Unexpected error type: {:?}", e),
             Ok(_) => panic!("Expected an error for too long secret"),
         }
@@ -182,12 +203,18 @@ mod tests {
         let max_length_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH);
         let json = format!("\"{}\"", max_length_string);
         let secret_result: Result<Secret, _> = serde_json::from_str(&json);
-        assert!(secret_result.is_ok(), "Secret with max length should deserialize correctly");
+        assert!(
+            secret_result.is_ok(),
+            "Secret with max length should deserialize correctly"
+        );
 
         // Create a string that is MAX_SECRET_LENGTH + 1 bytes
         let too_long_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH + 1);
         let json = format!("\"{}\"", too_long_string);
         let secret_result: Result<Secret, _> = serde_json::from_str(&json);
-        assert!(secret_result.is_err(), "Secret exceeding max length should fail deserialization");
+        assert!(
+            secret_result.is_err(),
+            "Secret exceeding max length should fail deserialization"
+        );
     }
 }
