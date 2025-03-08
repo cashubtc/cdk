@@ -15,8 +15,8 @@
 - cdk-sqlite: In memory sqlite database ([crodas]).
 - Add `tos_url` to `MintInfo` ([nodlAndHodl]).
 - cdk: Add tos_url setter to `MintBuilder` ([thesimplekid]).
-- Added optional "request" and "unit" fields to MeltQuoteBolt11Response ([thesimplekid]).
-- Added optional "amount" and "unit" fields to MintQuoteBolt11Response ([thesimplekid]).
+- Added optional "request" and "unit" fields to MeltQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
+- Added optional "amount" and "unit" fields to MintQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
 ### Removed
 - Remove support for Memory Database in cdk ([crodas]).
 - Remove `AmountStr` ([crodas]).
