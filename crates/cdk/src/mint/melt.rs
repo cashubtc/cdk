@@ -186,6 +186,8 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             payment_preimage: quote.payment_preimage,
             change,
+            request: Some(quote.request.clone()),
+            unit: Some(quote.unit.clone()),
         })
     }
 
@@ -696,6 +698,8 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             state: MeltQuoteState::Paid,
             expiry: quote.expiry,
+            request: Some(quote.request.clone()),
+            unit: Some(quote.unit.clone()),
         })
     }
 }

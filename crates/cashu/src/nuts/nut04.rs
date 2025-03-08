@@ -94,6 +94,12 @@ pub struct MintQuoteBolt11Response<Q> {
     pub quote: Q,
     /// Payment request to fulfil
     pub request: String,
+    /// Amount
+    // REVIEW: This is now required in the spec, we should remove the option once all mints update
+    pub amount: Option<Amount>,
+    /// Unit
+    // REVIEW: This is now required in the spec, we should remove the option once all mints update
+    pub unit: Option<CurrencyUnit>,
     /// Quote State
     pub state: MintQuoteState,
     /// Unix timestamp until the quote is valid
@@ -112,6 +118,8 @@ impl<Q: ToString> MintQuoteBolt11Response<Q> {
             state: self.state,
             expiry: self.expiry,
             pubkey: self.pubkey,
+            amount: self.amount,
+            unit: self.unit.clone(),
         }
     }
 }
@@ -125,6 +133,8 @@ impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
             state: value.state,
             expiry: value.expiry,
             pubkey: value.pubkey,
+            amount: value.amount,
+            unit: value.unit.clone(),
         }
     }
 }
@@ -138,6 +148,8 @@ impl From<crate::mint::MintQuote> for MintQuoteBolt11Response<Uuid> {
             state: mint_quote.state,
             expiry: Some(mint_quote.expiry),
             pubkey: mint_quote.pubkey,
+            amount: Some(mint_quote.amount),
+            unit: Some(mint_quote.unit.clone()),
         }
     }
 }

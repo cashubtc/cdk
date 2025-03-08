@@ -147,6 +147,8 @@ impl Mint {
             state,
             expiry: Some(quote.expiry),
             pubkey: quote.pubkey,
+            amount: Some(quote.amount),
+            unit: Some(quote.unit.clone()),
         })
     }
 
