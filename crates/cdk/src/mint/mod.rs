@@ -268,6 +268,12 @@ impl Mint {
     /// Verify [`Proof`] meets conditions and is signed
     #[instrument(skip_all)]
     pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+        // Check that the secret length is not greater than MAX_SECRET_LENGTH bytes
+        ensure_cdk!(
+            proof.secret.as_bytes().len() <= cdk_common::nuts::nut00::MAX_SECRET_LENGTH,
+            Error::InvalidSecret
+        );
+
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
             <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)

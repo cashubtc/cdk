@@ -30,6 +30,9 @@ pub enum Error {
     /// NUT02 Error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
+    /// Secret Error
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
     /// Bip32 Error
     #[error(transparent)]
     Bip32(#[from] bitcoin::bip32::Error),
@@ -45,7 +48,7 @@ impl Secret {
 
         Ok(Self::new(hex::encode(
             derived_xpriv.private_key.secret_bytes(),
-        )))
+        ))?)
     }
 }
 

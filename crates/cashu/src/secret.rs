@@ -20,6 +20,9 @@ pub enum Error {
     /// Invalid Length
     #[error("Invalid secret length: `{0}`")]
     InvalidLength(u64),
+    /// Invalid Secret
+    #[error("Secret exceeds maximum allowed length")]
+    InvalidSecret,
     /// Hex Error
     #[error(transparent)]
     Hex(#[from] hex::Error),
@@ -37,11 +40,15 @@ impl Default for Secret {
 impl Secret {
     /// Create new [`Secret`]
     #[inline]
-    pub fn new<S>(secret: S) -> Self
+    pub fn new<S>(secret: S) -> Result<Self, Error>
     where
         S: Into<String>,
     {
-        Self(secret.into())
+        let secret_str = secret.into();
+        if secret_str.as_bytes().len() > crate::nuts::nut00::MAX_SECRET_LENGTH {
+            return Err(Error::InvalidSecret);
+        }
+        Ok(Self(secret_str))
     }
 
     /// Create secret value
@@ -55,6 +62,7 @@ impl Secret {
         rng.fill_bytes(&mut random_bytes);
         // The secret string is hex encoded
         let secret = hex::encode(random_bytes);
+        // This will always be valid as it's 64 bytes (32 bytes as hex)
         Self(secret)
     }
 
@@ -91,7 +99,7 @@ impl FromStr for Secret {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_string()))
+        Self::new(s)
     }
 }
 
