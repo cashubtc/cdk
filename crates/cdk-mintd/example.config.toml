@@ -7,7 +7,7 @@ mnemonic = ""
 # enable_swagger_ui = false
 
 [mint_management_rpc]
-enabled = true
+# enabled = false
 # address = "127.0.0.1"
 # port = 8086
 

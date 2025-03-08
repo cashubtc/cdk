@@ -353,7 +353,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut mint_rpc = MintRPCServer::new(&addr, port, mint.clone())?;
 
                 let tls_dir = rpc_settings.tls_dir_path.unwrap_or(work_dir.join("tls"));
-                
+
                 if !tls_dir.exists() {
                     tracing::error!("TLS directory does not exist: {}", tls_dir.display());
                     bail!("Cannot start RPC server: TLS directory does not exist");
