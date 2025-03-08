@@ -175,4 +175,19 @@ mod tests {
             Ok(_) => panic!("Expected an error for too long secret"),
         }
     }
+
+    #[test]
+    fn test_secret_serde_deserialization_validation() {
+        // Create a string that is exactly MAX_SECRET_LENGTH bytes
+        let max_length_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH);
+        let json = format!("\"{}\"", max_length_string);
+        let secret_result: Result<Secret, _> = serde_json::from_str(&json);
+        assert!(secret_result.is_ok(), "Secret with max length should deserialize correctly");
+
+        // Create a string that is MAX_SECRET_LENGTH + 1 bytes
+        let too_long_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH + 1);
+        let json = format!("\"{}\"", too_long_string);
+        let secret_result: Result<Secret, _> = serde_json::from_str(&json);
+        assert!(secret_result.is_err(), "Secret exceeding max length should fail deserialization");
+    }
 }
