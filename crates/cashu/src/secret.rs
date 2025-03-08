@@ -156,4 +156,23 @@ mod tests {
 
         assert_eq!(secret_n, secret)
     }
+
+    #[test]
+    fn test_secret_length_validation() {
+        // Create a string that is exactly MAX_SECRET_LENGTH bytes
+        let max_length_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH);
+        let secret_result = Secret::from_str(&max_length_string);
+        assert!(secret_result.is_ok(), "Secret with max length should be valid");
+
+        // Create a string that is MAX_SECRET_LENGTH + 1 bytes
+        let too_long_string = "a".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH + 1);
+        let secret_result = Secret::from_str(&too_long_string);
+        assert!(secret_result.is_err(), "Secret exceeding max length should be rejected");
+        
+        match secret_result {
+            Err(Error::InvalidSecret) => {}, // Expected error
+            Err(e) => panic!("Unexpected error type: {:?}", e),
+            Ok(_) => panic!("Expected an error for too long secret"),
+        }
+    }
 }
