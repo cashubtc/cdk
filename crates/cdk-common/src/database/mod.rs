@@ -37,4 +37,10 @@ pub enum Error {
     /// Attempt to update state of spent proof
     #[error("Attempt to update state of spent proof")]
     AttemptUpdateSpentProof,
+    /// Proof not found
+    #[error("Proof not found")]
+    ProofNotFound,
+    /// Invalid keyset
+    #[error("Unknown or invalid keyset")]
+    InvalidKeysetId,
 }
