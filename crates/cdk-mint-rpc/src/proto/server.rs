@@ -63,9 +63,37 @@ impl MintRPCServer {
         let server = match tls_dir {
             Some(tls_dir) => {
                 tracing::info!("TLS configuration found, starting secure server");
-                let cert = std::fs::read_to_string(tls_dir.join("server.pem"))?;
-                let key = std::fs::read_to_string(tls_dir.join("server.key"))?;
-                let client_ca_cert = std::fs::read_to_string(tls_dir.join("ca.pem"))?;
+                let server_pem_path = tls_dir.join("server.pem");
+                let server_key_path = tls_dir.join("server.key");
+                let ca_pem_path = tls_dir.join("ca.pem");
+                
+                if !server_pem_path.exists() {
+                    tracing::error!("Server certificate file does not exist: {}", server_pem_path.display());
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Server certificate file not found: {}", server_pem_path.display()),
+                    )));
+                }
+                
+                if !server_key_path.exists() {
+                    tracing::error!("Server key file does not exist: {}", server_key_path.display());
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Server key file not found: {}", server_key_path.display()),
+                    )));
+                }
+                
+                if !ca_pem_path.exists() {
+                    tracing::error!("CA certificate file does not exist: {}", ca_pem_path.display());
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("CA certificate file not found: {}", ca_pem_path.display()),
+                    )));
+                }
+                
+                let cert = std::fs::read_to_string(&server_pem_path)?;
+                let key = std::fs::read_to_string(&server_key_path)?;
+                let client_ca_cert = std::fs::read_to_string(&ca_pem_path)?;
                 let client_ca_cert = Certificate::from_pem(client_ca_cert);
                 let server_identity = Identity::from_pem(cert, key);
                 let tls_config = ServerTlsConfig::new()
