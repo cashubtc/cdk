@@ -50,6 +50,12 @@ pub enum Error {
     /// Unknown quote TTL
     #[error("Unknown quote TTL")]
     UnknownQuoteTTL,
+    /// Proof not found
+    #[error("Proof not found")]
+    ProofNotFound,
+    /// Invalid keyset ID
+    #[error("Invalid keyset ID")]
+    InvalidKeysetId,
 }
 
 impl From<Error> for cdk_common::database::Error {
