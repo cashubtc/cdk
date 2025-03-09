@@ -11,12 +11,12 @@ use async_trait::async_trait;
 use axum::Router;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
-#[cfg(feature = "lnbits")]
 use cdk::cdk_payment::MintPayment;
 #[cfg(feature = "lnbits")]
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::types::FeeReserve;
+#[cfg(feature = "lnbits")]
 use tokio::sync::Mutex;
 
 use crate::config::{self, Settings};
