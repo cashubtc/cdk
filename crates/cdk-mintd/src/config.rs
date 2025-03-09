@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
-use cdk::nuts::{CurrencyUnit, PublicKey};
+#[cfg(feature = "fakewallet")]
+use cdk::nuts::CurrencyUnit;
+use cdk::nuts::PublicKey;
 use cdk::Amount;
 use cdk_axum::cache;
 use config::{Config, ConfigError, File};
@@ -46,9 +48,13 @@ impl std::fmt::Debug for Info {
 pub enum LnBackend {
     #[default]
     None,
+    #[cfg(feature = "cln")]
     Cln,
+    #[cfg(feature = "lnbits")]
     LNbits,
+    #[cfg(feature = "fakewallet")]
     FakeWallet,
+    #[cfg(feature = "lnd")]
     Lnd,
 }
 
@@ -57,9 +63,13 @@ impl std::str::FromStr for LnBackend {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            #[cfg(feature = "cln")]
             "cln" => Ok(LnBackend::Cln),
+            #[cfg(feature = "lnbits")]
             "lnbits" => Ok(LnBackend::LNbits),
+            #[cfg(feature = "fakewallet")]
             "fakewallet" => Ok(LnBackend::FakeWallet),
+            #[cfg(feature = "lnd")]
             "lnd" => Ok(LnBackend::Lnd),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
@@ -89,6 +99,7 @@ impl Default for Ln {
     }
 }
 
+#[cfg(feature = "lnbits")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LNbits {
     pub admin_api_key: String,
@@ -98,6 +109,7 @@ pub struct LNbits {
     pub reserve_fee_min: Amount,
 }
 
+#[cfg(feature = "cln")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
@@ -107,6 +119,7 @@ pub struct Cln {
     pub reserve_fee_min: Amount,
 }
 
+#[cfg(feature = "lnd")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Lnd {
     pub address: String,
@@ -116,6 +129,7 @@ pub struct Lnd {
     pub reserve_fee_min: Amount,
 }
 
+#[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
@@ -127,6 +141,7 @@ pub struct FakeWallet {
     pub max_delay_time: u64,
 }
 
+#[cfg(feature = "fakewallet")]
 impl Default for FakeWallet {
     fn default() -> Self {
         Self {
@@ -140,10 +155,12 @@ impl Default for FakeWallet {
 }
 
 // Helper functions to provide default values
+#[cfg(feature = "fakewallet")]
 fn default_min_delay_time() -> u64 {
     1
 }
 
+#[cfg(feature = "fakewallet")]
 fn default_max_delay_time() -> u64 {
     3
 }
@@ -181,9 +198,13 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
+    #[cfg(feature = "lnbits")]
     pub lnbits: Option<LNbits>,
+    #[cfg(feature = "lnd")]
     pub lnd: Option<Lnd>,
+    #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
     #[cfg(feature = "management-rpc")]
@@ -270,20 +291,24 @@ impl Settings {
 
         match settings.ln.ln_backend {
             LnBackend::None => panic!("Ln backend must be set"),
+            #[cfg(feature = "cln")]
             LnBackend::Cln => assert!(
                 settings.cln.is_some(),
                 "CLN backend requires a valid config."
             ),
+            #[cfg(feature = "lnbits")]
             LnBackend::LNbits => assert!(
                 settings.lnbits.is_some(),
                 "LNbits backend requires a valid config"
             ),
+            #[cfg(feature = "lnd")]
             LnBackend::Lnd => {
                 assert!(
                     settings.lnd.is_some(),
                     "LND backend requires a valid config."
                 )
             }
+            #[cfg(feature = "fakewallet")]
             LnBackend::FakeWallet => assert!(
                 settings.fake_wallet.is_some(),
                 "FakeWallet backend requires a valid config."
