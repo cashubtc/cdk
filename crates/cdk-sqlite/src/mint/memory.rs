@@ -12,7 +12,10 @@ use super::MintSqliteDatabase;
 
 /// Creates a new in-memory [`MintSqliteDatabase`] instance
 pub async fn empty() -> Result<MintSqliteDatabase, database::Error> {
+    #[cfg(not(feature = "sqlcipher"))]
     let db = MintSqliteDatabase::new(":memory:").await?;
+    #[cfg(feature = "sqlcipher")]
+    let db = MintSqliteDatabase::new(":memory:", "memory".to_string()).await?;
     db.migrate().await;
     Ok(db)
 }

@@ -13,6 +13,7 @@ The following crate feature flags are available:
 |-------------|:-------:|------------------------------------|
 | `wallet`    |   Yes   | Enable cashu wallet features       |
 | `mint`      |   Yes   | Enable cashu mint wallet features  |
+| `sqlcipher` |   No    | Enable encrypted database          |
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
