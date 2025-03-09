@@ -17,6 +17,7 @@ redis = ["cdk-axum/redis"]
 management-rpc = ["cdk-mint-rpc"]
 # MSRV is not commited to with redb enabled
 redb = ["dep:cdk-redb"]
+sqlcipher = ["cdk-sqlite/sqlcipher"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]

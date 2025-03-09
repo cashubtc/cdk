@@ -33,9 +33,22 @@ pub struct WalletSqliteDatabase {
 
 impl WalletSqliteDatabase {
     /// Create new [`WalletSqliteDatabase`]
+    #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         Ok(Self {
             pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
+        })
+    }
+
+    /// Create new [`WalletSqliteDatabase`]
+    #[cfg(feature = "sqlcipher")]
+    pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
+        Ok(Self {
+            pool: create_sqlite_pool(
+                path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
+                password,
+            )
+            .await?,
         })
     }
 
@@ -953,4 +966,33 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env::temp_dir;
+
+    #[tokio::test]
+    #[cfg(feature = "sqlcipher")]
+    async fn test_sqlcipher() {
+        use super::*;
+        let path = std::env::temp_dir()
+            .to_path_buf()
+            .join(format!("cdk-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let db = WalletSqliteDatabase::new(path, "password".to_string())
+            .await
+            .unwrap();
+
+        db.migrate().await;
+
+        // do something simple to test the database
+        let pk = PublicKey::from_hex(
+            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
+        )
+        .unwrap();
+        let last_checked = 6969;
+        db.add_nostr_last_checked(pk, last_checked).await.unwrap();
+        let res = db.get_nostr_last_checked(&pk).await.unwrap();
+        assert_eq!(res, Some(last_checked));
+    }
 }

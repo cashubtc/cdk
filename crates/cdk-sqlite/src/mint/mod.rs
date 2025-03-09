@@ -68,9 +68,22 @@ impl MintSqliteDatabase {
     }
 
     /// Create new [`MintSqliteDatabase`]
+    #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         Ok(Self {
             pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
+        })
+    }
+
+    /// Create new [`MintSqliteDatabase`]
+    #[cfg(feature = "sqlcipher")]
+    pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
+        Ok(Self {
+            pool: create_sqlite_pool(
+                path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
+                password,
+            )
+            .await?,
         })
     }
 
