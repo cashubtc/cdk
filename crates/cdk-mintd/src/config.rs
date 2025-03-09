@@ -71,6 +71,7 @@ impl std::str::FromStr for LnBackend {
             "fakewallet" => Ok(LnBackend::FakeWallet),
             #[cfg(feature = "lnd")]
             "lnd" => Ok(LnBackend::Lnd),
+            #[cfg(feature = "grpc-processor")]
             "grpc" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
@@ -323,6 +324,7 @@ impl Settings {
                 settings.fake_wallet.is_some(),
                 "FakeWallet backend requires a valid config."
             ),
+            #[cfg(feature = "grpc-processor")]
             LnBackend::GrpcProcessor => {
                 assert!(
                     settings.grpc_processor.is_some(),
