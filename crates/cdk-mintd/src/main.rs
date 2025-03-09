@@ -3,7 +3,6 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,13 +13,11 @@ use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning;
-use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
 use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
-use cdk::types::{LnKey, QuoteTTL};
+use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
 #[cfg(feature = "management-rpc")]
 use cdk_mint_rpc::MintRPCServer;
@@ -142,10 +139,6 @@ async fn main() -> anyhow::Result<()> {
         CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
     );
 
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-    > = HashMap::new();
     let mut ln_routers = vec![];
 
     let mint_melt_limits = MintMeltLimits {
@@ -166,11 +159,6 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
                 .await?;
             let cln = Arc::new(cln);
-            let ln_key = LnKey {
-                unit: CurrencyUnit::Sat,
-                method: PaymentMethod::Bolt11,
-            };
-            ln_backends.insert(ln_key, cln.clone());
 
             mint_builder = mint_builder.add_ln_backend(
                 CurrencyUnit::Sat,
