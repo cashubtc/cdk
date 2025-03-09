@@ -89,9 +89,7 @@ pub async fn receive(
             signing_keys.push(nostr_key.clone());
 
             let relays = sub_command_args.relay.clone();
-            let since = localstore
-                .get_nostr_last_checked(&nostr_key.public_key())
-                .await?;
+            let since = None;
 
             let tokens = nostr_receive(relays, nostr_key.clone(), since).await?;
 
@@ -116,9 +114,6 @@ pub async fn receive(
                 }
             }
 
-            localstore
-                .add_nostr_last_checked(nostr_key.public_key(), unix_time() as u32)
-                .await?;
             total_amount
         }
     };

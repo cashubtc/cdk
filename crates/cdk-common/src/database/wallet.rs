@@ -106,15 +106,4 @@ pub trait Database: Debug {
     /// Get current Keyset counter
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
 
-    /// Get when nostr key was last checked
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err>;
-    /// Update last checked time
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), Self::Err>;
 }

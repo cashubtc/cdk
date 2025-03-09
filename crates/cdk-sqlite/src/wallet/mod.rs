@@ -770,60 +770,6 @@ WHERE id=?;
         Ok(count)
     }
 
-    #[instrument(skip_all)]
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT last_check
-FROM nostr_last_checked
-WHERE key=?;
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let count = match rec {
-            Ok(rec) => {
-                let count: Option<u32> = rec.try_get("last_check").map_err(Error::from)?;
-                count
-            }
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(count)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
-INSERT INTO nostr_last_checked
-(key, last_check)
-VALUES (?, ?)
-ON CONFLICT(key) DO UPDATE SET
-    last_check = excluded.last_check
-;
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .bind(last_checked)
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
 }
 
 fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
