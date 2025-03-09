@@ -12,6 +12,8 @@ mod mint_info;
 mod cln;
 #[cfg(feature = "fakewallet")]
 mod fake_wallet;
+#[cfg(feature = "grpc-processor")]
+mod grpc_processor;
 #[cfg(feature = "lnbits")]
 mod lnbits;
 #[cfg(feature = "lnd")]
@@ -28,6 +30,8 @@ pub use cln::*;
 pub use common::*;
 #[cfg(feature = "fakewallet")]
 pub use fake_wallet::*;
+#[cfg(feature = "grpc-processor")]
+pub use grpc_processor::*;
 pub use ln::*;
 #[cfg(feature = "lnbits")]
 pub use lnbits::*;
@@ -76,6 +80,11 @@ impl Settings {
             #[cfg(feature = "lnd")]
             LnBackend::Lnd => {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
+            }
+            #[cfg(feature = "grpc-processor")]
+            LnBackend::GrpcProcessor => {
+                self.grpc_processor =
+                    Some(self.grpc_processor.clone().unwrap_or_default().from_env());
             }
             LnBackend::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]

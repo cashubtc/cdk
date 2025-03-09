@@ -143,14 +143,14 @@ impl ProofInfo {
 /// Key used in hashmap of ln backends to identify what unit and payment method
 /// it is for
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LnKey {
+pub struct PaymentProcessorKey {
     /// Unit of Payment backend
     pub unit: CurrencyUnit,
     /// Method of payment backend
     pub method: PaymentMethod,
 }
 
-impl LnKey {
+impl PaymentProcessorKey {
     /// Create new [`LnKey`]
     pub fn new(unit: CurrencyUnit, method: PaymentMethod) -> Self {
         Self { unit, method }
@@ -240,4 +240,13 @@ mod tests {
         assert_eq!(melted.fee_paid, Amount::from(1));
         assert_eq!(melted.total_amount(), Amount::from(32));
     }
+}
+
+/// Mint Fee Reserve
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeeReserve {
+    /// Absolute expected min fee
+    pub min_fee_reserve: Amount,
+    /// Percentage expected fee
+    pub percent_fee_reserve: f32,
 }

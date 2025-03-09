@@ -10,17 +10,18 @@ description = "CDK mint binary"
 rust-version = "1.75.0"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor"]
 # Ensure at least one lightning backend is enabled
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 management-rpc = ["cdk-mint-rpc"]
-# MSRV is not commited to with redb enabled
-redb = ["dep:cdk-redb"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
+grpc-processor = ["dep:cdk-payment-processor"]
+# MSRV is not commited to with redb enabled
+redb = ["dep:cdk-redb"]
 
 [dependencies]
 anyhow.workspace = true
@@ -41,6 +42,7 @@ cdk-lnd = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
+cdk-payment-processor = { workspace = true, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
 clap.workspace = true
 bitcoin.workspace = true
