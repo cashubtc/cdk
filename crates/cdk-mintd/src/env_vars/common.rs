@@ -1,0 +1,13 @@
+//! Common environment variables
+
+pub const ENV_WORK_DIR: &str = "CDK_MINTD_WORK_DIR";
+pub const DATABASE_ENV_VAR: &str = "CDK_MINTD_DATABASE";
+pub const ENV_URL: &str = "CDK_MINTD_URL";
+pub const ENV_LISTEN_HOST: &str = "CDK_MINTD_LISTEN_HOST";
+pub const ENV_LISTEN_PORT: &str = "CDK_MINTD_LISTEN_PORT";
+pub const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
+pub const ENV_SECONDS_QUOTE_VALID: &str = "CDK_MINTD_SECONDS_QUOTE_VALID";
+pub const ENV_CACHE_SECONDS: &str = "CDK_MINTD_CACHE_SECONDS";
+pub const ENV_EXTEND_CACHE_SECONDS: &str = "CDK_MINTD_EXTEND_CACHE_SECONDS";
+pub const ENV_INPUT_FEE_PPK: &str = "CDK_MINTD_INPUT_FEE_PPK";
+pub const ENV_ENABLE_SWAGGER: &str = "CDK_MINTD_ENABLE_SWAGGER";

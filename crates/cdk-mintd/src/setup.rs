@@ -1,17 +1,26 @@
-use std::collections::{HashMap, HashSet};
+#[cfg(feature = "fakewallet")]
+use std::collections::HashMap;
+#[cfg(feature = "fakewallet")]
+use std::collections::HashSet;
+#[cfg(feature = "lnbits")]
 use std::sync::Arc;
 
+#[cfg(feature = "cln")]
 use anyhow::anyhow;
 use async_trait::async_trait;
 use axum::Router;
+#[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
 use cdk::cdk_lightning::MintLightning;
 use cdk::mint::FeeReserve;
+#[cfg(feature = "lnbits")]
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
+#[cfg(feature = "lnbits")]
 use tokio::sync::Mutex;
 
 use crate::config::{self, Settings};
+#[cfg(feature = "cln")]
 use crate::expand_path;
 
 #[async_trait]
@@ -24,6 +33,7 @@ pub trait LnBackendSetup {
     ) -> anyhow::Result<impl MintLightning>;
 }
 
+#[cfg(feature = "cln")]
 #[async_trait]
 impl LnBackendSetup for config::Cln {
     async fn setup(
@@ -50,6 +60,7 @@ impl LnBackendSetup for config::Cln {
     }
 }
 
+#[cfg(feature = "lnbits")]
 #[async_trait]
 impl LnBackendSetup for config::LNbits {
     async fn setup(
@@ -93,6 +104,7 @@ impl LnBackendSetup for config::LNbits {
     }
 }
 
+#[cfg(feature = "lnd")]
 #[async_trait]
 impl LnBackendSetup for config::Lnd {
     async fn setup(
@@ -122,6 +134,7 @@ impl LnBackendSetup for config::Lnd {
     }
 }
 
+#[cfg(feature = "fakewallet")]
 #[async_trait]
 impl LnBackendSetup for config::FakeWallet {
     async fn setup(

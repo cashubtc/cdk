@@ -10,6 +10,7 @@
 - Updated MSRV to 1.75.0 ([thesimplekid]).
 - cdk-sqlite: Do not use `UPDATE OR REPLACE` ([crodas]).
 - cdk: Refactor keyset init ([lollerfirst]).
+- Feature-gated lightning backends (CLN, LND, LNbits, FakeWallet) for selective compilation ([thesimplekid]).
 ### Added
 - Added redb feature to mintd in order to meet MSRV target ([thesimplekid]).
 - cdk-sqlite: In memory sqlite database ([crodas]).
@@ -17,6 +18,7 @@
 - cdk: Add tos_url setter to `MintBuilder` ([thesimplekid]).
 - Added optional "request" and "unit" fields to MeltQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
 - Added optional "amount" and "unit" fields to MintQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
+- Compile-time error when no lightning backend features are enabled ([thesimplekid]).
 ### Removed
 - Remove support for Memory Database in cdk ([crodas]).
 - Remove `AmountStr` ([crodas]).
