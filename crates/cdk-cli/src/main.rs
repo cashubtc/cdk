@@ -176,6 +176,7 @@ async fn main() -> Result<()> {
                 localstore,
                 &mnemonic.to_seed_normalized(""),
                 sub_command_args,
+                &work_dir,
             )
             .await
         }
