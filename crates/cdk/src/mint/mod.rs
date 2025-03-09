@@ -268,9 +268,9 @@ impl Mint {
     /// Verify [`Proof`] meets conditions and is signed
     #[instrument(skip_all)]
     pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
-        // Check that the secret length is not greater than MAX_SECRET_LENGTH bytes
+        // Check that the secret length is not greater than MAX_SECRET_LENGTH characters
         ensure_cdk!(
-            proof.secret.as_bytes().len() <= cdk_common::nuts::nut00::MAX_SECRET_LENGTH,
+            proof.secret.to_string().chars().count() <= cdk_common::nuts::nut00::MAX_SECRET_LENGTH,
             Error::InvalidSecret
         );
 
