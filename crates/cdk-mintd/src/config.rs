@@ -54,6 +54,7 @@ pub enum LnBackend {
     FakeWallet,
     #[cfg(feature = "lnd")]
     Lnd,
+    #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
 }
 

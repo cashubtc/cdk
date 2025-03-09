@@ -24,7 +24,14 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
-use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
+use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
 #[cfg(feature = "management-rpc")]
@@ -33,7 +40,6 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
-use cdk_payment_processor::PaymentProcessorClient;
 #[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -262,43 +268,38 @@ async fn main() -> anyhow::Result<()> {
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
+        #[cfg(feature = "grpc-processor")]
         LnBackend::GrpcProcessor => {
-            #[cfg(feature = "grpc-processor")]
-            {
-                let grpc_processor = settings
-                    .clone()
-                    .grpc_processor
-                    .expect("grpc processor config defined");
+            let grpc_processor = settings
+                .clone()
+                .grpc_processor
+                .expect("grpc processor config defined");
 
-                tracing::info!(
-                    "Attempting to start with gRPC payment processor at {}:{}.",
-                    grpc_processor.addr,
-                    grpc_processor.port
-                );
+            tracing::info!(
+                "Attempting to start with gRPC payment processor at {}:{}.",
+                grpc_processor.addr,
+                grpc_processor.port
+            );
 
-                for unit in grpc_processor.clone().supported_units {
-                    tracing::debug!("Adding unit: {:?}", unit);
-                    
-                    let processor = grpc_processor
-                        .setup(&mut ln_routers, &settings, unit.clone())
-                        .await?;
+            for unit in grpc_processor.clone().supported_units {
+                tracing::debug!("Adding unit: {:?}", unit);
 
-                    mint_builder = mint_builder
-                        .add_ln_backend(
-                            unit.clone(),
-                            PaymentMethod::Bolt11,
-                            mint_melt_limits,
-                            Arc::new(processor),
-                        )
-                        .await?;
+                let processor = grpc_processor
+                    .setup(&mut ln_routers, &settings, unit.clone())
+                    .await?;
 
-                    let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
-                    mint_builder = mint_builder.add_supported_websockets(nut17_supported);
-                }
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt11,
+                        mint_melt_limits,
+                        Arc::new(processor),
+                    )
+                    .await?;
+
+                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
-            
-            #[cfg(not(feature = "grpc-processor"))]
-            bail!("GrpcProcessor backend is not enabled in this build");
         }
         LnBackend::None => bail!("Ln backend must be set"),
     };

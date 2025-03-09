@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(feature = "lnbits")]
 use std::sync::Arc;
-#[cfg(feature = "grpc-processor")]
-use std::sync::Arc;
 
 #[cfg(feature = "cln")]
 use anyhow::anyhow;
@@ -17,6 +15,12 @@ use cdk::cdk_payment::MintPayment;
 #[cfg(feature = "lnbits")]
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
+#[cfg(any(
+    feature = "lnbits",
+    feature = "cln",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
 use cdk::types::FeeReserve;
 #[cfg(feature = "lnbits")]
 use tokio::sync::Mutex;
@@ -30,7 +34,7 @@ pub trait LnBackendSetup {
     async fn setup(
         &self,
         routers: &mut Vec<Router>,
-        #[cfg(feature = "lnbits")] settings: &Settings,
+        settings: &Settings,
         unit: CurrencyUnit,
     ) -> anyhow::Result<impl MintPayment>;
 }
