@@ -782,61 +782,6 @@ WHERE id=?;
 
         Ok(count)
     }
-
-    #[instrument(skip_all)]
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT last_check
-FROM nostr_last_checked
-WHERE key=?;
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let count = match rec {
-            Ok(rec) => {
-                let count: Option<u32> = rec.try_get("last_check").map_err(Error::from)?;
-                count
-            }
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(count)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
-INSERT INTO nostr_last_checked
-(key, last_check)
-VALUES (?, ?)
-ON CONFLICT(key) DO UPDATE SET
-    last_check = excluded.last_check
-;
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .bind(last_checked)
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
 }
 
 fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
@@ -970,11 +915,13 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::env::temp_dir;
 
     #[tokio::test]
     #[cfg(feature = "sqlcipher")]
     async fn test_sqlcipher() {
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::MintInfo;
+
         use super::*;
         let path = std::env::temp_dir()
             .to_path_buf()
@@ -985,14 +932,15 @@ mod tests {
 
         db.migrate().await;
 
-        // do something simple to test the database
-        let pk = PublicKey::from_hex(
-            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
-        )
-        .unwrap();
-        let last_checked = 6969;
-        db.add_nostr_last_checked(pk, last_checked).await.unwrap();
-        let res = db.get_nostr_last_checked(&pk).await.unwrap();
-        assert_eq!(res, Some(last_checked));
+        let mint_info = MintInfo::new().description("test");
+        let mint_url = MintUrl::from_str("https://mint.xyz").unwrap();
+
+        db.add_mint(mint_url.clone(), Some(mint_info.clone()))
+            .await
+            .unwrap();
+
+        let res = db.get_mint(mint_url).await.unwrap();
+        assert_eq!(mint_info, res.clone().unwrap());
+        assert_eq!("test", &res.unwrap().description.unwrap());
     }
 }

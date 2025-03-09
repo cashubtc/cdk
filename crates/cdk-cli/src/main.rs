@@ -17,6 +17,7 @@ use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
+mod nostr_storage;
 mod sub_commands;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-cli";
@@ -188,6 +189,7 @@ async fn main() -> Result<()> {
                 localstore,
                 &mnemonic.to_seed_normalized(""),
                 sub_command_args,
+                &work_dir,
             )
             .await
         }
