@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
-#[cfg(feature = "fakewallet")]
-use cdk::nuts::CurrencyUnit;
-use cdk::nuts::PublicKey;
+use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use config::{Config, ConfigError, File};
