@@ -19,9 +19,12 @@
 - Added optional "request" and "unit" fields to MeltQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
 - Added optional "amount" and "unit" fields to MintQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
 - Compile-time error when no lightning backend features are enabled ([thesimplekid]).
+- Add support for sqlcipher ([benthecarman]).
 ### Removed
 - Remove support for Memory Database in cdk ([crodas]).
 - Remove `AmountStr` ([crodas]).
+- Remove `get_nostr_last_checked` from `WalletDatabase` ([thesimplekid]).
+- Remove `add_nostr_last_checked` from `WalletDatabase` ([thesimplekid]).
 
 ## [cdk-mind:v0.7.4](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.7.4)
 ### Changed
@@ -283,3 +286,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [tdelabro]: https://github.com/tdelabro
 [daywalker90]: https://github.com/daywalker90
 [nodlAndHodl]: https://github.com/nodlAndHodl
+[benthecarman]: https://github.com/benthecarman
