@@ -111,7 +111,10 @@ async fn main() -> anyhow::Result<()> {
         match settings.database.engine {
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd.sqlite");
+                #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
+                #[cfg(feature = "sqlcipher")]
+                let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
 
                 sqlite_db.migrate().await;
 

@@ -5,7 +5,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Error, Pool, Sqlite};
 
 #[inline(always)]
-pub async fn create_sqlite_pool(path: &str) -> Result<Pool<Sqlite>, Error> {
+pub async fn create_sqlite_pool(
+    path: &str,
+    #[cfg(feature = "sqlcipher")] password: String,
+) -> Result<Pool<Sqlite>, Error> {
     let db_options = SqliteConnectOptions::from_str(path)?
         .busy_timeout(Duration::from_secs(10))
         .read_only(false)
@@ -16,6 +19,9 @@ pub async fn create_sqlite_pool(path: &str) -> Result<Pool<Sqlite>, Error> {
         .pragma("mmap_size", "30000000000")
         .shared_cache(true)
         .create_if_missing(true);
+
+    #[cfg(feature = "sqlcipher")]
+    let db_options = db_options.pragma("key", password);
 
     let pool = SqlitePoolOptions::new()
         .min_connections(1)
