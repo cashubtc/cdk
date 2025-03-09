@@ -72,7 +72,7 @@ impl std::str::FromStr for LnBackend {
             #[cfg(feature = "lnd")]
             "lnd" => Ok(LnBackend::Lnd),
             #[cfg(feature = "grpc-processor")]
-            "grpc" => Ok(LnBackend::GrpcProcessor),
+            "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
     }

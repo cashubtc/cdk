@@ -102,13 +102,13 @@ export CDK_MINTD_URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0";
 export CDK_MINTD_WORK_DIR="$cdk_itests";
 export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
 export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port_0;
-export CDK_MINTD_LN_BACKEND="grpc";
+export CDK_MINTD_LN_BACKEND="grpcprocessor";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS="http://127.0.0.1";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT="8090";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS="sat";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
  
-cargo run --bin cdk-mintd &
+cargo run --bin cdk-mintd --no-default-features --features grpc-processor &
 cdk_mintd_pid=$!
 
 echo $cdk_itests

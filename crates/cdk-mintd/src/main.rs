@@ -175,6 +175,8 @@ async fn main() -> anyhow::Result<()> {
         melt_max: settings.ln.max_melt,
     };
 
+    tracing::debug!("Ln backendd: {:?}", settings.ln.ln_backend);
+
     match settings.ln.ln_backend {
         #[cfg(feature = "cln")]
         LnBackend::Cln => {
@@ -281,6 +283,8 @@ async fn main() -> anyhow::Result<()> {
                 grpc_processor.port
             );
 
+            tracing::info!("{:?}", grpc_processor);
+
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
 
@@ -301,7 +305,13 @@ async fn main() -> anyhow::Result<()> {
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
-        LnBackend::None => bail!("Ln backend must be set"),
+        LnBackend::None => {
+            tracing::error!(
+                "Pyament backend was not set or feature disabled. {:?}",
+                settings.ln.ln_backend
+            );
+            bail!("Ln backend must be")
+        }
     };
 
     if let Some(long_description) = &settings.mint_info.description_long {
