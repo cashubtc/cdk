@@ -28,7 +28,7 @@ pub trait LnBackendSetup {
     async fn setup(
         &self,
         routers: &mut Vec<Router>,
-        settings: &Settings,
+        #[cfg(feature = "lnbits")] settings: &Settings,
         unit: CurrencyUnit,
     ) -> anyhow::Result<impl MintPayment>;
 }
