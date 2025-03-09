@@ -9,6 +9,9 @@ repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+sqlcipher = ["cdk-sqlite/sqlcipher"]
+
 [dependencies]
 anyhow.workspace = true
 bip39.workspace = true
