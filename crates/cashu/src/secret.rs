@@ -195,7 +195,7 @@ mod tests {
             Err(e) => panic!("Unexpected error type: {:?}", e),
             Ok(_) => panic!("Expected an error for too long secret"),
         }
-        
+
         // Test with multi-byte characters (emoji)
         let emoji_string = "😀".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH);
         let secret_result = Secret::from_str(&emoji_string);
@@ -203,7 +203,7 @@ mod tests {
             secret_result.is_ok(),
             "Secret with max length of emoji characters should be valid"
         );
-        
+
         let too_long_emoji = "😀".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH + 1);
         let secret_result = Secret::from_str(&too_long_emoji);
         assert!(
@@ -231,7 +231,7 @@ mod tests {
             secret_result.is_err(),
             "Secret exceeding max length should fail deserialization"
         );
-        
+
         // Test with multi-byte characters (emoji)
         let emoji_string = "😀".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH);
         let json = format!("\"{}\"", emoji_string);
@@ -240,7 +240,7 @@ mod tests {
             secret_result.is_ok(),
             "Secret with max length of emoji characters should deserialize correctly"
         );
-        
+
         let too_long_emoji = "😀".repeat(crate::nuts::nut00::MAX_SECRET_LENGTH + 1);
         let json = format!("\"{}\"", too_long_emoji);
         let secret_result: Result<Secret, _> = serde_json::from_str(&json);
