@@ -19,7 +19,8 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "fakewallet"
+    feature = "fakewallet",
+    feature = "grpc-processor"
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
@@ -53,10 +54,11 @@ const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION")
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "fakewallet"
+    feature = "fakewallet",
+    feature = "grpc-processor"
 )))]
 compile_error!(
-    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, or fakewallet"
+    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, fakewallet, or grpc-processor"
 );
 
 #[tokio::main]
@@ -261,39 +263,42 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         LnBackend::GrpcProcessor => {
-            let grpc_processor = settings
-                .clone()
-                .grpc_processor
-                .expect("grpc defined defined");
+            #[cfg(feature = "grpc-processor")]
+            {
+                let grpc_processor = settings
+                    .clone()
+                    .grpc_processor
+                    .expect("grpc processor config defined");
 
-            tracing::info!(
-                "Attempting to start with grpc payment processor at {}:{}.",
-                grpc_processor.addr,
-                grpc_processor.port
-            );
+                tracing::info!(
+                    "Attempting to start with gRPC payment processor at {}:{}.",
+                    grpc_processor.addr,
+                    grpc_processor.port
+                );
 
-            for unit in grpc_processor.supported_units {
-                tracing::debug!("Adding unit: {:?}", unit);
-                let payment_processor = PaymentProcessorClient::new(
-                    &grpc_processor.addr,
-                    grpc_processor.port,
-                    grpc_processor.tls_dir.clone(),
-                )
-                .await?;
+                for unit in grpc_processor.clone().supported_units {
+                    tracing::debug!("Adding unit: {:?}", unit);
+                    
+                    let processor = grpc_processor
+                        .setup(&mut ln_routers, &settings, unit.clone())
+                        .await?;
 
-                mint_builder = mint_builder
-                    .add_ln_backend(
-                        unit.clone(),
-                        PaymentMethod::Bolt11,
-                        mint_melt_limits,
-                        Arc::new(payment_processor),
-                    )
-                    .await?;
+                    mint_builder = mint_builder
+                        .add_ln_backend(
+                            unit.clone(),
+                            PaymentMethod::Bolt11,
+                            mint_melt_limits,
+                            Arc::new(processor),
+                        )
+                        .await?;
 
-                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
-
-                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+                    let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+                    mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+                }
             }
+            
+            #[cfg(not(feature = "grpc-processor"))]
+            bail!("GrpcProcessor backend is not enabled in this build");
         }
         LnBackend::None => bail!("Ln backend must be set"),
     };

@@ -10,7 +10,7 @@ description = "CDK mint binary"
 rust-version = "1.75.0"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor"]
 # Ensure at least one lightning backend is enabled
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
@@ -21,6 +21,7 @@ cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
+grpc-processor = []
 
 [dependencies]
 anyhow.workspace = true

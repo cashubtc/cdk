@@ -1,41 +1,32 @@
+// This file is deprecated and will be removed in a future version.
+// Use grpc_processor.rs instead.
+
 use std::env;
 
 use cdk::nuts::CurrencyUnit;
 
 use crate::config::GrpcProcessor;
+use crate::env_vars::grpc_processor::*;
 
-pub const ENV_GRPC_PAYMENT_WALLET_SUPPORTED_UNITS: &str =
-    "CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS";
-pub const ENV_GRPC_PAYMENT_PROCESSOR_ADDRESS: &str = "CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS";
-pub const ENV_GRPC_PAYMENT_PROCESSOR_PORT: &str = "CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT";
-pub const ENV_GRPC_PAYMENT_PROCESSOR_TLS_DIR: &str = "CDK_MINTD_GRPC_PAYMENT_PROCESSOR_TLS_DIR";
+// These constants are kept for backward compatibility
+pub const ENV_GRPC_PAYMENT_WALLET_SUPPORTED_UNITS: &str = ENV_GRPC_PROCESSOR_SUPPORTED_UNITS;
+pub const ENV_GRPC_PAYMENT_PROCESSOR_ADDRESS: &str = ENV_GRPC_PROCESSOR_ADDRESS;
+pub const ENV_GRPC_PAYMENT_PROCESSOR_PORT: &str = ENV_GRPC_PROCESSOR_PORT;
+pub const ENV_GRPC_PAYMENT_PROCESSOR_TLS_DIR: &str = ENV_GRPC_PROCESSOR_TLS_DIR;
 
 impl GrpcProcessor {
-    pub fn from_env(mut self) -> Self {
-        if let Ok(units_str) = env::var(ENV_GRPC_PAYMENT_WALLET_SUPPORTED_UNITS) {
-            if let Ok(units) = units_str
-                .split(',')
-                .map(|s| s.trim().parse())
-                .collect::<Result<Vec<CurrencyUnit>, _>>()
-            {
-                self.supported_units = units;
-            }
+    // This implementation is kept for backward compatibility
+    // The actual implementation is in grpc_processor.rs
+    pub fn from_env(self) -> Self {
+        // Delegate to the new implementation
+        #[cfg(feature = "grpc-processor")]
+        {
+            return self.from_env();
         }
-
-        if let Ok(addr) = env::var(ENV_GRPC_PAYMENT_PROCESSOR_ADDRESS) {
-            self.addr = addr;
+        
+        #[cfg(not(feature = "grpc-processor"))]
+        {
+            self
         }
-
-        if let Ok(port) = env::var(ENV_GRPC_PAYMENT_PROCESSOR_PORT) {
-            if let Ok(port) = port.parse() {
-                self.port = port;
-            }
-        }
-
-        if let Ok(tls_dir) = env::var(ENV_GRPC_PAYMENT_PROCESSOR_TLS_DIR) {
-            self.tls_dir = Some(tls_dir.into());
-        }
-
-        self
     }
 }

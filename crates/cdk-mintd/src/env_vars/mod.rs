@@ -13,6 +13,8 @@ mod cln;
 #[cfg(feature = "fakewallet")]
 mod fake_wallet;
 mod grpc;
+#[cfg(feature = "grpc-processor")]
+mod grpc_processor;
 #[cfg(feature = "lnbits")]
 mod lnbits;
 #[cfg(feature = "lnd")]
@@ -30,6 +32,8 @@ pub use common::*;
 #[cfg(feature = "fakewallet")]
 pub use fake_wallet::*;
 pub use grpc::*;
+#[cfg(feature = "grpc-processor")]
+pub use grpc_processor::*;
 pub use ln::*;
 #[cfg(feature = "lnbits")]
 pub use lnbits::*;
@@ -80,8 +84,13 @@ impl Settings {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
             }
             LnBackend::GrpcProcessor => {
-                self.grpc_processor =
-                    Some(self.grpc_processor.clone().unwrap_or_default().from_env());
+                #[cfg(feature = "grpc-processor")]
+                {
+                    self.grpc_processor =
+                        Some(self.grpc_processor.clone().unwrap_or_default().from_env());
+                }
+                #[cfg(not(feature = "grpc-processor"))]
+                bail!("GrpcProcessor backend is not enabled in this build");
             }
             LnBackend::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]

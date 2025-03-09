@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(feature = "lnbits")]
 use std::sync::Arc;
+#[cfg(feature = "grpc-processor")]
+use std::sync::Arc;
 
 #[cfg(feature = "cln")]
 use anyhow::anyhow;
@@ -160,5 +162,25 @@ impl LnBackendSetup for config::FakeWallet {
         );
 
         Ok(fake_wallet)
+    }
+}
+
+#[cfg(feature = "grpc-processor")]
+#[async_trait]
+impl LnBackendSetup for config::GrpcProcessor {
+    async fn setup(
+        &self,
+        _routers: &mut Vec<Router>,
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
+        let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
+            &self.addr,
+            self.port,
+            self.tls_dir.clone(),
+        )
+        .await?;
+
+        Ok(payment_processor)
     }
 }
