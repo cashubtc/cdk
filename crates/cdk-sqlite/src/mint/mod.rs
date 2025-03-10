@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::{LnKey, QuoteTTL};
+use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
@@ -1285,7 +1285,7 @@ WHERE keyset_id=?;
     async fn add_melt_request(
         &self,
         melt_request: MeltBolt11Request<Uuid>,
-        ln_key: LnKey,
+        ln_key: PaymentProcessorKey,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -1328,7 +1328,7 @@ ON CONFLICT(id) DO UPDATE SET
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(
@@ -1708,7 +1708,9 @@ fn sqlite_row_to_blind_signature(row: SqliteRow) -> Result<BlindSignature, Error
     })
 }
 
-fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request<Uuid>, LnKey), Error> {
+fn sqlite_row_to_melt_request(
+    row: SqliteRow,
+) -> Result<(MeltBolt11Request<Uuid>, PaymentProcessorKey), Error> {
     let quote_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
     let row_inputs: String = row.try_get("inputs").map_err(Error::from)?;
     let row_outputs: Option<String> = row.try_get("outputs").map_err(Error::from)?;
@@ -1721,7 +1723,7 @@ fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request<Uuid>
         outputs: row_outputs.and_then(|o| serde_json::from_str(&o).ok()),
     };
 
-    let ln_key = LnKey {
+    let ln_key = PaymentProcessorKey {
         unit: CurrencyUnit::from_str(&row_unit)?,
         method: PaymentMethod::from_str(&row_method)?,
     };

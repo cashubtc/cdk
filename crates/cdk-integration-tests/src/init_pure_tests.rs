@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::MintDatabase;
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
@@ -15,7 +15,7 @@ use cdk::nuts::{
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PaymentMethod,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
-use cdk::types::QuoteTTL;
+use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::client::MintConnector;
 use cdk::wallet::Wallet;
@@ -167,19 +167,21 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
         percent_fee_reserve: 1.0,
     };
 
-    let ln_fake_backend = Arc::new(FakeWallet::new(
+    let ln_fake_backend = FakeWallet::new(
         fee_reserve.clone(),
         HashMap::default(),
         HashSet::default(),
         0,
-    ));
-
-    mint_builder = mint_builder.add_ln_backend(
-        CurrencyUnit::Sat,
-        PaymentMethod::Bolt11,
-        MintMeltLimits::new(1, 1_000),
-        ln_fake_backend,
     );
+
+    mint_builder = mint_builder
+        .add_ln_backend(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt11,
+            MintMeltLimits::new(1, 1_000),
+            Arc::new(ln_fake_backend),
+        )
+        .await?;
 
     let mnemonic = Mnemonic::generate(12)?;
 

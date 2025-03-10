@@ -19,11 +19,19 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "fakewallet"
+    feature = "fakewallet",
+    feature = "grpc-processor"
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
-use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
+use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
 #[cfg(feature = "management-rpc")]
@@ -52,10 +60,11 @@ const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION")
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "fakewallet"
+    feature = "fakewallet",
+    feature = "grpc-processor"
 )))]
 compile_error!(
-    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, or fakewallet"
+    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, fakewallet, or grpc-processor"
 );
 
 #[tokio::main]
@@ -169,6 +178,8 @@ async fn main() -> anyhow::Result<()> {
         melt_max: settings.ln.max_melt,
     };
 
+    tracing::debug!("Ln backendd: {:?}", settings.ln.ln_backend);
+
     match settings.ln.ln_backend {
         #[cfg(feature = "cln")]
         LnBackend::Cln => {
@@ -182,12 +193,14 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             let cln = Arc::new(cln);
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                cln.clone(),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    cln.clone(),
+                )
+                .await?;
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
@@ -200,12 +213,15 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnbits),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(lnbits),
+                )
+                .await?;
+
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
@@ -217,12 +233,14 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnd),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(lnd),
+                )
+                .await?;
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
@@ -231,27 +249,72 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "fakewallet")]
         LnBackend::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
+            tracing::info!("Using fake wallet: {:?}", fake_wallet);
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
                     .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
-                    .await?;
+                    .await
+                    .expect("hhh");
 
                 let fake = Arc::new(fake);
 
-                mint_builder = mint_builder.add_ln_backend(
-                    unit.clone(),
-                    PaymentMethod::Bolt11,
-                    mint_melt_limits,
-                    fake.clone(),
-                );
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt11,
+                        mint_melt_limits,
+                        fake.clone(),
+                    )
+                    .await?;
 
                 let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
 
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
-        LnBackend::None => bail!("Ln backend must be set"),
+        #[cfg(feature = "grpc-processor")]
+        LnBackend::GrpcProcessor => {
+            let grpc_processor = settings
+                .clone()
+                .grpc_processor
+                .expect("grpc processor config defined");
+
+            tracing::info!(
+                "Attempting to start with gRPC payment processor at {}:{}.",
+                grpc_processor.addr,
+                grpc_processor.port
+            );
+
+            tracing::info!("{:?}", grpc_processor);
+
+            for unit in grpc_processor.clone().supported_units {
+                tracing::debug!("Adding unit: {:?}", unit);
+
+                let processor = grpc_processor
+                    .setup(&mut ln_routers, &settings, unit.clone())
+                    .await?;
+
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt11,
+                        mint_melt_limits,
+                        Arc::new(processor),
+                    )
+                    .await?;
+
+                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+            }
+        }
+        LnBackend::None => {
+            tracing::error!(
+                "Pyament backend was not set or feature disabled. {:?}",
+                settings.ln.ln_backend
+            );
+            bail!("Ln backend must be")
+        }
     };
 
     if let Some(long_description) = &settings.mint_info.description_long {
@@ -299,6 +362,8 @@ async fn main() -> anyhow::Result<()> {
     mint_builder = mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints);
 
     let mint = mint_builder.build().await?;
+
+    tracing::debug!("Mint built from builder.");
 
     let mint = Arc::new(mint);
 
@@ -425,6 +490,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install CTRL+C handler");
+    tracing::info!("Shutdown signal received");
+}
+
 fn work_dir() -> Result<PathBuf> {
     let home_dir = home::home_dir().ok_or(anyhow!("Unknown home dir"))?;
     let dir = home_dir.join(".cdk-mintd");
@@ -432,11 +504,4 @@ fn work_dir() -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
 
     Ok(dir)
-}
-
-async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install CTRL+C handler");
-    tracing::info!("Shutdown signal received");
 }

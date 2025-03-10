@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::common::{LnKey, QuoteTTL};
+use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
@@ -826,7 +826,7 @@ impl MintDatabase for MintRedbDatabase {
     async fn add_melt_request(
         &self,
         melt_request: MeltBolt11Request<Uuid>,
-        ln_key: LnKey,
+        ln_key: PaymentProcessorKey,
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
@@ -847,7 +847,7 @@ impl MintDatabase for MintRedbDatabase {
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
 

@@ -5,18 +5,17 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::common::{LnKey, QuoteTTL};
+use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
 use subscription::PubSubManager;
 use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinSet;
 use tracing::instrument;
 use uuid::Uuid;
 
-use crate::cdk_lightning::{self, MintLightning};
+use crate::cdk_payment::{self, MintPayment};
 use crate::dhke::{sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
@@ -44,7 +43,8 @@ pub struct Mint {
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     /// Ln backends for mint
-    pub ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+    pub ln:
+        HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
     /// Subscription manager
     pub pubsub_manager: Arc<PubSubManager>,
     secp_ctx: Secp256k1<secp256k1::All>,
@@ -59,7 +59,10 @@ impl Mint {
     pub async fn new(
         seed: &[u8],
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
-        ln: HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>,
+        ln: HashMap<
+            PaymentProcessorKey,
+            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+        >,
         // Hashmap where the key is the unit and value is (input fee ppk, max_order)
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -117,21 +120,25 @@ impl Mint {
     }
 
     /// Get mint info
+    #[instrument(skip_all)]
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
         Ok(self.localstore.get_mint_info().await?)
     }
 
     /// Set mint info
+    #[instrument(skip_all)]
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
         Ok(self.localstore.set_mint_info(mint_info).await?)
     }
 
     /// Get quote ttl
+    #[instrument(skip_all)]
     pub async fn quote_ttl(&self) -> Result<QuoteTTL, Error> {
         Ok(self.localstore.get_quote_ttl().await?)
     }
 
     /// Set quote ttl
+    #[instrument(skip_all)]
     pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
         Ok(self.localstore.set_quote_ttl(quote_ttl).await?)
     }
@@ -139,6 +146,7 @@ impl Mint {
     /// Wait for any invoice to be paid
     /// For each backend starts a task that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
+    #[instrument(skip_all)]
     pub async fn wait_for_paid_invoices(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
         let mint_arc = Arc::new(self.clone());
 
@@ -146,19 +154,21 @@ impl Mint {
 
         for (key, ln) in self.ln.iter() {
             if !ln.is_wait_invoice_active() {
+                tracing::info!("Wait payment for {:?} inactive starting.", key);
                 let mint = Arc::clone(&mint_arc);
                 let ln = Arc::clone(ln);
                 let shutdown = Arc::clone(&shutdown);
                 let key = key.clone();
                 join_set.spawn(async move {
             loop {
+                tracing::info!("Restarting wait for: {:?}", key);
                 tokio::select! {
                     _ = shutdown.notified() => {
                         tracing::info!("Shutdown signal received, stopping task for {:?}", key);
                         ln.cancel_wait_invoice();
                         break;
                     }
-                    result = ln.wait_any_invoice() => {
+                    result = ln.wait_any_incoming_payment() => {
                         match result {
                             Ok(mut stream) => {
                                 while let Some(request_lookup_id) = stream.next().await {
@@ -168,7 +178,7 @@ impl Mint {
                                 }
                             }
                             Err(err) => {
-                                tracing::warn!("Could not get invoice stream for {:?}: {}",key, err);
+                                tracing::warn!("Could not get incoming payment stream for {:?}: {}",key, err);
 
                                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             }
@@ -432,15 +442,6 @@ impl Mint {
     }
 }
 
-/// Mint Fee Reserve
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FeeReserve {
-    /// Absolute expected min fee
-    pub min_fee_reserve: Amount,
-    /// Percentage expected fee
-    pub percent_fee_reserve: f32,
-}
-
 /// Generate new [`MintKeySetInfo`] from path
 #[instrument(skip_all)]
 fn create_new_keyset<C: secp256k1::Signing>(
@@ -490,7 +491,7 @@ mod tests {
     use std::str::FromStr;
 
     use bitcoin::Network;
-    use cdk_common::common::LnKey;
+    use cdk_common::common::PaymentProcessorKey;
     use cdk_sqlite::mint::memory::new_with_state;
     use secp256k1::Secp256k1;
     use uuid::Uuid;
@@ -594,7 +595,7 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-        melt_requests: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
+        melt_requests: Vec<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
