@@ -151,7 +151,7 @@ jobs:
     name: "Integration regtest tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [pre-commit-checks, clippy, pure-itest, fake-wallet-itest]
+    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
       matrix:
         build-args:
@@ -227,7 +227,7 @@ jobs:
     name: "Payment processor tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [pre-commit-checks, clippy, pure-itest, fake-wallet-itest, itest]
+    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest, regtest-itest]
     strategy:
       matrix:
         ln: 
