@@ -318,7 +318,7 @@ impl Mint {
             }
         };
 
-        // We check the the total value of blinded messages == mint quote
+        // We check the total value of blinded messages == mint quote
         if amount != mint_quote.amount {
             return Err(Error::TransactionUnbalanced(
                 mint_quote.amount.into(),
