@@ -104,6 +104,7 @@ jobs:
             -p cdk-lnd,
             -p cdk-lnbits,
             -p cdk-fake-wallet,
+            -p cdk-payment-processor,
             --bin cdk-cli,
             --bin cdk-cli --features sqlcipher,
             --bin cdk-mintd,
@@ -115,9 +116,11 @@ jobs:
             --bin cdk-mintd --no-default-features --features cln,
             --bin cdk-mintd --no-default-features --features lnbits,
             --bin cdk-mintd --no-default-features --features fakewallet,
+            --bin cdk-mintd --no-default-features --features grpc-processor,
             --bin cdk-mintd --no-default-features --features "management-rpc lnd",
             --bin cdk-mintd --no-default-features --features "management-rpc cln",
             --bin cdk-mintd --no-default-features --features "management-rpc lnbits",
+            --bin cdk-mintd --no-default-features --features "management-rpc grpc-processor",
             --bin cdk-mintd --no-default-features --features "swagger lnd",
             --bin cdk-mintd --no-default-features --features "swagger cln",
             --bin cdk-mintd --no-default-features --features "swagger lnbits",
@@ -211,6 +214,30 @@ jobs:
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just test
 
+
+  payment-processor-itests:
+    name: "Payment processor tests"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ln: 
+          [
+          FAKEWALLET,
+          CLN,
+          LND
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: nix develop -i -L .#stable --command just itest-payment-processor ${{matrix.ln}}
+
   msrv-build:
     name: "MSRV build"
     runs-on: ubuntu-latest
@@ -231,6 +258,7 @@ jobs:
             -p cdk-mint-rpc,
             -p cdk-sqlite,
             -p cdk-mintd,
+            -p cdk-payment-processor --no-default-features,
           ]
     steps:
       - name: checkout

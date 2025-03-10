@@ -16,7 +16,7 @@ pub enum Error {
     NoReceiver,
 }
 
-impl From<Error> for cdk::cdk_lightning::Error {
+impl From<Error> for cdk::cdk_payment::Error {
     fn from(e: Error) -> Self {
         Self::Lightning(Box::new(e))
     }

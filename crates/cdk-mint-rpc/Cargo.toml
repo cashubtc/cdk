@@ -19,20 +19,16 @@ cdk = { workspace = true, features = [
     "mint",
 ] }
 clap.workspace = true
-tonic = { version = "0.12.3", features = [
-    "channel",
-    "tls",
-    "tls-webpki-roots",
-] }
+tonic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-prost = "0.13.1"
+prost.workspace = true
 home.workspace = true
 
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build.workspace = true
