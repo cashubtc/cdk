@@ -1,3 +1,4 @@
+use cdk_common::payment::Bolt11Settings;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -7,7 +8,7 @@ use super::{
     NotificationPayload, PaymentMethod, PublicKey,
 };
 use crate::nuts::MintQuoteState;
-use crate::types::LnKey;
+use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error};
 
@@ -29,10 +30,10 @@ impl Mint {
 
         let is_above_max = settings
             .max_amount
-            .map_or(false, |max_amount| amount > max_amount);
+            .is_some_and(|max_amount| amount > max_amount);
         let is_below_min = settings
             .min_amount
-            .map_or(false, |min_amount| amount < min_amount);
+            .is_some_and(|min_amount| amount < min_amount);
         let is_out_of_range = is_above_max || is_below_min;
 
         ensure_cdk!(
@@ -64,7 +65,10 @@ impl Mint {
 
         let ln = self
             .ln
-            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt11))
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::Bolt11,
+            ))
             .ok_or_else(|| {
                 tracing::info!("Bolt11 mint request for unsupported unit");
 
@@ -75,17 +79,20 @@ impl Mint {
 
         let quote_expiry = unix_time() + mint_ttl;
 
-        if description.is_some() && !ln.get_settings().invoice_description {
+        let settings = ln.get_settings().await?;
+        let settings: Bolt11Settings = serde_json::from_value(settings)?;
+
+        if description.is_some() && !settings.invoice_description {
             tracing::error!("Backend does not support invoice description");
             return Err(Error::InvoiceDescriptionUnsupported);
         }
 
         let create_invoice_response = ln
-            .create_invoice(
+            .create_incoming_payment_request(
                 amount,
                 &unit,
                 description.unwrap_or("".to_string()),
-                quote_expiry,
+                Some(quote_expiry),
             )
             .await
             .map_err(|err| {
@@ -311,7 +318,7 @@ impl Mint {
             }
         };
 
-        // We check the the total value of blinded messages == mint quote
+        // We check the total value of blinded messages == mint quote
         if amount != mint_quote.amount {
             return Err(Error::TransactionUnbalanced(
                 mint_quote.amount.into(),

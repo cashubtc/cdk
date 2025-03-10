@@ -209,7 +209,7 @@ impl Wallet {
             .ok_or(Error::UnknownKeySet)?
             .input_fee_ppk;
 
-        let fee = (input_fee_ppk * count + 999) / 1000;
+        let fee = (input_fee_ppk * count).div_ceil(1000);
 
         Ok(Amount::from(fee))
     }

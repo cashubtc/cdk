@@ -1,7 +1,7 @@
 //! In-memory database that is provided by the `cdk-sqlite` crate, mainly for testing purposes.
 use std::collections::HashMap;
 
-use cdk_common::common::LnKey;
+use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nuts::{CurrencyUnit, Id, MeltBolt11Request, Proofs};
@@ -29,7 +29,7 @@ pub async fn new_with_state(
     melt_quotes: Vec<mint::MeltQuote>,
     pending_proofs: Proofs,
     spent_proofs: Proofs,
-    melt_request: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
+    melt_request: Vec<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>,
     mint_info: MintInfo,
 ) -> Result<MintSqliteDatabase, database::Error> {
     let db = empty().await?;

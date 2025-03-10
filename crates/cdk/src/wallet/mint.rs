@@ -79,7 +79,7 @@ impl Wallet {
             mint_url,
             id: quote_res.quote,
             amount,
-            unit: unit.clone(),
+            unit,
             request: quote_res.request,
             state: quote_res.state,
             expiry: quote_res.expiry.unwrap_or(0),

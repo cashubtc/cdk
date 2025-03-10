@@ -5,7 +5,7 @@
 
 use super::{Error, Mint};
 use crate::mint::{MeltQuote, MeltQuoteState, PaymentMethod};
-use crate::types::LnKey;
+use crate::types::PaymentProcessorKey;
 
 impl Mint {
     /// Check the status of all pending mint quotes in the mint db
@@ -38,7 +38,7 @@ impl Mint {
 
             let (melt_request, ln_key) = match melt_request_ln_key {
                 None => {
-                    let ln_key = LnKey {
+                    let ln_key = PaymentProcessorKey {
                         unit: pending_quote.unit,
                         method: PaymentMethod::Bolt11,
                     };
@@ -67,7 +67,7 @@ impl Mint {
                             if let Err(err) = self
                                 .process_melt_request(
                                     &melt_request,
-                                    pay_invoice_response.payment_preimage,
+                                    pay_invoice_response.payment_proof,
                                     pay_invoice_response.total_spent,
                                 )
                                 .await

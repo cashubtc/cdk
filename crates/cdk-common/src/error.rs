@@ -264,10 +264,10 @@ pub enum Error {
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::database::Error),
-    /// Lightning Error
+    /// Payment Error
     #[error(transparent)]
     #[cfg(feature = "mint")]
-    Lightning(#[from] crate::lightning::Error),
+    Payment(#[from] crate::payment::Error),
 }
 
 /// CDK Error Response
