@@ -132,8 +132,6 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v6
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: nix develop -i -L .#stable --command cargo build ${{ matrix.build-args }}
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
