@@ -36,7 +36,7 @@ pub enum Error {
     #[error("Invalid secret length: `{0}`")]
     InvalidLength(u64),
     /// Invalid Secret
-    #[error("Secret exceeds maximum allowed length")]
+    #[error("Secret exceeds maximum allowed char length")]
     InvalidSecret,
     /// Hex Error
     #[error(transparent)]
