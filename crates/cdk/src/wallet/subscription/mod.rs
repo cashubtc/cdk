@@ -14,9 +14,10 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::error;
 
+use super::Wallet;
 use crate::mint_url::MintUrl;
 use crate::pub_sub::SubId;
-use crate::wallet::client::MintConnector;
+use crate::wallet::MintConnector;
 
 mod http;
 #[cfg(all(
@@ -59,7 +60,12 @@ impl SubscriptionManager {
     }
 
     /// Subscribe to updates from a mint server with a given filter
-    pub async fn subscribe(&self, mint_url: MintUrl, filter: Params) -> ActiveSubscription {
+    pub async fn subscribe(
+        &self,
+        mint_url: MintUrl,
+        filter: Params,
+        wallet: Arc<Wallet>,
+    ) -> ActiveSubscription {
         let subscription_clients = self.all_connections.read().await;
         let id = filter.id.clone();
         if let Some(subscription_client) = subscription_clients.get(&mint_url) {
@@ -94,8 +100,12 @@ impl SubscriptionManager {
             );
 
             let mut subscription_clients = self.all_connections.write().await;
-            let subscription_client =
-                SubscriptionClient::new(mint_url.clone(), self.http_client.clone(), is_ws_support);
+            let subscription_client = SubscriptionClient::new(
+                mint_url.clone(),
+                self.http_client.clone(),
+                is_ws_support,
+                wallet,
+            );
             let (on_drop_notif, receiver) = subscription_client.subscribe(filter).await;
             subscription_clients.insert(mint_url, subscription_client);
 
@@ -179,6 +189,7 @@ impl SubscriptionClient {
         url: MintUrl,
         http_client: Arc<dyn MintConnector + Send + Sync>,
         prefer_ws_method: bool,
+        wallet: Arc<Wallet>,
     ) -> Self {
         let subscriptions = Arc::new(RwLock::new(HashMap::new()));
         let (new_subscription_notif, new_subscription_recv) = mpsc::channel(100);
@@ -195,6 +206,7 @@ impl SubscriptionClient {
                 subscriptions,
                 new_subscription_recv,
                 on_drop_recv,
+                wallet,
             )),
         }
     }
@@ -207,6 +219,7 @@ impl SubscriptionClient {
         subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
         new_subscription_recv: mpsc::Receiver<SubId>,
         on_drop_recv: mpsc::Receiver<SubId>,
+        wallet: Arc<Wallet>,
     ) -> JoinHandle<()> {
         #[cfg(any(
             feature = "http_subscription",
@@ -218,6 +231,7 @@ impl SubscriptionClient {
             subscriptions,
             new_subscription_recv,
             on_drop_recv,
+            wallet,
         );
 
         #[cfg(all(
@@ -232,6 +246,7 @@ impl SubscriptionClient {
                 subscriptions,
                 new_subscription_recv,
                 on_drop_recv,
+                wallet,
             )
         } else {
             Self::http_worker(
@@ -239,6 +254,7 @@ impl SubscriptionClient {
                 subscriptions,
                 new_subscription_recv,
                 on_drop_recv,
+                wallet,
             )
         }
     }
@@ -268,6 +284,7 @@ impl SubscriptionClient {
         subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
         new_subscription_recv: mpsc::Receiver<SubId>,
         on_drop: mpsc::Receiver<SubId>,
+        wallet: Arc<Wallet>,
     ) -> JoinHandle<()> {
         let http_worker = http::http_main(
             vec![],
@@ -275,6 +292,7 @@ impl SubscriptionClient {
             subscriptions,
             new_subscription_recv,
             on_drop,
+            wallet,
         );
 
         #[cfg(target_arch = "wasm32")]
@@ -301,6 +319,7 @@ impl SubscriptionClient {
         subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
         new_subscription_recv: mpsc::Receiver<SubId>,
         on_drop: mpsc::Receiver<SubId>,
+        wallet: Arc<Wallet>,
     ) -> JoinHandle<()> {
         tokio::spawn(ws::ws_main(
             http_client,
@@ -308,6 +327,7 @@ impl SubscriptionClient {
             subscriptions,
             new_subscription_recv,
             on_drop,
+            wallet,
         ))
     }
 }

@@ -30,6 +30,7 @@ async-trait.workspace = true
 axum.workspace = true
 cdk = { workspace = true, features = [
     "mint",
+    "auth"
 ] }
 cdk-redb = { workspace = true, features = [
     "mint",
