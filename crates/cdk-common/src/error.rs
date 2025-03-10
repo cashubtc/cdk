@@ -59,7 +59,7 @@ pub enum Error {
     #[error("Multi-Part payment is not supported for unit `{0}` and method `{1}`")]
     MppUnitMethodNotSupported(CurrencyUnit, PaymentMethod),
     /// Invalid secret must be less then 512
-    #[error("Invalid secret must be less then 512")]
+    #[error("Invalid secret: must be at most 512 UTF-8 chars")]
     InvalidSecret,
 
     // Mint Errors
