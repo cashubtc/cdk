@@ -2,7 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/00.md>
 
-/// Maximum length of a secret in characters
+/// Maximum length of a secret in UTF-8 characters
 pub const MAX_SECRET_LENGTH: usize = 512;
 
 use std::cmp::Ordering;
