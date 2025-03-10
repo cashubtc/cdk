@@ -15,3 +15,13 @@ pub use lightning_invoice::{self, Bolt11Invoice};
 pub use self::amount::Amount;
 pub use self::nuts::*;
 pub use self::util::SECP256K1;
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! ensure_cdk {
+    ($cond:expr, $err:expr) => {
+        if !$cond {
+            return Err($err);
+        }
+    };
+}

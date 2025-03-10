@@ -19,7 +19,7 @@ use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
 use crate::nuts::MeltQuoteState;
 use crate::types::LnKey;
 use crate::util::unix_time;
-use crate::{cdk_lightning, Amount, Error};
+use crate::{cdk_lightning, ensure_cdk, Amount, Error};
 
 impl Mint {
     #[instrument(skip_all)]
@@ -35,9 +35,7 @@ impl Mint {
         let nut05 = mint_info.nuts.nut05;
         let nut15 = mint_info.nuts.nut15;
 
-        if nut05.disabled {
-            return Err(Error::MeltingDisabled);
-        }
+        ensure_cdk!(!nut05.disabled, Error::MeltingDisabled);
 
         let settings = nut05
             .get_settings(&unit, &method)
@@ -188,6 +186,8 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             payment_preimage: quote.payment_preimage,
             change,
+            request: Some(quote.request.clone()),
+            unit: Some(quote.unit.clone()),
         })
     }
 
@@ -330,9 +330,7 @@ impl Mint {
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
 
-        if sig_flag.eq(&SigFlag::SigAll) {
-            return Err(Error::SigAllUsedInMelt);
-        }
+        ensure_cdk!(sig_flag.ne(&SigFlag::SigAll), Error::SigAllUsedInMelt);
 
         if let Some(outputs) = &melt_request.outputs {
             let Verification {
@@ -340,9 +338,7 @@ impl Mint {
                 unit: output_unit,
             } = self.verify_outputs(outputs).await?;
 
-            if input_unit != output_unit {
-                return Err(Error::UnsupportedUnit);
-            }
+            ensure_cdk!(input_unit == output_unit, Error::UnsupportedUnit);
         }
 
         tracing::debug!("Verified melt quote: {}", melt_request.quote);
@@ -370,7 +366,7 @@ impl Mint {
 
         if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
             self.pubsub_manager
-                .melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
+                .melt_quote_status(quote, None, None, MeltQuoteState::Unpaid);
         }
 
         for public_key in input_ys {
@@ -702,6 +698,8 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             state: MeltQuoteState::Paid,
             expiry: quote.expiry,
+            request: Some(quote.request.clone()),
+            unit: Some(quote.unit.clone()),
         })
     }
 }

@@ -10,7 +10,7 @@ use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
-use crate::{Amount, Error, Wallet};
+use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
     /// Get unspent proofs for mint
@@ -175,9 +175,7 @@ impl Wallet {
         if amount == Amount::ZERO {
             return Ok(vec![]);
         }
-        if proofs.total_amount()? < amount {
-            return Err(Error::InsufficientFunds);
-        }
+        ensure_cdk!(proofs.total_amount()? >= amount, Error::InsufficientFunds);
 
         // Sort proofs in descending order
         let mut proofs = proofs;

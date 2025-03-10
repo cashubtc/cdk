@@ -7,7 +7,7 @@ mnemonic = ""
 # enable_swagger_ui = false
 
 [mint_management_rpc]
-enabled = true
+# enabled = false
 # address = "127.0.0.1"
 # port = 8086
 
@@ -34,6 +34,7 @@ tti = 60
 # contact_email = "hello@cashu.me"
 # Nostr pubkey of mint (Hex)
 # contact_nostr_public_key = ""
+# tos_url = "https://example.com/terms-of-service"
 
 
 [database]

@@ -7,7 +7,7 @@ use crate::nuts::{
     nut10, PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, State, SwapRequest,
 };
 use crate::types::ProofInfo;
-use crate::{Amount, Error, Wallet};
+use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
     /// Swap
@@ -164,9 +164,7 @@ impl Wallet {
             },
         );
 
-        if proofs_sum < amount {
-            return Err(Error::InsufficientFunds);
-        }
+        ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
         let active_keyset_ids = self
             .get_active_mint_keysets()

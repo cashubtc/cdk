@@ -25,7 +25,7 @@ use super::nut01::Keys;
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
-use crate::Amount;
+use crate::{ensure_cdk, Amount};
 
 /// NUT02 Error
 #[derive(Debug, Error)]
@@ -144,9 +144,7 @@ impl TryFrom<String> for Id {
     type Error = Error;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        if s.len() != 16 {
-            return Err(Error::Length);
-        }
+        ensure_cdk!(s.len() == 16, Error::Length);
 
         Ok(Self {
             version: KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?,
@@ -230,9 +228,7 @@ impl KeySet {
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id: Id = (&self.keys).into();
 
-        if keys_id != self.id {
-            return Err(Error::IncorrectKeysetId);
-        }
+        ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
 
         Ok(())
     }

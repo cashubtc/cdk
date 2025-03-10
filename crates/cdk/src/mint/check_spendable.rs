@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, PublicKey, State};
-use crate::Error;
+use crate::{cdk_database, Error};
 
 impl Mint {
     /// Check state
@@ -41,10 +41,15 @@ impl Mint {
         ys: &[PublicKey],
         proof_state: State,
     ) -> Result<(), Error> {
-        let original_proofs_state = self
-            .localstore
-            .update_proofs_states(ys, proof_state)
-            .await?;
+        let original_proofs_state =
+            match self.localstore.update_proofs_states(ys, proof_state).await {
+                Ok(states) => states,
+                Err(cdk_database::Error::AttemptUpdateSpentProof)
+                | Err(cdk_database::Error::AttemptRemoveSpentProof) => {
+                    return Err(Error::TokenAlreadySpent)
+                }
+                Err(err) => return Err(err.into()),
+            };
 
         let proofs_state = original_proofs_state
             .iter()

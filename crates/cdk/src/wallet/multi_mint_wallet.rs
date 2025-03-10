@@ -18,7 +18,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SecretKey, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
-use crate::{Amount, Wallet};
+use crate::{ensure_cdk, Amount, Wallet};
 
 /// Multi Mint Wallet
 #[derive(Debug, Clone)]
@@ -275,9 +275,7 @@ impl MultiMintWallet {
 
         let quote = wallet.melt_quote(bolt11.to_string(), options).await?;
         if let Some(max_fee) = max_fee {
-            if quote.fee_reserve > max_fee {
-                return Err(Error::MaxFeeExceeded);
-            }
+            ensure_cdk!(quote.fee_reserve <= max_fee, Error::MaxFeeExceeded);
         }
 
         wallet.melt(&quote.id).await

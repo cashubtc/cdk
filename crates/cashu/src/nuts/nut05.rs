@@ -175,6 +175,14 @@ pub struct MeltQuoteBolt11Response<Q> {
     /// Change
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Vec<BlindSignature>>,
+    /// Payment request to fulfill
+    // REVIEW: This is now required in the spec, we should remove the option once all mints update
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// Unit
+    // REVIEW: This is now required in the spec, we should remove the option once all mints update
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<CurrencyUnit>,
 }
 
 impl<Q: ToString> MeltQuoteBolt11Response<Q> {
@@ -190,6 +198,8 @@ impl<Q: ToString> MeltQuoteBolt11Response<Q> {
             expiry: self.expiry,
             payment_preimage: self.payment_preimage,
             change: self.change,
+            request: self.request,
+            unit: self.unit,
         }
     }
 }
@@ -206,6 +216,8 @@ impl From<MeltQuoteBolt11Response<Uuid>> for MeltQuoteBolt11Response<String> {
             expiry: value.expiry,
             payment_preimage: value.payment_preimage,
             change: value.change,
+            request: value.request,
+            unit: value.unit,
         }
     }
 }
@@ -222,6 +234,8 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
             expiry: melt_quote.expiry,
             amount: melt_quote.amount,
             fee_reserve: melt_quote.fee_reserve,
+            request: None,
+            unit: Some(melt_quote.unit.clone()),
         }
     }
 }
@@ -297,6 +311,14 @@ impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
             .get("change")
             .and_then(|b| serde_json::from_value(b.clone()).ok());
 
+        let request: Option<String> = value
+            .get("request")
+            .and_then(|r| serde_json::from_value(r.clone()).ok());
+
+        let unit: Option<CurrencyUnit> = value
+            .get("unit")
+            .and_then(|u| serde_json::from_value(u.clone()).ok());
+
         Ok(Self {
             quote,
             amount,
@@ -306,6 +328,8 @@ impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
             expiry,
             payment_preimage,
             change,
+            request,
+            unit,
         })
     }
 }
@@ -323,6 +347,8 @@ impl From<mint::MeltQuote> for MeltQuoteBolt11Response<Uuid> {
             expiry: melt_quote.expiry,
             payment_preimage: melt_quote.payment_preimage,
             change: None,
+            request: Some(melt_quote.request.clone()),
+            unit: Some(melt_quote.unit.clone()),
         }
     }
 }
@@ -335,7 +361,7 @@ pub struct MeltBolt11Request<Q> {
     /// Quote ID
     pub quote: Q,
     /// Proofs
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<Proof>))]
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
     pub inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero

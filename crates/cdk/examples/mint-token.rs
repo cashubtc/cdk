@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
 use cdk::Amount;
+use cdk_sqlite::wallet::memory;
 use rand::Rng;
 use tracing_subscriber::EnvFilter;
 
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // Initialize the memory store for the wallet
-    let localstore = WalletMemoryDatabase::default();
+    let localstore = memory::empty().await?;
 
     // Generate a random seed for the wallet
     let seed = rand::thread_rng().gen::<[u8; 32]>();

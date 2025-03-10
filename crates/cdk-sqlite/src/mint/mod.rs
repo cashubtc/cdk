@@ -1,9 +1,8 @@
 //! SQLite Mint
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
@@ -20,35 +19,72 @@ use cdk_common::{
 };
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
-use sqlx::Row;
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Pool, Row, Sqlite};
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
+use crate::common::create_sqlite_pool;
+
 pub mod error;
+pub mod memory;
 
 /// Mint SQLite Database
 #[derive(Debug, Clone)]
 pub struct MintSqliteDatabase {
-    pool: SqlitePool,
+    pool: Pool<Sqlite>,
 }
 
 impl MintSqliteDatabase {
+    /// Check if any proofs are spent
+    async fn check_for_spent_proofs(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        ys: &[PublicKey],
+    ) -> Result<bool, database::Error> {
+        if ys.is_empty() {
+            return Ok(false);
+        }
+
+        let check_sql = format!(
+            "SELECT state FROM proof WHERE y IN ({}) AND state = 'SPENT'",
+            std::iter::repeat("?")
+                .take(ys.len())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let spent_count = ys
+            .iter()
+            .fold(sqlx::query(&check_sql), |query, y| {
+                query.bind(y.to_bytes().to_vec())
+            })
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(Error::from)?
+            .len();
+
+        Ok(spent_count > 0)
+    }
+
     /// Create new [`MintSqliteDatabase`]
-    pub async fn new(path: &Path) -> Result<Self, Error> {
-        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
-        let db_options = SqliteConnectOptions::from_str(path)?
-            .busy_timeout(Duration::from_secs(5))
-            .read_only(false)
-            .create_if_missing(true)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Full);
+    #[cfg(not(feature = "sqlcipher"))]
+    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        Ok(Self {
+            pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
+        })
+    }
 
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(db_options)
-            .await?;
-
-        Ok(Self { pool })
+    /// Create new [`MintSqliteDatabase`]
+    #[cfg(feature = "sqlcipher")]
+    pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
+        Ok(Self {
+            pool: create_sqlite_pool(
+                path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
+                password,
+            )
+            .await?,
+        })
     }
 
     /// Migrate [`MintSqliteDatabase`]
@@ -832,9 +868,9 @@ FROM keyset;
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for proof in proofs {
-            if let Err(err) = sqlx::query(
+            let result = sqlx::query(
                 r#"
-INSERT INTO proof
+INSERT OR IGNORE INTO proof
 (y, amount, keyset_id, secret, c, witness, state, quote_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
@@ -848,10 +884,25 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .bind("UNSPENT")
             .bind(quote_id.map(|q| q.hyphenated()))
             .execute(&mut transaction)
-            .await
-            .map_err(Error::from)
-            {
-                tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
+            .await;
+
+            // We still need to check for foreign key constraint errors
+            if let Err(err) = result {
+                if let sqlx::Error::Database(db_err) = &err {
+                    if db_err.message().contains("FOREIGN KEY constraint failed") {
+                        tracing::error!(
+                            "Foreign key constraint failed when adding proof: {:?}",
+                            err
+                        );
+                        transaction.rollback().await.map_err(Error::from)?;
+                        return Err(database::Error::InvalidKeysetId);
+                    }
+                }
+
+                // For any other error, roll back and return the error
+                tracing::error!("Error adding proof: {:?}", err);
+                transaction.rollback().await.map_err(Error::from)?;
+                return Err(Error::from(err).into());
             }
         }
         transaction.commit().await.map_err(Error::from)?;
@@ -866,7 +917,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
-        let sql = format!(
+        if self.check_for_spent_proofs(&mut transaction, ys).await? {
+            transaction.rollback().await.map_err(Error::from)?;
+            return Err(Self::Err::AttemptRemoveSpentProof);
+        }
+
+        // If no proofs are spent, proceed with deletion
+        let delete_sql = format!(
             "DELETE FROM proof WHERE y IN ({})",
             std::iter::repeat("?")
                 .take(ys.len())
@@ -875,7 +932,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         );
 
         ys.iter()
-            .fold(sqlx::query(&sql), |query, y| {
+            .fold(sqlx::query(&delete_sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
             })
             .execute(&mut transaction)
@@ -1048,7 +1105,7 @@ WHERE keyset_id=?;
             "?,".repeat(ys.len()).trim_end_matches(',')
         );
 
-        let mut current_states = ys
+        let rows = ys
             .iter()
             .fold(sqlx::query(&sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
@@ -1058,7 +1115,16 @@ WHERE keyset_id=?;
             .map_err(|err| {
                 tracing::error!("SQLite could not get state of proof: {err:?}");
                 Error::SQLX(err)
-            })?
+            })?;
+
+        // Check if all proofs exist
+        if rows.len() != ys.len() {
+            transaction.rollback().await.map_err(Error::from)?;
+            tracing::warn!("Attempted to update state of non-existent proof");
+            return Err(database::Error::ProofNotFound);
+        }
+
+        let mut current_states = rows
             .into_iter()
             .map(|row| {
                 PublicKey::from_slice(row.get("y"))
@@ -1072,16 +1138,23 @@ WHERE keyset_id=?;
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
+        let states = current_states.values().collect::<HashSet<_>>();
+
+        if states.contains(&State::Spent) {
+            transaction.rollback().await.map_err(Error::from)?;
+            tracing::warn!("Attempted to update state of spent proof");
+            return Err(database::Error::AttemptUpdateSpentProof);
+        }
+
+        // If no proofs are spent, proceed with update
         let update_sql = format!(
-            "UPDATE proof SET state = ? WHERE state != ? AND y IN ({})",
+            "UPDATE proof SET state = ? WHERE y IN ({})",
             "?,".repeat(ys.len()).trim_end_matches(',')
         );
 
         ys.iter()
             .fold(
-                sqlx::query(&update_sql)
-                    .bind(proofs_state.to_string())
-                    .bind(State::Spent.to_string()),
+                sqlx::query(&update_sql).bind(proofs_state.to_string()),
                 |query, y| query.bind(y.to_bytes().to_vec()),
             )
             .execute(&mut transaction)
@@ -1654,4 +1727,151 @@ fn sqlite_row_to_melt_request(row: SqliteRow) -> Result<(MeltBolt11Request<Uuid>
     };
 
     Ok((melt_request, ln_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::mint::MintKeySetInfo;
+    use cdk_common::Amount;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_remove_spent_proofs() {
+        let db = memory::empty().await.unwrap();
+
+        // Create a keyset and add it to the database
+        let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+        let keyset_info = MintKeySetInfo {
+            id: keyset_id.clone(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            valid_to: None,
+            derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(0),
+            max_order: 32,
+            input_fee_ppk: 0,
+        };
+        db.add_keyset_info(keyset_info).await.unwrap();
+
+        let proofs = vec![
+            Proof {
+                amount: Amount::from(100),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: Amount::from(200),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+        ];
+
+        // Add proofs to database
+        db.add_proofs(proofs.clone(), None).await.unwrap();
+
+        // Mark one proof as spent
+        db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
+            .await
+            .unwrap();
+
+        // Try to remove both proofs - should fail because one is spent
+        let result = db
+            .remove_proofs(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()], None)
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            database::Error::AttemptRemoveSpentProof
+        ));
+
+        // Verify both proofs still exist
+        let states = db
+            .get_proofs_states(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()])
+            .await
+            .unwrap();
+
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0], Some(State::Spent));
+        assert_eq!(states[1], Some(State::Unspent));
+    }
+
+    #[tokio::test]
+    async fn test_update_spent_proofs() {
+        let db = memory::empty().await.unwrap();
+
+        // Create a keyset and add it to the database
+        let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+        let keyset_info = MintKeySetInfo {
+            id: keyset_id.clone(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            valid_to: None,
+            derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(0),
+            max_order: 32,
+            input_fee_ppk: 0,
+        };
+        db.add_keyset_info(keyset_info).await.unwrap();
+
+        let proofs = vec![
+            Proof {
+                amount: Amount::from(100),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: Amount::from(200),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+        ];
+
+        // Add proofs to database
+        db.add_proofs(proofs.clone(), None).await.unwrap();
+
+        // Mark one proof as spent
+        db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
+            .await
+            .unwrap();
+
+        // Try to update both proofs - should fail because one is spent
+        let result = db
+            .update_proofs_states(
+                &[proofs[0].y().unwrap(), proofs[1].y().unwrap()],
+                State::Reserved,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            database::Error::AttemptUpdateSpentProof
+        ));
+
+        // Verify states haven't changed
+        let states = db
+            .get_proofs_states(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()])
+            .await
+            .unwrap();
+
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0], Some(State::Spent));
+        assert_eq!(states[1], Some(State::Unspent));
+    }
 }

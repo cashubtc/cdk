@@ -31,4 +31,16 @@ pub enum Error {
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,
+    /// Attempt to remove spent proof
+    #[error("Attempt to remove spent proof")]
+    AttemptRemoveSpentProof,
+    /// Attempt to update state of spent proof
+    #[error("Attempt to update state of spent proof")]
+    AttemptUpdateSpentProof,
+    /// Proof not found
+    #[error("Proof not found")]
+    ProofNotFound,
+    /// Invalid keyset
+    #[error("Unknown or invalid keyset")]
+    InvalidKeysetId,
 }

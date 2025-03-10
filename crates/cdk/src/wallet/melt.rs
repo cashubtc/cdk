@@ -12,7 +12,7 @@ use crate::nuts::{
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
-use crate::{Error, Wallet};
+use crate::{ensure_cdk, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote
@@ -20,7 +20,7 @@ impl Wallet {
     /// ```rust
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use rand::Rng;
@@ -31,7 +31,7 @@ impl Wallet {
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
-    ///     let localstore = WalletMemoryDatabase::default();
+    ///     let localstore = memory::empty().await?;
     ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///     let quote = wallet.melt_quote(bolt11, None).await?;
@@ -113,16 +113,16 @@ impl Wallet {
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) {
-                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
-            }
+        let quote_info = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-            quote.clone()
-        } else {
-            return Err(Error::UnknownQuote);
-        };
+        ensure_cdk!(
+            quote_info.expiry.gt(&unix_time()),
+            Error::ExpiredQuote(quote_info.expiry, unix_time())
+        );
 
         let proofs_total = proofs.total_amount()?;
         if proofs_total < quote_info.amount + quote_info.fee_reserve {
@@ -251,7 +251,7 @@ impl Wallet {
     /// ```rust, no_run
     ///  use std::sync::Arc;
     ///
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use rand::Rng;
@@ -262,7 +262,7 @@ impl Wallet {
     ///  let mint_url = "https://testnut.cashu.space";
     ///  let unit = CurrencyUnit::Sat;
     ///
-    ///  let localstore = WalletMemoryDatabase::default();
+    ///  let localstore = memory::empty().await?;
     ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
     ///  let quote = wallet.melt_quote(bolt11, None).await?;
@@ -274,17 +274,16 @@ impl Wallet {
     /// }
     #[instrument(skip(self))]
     pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
-        let quote_info = self.localstore.get_melt_quote(quote_id).await?;
+        let quote_info = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-        let quote_info = if let Some(quote) = quote_info {
-            if quote.expiry.le(&unix_time()) {
-                return Err(Error::ExpiredQuote(quote.expiry, unix_time()));
-            }
-
-            quote.clone()
-        } else {
-            return Err(Error::UnknownQuote);
-        };
+        ensure_cdk!(
+            quote_info.expiry.gt(&unix_time()),
+            Error::ExpiredQuote(quote_info.expiry, unix_time())
+        );
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 

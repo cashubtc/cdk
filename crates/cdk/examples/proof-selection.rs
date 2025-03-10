@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk::Amount;
+use cdk_sqlite::wallet::memory;
 use rand::Rng;
 
 #[tokio::main]
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let unit = CurrencyUnit::Sat;
 
     // Initialize the memory store
-    let localstore = WalletMemoryDatabase::default();
+    let localstore = memory::empty().await?;
 
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;

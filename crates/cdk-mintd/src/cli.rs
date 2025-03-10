@@ -12,6 +12,9 @@ pub struct CLIArgs {
         required = false
     )]
     pub work_dir: Option<PathBuf>,
+    #[cfg(feature = "sqlcipher")]
+    #[arg(short, long, help = "Database password for sqlcipher", required = true)]
+    pub password: String,
     #[arg(
         short,
         long,

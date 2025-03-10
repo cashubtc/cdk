@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
-use cdk::nuts::{CurrencyUnit, PublicKey};
+#[cfg(feature = "fakewallet")]
+use cdk::nuts::CurrencyUnit;
+use cdk::nuts::PublicKey;
 use cdk::Amount;
 use cdk_axum::cache;
 use config::{Config, ConfigError, File};
@@ -46,11 +48,13 @@ impl std::fmt::Debug for Info {
 pub enum LnBackend {
     #[default]
     None,
+    #[cfg(feature = "cln")]
     Cln,
-    Strike,
+    #[cfg(feature = "lnbits")]
     LNbits,
+    #[cfg(feature = "fakewallet")]
     FakeWallet,
-    Phoenixd,
+    #[cfg(feature = "lnd")]
     Lnd,
 }
 
@@ -59,11 +63,13 @@ impl std::str::FromStr for LnBackend {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            #[cfg(feature = "cln")]
             "cln" => Ok(LnBackend::Cln),
-            "strike" => Ok(LnBackend::Strike),
+            #[cfg(feature = "lnbits")]
             "lnbits" => Ok(LnBackend::LNbits),
+            #[cfg(feature = "fakewallet")]
             "fakewallet" => Ok(LnBackend::FakeWallet),
-            "phoenixd" => Ok(LnBackend::Phoenixd),
+            #[cfg(feature = "lnd")]
             "lnd" => Ok(LnBackend::Lnd),
             _ => Err(format!("Unknown Lightning backend: {}", s)),
         }
@@ -93,12 +99,7 @@ impl Default for Ln {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Strike {
-    pub api_key: String,
-    pub supported_units: Option<Vec<CurrencyUnit>>,
-}
-
+#[cfg(feature = "lnbits")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LNbits {
     pub admin_api_key: String,
@@ -108,6 +109,7 @@ pub struct LNbits {
     pub reserve_fee_min: Amount,
 }
 
+#[cfg(feature = "cln")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
@@ -117,6 +119,7 @@ pub struct Cln {
     pub reserve_fee_min: Amount,
 }
 
+#[cfg(feature = "lnd")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Lnd {
     pub address: String,
@@ -126,15 +129,7 @@ pub struct Lnd {
     pub reserve_fee_min: Amount,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Phoenixd {
-    pub api_password: String,
-    pub api_url: String,
-    pub bolt12: bool,
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
-}
-
+#[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
@@ -146,6 +141,7 @@ pub struct FakeWallet {
     pub max_delay_time: u64,
 }
 
+#[cfg(feature = "fakewallet")]
 impl Default for FakeWallet {
     fn default() -> Self {
         Self {
@@ -159,10 +155,12 @@ impl Default for FakeWallet {
 }
 
 // Helper functions to provide default values
+#[cfg(feature = "fakewallet")]
 fn default_min_delay_time() -> u64 {
     1
 }
 
+#[cfg(feature = "fakewallet")]
 fn default_max_delay_time() -> u64 {
     3
 }
@@ -172,6 +170,7 @@ fn default_max_delay_time() -> u64 {
 pub enum DatabaseEngine {
     #[default]
     Sqlite,
+    #[cfg(feature = "redb")]
     Redb,
 }
 
@@ -181,6 +180,7 @@ impl std::str::FromStr for DatabaseEngine {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "sqlite" => Ok(DatabaseEngine::Sqlite),
+            #[cfg(feature = "redb")]
             "redb" => Ok(DatabaseEngine::Redb),
             _ => Err(format!("Unknown database engine: {}", s)),
         }
@@ -198,11 +198,13 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
-    pub strike: Option<Strike>,
+    #[cfg(feature = "lnbits")]
     pub lnbits: Option<LNbits>,
-    pub phoenixd: Option<Phoenixd>,
+    #[cfg(feature = "lnd")]
     pub lnd: Option<Lnd>,
+    #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub database: Database,
     #[cfg(feature = "management-rpc")]
@@ -227,6 +229,8 @@ pub struct MintInfo {
     pub contact_nostr_public_key: Option<String>,
     /// Contact email
     pub contact_email: Option<String>,
+    /// URL to the terms of service
+    pub tos_url: Option<String>,
 }
 
 #[cfg(feature = "management-rpc")]
@@ -287,28 +291,24 @@ impl Settings {
 
         match settings.ln.ln_backend {
             LnBackend::None => panic!("Ln backend must be set"),
+            #[cfg(feature = "cln")]
             LnBackend::Cln => assert!(
                 settings.cln.is_some(),
                 "CLN backend requires a valid config."
             ),
-            LnBackend::Strike => assert!(
-                settings.strike.is_some(),
-                "Strike backend requires a valid config."
-            ),
+            #[cfg(feature = "lnbits")]
             LnBackend::LNbits => assert!(
                 settings.lnbits.is_some(),
                 "LNbits backend requires a valid config"
             ),
-            LnBackend::Phoenixd => assert!(
-                settings.phoenixd.is_some(),
-                "Phoenixd backend requires a valid config"
-            ),
+            #[cfg(feature = "lnd")]
             LnBackend::Lnd => {
                 assert!(
                     settings.lnd.is_some(),
                     "LND backend requires a valid config."
                 )
             }
+            #[cfg(feature = "fakewallet")]
             LnBackend::FakeWallet => assert!(
                 settings.fake_wallet.is_some(),
                 "FakeWallet backend requires a valid config."

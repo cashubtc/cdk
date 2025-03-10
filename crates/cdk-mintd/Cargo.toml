@@ -7,53 +7,54 @@ license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 description = "CDK mint binary"
+rust-version = "1.75.0"
 
 [features]
-default = ["management-rpc"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet"]
+# Ensure at least one lightning backend is enabled
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 management-rpc = ["cdk-mint-rpc"]
+# MSRV is not commited to with redb enabled
+redb = ["dep:cdk-redb"]
+sqlcipher = ["cdk-sqlite/sqlcipher"]
+cln = ["dep:cdk-cln"]
+lnd = ["dep:cdk-lnd"]
+lnbits = ["dep:cdk-lnbits"]
+fakewallet = ["dep:cdk-fake-wallet"]
 
 [dependencies]
-anyhow = "1"
-axum = "0.6.20"
-cdk = { path = "../cdk", version = "0.7.1", default-features = false, features = [
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+cdk = { workspace = true, features = [
     "mint",
 ] }
-cdk-redb = { path = "../cdk-redb", version = "0.7.1", default-features = false, features = [
+cdk-redb = { workspace = true, features = [
+    "mint",
+], optional = true }
+cdk-sqlite = { workspace = true, features = [
     "mint",
 ] }
-cdk-sqlite = { path = "../cdk-sqlite", version = "0.7.1", default-features = false, features = [
-    "mint",
-] }
-cdk-cln = { path = "../cdk-cln", version = "0.7.1", default-features = false }
-cdk-lnbits = { path = "../cdk-lnbits", version = "0.7.1", default-features = false }
-cdk-phoenixd = { path = "../cdk-phoenixd", version = "0.7.1", default-features = false }
-cdk-lnd = { path = "../cdk-lnd", version = "0.7.1", default-features = false }
-cdk-fake-wallet = { path = "../cdk-fake-wallet", version = "0.7.1", default-features = false }
-cdk-strike = { path = "../cdk-strike", version = "0.7.1" }
-cdk-axum = { path = "../cdk-axum", version = "0.7.1", default-features = false }
-cdk-mint-rpc = { path = "../cdk-mint-rpc", version = "0.7.1", default-features = false, optional = true }
+cdk-cln = { workspace = true, optional = true }
+cdk-lnbits = { workspace = true, optional = true }
+cdk-lnd = { workspace = true, optional = true }
+cdk-fake-wallet = { workspace = true, optional = true }
+cdk-axum.workspace = true
+cdk-mint-rpc = { workspace = true, optional = true }
 config = { version = "0.13.3", features = ["toml"] }
-clap = { version = "~4.0.32", features = ["derive"] }
-bitcoin = { version = "0.32.2", features = [
-    "base64",
-    "serde",
-    "rand",
-    "rand-std",
-] }
-tokio = { version = "1", default-features = false, features = ["signal"] }
-tracing = { version = "0.1", default-features = false, features = [
-    "attributes",
-    "log",
-] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-futures = { version = "0.3.28", default-features = false }
-serde = { version = "1", default-features = false, features = ["derive"] }
-bip39 = { version = "2.0", features = ["rand"] }
-tower-http = { version = "0.4.4", features = ["cors", "compression-full"] }
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+clap.workspace = true
+bitcoin.workspace = true
+tokio = { workspace = true, default-features = false, features = ["signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures.workspace = true
+serde.workspace = true
+bip39.workspace = true
+tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
+tower = "0.5.2"
+lightning-invoice.workspace = true
 home = "0.5.5"
-url = "2.3"
-utoipa = { version = "4", optional = true }
-utoipa-swagger-ui = { version = "4", features = ["axum"], optional = true }
+url.workspace = true
+utoipa = { workspace = true, optional = true }
+utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }

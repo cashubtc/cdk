@@ -6,18 +6,18 @@ authors = ["CDK Developers"]
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0" # MSRV
+rust-version = "1.75.0" # MSRV
 description = "CDK ln backend for lnbits"
 
 [dependencies]
-async-trait = "0.1"
-anyhow = "1"
-axum = "0.6.20"
-bitcoin = { version = "0.32.2", default-features = false }
-cdk = { path = "../cdk", version = "0.7.1", default-features = false, features = ["mint"] }
-futures = { version = "0.3.28", default-features = false }
-tokio = { version = "1", default-features = false }
-tokio-util = { version = "0.7.11", default-features = false }
-tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
-thiserror = "1"
-lnbits-rs = "0.3.0"
+async-trait.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+bitcoin.workspace = true
+cdk = { workspace = true, features = ["mint"] }
+futures.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+lnbits-rs = "0.4.0"

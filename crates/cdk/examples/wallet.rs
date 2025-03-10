@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::{SendOptions, Wallet};
 use cdk::Amount;
+use cdk_sqlite::wallet::memory;
 use rand::Rng;
 use tokio::time::sleep;
 
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let amount = Amount::from(10);
 
     // Initialize the memory store
-    let localstore = WalletMemoryDatabase::default();
+    let localstore = memory::empty().await?;
 
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;

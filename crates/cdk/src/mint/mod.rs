@@ -22,7 +22,7 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
 use crate::util::unix_time;
-use crate::Amount;
+use crate::{ensure_cdk, Amount};
 
 mod builder;
 mod check_spendable;
@@ -139,8 +139,6 @@ impl Mint {
     /// Wait for any invoice to be paid
     /// For each backend starts a task that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
-    #[allow(clippy::incompatible_msrv)]
-    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
     pub async fn wait_for_paid_invoices(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
         let mint_arc = Arc::new(self.clone());
 
@@ -242,24 +240,17 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownKeySet)?;
 
-        let active = self
+        // Check that the keyset is active and should be used to sign
+        let active_id = self
             .localstore
             .get_active_keyset_id(&keyset_info.unit)
             .await?
             .ok_or(Error::InactiveKeyset)?;
-
-        // Check that the keyset is active and should be used to sign
-        if keyset_info.id.ne(&active) {
-            return Err(Error::InactiveKeyset);
-        }
+        ensure_cdk!(keyset_info.id.eq(&active_id), Error::InactiveKeyset);
 
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        let key_pair = match keyset.keys.get(amount) {
-            Some(key_pair) => key_pair,
-            None => return Err(Error::AmountKey),
-        };
+        let key_pair = keyset.keys.get(amount).ok_or(Error::AmountKey)?;
 
         let c = sign_message(&key_pair.secret_key, blinded_secret)?;
 
@@ -300,11 +291,7 @@ impl Mint {
         self.ensure_keyset_loaded(&proof.keyset_id).await?;
         let keysets = self.keysets.read().await;
         let keyset = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        let keypair = match keyset.keys.get(&proof.amount) {
-            Some(key_pair) => key_pair,
-            None => return Err(Error::AmountKey),
-        };
+        let keypair = keyset.keys.get(&proof.amount).ok_or(Error::AmountKey)?;
 
         verify_message(&keypair.secret_key, proof.c, proof.secret.as_bytes())?;
 
@@ -503,12 +490,12 @@ mod tests {
     use std::str::FromStr;
 
     use bitcoin::Network;
-    use cdk_common::common::{LnKey, QuoteTTL};
+    use cdk_common::common::LnKey;
+    use cdk_sqlite::mint::memory::new_with_state;
     use secp256k1::Secp256k1;
     use uuid::Uuid;
 
     use super::*;
-    use crate::cdk_database::mint_memory::MintMemoryDatabase;
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
@@ -604,32 +591,25 @@ mod tests {
         melt_quotes: Vec<MeltQuote>,
         pending_proofs: Proofs,
         spent_proofs: Proofs,
-        blinded_signatures: HashMap<[u8; 33], BlindSignature>,
-        quote_proofs: HashMap<Uuid, Vec<PublicKey>>,
-        quote_signatures: HashMap<Uuid, Vec<BlindSignature>>,
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         melt_requests: Vec<(MeltBolt11Request<Uuid>, LnKey)>,
-        quote_ttl: QuoteTTL,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
         let localstore = Arc::new(
-            MintMemoryDatabase::new(
+            new_with_state(
                 config.active_keysets,
                 config.keysets,
                 config.mint_quotes,
                 config.melt_quotes,
                 config.pending_proofs,
                 config.spent_proofs,
-                config.quote_proofs,
-                config.blinded_signatures,
-                config.quote_signatures,
                 config.melt_requests,
                 config.mint_info,
-                config.quote_ttl,
             )
+            .await
             .unwrap(),
         );
 

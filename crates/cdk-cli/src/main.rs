@@ -17,6 +17,7 @@ use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
+mod nostr_storage;
 mod sub_commands;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-cli";
@@ -31,6 +32,10 @@ struct Cli {
     /// Database engine to use (sqlite/redb)
     #[arg(short, long, default_value = "sqlite")]
     engine: String,
+    /// Database password for sqlcipher
+    #[cfg(feature = "sqlcipher")]
+    #[arg(long)]
+    password: Option<String>,
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
@@ -106,7 +111,15 @@ async fn main() -> Result<()> {
         match args.engine.as_str() {
             "sqlite" => {
                 let sql_path = work_dir.join("cdk-cli.sqlite");
+                #[cfg(not(feature = "sqlcipher"))]
                 let sql = WalletSqliteDatabase::new(&sql_path).await?;
+                #[cfg(feature = "sqlcipher")]
+                let sql = {
+                    match args.password {
+                        Some(pass) => WalletSqliteDatabase::new(&sql_path, pass).await?,
+                        None => bail!("Missing database password"),
+                    }
+                };
 
                 sql.migrate().await;
 
@@ -176,6 +189,7 @@ async fn main() -> Result<()> {
                 localstore,
                 &mnemonic.to_seed_normalized(""),
                 sub_command_args,
+                &work_dir,
             )
             .await
         }

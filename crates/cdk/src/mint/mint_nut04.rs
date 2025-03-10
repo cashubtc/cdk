@@ -9,7 +9,7 @@ use super::{
 use crate::nuts::MintQuoteState;
 use crate::types::LnKey;
 use crate::util::unix_time;
-use crate::{Amount, Error};
+use crate::{ensure_cdk, Amount, Error};
 
 impl Mint {
     /// Checks that minting is enabled, request is supported unit and within range
@@ -21,38 +21,28 @@ impl Mint {
         let mint_info = self.localstore.get_mint_info().await?;
         let nut04 = &mint_info.nuts.nut04;
 
-        if nut04.disabled {
-            return Err(Error::MintingDisabled);
-        }
+        ensure_cdk!(!nut04.disabled, Error::MintingDisabled);
 
-        match nut04.get_settings(unit, &PaymentMethod::Bolt11) {
-            Some(settings) => {
-                if settings
-                    .max_amount
-                    .map_or(false, |max_amount| amount > max_amount)
-                {
-                    return Err(Error::AmountOutofLimitRange(
-                        settings.min_amount.unwrap_or_default(),
-                        settings.max_amount.unwrap_or_default(),
-                        amount,
-                    ));
-                }
+        let settings = nut04
+            .get_settings(unit, &PaymentMethod::Bolt11)
+            .ok_or(Error::UnsupportedUnit)?;
 
-                if settings
-                    .min_amount
-                    .map_or(false, |min_amount| amount < min_amount)
-                {
-                    return Err(Error::AmountOutofLimitRange(
-                        settings.min_amount.unwrap_or_default(),
-                        settings.max_amount.unwrap_or_default(),
-                        amount,
-                    ));
-                }
-            }
-            None => {
-                return Err(Error::UnsupportedUnit);
-            }
-        }
+        let is_above_max = settings
+            .max_amount
+            .map_or(false, |max_amount| amount > max_amount);
+        let is_below_min = settings
+            .min_amount
+            .map_or(false, |min_amount| amount < min_amount);
+        let is_out_of_range = is_above_max || is_below_min;
+
+        ensure_cdk!(
+            !is_out_of_range,
+            Error::AmountOutofLimitRange(
+                settings.min_amount.unwrap_or_default(),
+                settings.max_amount.unwrap_or_default(),
+                amount,
+            )
+        );
 
         Ok(())
     }
@@ -157,6 +147,8 @@ impl Mint {
             state,
             expiry: Some(quote.expiry),
             pubkey: quote.pubkey,
+            amount: Some(quote.amount),
+            unit: Some(quote.unit.clone()),
         })
     }
 
@@ -263,12 +255,11 @@ impl Mint {
         &self,
         mint_request: nut04::MintBolt11Request<Uuid>,
     ) -> Result<nut04::MintBolt11Response, Error> {
-        let mint_quote =
-            if let Some(mint_quote) = self.localstore.get_mint_quote(&mint_request.quote).await? {
-                mint_quote
-            } else {
-                return Err(Error::UnknownQuote);
-            };
+        let mint_quote = self
+            .localstore
+            .get_mint_quote(&mint_request.quote)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
         let state = self
             .localstore
@@ -329,9 +320,7 @@ impl Mint {
             ));
         }
 
-        if unit != mint_quote.unit {
-            return Err(Error::UnsupportedUnit);
-        }
+        ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
 
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
