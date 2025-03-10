@@ -30,7 +30,7 @@ pub struct ReceiveSubCommand {
     /// Nostr relay
     #[arg(short, long, action = clap::ArgAction::Append)]
     relay: Vec<String>,
-    /// Unix time to to query nostr from
+    /// Unix time to query nostr from
     #[arg(long)]
     since: Option<u64>,
     /// Preimage
