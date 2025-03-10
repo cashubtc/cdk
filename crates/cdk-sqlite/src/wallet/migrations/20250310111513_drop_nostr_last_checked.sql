@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS nostr_last_checked;
