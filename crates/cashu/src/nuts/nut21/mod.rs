@@ -1,9 +1,9 @@
-//! XX Clear Auth
+//! 21 Clear Auth
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// NUTXX Error
+/// NUT21 Error
 #[derive(Debug, Error)]
 pub enum Error {}
 
