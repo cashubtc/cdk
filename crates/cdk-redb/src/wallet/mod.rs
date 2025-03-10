@@ -40,7 +40,6 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
-const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 
 const DATABASE_VERSION: u32 = 2;
 
@@ -133,7 +132,6 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
-                        let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
 
