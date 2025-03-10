@@ -11,6 +11,7 @@ use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use futures::StreamExt;
+#[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
 use tokio::sync::{Notify, RwLock};
@@ -81,10 +82,12 @@ impl Mint {
         Self::new_internal(
             seed,
             localstore,
+            #[cfg(feature = "auth")]
             None,
             ln,
             supported_units,
             custom_paths,
+            #[cfg(feature = "auth")]
             None,
         )
         .await
@@ -120,7 +123,7 @@ impl Mint {
     async fn new_internal(
         seed: &[u8],
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
-        auth_localstore: Option<
+        #[cfg(feature = "auth")] auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,
         ln: HashMap<
@@ -129,7 +132,7 @@ impl Mint {
         >,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
-        open_id_discovery: Option<String>,
+        #[cfg(feature = "auth")] open_id_discovery: Option<String>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
@@ -170,8 +173,8 @@ impl Mint {
             }
         }
 
+        #[cfg(feature = "auth")]
         let oidc_client = if let Some(openid_discovery) = open_id_discovery {
-            #[cfg(feature = "auth")]
             {
                 tracing::info!("Auth enabled creating auth keysets");
                 let auth_localstore = auth_localstore
@@ -226,6 +229,7 @@ impl Mint {
             oidc_client,
             ln,
             custom_paths,
+            #[cfg(feature = "auth")]
             auth_localstore,
             keysets,
         })
@@ -234,9 +238,11 @@ impl Mint {
     /// Get mint info
     #[instrument(skip_all)]
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
-        let mut mint_info = self.localstore.get_mint_info().await?;
+        let mint_info = self.localstore.get_mint_info().await?;
 
-        if let Some(auth_db) = self.auth_localstore.as_ref() {
+        #[cfg(feature = "auth")]
+        let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
+            let mut mint_info = mint_info;
             let auth_endpoints = auth_db.get_auth_for_endpoints().await?;
 
             let mut clear_auth_endpoints: Vec<ProtectedEndpoint> = vec![];
@@ -263,7 +269,10 @@ impl Mint {
                 a.protected_endpoints = blind_auth_endpoints;
                 a
             });
-        }
+            mint_info
+        } else {
+            mint_info
+        };
 
         Ok(mint_info)
     }

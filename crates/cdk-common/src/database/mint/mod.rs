@@ -14,8 +14,10 @@ use crate::nuts::{
     Proofs, PublicKey, State,
 };
 
+#[cfg(feature = "auth")]
 mod auth;
 
+#[cfg(feature = "auth")]
 pub use auth::MintAuthDatabase;
 
 /// Mint Database trait
