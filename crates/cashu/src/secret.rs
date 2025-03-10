@@ -20,6 +20,7 @@ impl<'de> Deserialize<'de> for Secret {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
+        // Rust Strings can only contain UTF-8 chars. In case of a non-UTF-8 char, String instantiation above would error out.
         if s.chars().count() > crate::nuts::nut00::MAX_SECRET_LENGTH {
             return Err(serde::de::Error::custom(
                 "Secret exceeds maximum allowed length",
