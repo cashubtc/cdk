@@ -36,6 +36,7 @@ impl Settings {
 
 /// List of the methods and paths that are protected
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ProtectedEndpoint {
     /// HTTP Method
     pub method: Method,
@@ -53,6 +54,7 @@ impl ProtectedEndpoint {
 /// HTTP method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Method {
     /// Get
     Get,
@@ -62,6 +64,7 @@ pub enum Method {
 
 /// Route path
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum RoutePath {
     /// Bolt11 Mint Quote
     #[serde(rename = "/v1/mint/quote/bolt11")]

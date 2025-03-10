@@ -760,9 +760,9 @@ mod tests {
         Mint::new(
             config.seed,
             localstore,
-            None,
             HashMap::new(),
             config.supported_units,
+            HashMap::new(),
         )
         .await
     }

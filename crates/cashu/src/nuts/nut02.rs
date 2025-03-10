@@ -49,6 +49,7 @@ pub enum Error {
 
 /// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Current Version 00
     Version00,
@@ -85,6 +86,7 @@ impl fmt::Display for KeySetVersion {
 /// which mint or keyset it was generated from.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Id {
     version: KeySetVersion,
     id: [u8; Self::BYTELEN],
