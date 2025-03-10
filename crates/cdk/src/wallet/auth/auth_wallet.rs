@@ -13,8 +13,8 @@ use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
-    AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets, Proofs,
-    ProtectedEndpoint, State,
+    nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets,
+    Proofs, ProtectedEndpoint, State,
 };
 use crate::types::ProofInfo;
 use crate::wallet::mint_connector::AuthHttpClient;
@@ -291,6 +291,22 @@ impl AuthWallet {
         let mint_res = self.client.post_mint_blind_auth(request).await?;
 
         let keys = self.get_keyset_keys(active_keyset_id).await?;
+
+        // Verify the signature DLEQ is valid
+        {
+            for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
+                let keys = self.get_keyset_keys(sig.keyset_id).await?;
+                let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
+                match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
+                    Ok(_) => (),
+                    Err(nut12::Error::MissingDleqProof) => {
+                        // TODO: Do we want to error here and require dleq proofs?
+                        tracing::warn!("Signature for bat returned without dleq proof.");
+                    }
+                    Err(_) => return Err(Error::CouldNotVerifyDleq),
+                }
+            }
+        }
 
         let proofs = construct_proofs(
             mint_res.signatures,

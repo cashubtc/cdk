@@ -85,6 +85,11 @@ itest-payment-processor ln:
   #!/usr/bin/env bash
   ./misc/mintd_payment_processor.sh "{{ln}}"
 
+  
+fake-auth-mint-itest db openid_discovery:
+  #!/usr/bin/env bash
+  ./misc/fake_auth_itests.sh "{{db}}" "{{openid_discovery}}"
+
 run-examples:
   cargo r --example p2pk
   cargo r --example mint-token
