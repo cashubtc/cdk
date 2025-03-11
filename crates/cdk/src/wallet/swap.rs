@@ -210,7 +210,7 @@ impl Wallet {
 
         let ys: Vec<PublicKey> = proofs.ys()?;
         self.localstore
-            .update_proofs_state(ys, State::Pending)
+            .update_proofs_state(ys, State::Reserved)
             .await?;
 
         let fee = self.get_proofs_fee(&proofs).await?;
