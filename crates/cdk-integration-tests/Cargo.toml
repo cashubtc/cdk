@@ -36,7 +36,7 @@ serde.workspace = true
 serde_json.workspace = true
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
 ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "ed24716" }
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
+lightning-invoice.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio-tungstenite.workspace = true
