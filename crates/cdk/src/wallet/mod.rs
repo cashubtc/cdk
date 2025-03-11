@@ -218,13 +218,14 @@ impl Wallet {
     /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
-        self.mint_url = new_mint_url.clone();
-        // Where the mint_url is in the database it must be updated
+        // Update the mint URL in the wallet DB
         self.localstore
-            .update_mint_url(self.mint_url.clone(), new_mint_url)
+            .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
 
-        self.localstore.remove_mint(self.mint_url.clone()).await?;
+        // Update the mint URL in the wallet struct field
+        self.mint_url = new_mint_url;
+
         Ok(())
     }
 

@@ -729,7 +729,7 @@ WHERE id=?;
         )
         .bind(count as i64)
         .bind(keyset_id.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(Error::from)?;
 

@@ -78,6 +78,12 @@ impl MintBuilder {
         self
     }
 
+    /// Set initial mint URLs
+    pub fn with_urls(mut self, urls: Vec<String>) -> Self {
+        self.mint_info.urls = Some(urls);
+        self
+    }
+
     /// Set icon url
     pub fn with_icon_url(mut self, icon_url: String) -> Self {
         self.mint_info.icon_url = Some(icon_url);
