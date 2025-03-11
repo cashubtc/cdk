@@ -20,7 +20,7 @@ use cdk_common::{
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{Executor, Pool, Row, Sqlite};
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
@@ -37,11 +37,14 @@ pub struct MintSqliteDatabase {
 
 impl MintSqliteDatabase {
     /// Check if any proofs are spent
-    async fn check_for_spent_proofs(
+    async fn check_for_spent_proofs<'e, 'c: 'e, E>(
         &self,
-        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        transaction: E,
         ys: &[PublicKey],
-    ) -> Result<bool, database::Error> {
+    ) -> Result<bool, database::Error>
+    where
+        E: Executor<'c, Database = Sqlite>,
+    {
         if ys.is_empty() {
             return Ok(false);
         }
@@ -59,7 +62,7 @@ impl MintSqliteDatabase {
             .fold(sqlx::query(&check_sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
             })
-            .fetch_all(&mut *transaction)
+            .fetch_all(transaction)
             .await
             .map_err(Error::from)?
             .len();
@@ -111,7 +114,7 @@ WHERE unit IS ?;
         "#,
         )
         .bind(unit.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match update_res {
@@ -136,7 +139,7 @@ AND id IS ?;
         )
         .bind(unit.to_string())
         .bind(id.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match update_res {
@@ -168,7 +171,7 @@ AND unit IS ?
         "#,
         )
         .bind(unit.to_string())
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         let rec = match rec {
@@ -207,7 +210,7 @@ FROM keyset
 WHERE active = 1
         "#,
         )
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await;
 
         match recs {
@@ -268,7 +271,7 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.expiry as i64)
         .bind(quote.request_lookup_id)
         .bind(quote.pubkey.map(|p| p.to_string()))
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -297,7 +300,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
@@ -333,7 +336,7 @@ WHERE request=?;
         "#,
         )
         .bind(request)
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
@@ -370,7 +373,7 @@ WHERE request_lookup_id=?;
         "#,
         )
         .bind(request_lookup_id)
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
@@ -409,7 +412,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
         let quote = match rec {
             Ok(row) => sqlite_row_to_mint_quote(row)?,
@@ -430,7 +433,7 @@ WHERE id=?;
         )
         .bind(state.to_string())
         .bind(quote_id.as_hyphenated())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match update {
@@ -457,7 +460,7 @@ SELECT *
 FROM mint_quote
         "#,
         )
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await;
 
         match rec {
@@ -494,7 +497,7 @@ WHERE state = ?
         "#,
         )
         .bind(state.to_string())
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await;
 
         match rec {
@@ -528,7 +531,7 @@ WHERE id=?
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -586,7 +589,7 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.payment_preimage)
         .bind(quote.request_lookup_id)
         .bind(quote.msat_to_pay.map(|a| u64::from(a) as i64))
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -615,7 +618,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
@@ -648,7 +651,7 @@ SELECT *
 FROM melt_quote
         "#,
         )
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await
         .map_err(Error::from);
 
@@ -685,7 +688,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         let quote = match rec {
@@ -707,7 +710,7 @@ WHERE id=?;
         )
         .bind(state.to_string())
         .bind(quote_id.as_hyphenated())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match rec {
@@ -736,7 +739,7 @@ WHERE id=?
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -782,7 +785,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(keyset.max_order)
         .bind(keyset.input_fee_ppk as i64)
             .bind(keyset.derivation_path_index)
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -811,7 +814,7 @@ WHERE id=?;
         "#,
         )
         .bind(id.to_string())
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
@@ -843,7 +846,7 @@ SELECT *
 FROM keyset;
         "#,
         )
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await
         .map_err(Error::from);
 
@@ -883,7 +886,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
             .bind("UNSPENT")
             .bind(quote_id.map(|q| q.hyphenated()))
-            .execute(&mut transaction)
+            .execute(&mut *transaction)
             .await;
 
             // We still need to check for foreign key constraint errors
@@ -917,7 +920,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
-        if self.check_for_spent_proofs(&mut transaction, ys).await? {
+        if self.check_for_spent_proofs(&mut *transaction, ys).await? {
             transaction.rollback().await.map_err(Error::from)?;
             return Err(Self::Err::AttemptRemoveSpentProof);
         }
@@ -935,7 +938,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .fold(sqlx::query(&delete_sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
             })
-            .execute(&mut transaction)
+            .execute(&mut *transaction)
             .await
             .map_err(Error::from)?;
 
@@ -956,7 +959,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .fold(sqlx::query(&sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
             })
-            .fetch_all(&mut transaction)
+            .fetch_all(&mut *transaction)
             .await
             .map_err(|err| {
                 tracing::error!("SQLite could not get state of proof: {err:?}");
@@ -984,7 +987,7 @@ WHERE quote_id=?;
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await;
 
         let ys = match rec {
@@ -1029,7 +1032,7 @@ WHERE quote_id=?;
             .fold(sqlx::query(&sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
             })
-            .fetch_all(&mut transaction)
+            .fetch_all(&mut *transaction)
             .await
             .map_err(|err| {
                 tracing::error!("SQLite could not get state of proof: {err:?}");
@@ -1064,7 +1067,7 @@ WHERE keyset_id=?;
         "#,
         )
         .bind(keyset_id.to_string())
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await;
 
         match rec {
@@ -1110,7 +1113,7 @@ WHERE keyset_id=?;
             .fold(sqlx::query(&sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
             })
-            .fetch_all(&mut transaction)
+            .fetch_all(&mut *transaction)
             .await
             .map_err(|err| {
                 tracing::error!("SQLite could not get state of proof: {err:?}");
@@ -1157,7 +1160,7 @@ WHERE keyset_id=?;
                 sqlx::query(&update_sql).bind(proofs_state.to_string()),
                 |query, y| query.bind(y.to_bytes().to_vec()),
             )
-            .execute(&mut transaction)
+            .execute(&mut *transaction)
             .await
             .map_err(|err| {
                 tracing::error!("SQLite could not update proof state: {err:?}");
@@ -1191,7 +1194,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(quote_id.map(|q| q.hyphenated()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()))
-            .execute(&mut transaction)
+            .execute(&mut *transaction)
             .await;
 
             if let Err(err) = res {
@@ -1224,7 +1227,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .fold(sqlx::query(&sql), |query, y| {
                 query.bind(y.to_bytes().to_vec())
             })
-            .fetch_all(&mut transaction)
+            .fetch_all(&mut *transaction)
             .await
             .map_err(|err| {
                 tracing::error!("SQLite could not get state of proof: {err:?}");
@@ -1258,7 +1261,7 @@ WHERE keyset_id=?;
         "#,
         )
         .bind(keyset_id.to_string())
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await;
 
         match rec {
@@ -1306,7 +1309,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(serde_json::to_string(&melt_request.outputs)?)
         .bind(ln_key.method.to_string())
         .bind(ln_key.unit.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -1339,7 +1342,7 @@ WHERE id=?;
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
@@ -1382,7 +1385,7 @@ WHERE quote_id=?;
         "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_all(&mut transaction)
+        .fetch_all(&mut *transaction)
         .await;
 
         match recs {
@@ -1420,7 +1423,7 @@ ON CONFLICT(id) DO UPDATE SET
         )
         .bind("mint_info")
         .bind(serde_json::to_string(&mint_info)?)
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -1449,7 +1452,7 @@ WHERE id=?;
         "#,
         )
         .bind("mint_info")
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
@@ -1494,7 +1497,7 @@ ON CONFLICT(id) DO UPDATE SET
         )
         .bind("quote_ttl")
         .bind(serde_json::to_string(&quote_ttl)?)
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await;
 
         match res {
@@ -1523,7 +1526,7 @@ WHERE id=?;
         "#,
         )
         .bind("quote_ttl")
-        .fetch_one(&mut transaction)
+        .fetch_one(&mut *transaction)
         .await;
 
         match rec {
