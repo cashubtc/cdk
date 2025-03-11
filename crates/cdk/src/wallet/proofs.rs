@@ -117,7 +117,7 @@ impl Wallet {
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
-                Some(vec![State::Pending, State::Reserved]),
+                Some(vec![State::Pending, State::Reserved, State::PendingSpent]),
                 None,
             )
             .await?;
