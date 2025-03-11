@@ -20,14 +20,14 @@ sqlcipher = ["libsqlite3-sys"]
 async-trait.workspace = true
 cdk-common.workspace = true
 bitcoin.workspace = true
-sqlx = { version = "0.6.3", default-features = false, features = [
+sqlx = { version = "0.7.4", default-features = false, features = [
     "runtime-tokio-rustls",
     "sqlite", 
     "macros",
     "migrate",
     "uuid",
 ] }
-libsqlite3-sys = { version = "0.24.1", features = ["bundled-sqlcipher"], optional = true }
+libsqlite3-sys = { version = "0.27.0", features = ["bundled-sqlcipher"], optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
