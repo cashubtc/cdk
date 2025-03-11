@@ -48,6 +48,7 @@ jobs:
     name: "Run examples"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
         build-args:
@@ -73,6 +74,7 @@ jobs:
     name: "Stable build, clippy and test"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: pre-commit-checks
     strategy:
       matrix:
         build-args:
@@ -144,6 +146,7 @@ jobs:
     name: "Integration regtest tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [pre-commit-checks, clippy, pure-itest, fake-wallet-itest]
     strategy:
       matrix:
         build-args:
@@ -173,6 +176,7 @@ jobs:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
         build-args:
@@ -202,6 +206,7 @@ jobs:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [pre-commit-checks, clippy]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -218,6 +223,8 @@ jobs:
   payment-processor-itests:
     name: "Payment processor tests"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [pre-commit-checks, clippy, pure-itest, fake-wallet-itest, itest]
     strategy:
       matrix:
         ln: 
@@ -242,6 +249,7 @@ jobs:
     name: "MSRV build"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [pre-commit-checks, clippy, pure-itest]
     strategy:
       matrix:
         build-args:
@@ -277,6 +285,7 @@ jobs:
     name: Check WASM
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [pre-commit-checks, clippy, pure-itest]
     strategy:
       matrix:
         rust:
@@ -306,6 +315,7 @@ jobs:
     name: Check WASM
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [pre-commit-checks, clippy, msrv-build]
     strategy:
       matrix:
         rust:
