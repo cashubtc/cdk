@@ -706,7 +706,7 @@ WHERE y IS ?;
             )
             .bind(state.to_string())
             .bind(y.to_bytes().to_vec())
-            .execute(&mut transaction)
+            .execute(&mut *transaction)
             .await
             .map_err(Error::from)?;
         }
