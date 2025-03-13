@@ -24,6 +24,7 @@
 - Compile-time error when no lightning backend features are enabled ([thesimplekid]).
 - Add support for sqlcipher ([benthecarman]).
 - Payment processor ([thesimplekid]).
+- Payment request builder ([thesimplekid]).
 ### Removed
 - Remove support for Memory Database in cdk ([crodas]).
 - Remove `AmountStr` ([crodas]).
