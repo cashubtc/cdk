@@ -49,11 +49,27 @@ impl fmt::Display for TransportType {
     }
 }
 
-impl FromStr for Transport {
-    type Err = serde_json::Error;
+impl FromStr for TransportType {
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(s)
+        match s.to_lowercase().as_str() {
+            "nostr" => Ok(Self::Nostr),
+            "post" => Ok(Self::HttpPost),
+            _ => Err(Error::InvalidPrefix),
+        }
+    }
+}
+
+impl FromStr for Transport {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let decode_config = general_purpose::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
+        let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
+
+        Ok(ciborium::from_reader(&decoded[..])?)
     }
 }
 
@@ -69,6 +85,65 @@ pub struct Transport {
     /// Tags
     #[serde(rename = "g")]
     pub tags: Option<Vec<Vec<String>>>,
+}
+
+impl Transport {
+    /// Create a new TransportBuilder
+    pub fn builder() -> TransportBuilder {
+        TransportBuilder::default()
+    }
+}
+
+/// Builder for Transport
+#[derive(Debug, Default, Clone)]
+pub struct TransportBuilder {
+    _type: Option<TransportType>,
+    target: Option<String>,
+    tags: Option<Vec<Vec<String>>>,
+}
+
+impl TransportBuilder {
+    /// Set transport type
+    pub fn transport_type(mut self, transport_type: TransportType) -> Self {
+        self._type = Some(transport_type);
+        self
+    }
+
+    /// Set target
+    pub fn target<S: Into<String>>(mut self, target: S) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+
+    /// Add a tag
+    pub fn add_tag(mut self, tag: Vec<String>) -> Self {
+        self.tags.get_or_insert_with(Vec::new).push(tag);
+        self
+    }
+
+    /// Set tags
+    pub fn tags(mut self, tags: Vec<Vec<String>>) -> Self {
+        self.tags = Some(tags);
+        self
+    }
+
+    /// Build the Transport
+    pub fn build(self) -> Result<Transport, &'static str> {
+        let _type = self._type.ok_or("Transport type is required")?;
+        let target = self.target.ok_or("Target is required")?;
+
+        Ok(Transport {
+            _type,
+            target,
+            tags: self.tags,
+        })
+    }
+}
+
+impl AsRef<String> for Transport {
+    fn as_ref(&self) -> &String {
+        &self.target
+    }
 }
 
 /// Payment Request
@@ -95,6 +170,106 @@ pub struct PaymentRequest {
     /// Transport
     #[serde(rename = "t")]
     pub transports: Vec<Transport>,
+}
+
+impl PaymentRequest {
+    /// Create a new PaymentRequestBuilder
+    pub fn builder() -> PaymentRequestBuilder {
+        PaymentRequestBuilder::default()
+    }
+}
+
+/// Builder for PaymentRequest
+#[derive(Debug, Default, Clone)]
+pub struct PaymentRequestBuilder {
+    payment_id: Option<String>,
+    amount: Option<Amount>,
+    unit: Option<CurrencyUnit>,
+    single_use: Option<bool>,
+    mints: Option<Vec<MintUrl>>,
+    description: Option<String>,
+    transports: Vec<Transport>,
+}
+
+impl PaymentRequestBuilder {
+    /// Set payment ID
+    pub fn payment_id<S>(mut self, payment_id: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.payment_id = Some(payment_id.into());
+        self
+    }
+
+    /// Set amount
+    pub fn amount<A>(mut self, amount: A) -> Self
+    where
+        A: Into<Amount>,
+    {
+        self.amount = Some(amount.into());
+        self
+    }
+
+    /// Set unit
+    pub fn unit(mut self, unit: CurrencyUnit) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// Set single use flag
+    pub fn single_use(mut self, single_use: bool) -> Self {
+        self.single_use = Some(single_use);
+        self
+    }
+
+    /// Add a mint URL
+    pub fn add_mint(mut self, mint_url: MintUrl) -> Self {
+        self.mints.get_or_insert_with(Vec::new).push(mint_url);
+        self
+    }
+
+    /// Set mints
+    pub fn mints(mut self, mints: Vec<MintUrl>) -> Self {
+        self.mints = Some(mints);
+        self
+    }
+
+    /// Set description
+    pub fn description<S: Into<String>>(mut self, description: S) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Add a transport
+    pub fn add_transport(mut self, transport: Transport) -> Self {
+        self.transports.push(transport);
+        self
+    }
+
+    /// Set transports
+    pub fn transports(mut self, transports: Vec<Transport>) -> Self {
+        self.transports = transports;
+        self
+    }
+
+    /// Build the PaymentRequest
+    pub fn build(self) -> PaymentRequest {
+        PaymentRequest {
+            payment_id: self.payment_id,
+            amount: self.amount,
+            unit: self.unit,
+            single_use: self.single_use,
+            mints: self.mints,
+            description: self.description,
+            transports: self.transports,
+        }
+    }
+}
+
+impl AsRef<Option<String>> for PaymentRequest {
+    fn as_ref(&self) -> &Option<String> {
+        &self.payment_id
+    }
 }
 
 impl fmt::Display for PaymentRequest {
@@ -197,5 +372,66 @@ mod tests {
 
         let t = req.transports.first().unwrap();
         assert_eq!(&transport, t);
+    }
+
+    #[test]
+    fn test_payment_request_builder() {
+        let transport = Transport {
+            _type: TransportType::Nostr,
+            target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), 
+            tags: Some(vec![vec!["n".to_string(), "17".to_string()]])
+        };
+
+        let mint_url =
+            MintUrl::from_str("https://nofees.testnut.cashu.space").expect("valid mint url");
+
+        // Build a payment request using the builder pattern
+        let request = PaymentRequest::builder()
+            .payment_id("b7a90176")
+            .amount(Amount::from(10))
+            .unit(CurrencyUnit::Sat)
+            .add_mint(mint_url.clone())
+            .add_transport(transport.clone())
+            .build();
+
+        // Verify the built request
+        assert_eq!(&request.payment_id.clone().unwrap(), "b7a90176");
+        assert_eq!(request.amount.unwrap(), 10.into());
+        assert_eq!(request.unit.clone().unwrap(), CurrencyUnit::Sat);
+        assert_eq!(request.mints.clone().unwrap(), vec![mint_url]);
+
+        let t = request.transports.first().unwrap();
+        assert_eq!(&transport, t);
+
+        // Test serialization and deserialization
+        let request_str = request.to_string();
+        let req = PaymentRequest::from_str(&request_str).expect("valid payment request");
+
+        assert_eq!(req.payment_id, request.payment_id);
+        assert_eq!(req.amount, request.amount);
+        assert_eq!(req.unit, request.unit);
+    }
+
+    #[test]
+    fn test_transport_builder() {
+        // Build a transport using the builder pattern
+        let transport = Transport::builder()
+            .transport_type(TransportType::Nostr)
+            .target("nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5")
+            .add_tag(vec!["n".to_string(), "17".to_string()])
+            .build()
+            .expect("Valid transport");
+
+        // Verify the built transport
+        assert_eq!(transport._type, TransportType::Nostr);
+        assert_eq!(transport.target, "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5");
+        assert_eq!(
+            transport.tags,
+            Some(vec![vec!["n".to_string(), "17".to_string()]])
+        );
+
+        // Test error case - missing required fields
+        let result = TransportBuilder::default().build();
+        assert!(result.is_err());
     }
 }

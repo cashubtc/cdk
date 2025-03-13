@@ -54,4 +54,7 @@ pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 pub use nut17::NotificationPayload;
-pub use nut18::{PaymentRequest, PaymentRequestPayload, Transport};
+pub use nut18::{
+    PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport, TransportBuilder,
+    TransportType,
+};
