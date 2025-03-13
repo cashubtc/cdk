@@ -224,11 +224,7 @@ impl PaymentRequestBuilder {
 
     /// Add a mint URL
     pub fn add_mint(mut self, mint_url: MintUrl) -> Self {
-        if let Some(ref mut mints) = self.mints {
-            mints.push(mint_url);
-        } else {
-            self.mints = Some(vec![mint_url]);
-        }
+        self.mints.get_or_insert_with(Vec::new).push(mint_url);
         self
     }
 
