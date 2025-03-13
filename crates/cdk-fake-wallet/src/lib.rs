@@ -17,8 +17,8 @@ use bitcoin::secp256k1::rand::{thread_rng, Rng};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    self, BaseMintSettings, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse,
+    MintPayment, PaymentQuoteResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
 use cdk::types::FeeReserve;
@@ -28,7 +28,6 @@ use futures::stream::StreamExt;
 use futures::Stream;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
@@ -102,12 +101,12 @@ impl MintPayment for FakeWallet {
     type Err = cdk_payment::Error;
 
     #[instrument(skip_all)]
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(Bolt11Settings {
+    async fn get_settings(&self) -> Result<Box<dyn BaseMintSettings>, Self::Err> {
+        Ok(Box::new(Bolt11Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
-        })?)
+        }))
     }
 
     #[instrument(skip_all)]

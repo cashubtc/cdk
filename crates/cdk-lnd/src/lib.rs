@@ -15,8 +15,8 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    self, BaseMintSettings, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse,
+    MintPayment, PaymentQuoteResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
 use cdk::secp256k1::hashes::Hash;
@@ -112,8 +112,8 @@ impl MintPayment for Lnd {
     type Err = cdk_payment::Error;
 
     #[instrument(skip_all)]
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
-        Ok(serde_json::to_value(&self.settings)?)
+    async fn get_settings(&self) -> Result<Box<dyn BaseMintSettings>, Self::Err> {
+        Ok(Box::new(self.settings.clone()))
     }
 
     #[instrument(skip_all)]

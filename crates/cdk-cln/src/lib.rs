@@ -12,8 +12,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    self, BaseMintSettings, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse,
+    MintPayment, PaymentQuoteResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
 use cdk::types::FeeReserve;
@@ -29,7 +29,6 @@ use cln_rpc::model::responses::{
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
 use error::Error;
 use futures::{Stream, StreamExt};
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -65,12 +64,12 @@ impl Cln {
 impl MintPayment for Cln {
     type Err = cdk_payment::Error;
 
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(Bolt11Settings {
+    async fn get_settings(&self) -> Result<Box<dyn BaseMintSettings>, Self::Err> {
+        Ok(Box::new(Bolt11Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
-        })?)
+        }))
     }
 
     /// Is wait invoice active

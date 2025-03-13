@@ -143,9 +143,11 @@ impl MintBuilder {
 
         let mut ln = self.ln.unwrap_or_default();
 
-        let settings = ln_backend.get_settings().await?;
-
-        let settings: Bolt11Settings = settings.try_into()?;
+        let settings_trait_obj = ln_backend.get_settings().await?;
+        let settings: &Bolt11Settings = settings_trait_obj
+            .as_any()
+            .downcast_ref::<Bolt11Settings>()
+            .ok_or(Error::Internal)?;
 
         if settings.mpp {
             let mpp_settings = MppMethodSettings {

@@ -6,12 +6,11 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use cdk_common::payment::{
-    CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    BaseMintSettings, CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse,
+    MintPayment, PaymentQuoteResponse,
 };
 use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState};
 use futures::{Stream, StreamExt};
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::{async_trait, Request};
@@ -97,7 +96,7 @@ impl PaymentProcessorClient {
 impl MintPayment for PaymentProcessorClient {
     type Err = cdk_common::payment::Error;
 
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
+    async fn get_settings(&self) -> Result<Box<dyn BaseMintSettings>, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
             .get_settings(Request::new(SettingsRequest {}))
@@ -107,9 +106,7 @@ impl MintPayment for PaymentProcessorClient {
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 
-        let settings = response.into_inner();
-
-        Ok(serde_json::from_str(&settings.inner)?)
+        Ok(Box::new(response.into_inner()))
     }
 
     /// Create a new invoice

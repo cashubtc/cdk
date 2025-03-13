@@ -5,9 +5,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk_common::payment::MintPayment;
+use cdk_common::payment::{BaseMintSettings, MintPayment};
 use futures::{Stream, StreamExt};
-use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Instant};
@@ -163,15 +162,18 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         &self,
         _request: Request<SettingsRequest>,
     ) -> Result<Response<SettingsResponse>, Status> {
-        let settings: Value = self
+        let settings_trait_obj: Box<dyn BaseMintSettings> = self
             .inner
             .get_settings()
             .await
             .map_err(|_| Status::internal("Could not get settings"))?;
 
-        Ok(Response::new(SettingsResponse {
-            inner: settings.to_string(),
-        }))
+        let settings: &SettingsResponse = settings_trait_obj
+            .as_any()
+            .downcast_ref::<SettingsResponse>()
+            .ok_or(Status::internal("Settings type is not SettingsResponse"))?;
+
+        Ok(Response::new(settings.clone()))
     }
 
     async fn create_payment(

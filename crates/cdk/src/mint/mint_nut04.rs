@@ -79,8 +79,11 @@ impl Mint {
 
         let quote_expiry = unix_time() + mint_ttl;
 
-        let settings = ln.get_settings().await?;
-        let settings: Bolt11Settings = serde_json::from_value(settings)?;
+        let settings_trait_obj = ln.get_settings().await?;
+        let settings: &Bolt11Settings = settings_trait_obj
+            .as_any()
+            .downcast_ref::<Bolt11Settings>()
+            .ok_or(Error::Internal)?;
 
         if description.is_some() && !settings.invoice_description {
             tracing::error!("Backend does not support invoice description");

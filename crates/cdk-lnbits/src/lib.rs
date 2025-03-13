@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    self, BaseMintSettings, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse,
+    MintPayment, PaymentQuoteResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
 use cdk::types::FeeReserve;
@@ -25,7 +25,6 @@ use futures::stream::StreamExt;
 use futures::Stream;
 use lnbits_rs::api::invoice::CreateInvoiceRequest;
 use lnbits_rs::LNBitsClient;
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -76,8 +75,8 @@ impl LNbits {
 impl MintPayment for LNbits {
     type Err = cdk_payment::Error;
 
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(&self.settings)?)
+    async fn get_settings(&self) -> Result<Box<dyn BaseMintSettings>, Self::Err> {
+        Ok(Box::new(self.settings.clone()))
     }
 
     fn is_wait_invoice_active(&self) -> bool {

@@ -1,5 +1,6 @@
 //! CDK Mint Lightning
 
+use std::any::Any;
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -57,14 +58,19 @@ pub enum Error {
     Custom(String),
 }
 
+/// The base trait for all mint payment settings.
+pub trait BaseMintSettings: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+}
+
 /// Mint payment trait
 #[async_trait]
 pub trait MintPayment {
     /// Mint Lightning Error
     type Err: Into<Error> + From<Error>;
 
-    /// Base Settings
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err>;
+    /// Fetch Mint Settings. They may be of different types, depending on the payment processor.
+    async fn get_settings(&self) -> Result<Box<dyn BaseMintSettings>, Self::Err>;
 
     /// Create a new invoice
     async fn create_incoming_payment_request(
@@ -165,6 +171,12 @@ pub struct Bolt11Settings {
     pub unit: CurrencyUnit,
     /// Invoice Description supported
     pub invoice_description: bool,
+}
+
+impl BaseMintSettings for Bolt11Settings {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl TryFrom<Bolt11Settings> for Value {
