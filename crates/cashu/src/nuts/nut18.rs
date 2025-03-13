@@ -117,11 +117,7 @@ impl TransportBuilder {
 
     /// Add a tag
     pub fn add_tag(mut self, tag: Vec<String>) -> Self {
-        if let Some(ref mut tags) = self.tags {
-            tags.push(tag);
-        } else {
-            self.tags = Some(vec![tag]);
-        }
+        self.tags.get_or_insert_with(Vec::new).push(tag);
         self
     }
 
