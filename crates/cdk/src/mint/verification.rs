@@ -8,7 +8,7 @@ use super::{Error, Mint};
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
     pub amount: Amount,
-    pub unit: CurrencyUnit,
+    pub unit: Option<CurrencyUnit>,
 }
 
 impl Mint {
@@ -171,6 +171,13 @@ impl Mint {
     /// Checks outputs are unique, of the same unit and not signed before
     #[instrument(skip_all)]
     pub async fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
+        if outputs.is_empty() {
+            return Ok(Verification {
+                amount: Amount::ZERO,
+                unit: None,
+            });
+        }
+
         Mint::check_outputs_unique(outputs)?;
         self.check_output_already_signed(outputs).await?;
 
@@ -178,7 +185,10 @@ impl Mint {
 
         let amount = Amount::try_sum(outputs.iter().map(|o| o.amount).collect::<Vec<Amount>>())?;
 
-        Ok(Verification { amount, unit })
+        Ok(Verification {
+            amount,
+            unit: Some(unit),
+        })
     }
 
     /// Verifies inputs
@@ -194,7 +204,10 @@ impl Mint {
             self.verify_proof(proof).await?;
         }
 
-        Ok(Verification { amount, unit })
+        Ok(Verification {
+            amount,
+            unit: Some(unit),
+        })
     }
 
     /// Verify that inputs and outputs are valid and balanced
@@ -215,7 +228,7 @@ impl Mint {
 
         if output_verification.unit != input_verification.unit {
             tracing::debug!(
-                "Output unit {} does not match input unit {}",
+                "Output unit {:?} does not match input unit {:?}",
                 output_verification.unit,
                 input_verification.unit
             );
