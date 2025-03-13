@@ -310,6 +310,8 @@ impl Mint {
             unit: input_unit,
         } = self.verify_inputs(&melt_request.inputs).await?;
 
+        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
+
         let input_ys = melt_request.inputs.ys()?;
 
         let fee = self.get_proofs_fee(&melt_request.inputs).await?;
@@ -343,12 +345,14 @@ impl Mint {
         ensure_cdk!(sig_flag.ne(&SigFlag::SigAll), Error::SigAllUsedInMelt);
 
         if let Some(outputs) = &melt_request.outputs {
-            let Verification {
-                amount: _,
-                unit: output_unit,
-            } = self.verify_outputs(outputs).await?;
+            if !outputs.is_empty() {
+                let Verification {
+                    amount: _,
+                    unit: output_unit,
+                } = self.verify_outputs(outputs).await?;
 
-            ensure_cdk!(input_unit == output_unit, Error::UnsupportedUnit);
+                ensure_cdk!(input_unit == output_unit, Error::UnsupportedUnit);
+            }
         }
 
         tracing::debug!("Verified melt quote: {}", melt_request.quote);
