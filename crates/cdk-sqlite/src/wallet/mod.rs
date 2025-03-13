@@ -696,20 +696,22 @@ FROM proof;
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
-        for y in ys {
-            sqlx::query(
-                r#"
-UPDATE proof
-SET state=?
-WHERE y IS ?;
-                "#,
+        let update_sql = format!(
+            "UPDATE proof SET state = ? WHERE y IN ({})",
+            "?,".repeat(ys.len()).trim_end_matches(',')
+        );
+
+        ys.iter()
+            .fold(
+                sqlx::query(&update_sql).bind(state.to_string()),
+                |query, y| query.bind(y.to_bytes().to_vec()),
             )
-            .bind(state.to_string())
-            .bind(y.to_bytes().to_vec())
             .execute(&mut *transaction)
             .await
-            .map_err(Error::from)?;
-        }
+            .map_err(|err| {
+                tracing::error!("SQLite could not update proof state: {err:?}");
+                Error::SQLX(err)
+            })?;
 
         transaction.commit().await.map_err(Error::from)?;
 
