@@ -256,42 +256,54 @@ async fn test_restore() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_pay_invoice_twice() -> Result<()> {
+async fn test_pay_invoice_twice() -> anyhow::Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
+        Arc::new(memory::empty().await.unwrap()),
         &seed,
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet
+        .mint_quote(100.into(), None)
+        .await
+        .expect("Get mint quote");
 
     lnd_client
         .pay_invoice(mint_quote.request)
         .await
         .expect("Could not pay invoice");
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .expect("Mint invoice timeout not paid");
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .expect("Could not mint");
 
-    let mint_amount = proofs.total_amount()?;
+    let mint_amount = proofs.total_amount().unwrap();
 
     assert_eq!(mint_amount, 100.into());
 
-    let invoice = lnd_client.create_invoice(Some(10)).await?;
+    let invoice = lnd_client
+        .create_invoice(Some(10))
+        .await
+        .expect("Could not create invoice");
 
-    let melt_quote = wallet.melt_quote(invoice.clone(), None).await?;
+    let melt_quote = wallet
+        .melt_quote(invoice.clone(), None)
+        .await
+        .expect("Could not get melt quote");
 
     let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    let melt_two = wallet.melt_quote(invoice, None).await?;
+    let melt_two = wallet.melt_quote(invoice, None).await.unwrap();
 
     let melt_two = wallet.melt(&melt_two.id).await;
 
@@ -307,7 +319,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
         }
     }
 
-    let balance = wallet.total_balance().await?;
+    let balance = wallet.total_balance().await.unwrap();
 
     assert_eq!(balance, (Amount::from(100) - melt.fee_paid - melt.amount));
 
