@@ -22,7 +22,6 @@ use error::Error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{ConnectOptions, Row};
 use tracing::instrument;
-use uuid::fmt::Urn;
 
 pub mod error;
 
