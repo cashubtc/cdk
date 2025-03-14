@@ -244,13 +244,19 @@ impl Wallet {
         }
 
         // Check if proofs are reserved or unspent
-        let sendable_proofs = self
+        let sendable_proof_ys = self
             .get_proofs_with(
                 Some(vec![State::Reserved, State::Unspent]),
                 send.options.conditions.clone().map(|c| vec![c]),
             )
-            .await?;
-        if proofs_to_send.iter().any(|p| !sendable_proofs.contains(p)) {
+            .await?
+            .ys()?;
+        if proofs_to_send
+            .ys()?
+            .iter()
+            .any(|y| !sendable_proof_ys.contains(y))
+        {
+            tracing::error!("Proofs to send are not reserved or unspent");
             return Err(Error::InsufficientFunds);
         }
 
