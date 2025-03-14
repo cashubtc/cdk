@@ -250,7 +250,7 @@ impl Wallet {
                 send.options.conditions.clone().map(|c| vec![c]),
             )
             .await?;
-        if proofs_to_send.iter().any(|p| !sendable_proofs.contains(&p)) {
+        if proofs_to_send.iter().any(|p| !sendable_proofs.contains(p)) {
             return Err(Error::InsufficientFunds);
         }
 
