@@ -12,18 +12,6 @@ CREATE TABLE IF NOT EXISTS kvac_coins (
     keyset_id TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS kvac_null_coins (
-    t BLOB PRIMARY KEY,
-    V BLOB NOT NULL,
-    r_a BLOB NOT NULL,
-    script BLOB DEFAULT NULL,
-    r_s BLOB DEFAULT NULL,
-    mint_url TEXT NOT NULL,
-    state TEXT CHECK ( state IN ('SPENT', 'UNSPENT', 'PENDING', 'RESERVED' ) ) NOT NULL,
-    unit TEXT NOT NULL,
-    keyset_id TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS kvac_keyset (
     id TEXT PRIMARY KEY,
     mint_url TEXT NOT NULL,
