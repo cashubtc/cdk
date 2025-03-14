@@ -107,7 +107,7 @@ impl Mint {
             }
         }
         let keysets = Arc::new(RwLock::new(active_keysets));
-        
+
         #[cfg(feature = "kvac")]
         {
             let (mut active_kvac_keysets, active_kvac_keyset_units) = Mint::init_kvac_keysets(
@@ -118,7 +118,7 @@ impl Mint {
                 &custom_paths,
             )
             .await?;
-            
+
             // Create new KVAC keysets for supported units that aren't covered by the current keysets
             for (unit, (fee, _max_order)) in supported_units {
                 if !active_kvac_keyset_units.contains(&unit) {
@@ -142,7 +142,7 @@ impl Mint {
                 }
             }
             let kvac_keysets = Arc::new(RwLock::new(active_kvac_keysets));
-            
+
             Ok(Self {
                 pubsub_manager: Arc::new(localstore.clone().into()),
                 secp_ctx,

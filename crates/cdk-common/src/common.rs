@@ -79,7 +79,7 @@ impl KvacCoinInfo {
         mint_url: &Option<MintUrl>,
         unit: &Option<CurrencyUnit>,
         state: &Option<Vec<State>>,
-        _script: &Option<String>,
+        script: &Option<String>,
     ) -> bool {
         if let Some(mint_url) = mint_url {
             if mint_url.ne(&self.mint_url) {
@@ -95,6 +95,16 @@ impl KvacCoinInfo {
 
         if let Some(state) = state {
             if !state.contains(&self.state) {
+                return false;
+            }
+        }
+
+        if let Some(script) = script {
+            if let Some(coin_script) = &self.coin.script {
+                if script.ne(coin_script) {
+                    return false;
+                }
+            } else {
                 return false;
             }
         }

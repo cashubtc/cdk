@@ -179,13 +179,11 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/kvac/restore", post(post_kvac_restore))
         .route("/kvac/checkstate", post(post_kvac_check));
 
-    let mint_router = Router::new()
-        .nest("/v1", v1_router);
+    let mint_router = Router::new().nest("/v1", v1_router);
 
     #[cfg(feature = "kvac")]
-    let mint_router = mint_router
-        .nest("/v2", v2_router);
-    
+    let mint_router = mint_router.nest("/v2", v2_router);
+
     let mint_router = mint_router.with_state(state);
 
     Ok(mint_router)

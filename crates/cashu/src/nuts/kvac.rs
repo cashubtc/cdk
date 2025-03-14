@@ -98,7 +98,9 @@ impl From<&KvacKeys> for Id {
         let mut data = kvac_keys.0.Cw.to_bytes();
         data.extend(kvac_keys.0.I.to_bytes());
         let hash = Sha256::hash(&data);
-        let hash_bytes= hash.to_byte_array()[0..Self::BYTELEN].to_vec().try_into()
+        let hash_bytes = hash.to_byte_array()[0..Self::BYTELEN]
+            .to_vec()
+            .try_into()
             .expect("Invalid length of hex id");
         Id {
             version: KeySetVersion::Version00,

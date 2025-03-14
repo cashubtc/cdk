@@ -258,7 +258,7 @@ pub enum Error {
     NUT13(#[from] crate::nuts::nut13::Error),
     /// NUT14 Error
     #[error(transparent)]
-    NUT14(#[from] crate::nuts::nut14::Error),   
+    NUT14(#[from] crate::nuts::nut14::Error),
     /// NUT18 Error
     #[error(transparent)]
     NUT18(#[from] crate::nuts::nut18::Error),

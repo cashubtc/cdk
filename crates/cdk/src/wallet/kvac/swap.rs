@@ -4,10 +4,10 @@ use std::collections::HashSet;
 use cashu_kvac::kvac::{BalanceProof, IParamsProof, MacProof, RangeProof};
 use cashu_kvac::models::{AmountAttribute, Coin};
 use cashu_kvac::transcript::CashuTranscript;
+use cdk_common::kvac::Error::DifferentScriptsError;
 use cdk_common::kvac::{
     KvacCoin, KvacCoinMessage, KvacPreCoin, KvacRandomizedCoin, KvacSwapRequest,
 };
-use cdk_common::kvac::Error::DifferentScriptsError;
 use cdk_common::Amount;
 use tracing::instrument;
 

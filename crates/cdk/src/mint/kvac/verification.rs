@@ -6,16 +6,11 @@ use cashu_kvac::kvac::{BalanceProof, MacProof, RangeProof};
 use cashu_kvac::models::{RandomizedCoin, RangeZKP, ZKP};
 use cashu_kvac::secp::{GroupElement, Scalar};
 use cashu_kvac::transcript::CashuTranscript;
-use cdk_common::kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin};
 use cdk_common::kvac::Error::{
-    MacAlreadyIssued,
-    BalanceVerificationError,
-    MacVerificationError,
-    RangeProofVerificationError,
-    RequestInvalidInputLength,
-    RequestInvalidOutputLength,
-    InputsToProofsLengthMismatch,
+    BalanceVerificationError, InputsToProofsLengthMismatch, MacAlreadyIssued, MacVerificationError,
+    RangeProofVerificationError, RequestInvalidInputLength, RequestInvalidOutputLength,
 };
+use cdk_common::kvac::{KvacCoinMessage, KvacNullifier, KvacRandomizedCoin};
 use cdk_common::{Id, State};
 
 use crate::{Error, Mint};

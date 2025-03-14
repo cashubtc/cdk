@@ -4,12 +4,12 @@ use cashu_kvac::models::{AmountAttribute, Coin};
 use cashu_kvac::secp::GroupElement;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
-use cdk_common::kvac::{KvacCoin, KvacCoinMessage, KvacMintBolt11Request, KvacRandomizedCoin};
 use cdk_common::kvac::Error::NotEnoughCoins;
+use cdk_common::kvac::{KvacCoin, KvacCoinMessage, KvacMintBolt11Request, KvacRandomizedCoin};
 use cdk_common::{Amount, State};
 use tracing::instrument;
 
-use crate::{Wallet, Error};
+use crate::{Error, Wallet};
 
 impl Wallet {
     /// Compute the necessary proofs and perform a KVAC mint

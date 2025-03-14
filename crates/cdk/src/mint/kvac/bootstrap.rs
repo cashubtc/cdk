@@ -2,12 +2,10 @@ use std::collections::HashSet;
 
 use cashu_kvac::kvac::BootstrapProof;
 use cashu_kvac::transcript::CashuTranscript;
-use cdk_common::kvac::{BootstrapRequest, BootstrapResponse};
 use cdk_common::kvac::Error::{
-    RequestInvalidInputLength,
-    InputsToProofsLengthMismatch,
-    BootstrapVerificationError,
+    BootstrapVerificationError, InputsToProofsLengthMismatch, RequestInvalidInputLength,
 };
+use cdk_common::kvac::{BootstrapRequest, BootstrapResponse};
 use tracing::instrument;
 
 use super::super::Mint;

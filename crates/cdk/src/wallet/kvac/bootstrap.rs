@@ -5,11 +5,8 @@ use cashu_kvac::models::Coin;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::error::Error;
+use cdk_common::kvac::Error::{IParamsVerificationError, OutOfBounds};
 use cdk_common::kvac::{BootstrapRequest, KvacCoin, KvacCoinMessage, KvacPreCoin};
-use cdk_common::kvac::Error::{
-    OutOfBounds,
-    IParamsVerificationError,
-};
 use cdk_common::{Amount, State};
 use tracing::instrument;
 
