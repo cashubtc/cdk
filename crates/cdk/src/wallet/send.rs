@@ -68,13 +68,7 @@ impl Wallet {
                     )
                     .await?
                     .into_iter()
-                    .filter_map(|p| {
-                        if p.spending_condition.is_none() {
-                            Some(p.proof)
-                        } else {
-                            None
-                        }
-                    })
+                    .map(|p| p.proof)
                     .collect();
             }
         }
