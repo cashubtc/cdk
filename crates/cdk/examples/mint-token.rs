@@ -4,14 +4,23 @@ use cdk::amount::SplitTarget;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
-use cdk::wallet::types::SendKind;
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::Rng;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let default_filter = "debug";
+
+    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn,rustls=warn";
+
+    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+
+    // Parse input
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
     // Initialize the memory store for the wallet
     let localstore = memory::empty().await?;
 
@@ -52,16 +61,8 @@ async fn main() -> Result<(), Error> {
     println!("Received {} from mint {}", receive_amount, mint_url);
 
     // Send a token with the specified amount
-    let token = wallet
-        .send(
-            amount,
-            None,
-            None,
-            &SplitTarget::default(),
-            &SendKind::OnlineExact,
-            false,
-        )
-        .await?;
+    let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+    let token = wallet.send(prepared_send, None).await?;
     println!("Token:");
     println!("{}", token);
 
