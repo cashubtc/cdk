@@ -64,7 +64,7 @@ impl Wallet {
                         Some(self.mint_url.clone()),
                         Some(self.unit.clone()),
                         Some(vec![State::Unspent]),
-                        None,
+                        Some(vec![]),
                     )
                     .await?
                     .into_iter()
@@ -148,6 +148,11 @@ impl Wallet {
         tracing::debug!("Send amounts: {:?}", send_amounts);
         tracing::debug!("Send fee: {:?}", send_fee);
 
+        // Reserve proofs
+        self.localstore
+            .update_proofs_state(proofs.ys()?, State::Reserved)
+            .await?;
+
         // Check if proofs are exact send amount
         let proofs_exact_amount = proofs.total_amount()? == amount + send_fee;
 
@@ -220,7 +225,7 @@ impl Wallet {
                     Some(swap_amount),
                     SplitTarget::None,
                     send.proofs_to_swap,
-                    send.options.conditions,
+                    send.options.conditions.clone(),
                     false, // already included in swap_amount
                 )
                 .await?
@@ -235,6 +240,17 @@ impl Wallet {
 
         // Check if sufficient proofs are available
         if send.amount > proofs_to_send.total_amount()? {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Check if proofs are reserved or unspent
+        let sendable_proofs = self
+            .get_proofs_with(
+                Some(vec![State::Reserved, State::Unspent]),
+                send.options.conditions.clone().map(|c| vec![c]),
+            )
+            .await?;
+        if proofs_to_send.iter().any(|p| !sendable_proofs.contains(&p)) {
             return Err(Error::InsufficientFunds);
         }
 

@@ -32,6 +32,13 @@ impl Wallet {
             .await
     }
 
+    /// Get pending spent [`Proofs`]
+    #[instrument(skip(self))]
+    pub async fn get_pending_spent_proofs(&self) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::PendingSpent]), None)
+            .await
+    }
+
     /// Get this wallet's [Proofs] that match the args
     pub async fn get_proofs_with(
         &self,

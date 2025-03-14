@@ -1,4 +1,6 @@
 use std::assert_eq;
+use std::collections::HashSet;
+use std::hash::RandomState;
 
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
@@ -21,9 +23,23 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
     let prepared_send = wallet_alice
         .prepare_send(Amount::from(40), SendOptions::default())
         .await?;
+    assert_eq!(
+        HashSet::<_, RandomState>::from_iter(prepared_send.proofs().iter().cloned()),
+        HashSet::from_iter(wallet_alice.get_reserved_proofs().await?.iter().cloned())
+    );
     let token = wallet_alice.send(prepared_send, None).await?;
     assert_eq!(Amount::from(40), token.proofs().total_amount()?);
     assert_eq!(Amount::from(24), wallet_alice.total_balance().await?);
+    assert_eq!(
+        HashSet::<_, RandomState>::from_iter(token.proofs().iter().cloned()),
+        HashSet::from_iter(
+            wallet_alice
+                .get_pending_spent_proofs()
+                .await?
+                .iter()
+                .cloned()
+        )
+    );
 
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_arc_for_mint(mint_bob.clone()).await?;
