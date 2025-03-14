@@ -232,6 +232,7 @@
 
               cargo update -p home --precise 0.5.5
               cargo update -p zerofrom --precise 0.1.5
+              cargo update -p half --precise 2.4.1
 
               cargo update -p url --precise 2.5.2
 
