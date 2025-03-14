@@ -199,6 +199,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
+      - name: Debug SQLite vesion
+        run: grep -C 3 "sqlite" Cargo.lock
+
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
                 
