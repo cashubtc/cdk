@@ -62,6 +62,7 @@ impl FromStr for State {
             "UNSPENT" => Ok(Self::Unspent),
             "PENDING" => Ok(Self::Pending),
             "RESERVED" => Ok(Self::Reserved),
+            "PENDING_SPENT" => Ok(Self::PendingSpent),
             _ => Err(Error::UnknownState),
         }
     }
