@@ -256,11 +256,15 @@ impl Wallet {
             .iter()
             .any(|y| !sendable_proof_ys.contains(y))
         {
-            tracing::error!("Proofs to send are not reserved or unspent");
-            return Err(Error::InsufficientFunds);
+            tracing::warn!("Proofs to send are not reserved or unspent");
+            return Err(Error::UnexpectedProofState);
         }
 
         // Update proofs state to pending spent
+        tracing::debug!(
+            "Updating proofs state to pending spent: {:?}",
+            proofs_to_send.ys()?
+        );
         self.localstore
             .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
