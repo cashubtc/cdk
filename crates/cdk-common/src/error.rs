@@ -127,6 +127,10 @@ pub enum Error {
     #[error("Internal Error")]
     Internal,
 
+    /// Implementation Status
+    #[error("This is not yet implemented")]
+    NotImplemented,
+
     // Wallet Errors
     /// P2PK spending conditions not met
     #[error("P2PK condition not met `{0}`")]
@@ -268,6 +272,10 @@ pub enum Error {
     #[error(transparent)]
     #[cfg(feature = "mint")]
     Payment(#[from] crate::payment::Error),
+    /// KVAC Error
+    #[cfg(feature = "kvac")]
+    #[error(transparent)]
+    Kvac(#[from] crate::nuts::kvac::Error),
 }
 
 /// CDK Error Response

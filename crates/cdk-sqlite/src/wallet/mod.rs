@@ -5,8 +5,11 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::common::ProofInfo;
+use cashu_kvac::models::{AmountAttribute, Coin, MintPublicKey, ScriptAttribute, MAC};
+use cashu_kvac::secp::{GroupElement, Scalar};
+use cdk_common::common::{KvacCoinInfo, ProofInfo};
 use cdk_common::database::WalletDatabase;
+use cdk_common::kvac::{KvacCoin, KvacKeys};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
@@ -70,6 +73,28 @@ impl WalletSqliteDatabase {
         )
         .bind(state.to_string())
         .bind(y.to_bytes().to_vec())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "kvac")]
+    async fn set_kvac_coin_state(
+        &self,
+        nullifier: &GroupElement,
+        state: State,
+    ) -> Result<(), database::Error> {
+        sqlx::query(
+            r#"
+    UPDATE kvac_coins
+    SET state=?
+    WHERE nullifier IS ?;
+            "#,
+        )
+        .bind(state.to_string())
+        .bind(nullifier.to_bytes())
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -307,6 +332,39 @@ FROM mint
         Ok(())
     }
 
+    #[instrument(skip(self, keysets))]
+    #[cfg(feature = "kvac")]
+    async fn add_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Self::Err> {
+        for keyset in keysets {
+            sqlx::query(
+                r#"
+    INSERT INTO kvac_keyset
+    (mint_url, id, unit, active, input_fee_ppk)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        unit = excluded.unit,
+        active = excluded.active,
+        input_fee_ppk = excluded.input_fee_ppk;
+    "#,
+            )
+            .bind(mint_url.to_string())
+            .bind(keyset.id.to_string())
+            .bind(keyset.unit.to_string())
+            .bind(keyset.active)
+            .bind(keyset.input_fee_ppk as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        Ok(())
+    }
+
     #[instrument(skip(self))]
     async fn get_mint_keysets(
         &self,
@@ -342,12 +400,73 @@ WHERE mint_url=?
         }
     }
 
+    #[instrument(skip(self))]
+    #[cfg(feature = "kvac")]
+    async fn get_mint_kvac_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset
+WHERE mint_url=?
+        "#,
+        )
+        .bind(mint_url.to_string())
+        .fetch_all(&self.pool)
+        .await;
+
+        let recs = match recs {
+            Ok(recs) => recs,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        let keysets = recs
+            .iter()
+            .map(sqlite_row_to_keyset)
+            .collect::<Result<Vec<KeySetInfo>, _>>()?;
+
+        match keysets.is_empty() {
+            false => Ok(Some(keysets)),
+            true => Ok(None),
+        }
+    }
+
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT *
 FROM keyset
+WHERE id=?
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(recs) => recs,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(Some(sqlite_row_to_keyset(&rec)?))
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_keyset
 WHERE id=?
         "#,
         )
@@ -551,6 +670,26 @@ ON CONFLICT(id) DO UPDATE SET
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    #[cfg(feature = "kvac")]
+    async fn add_kvac_keys(&self, keys: KvacKeys) -> Result<(), Self::Err> {
+        sqlx::query(
+            r#"
+INSERT OR REPLACE INTO kvac_key
+(id, Cw, I)
+VALUES (?, ?, ?);
+        "#,
+        )
+        .bind(Id::from(&keys).to_string())
+        .bind(keys.0.Cw.to_bytes().to_vec())
+        .bind(keys.0.I.to_bytes().to_vec())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
         let rec = sqlx::query(
@@ -577,11 +716,61 @@ WHERE id=?;
         Ok(serde_json::from_str(&keys).map_err(Error::from)?)
     }
 
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_keys(&self, keyset_id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM kvac_key
+WHERE id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        let cw: Vec<u8> = rec.try_get("Cw").map_err(Error::from)?;
+        let i: Vec<u8> = rec.try_get("I").map_err(Error::from)?;
+
+        let mint_key = KvacKeys(MintPublicKey {
+            Cw: GroupElement::new(&cw),
+            I: GroupElement::new(&i),
+        });
+
+        Ok(Some(mint_key))
+    }
+
     #[instrument(skip(self))]
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
 DELETE FROM key
+WHERE id=?
+        "#,
+        )
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    #[cfg(feature = "kvac")]
+    async fn remove_kvac_keys(&self, id: &Id) -> Result<(), Self::Err> {
+        sqlx::query(
+            r#"
+DELETE FROM kvac_key
 WHERE id=?
         "#,
         )
@@ -658,9 +847,76 @@ WHERE id=?
         Ok(())
     }
 
+    /// Update the coins in storage by adding new coins or removing coins
+    #[cfg(feature = "kvac")]
+    async fn update_kvac_coins(
+        &self,
+        added: Vec<KvacCoinInfo>,
+        removed_nullifiers: Vec<GroupElement>,
+    ) -> Result<(), Self::Err> {
+        for coin in added {
+            sqlx::query(
+                r#"
+    INSERT OR REPLACE INTO proof
+    (nullifier, tag, mac, amount, amount_blinding_factor, script, script_blinding_factor, mint_url, state, unit, keyset_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            "#,
+            )
+            .bind(coin.coin.coin.mac.t.to_bytes())
+            .bind(coin.mint_url.to_string())
+            .bind(coin.state.to_string())
+            .bind(coin.coin.amount.0 as i64)
+            .bind(coin.coin.coin.amount_attribute.r.to_bytes())
+            .bind(coin.coin.script.unwrap_or("".to_string()))
+            .bind(coin.coin.coin.script_attribute.expect(
+                "a KvacCoin always has a script attribute"
+                )
+                .r
+                .to_bytes()
+            )
+            .bind(coin.mint_url.to_string())
+            .bind(coin.state.to_string())
+            .bind(coin.coin.unit.to_string())
+            .bind(coin.coin.keyset_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(Error::from)?;
+        }
+
+        let delete_sql = format!(
+            "DELETE FROM kvac_coins WHERE nullifier IN ({})",
+            std::iter::repeat("?")
+                .take(removed_nullifiers.len())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        removed_nullifiers
+            .iter()
+            .fold(sqlx::query(&delete_sql), |query, nullifier| {
+                query.bind(nullifier.to_bytes())
+            })
+            .execute(&self.pool)
+            .await
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
         for y in ys {
             self.set_proof_state(y, State::Pending).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Set coins as pending in storage. Coins are identified by their `t`
+    /// value.
+    #[cfg(feature = "kvac")]
+    async fn set_pending_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
+        for n in nullifiers {
+            self.set_kvac_coin_state(n, State::Pending).await?;
         }
 
         Ok(())
@@ -674,9 +930,29 @@ WHERE id=?
         Ok(())
     }
 
+    /// Reserve kvac coins in storage. Coins are identified by their tag `t`.
+    #[cfg(feature = "kvac")]
+    async fn reserve_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
+        for n in nullifiers {
+            self.set_kvac_coin_state(n, State::Reserved).await?;
+        }
+
+        Ok(())
+    }
+
     async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
         for y in ys {
             self.set_proof_state(y, State::Unspent).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Set kvac coins as unspent in storage. Coins are identified by their tag `t`
+    #[cfg(feature = "kvac")]
+    async fn set_unspent_kvac_coins(&self, nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
+        for n in nullifiers {
+            self.set_kvac_coin_state(n, State::Unspent).await?;
         }
 
         Ok(())
@@ -734,6 +1010,54 @@ FROM proof;
         }
     }
 
+    /// Get kvac coins from storage
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_coins(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+        script: Option<String>,
+    ) -> Result<Vec<KvacCoinInfo>, Self::Err> {
+        let recs = sqlx::query(
+            r#"
+        SELECT *
+        FROM kvac_coins;
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await;
+
+        let recs = match recs {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(vec![]),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        let proofs: Vec<KvacCoinInfo> = recs
+            .iter()
+            .filter_map(|p| match sqlite_row_to_kvac_coin_info(p) {
+                Ok(coin_info) => {
+                    match coin_info.matches_conditions(&mint_url, &unit, &state, &script) {
+                        true => Some(coin_info),
+                        false => None,
+                    }
+                }
+                Err(err) => {
+                    tracing::error!("Could not deserialize kvac coin row: {}", err);
+                    None
+                }
+            })
+            .collect();
+
+        match proofs.is_empty() {
+            false => Ok(proofs),
+            true => return Ok(vec![]),
+        }
+    }
+
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
@@ -757,11 +1081,66 @@ WHERE id=?;
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
+    async fn increment_kvac_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        count: u32,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        sqlx::query(
+            r#"
+UPDATE kvac_keyset
+SET counter=counter+?
+WHERE id=?;
+        "#,
+        )
+        .bind(count as i64)
+        .bind(keyset_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(Error::from)?;
+
+        transaction.commit().await.map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
         let rec = sqlx::query(
             r#"
 SELECT counter
 FROM keyset
+WHERE id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await;
+
+        let count = match rec {
+            Ok(rec) => {
+                let count: Option<u32> = rec.try_get("counter").map_err(Error::from)?;
+                count
+            }
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        Ok(count)
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT counter
+FROM kvac_keyset
 WHERE id=?;
         "#,
         )
@@ -910,6 +1289,52 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         state: State::from_str(&row_state)?,
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
+    })
+}
+
+fn sqlite_row_to_kvac_coin_info(row: &SqliteRow) -> Result<KvacCoinInfo, Error> {
+    /*
+        nullifier BLOB PRIMARY KEY,
+        tag BLOB NOT NULL,
+        mac BLOB NOT NULL,
+        amount INTEGER NOT NULL,
+        amount_blinding_factor BLOB NOT NULL,
+        script TEXT DEFAULT NULL,
+        script_blinding_factor BLOB DEFAULT NULL,
+        mint_url TEXT NOT NULL,
+        state TEXT CHECK ( state IN ('SPENT', 'UNSPENT', 'PENDING', 'RESERVED' ) ) NOT NULL,
+        unit TEXT NOT NULL,
+        keyset_id TEXT NOT NULL
+    */
+
+    let tag: Scalar = Scalar::new(row.try_get("tag").map_err(Error::from)?);
+    let mac: GroupElement = GroupElement::new(row.try_get("mac").map_err(Error::from)?);
+    let amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let r_a: Vec<u8> = row.try_get("amount_blinding_factor").map_err(Error::from)?;
+    let script: String = row.try_get("script").map_err(Error::from)?;
+    let r_s: Vec<u8> = row.try_get("script_blinding_factor").map_err(Error::from)?;
+    let mint_url: MintUrl = MintUrl::from_str(row.try_get("mint_url").map_err(Error::from)?)?;
+    let state: State = State::from_str(row.try_get("state").map_err(Error::from)?)?;
+    let unit: CurrencyUnit = CurrencyUnit::from_str(row.try_get("unit").map_err(Error::from)?)?;
+    let keyset_id: Id = Id::from_str(row.try_get("keyset_id").map_err(Error::from)?)?;
+
+    let amount_attribute = AmountAttribute::new(amount.clone() as u64, Some(&r_a));
+    let script_attribute = ScriptAttribute::new(script.as_bytes(), Some(&r_s));
+    let mac = MAC { t: tag, V: mac };
+    let inner_coin = Coin::new(amount_attribute, Some(script_attribute), mac);
+
+    let coin = KvacCoin {
+        keyset_id,
+        amount: Amount::from(amount as u64),
+        script: Some(script),
+        unit,
+        coin: inner_coin,
+    };
+
+    Ok(KvacCoinInfo {
+        coin,
+        mint_url,
+        state,
     })
 }
 

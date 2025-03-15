@@ -9,8 +9,10 @@ rust-version = "1.75.0"                            # MSRV
 description = "Cashu CDK axum webserver"
 
 [features]
+default = ["kvac"]
 redis = ["dep:redis"]
 swagger = ["cdk/swagger", "dep:utoipa"]
+kvac = []
 
 [dependencies]
 anyhow.workspace = true

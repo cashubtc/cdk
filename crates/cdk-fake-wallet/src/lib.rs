@@ -150,7 +150,7 @@ impl MintPayment for FakeWallet {
         let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
 
         let relative_fee_reserve =
-            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+            ((self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) / 100.0) as u64;
 
         let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
