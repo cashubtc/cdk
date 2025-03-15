@@ -1,8 +1,7 @@
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-
-use cdk::cdk_database::WalletMemoryDatabase;
+use cdk_sqlite::wallet::memory;
 use cdk::wallet::Wallet;
 use cdk_common::{Amount, CurrencyUnit, MintQuoteState};
 use rand::Rng;
@@ -16,8 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint_url = "http://127.0.0.1:3338";
     let unit = CurrencyUnit::Sat;
 
-    // Initialize the memory store
-    let localstore = WalletMemoryDatabase::default();
+    // Initialize the memory store for the wallet
+    let localstore = memory::empty().await?;
 
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), &seed, None)?;
@@ -88,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create a new wallet and try to restore
-    let localstore1 = WalletMemoryDatabase::default();
+    let localstore1 = memory::empty().await?;
     let wallet1 = Wallet::new(mint_url, unit.clone(), Arc::new(localstore1), &seed, None)?;
 
     // Restore

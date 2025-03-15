@@ -2,15 +2,17 @@ use anyhow::bail;
 use cashu_kvac::secp::{GroupElement, TweakKind};
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::amount::to_unit;
-use cdk_common::common::LnKey;
+use cdk_common::common::PaymentProcessorKey;
 use cdk_common::kvac::{
     KvacIssuedMac, KvacMeltBolt11Request, KvacMeltBolt11Response, KvacNullifier, KvacRandomizedCoin,
 };
-use cdk_common::lightning::{MintLightning, PayInvoiceResponse};
 use cdk_common::mint::MeltQuote;
+use cdk_common::payment::{MakePaymentResponse, MintPayment};
 use cdk_common::{Amount, MeltQuoteState, MintQuoteState, PaymentMethod, State};
 use tracing::instrument;
 use uuid::Uuid;
+use crate::cdk_payment;
+
 
 use crate::{Error, Mint};
 
@@ -112,9 +114,9 @@ impl Mint {
         // Define helper to check outgoing payments
         use std::sync::Arc;
         async fn check_payment_state(
-            ln: Arc<dyn MintLightning<Err = crate::cdk_lightning::Error> + Send + Sync>,
+            ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
             melt_quote: &MeltQuote,
-        ) -> anyhow::Result<PayInvoiceResponse> {
+        ) -> anyhow::Result<MakePaymentResponse> {
             match ln
                 .check_outgoing_payment(&melt_quote.request_lookup_id)
                 .await
@@ -243,7 +245,7 @@ impl Mint {
                 */
                 let ln = match self
                     .ln
-                    .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt11))
+                    .get(&PaymentProcessorKey::new(quote.unit.clone(), PaymentMethod::Bolt11))
                 {
                     Some(ln) => ln,
                     None => {
@@ -260,7 +262,7 @@ impl Mint {
                 };
 
                 let pre = match ln
-                    .pay_invoice(quote.clone(), None, Some(quote.fee_reserve))
+                    .make_payment(quote.clone(), None, Some(quote.fee_reserve))
                     .await
                 {
                     Ok(pay)
@@ -283,7 +285,7 @@ impl Mint {
                     Err(err) => {
                         // If the error is that the invoice was already paid we do not want to hold
                         // hold the proofs as pending to we reset them  and return an error.
-                        if matches!(err, crate::cdk_lightning::Error::InvoiceAlreadyPaid) {
+                        if matches!(err, crate::cdk_payment::Error::InvoiceAlreadyPaid) {
                             tracing::debug!("Invoice already paid, resetting melt quote");
                             if let Err(err) = self
                                 .process_unpaid_kvac_melt(&melt_request.inputs, &melt_request.quote)
@@ -356,7 +358,7 @@ impl Mint {
                     }
                 }
 
-                (pre.payment_preimage, amount_spent)
+                (pre.payment_proof, amount_spent)
             }
         };
 
