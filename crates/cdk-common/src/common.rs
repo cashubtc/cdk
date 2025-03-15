@@ -180,7 +180,11 @@ impl ProofInfo {
 
         if let Some(spending_conditions) = spending_conditions {
             match &self.spending_condition {
-                None => return false,
+                None => {
+                    if !spending_conditions.is_empty() {
+                        return false;
+                    }
+                }
                 Some(s) => {
                     if !spending_conditions.contains(s) {
                         return false;
@@ -196,14 +200,14 @@ impl ProofInfo {
 /// Key used in hashmap of ln backends to identify what unit and payment method
 /// it is for
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LnKey {
+pub struct PaymentProcessorKey {
     /// Unit of Payment backend
     pub unit: CurrencyUnit,
     /// Method of payment backend
     pub method: PaymentMethod,
 }
 
-impl LnKey {
+impl PaymentProcessorKey {
     /// Create new [`LnKey`]
     pub fn new(unit: CurrencyUnit, method: PaymentMethod) -> Self {
         Self { unit, method }
@@ -230,8 +234,11 @@ impl QuoteTTL {
 mod tests {
     use std::str::FromStr;
 
-    use super::Melted;
-    use crate::nuts::{Id, Proof, PublicKey};
+    use cashu::SecretKey;
+
+    use super::{Melted, ProofInfo};
+    use crate::mint_url::MintUrl;
+    use crate::nuts::{CurrencyUnit, Id, Proof, PublicKey, SpendingConditions, State};
     use crate::secret::Secret;
     use crate::Amount;
 
@@ -293,4 +300,97 @@ mod tests {
         assert_eq!(melted.fee_paid, Amount::from(1));
         assert_eq!(melted.total_amount(), Amount::from(32));
     }
+
+    #[test]
+    fn test_matches_conditions() {
+        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
+        let proof = Proof::new(
+            Amount::from(64),
+            keyset_id,
+            Secret::new("test_secret"),
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let proof_info =
+            ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
+
+        // Test matching mint_url
+        assert!(proof_info.matches_conditions(&Some(mint_url.clone()), &None, &None, &None));
+        assert!(!proof_info.matches_conditions(
+            &Some(MintUrl::from_str("https://different.com").unwrap()),
+            &None,
+            &None,
+            &None
+        ));
+
+        // Test matching unit
+        assert!(proof_info.matches_conditions(&None, &Some(CurrencyUnit::Sat), &None, &None));
+        assert!(!proof_info.matches_conditions(&None, &Some(CurrencyUnit::Msat), &None, &None));
+
+        // Test matching state
+        assert!(proof_info.matches_conditions(&None, &None, &Some(vec![State::Unspent]), &None));
+        assert!(proof_info.matches_conditions(
+            &None,
+            &None,
+            &Some(vec![State::Unspent, State::Spent]),
+            &None
+        ));
+        assert!(!proof_info.matches_conditions(&None, &None, &Some(vec![State::Spent]), &None));
+
+        // Test with no conditions (should match)
+        assert!(proof_info.matches_conditions(&None, &None, &None, &None));
+
+        // Test with multiple conditions
+        assert!(proof_info.matches_conditions(
+            &Some(mint_url),
+            &Some(CurrencyUnit::Sat),
+            &Some(vec![State::Unspent]),
+            &None
+        ));
+    }
+
+    #[test]
+    fn test_matches_conditions_with_spending_conditions() {
+        // This test would need to be expanded with actual SpendingConditions
+        // implementation, but we can test the basic case where no spending
+        // conditions are present
+
+        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
+        let proof = Proof::new(
+            Amount::from(64),
+            keyset_id,
+            Secret::new("test_secret"),
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let proof_info =
+            ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+
+        // Test with empty spending conditions (should match when proof has none)
+        assert!(proof_info.matches_conditions(&None, &None, &None, &Some(vec![])));
+
+        // Test with non-empty spending conditions (should not match when proof has none)
+        let dummy_condition = SpendingConditions::P2PKConditions {
+            data: SecretKey::generate().public_key(),
+            conditions: None,
+        };
+        assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
+    }
+}
+
+/// Mint Fee Reserve
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeeReserve {
+    /// Absolute expected min fee
+    pub min_fee_reserve: Amount,
+    /// Percentage expected fee
+    pub percent_fee_reserve: f32,
 }

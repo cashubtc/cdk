@@ -1,17 +1,19 @@
 use std::collections::HashSet;
 
 use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods, PublicKey};
+use tracing::instrument;
 
 use super::{Error, Mint};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
     pub amount: Amount,
-    pub unit: CurrencyUnit,
+    pub unit: Option<CurrencyUnit>,
 }
 
 impl Mint {
     /// Verify that the inputs to the transaction are unique
+    #[instrument(skip_all)]
     pub fn check_inputs_unique(inputs: &Proofs) -> Result<(), Error> {
         let proof_count = inputs.len();
 
@@ -22,6 +24,7 @@ impl Mint {
             .len()
             .ne(&proof_count)
         {
+            tracing::debug!("Transaction attempted with duplicate inputs");
             return Err(Error::DuplicateInputs);
         }
 
@@ -29,6 +32,7 @@ impl Mint {
     }
 
     /// Verify that the outputs to are unique
+    #[instrument(skip_all)]
     pub fn check_outputs_unique(outputs: &[BlindedMessage]) -> Result<(), Error> {
         let output_count = outputs.len();
 
@@ -39,6 +43,7 @@ impl Mint {
             .len()
             .ne(&output_count)
         {
+            tracing::debug!("Transaction attempted with duplicate outputs");
             return Err(Error::DuplicateOutputs);
         }
 
@@ -48,6 +53,7 @@ impl Mint {
     /// Verify output keyset
     ///
     /// Checks that the outputs are all of the same unit and the keyset is active
+    #[instrument(skip_all)]
     pub async fn verify_outputs_keyset(
         &self,
         outputs: &[BlindedMessage],
@@ -60,12 +66,19 @@ impl Mint {
             match self.localstore.get_keyset_info(id).await? {
                 Some(keyset) => {
                     if !keyset.active {
+                        tracing::debug!(
+                            "Transaction attempted with inactive keyset in outputs: {}.",
+                            id
+                        );
                         return Err(Error::InactiveKeyset);
                     }
                     keyset_units.insert(keyset.unit);
                 }
                 None => {
-                    tracing::info!("Swap request with unknown keyset in outputs");
+                    tracing::debug!(
+                        "Transaction attempted with unknown keyset in outputs: {}.",
+                        id
+                    );
                     return Err(Error::UnknownKeySet);
                 }
             }
@@ -75,7 +88,10 @@ impl Mint {
         // in the future it maybe possible to support multiple units but unsupported for
         // now
         if keyset_units.len() != 1 {
-            tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
+            tracing::debug!(
+                "Transaction attempted with multiple units in outputs: {:?}.",
+                keyset_units
+            );
             return Err(Error::MultipleUnits);
         }
 
@@ -88,6 +104,7 @@ impl Mint {
     /// Verify input keyset
     ///
     /// Checks that the inputs are all of the same unit
+    #[instrument(skip_all)]
     pub async fn verify_inputs_keyset(&self, inputs: &Proofs) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
 
@@ -99,7 +116,10 @@ impl Mint {
                     keyset_units.insert(keyset.unit);
                 }
                 None => {
-                    tracing::info!("Swap request with unknown keyset in outputs");
+                    tracing::debug!(
+                        "Transaction attempted with unknown keyset in inputs: {}.",
+                        id
+                    );
                     return Err(Error::UnknownKeySet);
                 }
             }
@@ -109,7 +129,10 @@ impl Mint {
         // in the future it maybe possible to support multiple units but unsupported for
         // now
         if keyset_units.len() != 1 {
-            tracing::error!("Only one unit is allowed in request: {:?}", keyset_units);
+            tracing::debug!(
+                "Transaction attempted with multiple units in inputs: {:?}.",
+                keyset_units
+            );
             return Err(Error::MultipleUnits);
         }
 
@@ -120,6 +143,7 @@ impl Mint {
     }
 
     /// Verifies that the outputs have not already been signed
+    #[instrument(skip_all)]
     pub async fn check_output_already_signed(
         &self,
         outputs: &[BlindedMessage],
@@ -135,7 +159,7 @@ impl Mint {
             .next()
             .is_some()
         {
-            tracing::info!("Output has already been signed",);
+            tracing::debug!("Transaction attempted where output is already signed.");
 
             return Err(Error::BlindedMessageAlreadySigned);
         }
@@ -145,7 +169,15 @@ impl Mint {
 
     /// Verifies outputs
     /// Checks outputs are unique, of the same unit and not signed before
+    #[instrument(skip_all)]
     pub async fn verify_outputs(&self, outputs: &[BlindedMessage]) -> Result<Verification, Error> {
+        if outputs.is_empty() {
+            return Ok(Verification {
+                amount: Amount::ZERO,
+                unit: None,
+            });
+        }
+
         Mint::check_outputs_unique(outputs)?;
         self.check_output_already_signed(outputs).await?;
 
@@ -153,12 +185,16 @@ impl Mint {
 
         let amount = Amount::try_sum(outputs.iter().map(|o| o.amount).collect::<Vec<Amount>>())?;
 
-        Ok(Verification { amount, unit })
+        Ok(Verification {
+            amount,
+            unit: Some(unit),
+        })
     }
 
     /// Verifies inputs
     /// Checks that inputs are unique and of the same unit
     /// **NOTE: This does not check if inputs have been spent
+    #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
@@ -168,10 +204,14 @@ impl Mint {
             self.verify_proof(proof).await?;
         }
 
-        Ok(Verification { amount, unit })
+        Ok(Verification {
+            amount,
+            unit: Some(unit),
+        })
     }
 
     /// Verify that inputs and outputs are valid and balanced
+    #[instrument(skip_all)]
     pub async fn verify_transaction_balanced(
         &self,
         inputs: &Proofs,
@@ -188,7 +228,7 @@ impl Mint {
 
         if output_verification.unit != input_verification.unit {
             tracing::debug!(
-                "Output unit {} does not match input unit {}",
+                "Output unit {:?} does not match input unit {:?}",
                 output_verification.unit,
                 input_verification.unit
             );

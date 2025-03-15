@@ -230,7 +230,7 @@ pub async fn get_kvac_keysets(
     path = "/mint/quote/bolt11",
     request_body(content = MintQuoteBolt11Request, description = "Request params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -258,7 +258,7 @@ pub async fn post_mint_bolt11_quote(
         ("quote_id" = String, description = "The quote ID"),
     ),
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -294,7 +294,7 @@ pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) ->
     post,
     context_path = "/v1",
     path = "/mint/bolt11",
-    request_body(content = MintBolt11Request, description = "Request params", content_type = "application/json"),
+    request_body(content = MintBolt11Request<String>, description = "Request params", content_type = "application/json"),
     responses(
         (status = 200, description = "Successful response", body = MintBolt11Response, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
@@ -354,7 +354,7 @@ pub async fn post_kvac_mint_bolt11(
     path = "/melt/quote/bolt11",
     request_body(content = MeltQuoteBolt11Request, description = "Quote params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -381,7 +381,7 @@ pub async fn post_melt_bolt11_quote(
         ("quote_id" = String, description = "The quote ID"),
     ),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -409,9 +409,9 @@ pub async fn get_check_melt_bolt11_quote(
     post,
     context_path = "/v1",
     path = "/melt/bolt11",
-    request_body(content = MeltBolt11Request, description = "Melt params", content_type = "application/json"),
+    request_body(content = MeltBolt11Request<String>, description = "Melt params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]

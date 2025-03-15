@@ -9,7 +9,7 @@ use cashu_kvac::secp::{GroupElement, Scalar};
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::{LnKey, QuoteTTL};
+use crate::common::{PaymentProcessorKey, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
@@ -96,13 +96,13 @@ pub trait Database {
     async fn add_melt_request(
         &self,
         melt_request: MeltBolt11Request<Uuid>,
-        ln_key: LnKey,
+        ln_key: PaymentProcessorKey,
     ) -> Result<(), Self::Err>;
     /// Get melt request
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err>;
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>, Self::Err>;
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err>;

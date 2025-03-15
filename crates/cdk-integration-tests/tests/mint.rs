@@ -2,31 +2,26 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
 use cdk::cdk_database::MintDatabase;
 use cdk::dhke::construct_proofs;
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits, MintQuote};
+use cdk::mint::{MintBuilder, MintMeltLimits, MintQuote};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PaymentMethod,
     PreMintSecrets, ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::subscription::{IndexableParams, Params};
-use cdk::types::QuoteTTL;
+use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::Mint;
 use cdk_fake_wallet::FakeWallet;
-use tokio::sync::OnceCell;
-use tokio::time::sleep;
+use cdk_sqlite::mint::memory;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
-
-static INSTANCE: OnceCell<Mint> = OnceCell::const_new();
 
 async fn new_mint(fee: u64) -> Mint {
     let mut supported_units = HashMap::new();
@@ -43,7 +38,7 @@ async fn new_mint(fee: u64) -> Mint {
 
     let mint_info = MintInfo::new().nuts(nuts);
 
-    let localstore = MintMemoryDatabase::default();
+    let localstore = memory::empty().await.expect("valid db instance");
 
     localstore
         .set_mint_info(mint_info)
@@ -62,8 +57,8 @@ async fn new_mint(fee: u64) -> Mint {
     .unwrap()
 }
 
-async fn initialize() -> &'static Mint {
-    INSTANCE.get_or_init(|| new_mint(0)).await
+async fn initialize() -> Mint {
+    new_mint(0).await
 }
 
 async fn mint_proofs(
@@ -115,7 +110,7 @@ async fn test_mint_double_spend() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 100.into(), &SplitTarget::default())?;
 
@@ -149,7 +144,7 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let amount = 2_u64.pow(63);
 
@@ -188,7 +183,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let secret = SecretKey::generate();
 
@@ -218,20 +213,12 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
+    // Listen for status updates on all input proof pks
     let public_keys_to_listen: Vec<_> = swap_request
         .inputs
-        .ys()
-        .expect("key")
-        .into_iter()
-        .enumerate()
-        .filter_map(|(key, pk)| {
-            if key % 2 == 0 {
-                // Only expect messages from every other key
-                Some(pk.to_string())
-            } else {
-                None
-            }
-        })
+        .ys()?
+        .iter()
+        .map(|pk| pk.to_string())
         .collect();
 
     let mut listener = mint
@@ -268,21 +255,14 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     assert!(attempt_swap.is_ok());
 
-    sleep(Duration::from_millis(10)).await;
-
     let mut msgs = HashMap::new();
     while let Ok((sub_id, msg)) = listener.try_recv() {
         assert_eq!(sub_id, "test".into());
         match msg {
             NotificationPayload::ProofState(ProofState { y, state, .. }) => {
-                let pk = y.to_string();
-                msgs.get_mut(&pk)
-                    .map(|x: &mut Vec<State>| {
-                        x.push(state);
-                    })
-                    .unwrap_or_else(|| {
-                        msgs.insert(pk, vec![state]);
-                    });
+                msgs.entry(y.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(state);
             }
             _ => bail!("Wrong message received"),
         }
@@ -290,6 +270,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     for keys in public_keys_to_listen {
         let statuses = msgs.remove(&keys).expect("some events");
+        // Every input pk receives two state updates, as there are only two state transitions
         assert_eq!(statuses, vec![State::Pending, State::Spent]);
     }
 
@@ -306,7 +287,7 @@ async fn test_swap_unbalanced() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 95.into(), &SplitTarget::default())?;
 
@@ -450,7 +431,7 @@ async fn test_correct_keyset() -> Result<()> {
         percent_fee_reserve: 1.0,
     };
 
-    let database = MintMemoryDatabase::default();
+    let database = memory::empty().await.expect("valid db instance");
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
@@ -458,12 +439,14 @@ async fn test_correct_keyset() -> Result<()> {
     let localstore = Arc::new(database);
     mint_builder = mint_builder.with_localstore(localstore.clone());
 
-    mint_builder = mint_builder.add_ln_backend(
-        CurrencyUnit::Sat,
-        PaymentMethod::Bolt11,
-        MintMeltLimits::new(1, 5_000),
-        Arc::new(fake_wallet),
-    );
+    mint_builder = mint_builder
+        .add_ln_backend(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt11,
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet),
+        )
+        .await?;
 
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())

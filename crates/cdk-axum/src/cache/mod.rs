@@ -117,7 +117,7 @@ impl HttpCache {
         tti: Duration,
         storage: Option<Box<dyn HttpCacheStorage + Send + Sync + 'static>>,
     ) -> Self {
-        let mut storage = storage.unwrap_or_else(|| Box::new(InMemoryHttpCache::default()));
+        let mut storage = storage.unwrap_or_else(|| Box::<InMemoryHttpCache>::default());
         storage.set_expiration_times(ttl, tti);
 
         Self {

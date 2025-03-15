@@ -3,12 +3,12 @@ use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
-use cdk::cdk_database::{MintDatabase, WalletMemoryDatabase};
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::cdk_database::MintDatabase;
+use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
@@ -16,13 +16,13 @@ use cdk::nuts::{
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PaymentMethod,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
-use cdk::types::QuoteTTL;
+use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::client::MintConnector;
 use cdk::wallet::Wallet;
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -143,7 +143,7 @@ impl MintConnector for DirectMintConnection {
     }
 }
 
-pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
+pub fn setup_tracing() {
     let default_filter = "debug";
 
     let sqlx_filter = "sqlx=warn";
@@ -154,11 +154,17 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
         default_filter, sqlx_filter, hyper_filter
     ));
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    // Ok if successful, Err if already initialized
+    // Allows us to setup tracing at the start of several parallel tests
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .try_init();
+}
 
+pub async fn create_and_start_test_mint() -> Result<Arc<Mint>> {
     let mut mint_builder = MintBuilder::new();
 
-    let database = MintMemoryDatabase::default();
+    let database = cdk_sqlite::mint::memory::empty().await?;
 
     let localstore = Arc::new(database);
     mint_builder = mint_builder.with_localstore(localstore.clone());
@@ -168,25 +174,28 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
         percent_fee_reserve: 1.0,
     };
 
-    let ln_fake_backend = Arc::new(FakeWallet::new(
+    let ln_fake_backend = FakeWallet::new(
         fee_reserve.clone(),
         HashMap::default(),
         HashSet::default(),
         0,
-    ));
-
-    mint_builder = mint_builder.add_ln_backend(
-        CurrencyUnit::Sat,
-        PaymentMethod::Bolt11,
-        MintMeltLimits::new(1, 1_000),
-        ln_fake_backend,
     );
+
+    mint_builder = mint_builder
+        .add_ln_backend(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt11,
+            MintMeltLimits::new(1, 1_000),
+            Arc::new(ln_fake_backend),
+        )
+        .await?;
 
     let mnemonic = Mnemonic::generate(12)?;
 
     mint_builder = mint_builder
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
+        .with_urls(vec!["https://aaa".to_string()])
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
     localstore
@@ -209,23 +218,41 @@ pub async fn create_and_start_test_mint() -> anyhow::Result<Arc<Mint>> {
     Ok(mint_arc)
 }
 
-pub fn create_test_wallet_for_mint(mint: Arc<Mint>) -> anyhow::Result<Arc<Wallet>> {
-    let connector = DirectMintConnection::new(mint);
+async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
+    let connector = DirectMintConnection::new(mint.clone());
+
+    let mint_info = mint.mint_info().await?;
+    let mint_url = mint_info
+        .urls
+        .as_ref()
+        .ok_or(anyhow!("Test mint URLs list is unset"))?
+        .first()
+        .ok_or(anyhow!("Test mint has empty URLs list"))?;
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    let mint_url = "http://aa".to_string();
     let unit = CurrencyUnit::Sat;
-    let localstore = WalletMemoryDatabase::default();
-    let mut wallet = Wallet::new(&mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let localstore = cdk_sqlite::wallet::memory::empty().await?;
+    let mut wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
 
     wallet.set_client(connector);
 
-    Ok(Arc::new(wallet))
+    Ok(wallet)
+}
+
+pub async fn create_test_wallet_arc_for_mint(mint: Arc<Mint>) -> Result<Arc<Wallet>> {
+    create_test_wallet_for_mint(mint).await.map(Arc::new)
+}
+
+pub async fn create_test_wallet_arc_mut_for_mint(mint: Arc<Mint>) -> Result<Arc<Mutex<Wallet>>> {
+    create_test_wallet_for_mint(mint)
+        .await
+        .map(Mutex::new)
+        .map(Arc::new)
 }
 
 /// Creates a mint quote for the given amount and checks its state in a loop. Returns when
 /// amount is minted.
-pub async fn fund_wallet(wallet: Arc<Wallet>, amount: u64) -> anyhow::Result<Amount> {
+pub async fn fund_wallet(wallet: Arc<Wallet>, amount: u64) -> Result<Amount> {
     let desired_amount = Amount::from(amount);
     let quote = wallet.mint_quote(desired_amount, None).await?;
 

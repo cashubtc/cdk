@@ -1,13 +1,13 @@
 //! SQLite Storage for CDK
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::common::{LnKey, QuoteTTL};
+use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
@@ -558,22 +558,36 @@ impl MintDatabase for MintRedbDatabase {
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
-        {
-            let mut proofs_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-
-            for y in ys {
-                proofs_table.remove(&y.to_bytes()).map_err(Error::from)?;
-            }
-        }
+        let mut states: HashSet<State> = HashSet::new();
 
         {
             let mut proof_state_table = write_txn
                 .open_table(PROOFS_STATE_TABLE)
                 .map_err(Error::from)?;
             for y in ys {
-                proof_state_table
+                let state = proof_state_table
                     .remove(&y.to_bytes())
                     .map_err(Error::from)?;
+
+                if let Some(state) = state {
+                    let state: State = serde_json::from_str(state.value()).map_err(Error::from)?;
+
+                    states.insert(state);
+                }
+            }
+        }
+
+        if states.contains(&State::Spent) {
+            tracing::warn!("Db attempted to remove spent proof");
+            write_txn.abort().map_err(Error::from)?;
+            return Err(Self::Err::AttemptRemoveSpentProof);
+        }
+
+        {
+            let mut proofs_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+            for y in ys {
+                proofs_table.remove(&y.to_bytes()).map_err(Error::from)?;
             }
         }
 
@@ -684,36 +698,44 @@ impl MintDatabase for MintRedbDatabase {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         let mut states = Vec::with_capacity(ys.len());
+        {
+            let table = write_txn
+                .open_table(PROOFS_STATE_TABLE)
+                .map_err(Error::from)?;
+            {
+                // First collect current states
+                for y in ys {
+                    let current_state = match table.get(y.to_bytes()).map_err(Error::from)? {
+                        Some(state) => {
+                            Some(serde_json::from_str(state.value()).map_err(Error::from)?)
+                        }
+                        None => None,
+                    };
+                    states.push(current_state);
+                }
+            }
+        }
 
-        let state_str = serde_json::to_string(&proofs_state).map_err(Error::from)?;
+        // Check if any proofs are spent
+        if states.iter().any(|state| *state == Some(State::Spent)) {
+            write_txn.abort().map_err(Error::from)?;
+            return Err(database::Error::AttemptUpdateSpentProof);
+        }
 
         {
             let mut table = write_txn
                 .open_table(PROOFS_STATE_TABLE)
                 .map_err(Error::from)?;
-
-            for y in ys {
-                let current_state;
-
-                {
-                    match table.get(y.to_bytes()).map_err(Error::from)? {
-                        Some(state) => {
-                            current_state =
-                                Some(serde_json::from_str(state.value()).map_err(Error::from)?)
-                        }
-                        None => current_state = None,
-                    }
-                }
-                states.push(current_state);
-
-                if current_state != Some(State::Spent) {
+            {
+                // If no proofs are spent, proceed with update
+                let state_str = serde_json::to_string(&proofs_state).map_err(Error::from)?;
+                for y in ys {
                     table
                         .insert(y.to_bytes(), state_str.as_str())
                         .map_err(Error::from)?;
                 }
             }
         }
-
         write_txn.commit().map_err(Error::from)?;
 
         Ok(states)
@@ -804,7 +826,7 @@ impl MintDatabase for MintRedbDatabase {
     async fn add_melt_request(
         &self,
         melt_request: MeltBolt11Request<Uuid>,
-        ln_key: LnKey,
+        ln_key: PaymentProcessorKey,
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
@@ -825,7 +847,7 @@ impl MintDatabase for MintRedbDatabase {
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, LnKey)>, Self::Err> {
+    ) -> Result<Option<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
 
@@ -921,5 +943,139 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         Err(Error::UnknownQuoteTTL.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::secret::Secret;
+    use cdk_common::{Amount, SecretKey};
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_remove_spent_proofs() {
+        let tmp_dir = tempdir().unwrap();
+
+        let db = MintRedbDatabase::new(&tmp_dir.path().join("mint.redb")).unwrap();
+        // Create some test proofs
+        let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+
+        let proofs = vec![
+            Proof {
+                amount: Amount::from(100),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: Amount::from(200),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+        ];
+
+        // Add proofs to database
+        db.add_proofs(proofs.clone(), None).await.unwrap();
+
+        // Mark one proof as spent
+        db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
+            .await
+            .unwrap();
+
+        db.update_proofs_states(&[proofs[1].y().unwrap()], State::Unspent)
+            .await
+            .unwrap();
+
+        // Try to remove both proofs - should fail because one is spent
+        let result = db
+            .remove_proofs(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()], None)
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            database::Error::AttemptRemoveSpentProof
+        ));
+
+        // Verify both proofs still exist
+        let states = db
+            .get_proofs_states(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()])
+            .await
+            .unwrap();
+
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0], Some(State::Spent));
+        assert_eq!(states[1], Some(State::Unspent));
+    }
+
+    #[tokio::test]
+    async fn test_update_spent_proofs() {
+        let tmp_dir = tempdir().unwrap();
+
+        let db = MintRedbDatabase::new(&tmp_dir.path().join("mint.redb")).unwrap();
+        // Create some test proofs
+        let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+
+        let proofs = vec![
+            Proof {
+                amount: Amount::from(100),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+            Proof {
+                amount: Amount::from(200),
+                keyset_id: keyset_id.clone(),
+                secret: Secret::generate(),
+                c: SecretKey::generate().public_key(),
+                witness: None,
+                dleq: None,
+            },
+        ];
+
+        // Add proofs to database
+        db.add_proofs(proofs.clone(), None).await.unwrap();
+
+        // Mark one proof as spent
+        db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
+            .await
+            .unwrap();
+
+        db.update_proofs_states(&[proofs[1].y().unwrap()], State::Unspent)
+            .await
+            .unwrap();
+
+        // Mark one proof as spent
+        let result = db
+            .update_proofs_states(
+                &[proofs[0].y().unwrap(), proofs[1].y().unwrap()],
+                State::Unspent,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            database::Error::AttemptUpdateSpentProof
+        ));
+
+        // Verify both proofs still exist
+        let states = db
+            .get_proofs_states(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()])
+            .await
+            .unwrap();
+
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0], Some(State::Spent));
+        assert_eq!(states[1], Some(State::Unspent));
     }
 }

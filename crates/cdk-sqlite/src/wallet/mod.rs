@@ -19,33 +19,40 @@ use cdk_common::{
     SpendingConditions, State,
 };
 use error::Error;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
-use sqlx::{ConnectOptions, Row};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Pool, Row, Sqlite};
 use tracing::instrument;
 
+use crate::common::create_sqlite_pool;
+
 pub mod error;
+pub mod memory;
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
 pub struct WalletSqliteDatabase {
-    pool: SqlitePool,
+    pool: Pool<Sqlite>,
 }
 
 impl WalletSqliteDatabase {
     /// Create new [`WalletSqliteDatabase`]
-    pub async fn new(path: &Path) -> Result<Self, Error> {
-        let path = path.to_str().ok_or(Error::InvalidDbPath)?;
-        let _conn = SqliteConnectOptions::from_str(path)?
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .read_only(false)
-            .create_if_missing(true)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Full)
-            .connect()
-            .await?;
+    #[cfg(not(feature = "sqlcipher"))]
+    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        Ok(Self {
+            pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
+        })
+    }
 
-        let pool = SqlitePool::connect(path).await?;
-
-        Ok(Self { pool })
+    /// Create new [`WalletSqliteDatabase`]
+    #[cfg(feature = "sqlcipher")]
+    pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
+        Ok(Self {
+            pool: create_sqlite_pool(
+                path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
+                password,
+            )
+            .await?,
+        })
     }
 
     /// Migrate [`WalletSqliteDatabase`]
@@ -118,6 +125,7 @@ impl WalletDatabase for WalletSqliteDatabase {
             urls,
             motd,
             time,
+            tos_url,
         ) = match mint_info {
             Some(mint_info) => {
                 let MintInfo {
@@ -132,6 +140,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                     urls,
                     motd,
                     time,
+                    tos_url,
                 } = mint_info;
 
                 (
@@ -146,18 +155,33 @@ impl WalletDatabase for WalletSqliteDatabase {
                     urls.map(|c| serde_json::to_string(&c).ok()),
                     motd,
                     time,
+                    tos_url,
                 )
             }
             None => (
-                None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None,
             ),
         };
 
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO mint
-(mint_url, name, pubkey, version, description, description_long, contact, nuts, icon_url, urls, motd, mint_time)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO mint
+(mint_url, name, pubkey, version, description, description_long, contact, nuts, icon_url, urls, motd, mint_time, tos_url)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(mint_url) DO UPDATE SET
+    name = excluded.name,
+    pubkey = excluded.pubkey,
+    version = excluded.version,
+    description = excluded.description,
+    description_long = excluded.description_long,
+    contact = excluded.contact,
+    nuts = excluded.nuts,
+    icon_url = excluded.icon_url,
+    urls = excluded.urls,
+    motd = excluded.motd,
+    mint_time = excluded.mint_time,
+    tos_url = excluded.tos_url
+;
         "#,
         )
         .bind(mint_url.to_string())
@@ -172,6 +196,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         .bind(urls)
         .bind(motd)
         .bind(time.map(|v| v as i64))
+        .bind(tos_url)
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;
@@ -464,9 +489,18 @@ WHERE id=?
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO mint_quote
+INSERT INTO mint_quote
 (id, mint_url, amount, unit, request, state, expiry, secret_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    mint_url = excluded.mint_url,
+    amount = excluded.amount,
+    unit = excluded.unit,
+    request = excluded.request,
+    state = excluded.state,
+    expiry = excluded.expiry,
+    secret_key = excluded.secret_key
+;
         "#,
         )
         .bind(quote.id.to_string())
@@ -548,9 +582,17 @@ WHERE id=?
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO melt_quote
+INSERT INTO melt_quote
 (id, unit, amount, request, fee_reserve, state, expiry)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    unit = excluded.unit,
+    amount = excluded.amount,
+    request = excluded.request,
+    fee_reserve = excluded.fee_reserve,
+    state = excluded.state,
+    expiry = excluded.expiry
+;
         "#,
         )
         .bind(quote.id.to_string())
@@ -611,9 +653,12 @@ WHERE id=?
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-INSERT OR REPLACE INTO key
+INSERT INTO key
 (id, keys)
-VALUES (?, ?);
+VALUES (?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    keys = excluded.keys
+;
         "#,
         )
         .bind(Id::from(&keys).to_string())
@@ -745,9 +790,20 @@ WHERE id=?
         for proof in added {
             sqlx::query(
                 r#"
-    INSERT OR REPLACE INTO proof
+    INSERT INTO proof
     (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(y) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        state = excluded.state,
+        spending_condition = excluded.spending_condition,
+        unit = excluded.unit,
+        amount = excluded.amount,
+        keyset_id = excluded.keyset_id,
+        secret = excluded.secret,
+        c = excluded.c,
+        witness = excluded.witness
+    ;
             "#,
             )
             .bind(proof.y.to_bytes().to_vec())
@@ -1015,7 +1071,7 @@ WHERE id=?;
         )
         .bind(count as i64)
         .bind(keyset_id.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -1042,7 +1098,7 @@ WHERE id=?;
         )
         .bind(count as i64)
         .bind(keyset_id.to_string())
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(Error::from)?;
 
@@ -1078,6 +1134,7 @@ WHERE id=?;
         Ok(count)
     }
 
+
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
@@ -1105,58 +1162,6 @@ WHERE id=?;
 
         Ok(count)
     }
-
-    #[instrument(skip_all)]
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
-        let rec = sqlx::query(
-            r#"
-SELECT last_check
-FROM nostr_last_checked
-WHERE key=?;
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .fetch_one(&self.pool)
-        .await;
-
-        let count = match rec {
-            Ok(rec) => {
-                let count: Option<u32> = rec.try_get("last_check").map_err(Error::from)?;
-                count
-            }
-            Err(err) => match err {
-                sqlx::Error::RowNotFound => return Ok(None),
-                _ => return Err(Error::SQLX(err).into()),
-            },
-        };
-
-        Ok(count)
-    }
-
-    #[instrument(skip_all)]
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), Self::Err> {
-        sqlx::query(
-            r#"
-INSERT OR REPLACE INTO nostr_last_checked
-(key, last_check)
-VALUES (?, ?);
-        "#,
-        )
-        .bind(verifying_key.to_bytes().to_vec())
-        .bind(last_checked)
-        .execute(&self.pool)
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
-    }
 }
 
 fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
@@ -1171,7 +1176,7 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
     let motd: Option<String> = row.try_get("motd").map_err(Error::from)?;
     let row_urls: Option<String> = row.try_get("urls").map_err(Error::from)?;
     let time: Option<i64> = row.try_get("mint_time").map_err(Error::from)?;
-
+    let tos_url: Option<String> = row.try_get("tos_url").map_err(Error::from)?;
     Ok(MintInfo {
         name,
         pubkey: row_pubkey.and_then(|p| PublicKey::from_slice(&p).ok()),
@@ -1186,6 +1191,7 @@ fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
         urls: row_urls.and_then(|c| serde_json::from_str(&c).ok()),
         motd,
         time: time.map(|t| t as u64),
+        tos_url,
     })
 }
 
@@ -1331,4 +1337,36 @@ fn sqlite_row_to_kvac_coin_info(row: &SqliteRow) -> Result<KvacCoinInfo, Error> 
         mint_url,
         state,
     })
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[tokio::test]
+    #[cfg(feature = "sqlcipher")]
+    async fn test_sqlcipher() {
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::MintInfo;
+
+        use super::*;
+        let path = std::env::temp_dir()
+            .to_path_buf()
+            .join(format!("cdk-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let db = WalletSqliteDatabase::new(path, "password".to_string())
+            .await
+            .unwrap();
+
+        db.migrate().await;
+
+        let mint_info = MintInfo::new().description("test");
+        let mint_url = MintUrl::from_str("https://mint.xyz").unwrap();
+
+        db.add_mint(mint_url.clone(), Some(mint_info.clone()))
+            .await
+            .unwrap();
+
+        let res = db.get_mint(mint_url).await.unwrap();
+        assert_eq!(mint_info, res.clone().unwrap());
+        assert_eq!("test", &res.unwrap().description.unwrap());
+    }
 }

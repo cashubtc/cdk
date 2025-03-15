@@ -13,7 +13,7 @@ use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State, Token};
 use crate::types::ProofInfo;
 use crate::util::hex;
-use crate::{Amount, Error, Wallet, SECP256K1};
+use crate::{ensure_cdk, Amount, Error, Wallet, SECP256K1};
 
 impl Wallet {
     /// Receive proofs
@@ -164,7 +164,7 @@ impl Wallet {
     ///  use std::sync::Arc;
     ///
     ///  use cdk::amount::SplitTarget;
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use rand::Rng;
@@ -175,7 +175,7 @@ impl Wallet {
     ///  let mint_url = "https://testnut.cashu.space";
     ///  let unit = CurrencyUnit::Sat;
     ///
-    ///  let localstore = WalletMemoryDatabase::default();
+    ///  let localstore = memory::empty().await?;
     ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let token = "cashuAeyJ0b2tlbiI6W3sicHJvb2ZzIjpbeyJhbW91bnQiOjEsInNlY3JldCI6ImI0ZjVlNDAxMDJhMzhiYjg3NDNiOTkwMzU5MTU1MGYyZGEzZTQxNWEzMzU0OTUyN2M2MmM5ZDc5MGVmYjM3MDUiLCJDIjoiMDIzYmU1M2U4YzYwNTMwZWVhOWIzOTQzZmRhMWEyY2U3MWM3YjNmMGNmMGRjNmQ4NDZmYTc2NWFhZjc3OWZhODFkIiwiaWQiOiIwMDlhMWYyOTMyNTNlNDFlIn1dLCJtaW50IjoiaHR0cHM6Ly90ZXN0bnV0LmNhc2h1LnNwYWNlIn1dLCJ1bml0Ijoic2F0In0=";
     ///  let amount_receive = wallet.receive(token, SplitTarget::default(), &[], &[]).await?;
@@ -194,21 +194,15 @@ impl Wallet {
 
         let unit = token.unit().unwrap_or_default();
 
-        if unit != self.unit {
-            return Err(Error::UnsupportedUnit);
-        }
+        ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
 
         let proofs = token.proofs();
 
         if let Token::TokenV3(token) = &token {
-            if token.is_multi_mint() {
-                return Err(Error::MultiMintTokenNotSupported);
-            }
+            ensure_cdk!(!token.is_multi_mint(), Error::MultiMintTokenNotSupported);
         }
 
-        if self.mint_url != token.mint_url()? {
-            return Err(Error::IncorrectMint);
-        }
+        ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
         let amount = self
             .receive_proofs(proofs, amount_split_target, p2pk_signing_keys, preimages)
@@ -223,7 +217,7 @@ impl Wallet {
     ///  use std::sync::Arc;
     ///
     ///  use cdk::amount::SplitTarget;
-    ///  use cdk::cdk_database::WalletMemoryDatabase;
+    ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use cdk::util::hex;
@@ -235,7 +229,7 @@ impl Wallet {
     ///  let mint_url = "https://testnut.cashu.space";
     ///  let unit = CurrencyUnit::Sat;
     ///
-    ///  let localstore = WalletMemoryDatabase::default();
+    ///  let localstore = memory::empty().await?;
     ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///  let token_raw = hex::decode("6372617742a4617481a261694800ad268c4d1f5826617081a3616101617378403961366462623834376264323332626137366462306466313937323136623239643362386363313435353363643237383237666331636339343266656462346561635821038618543ffb6b8695df4ad4babcde92a34a96bdcd97dcee0d7ccf98d4721267926164695468616e6b20796f75616d75687474703a2f2f6c6f63616c686f73743a33333338617563736174").unwrap();
     ///  let amount_receive = wallet.receive_raw(&token_raw, SplitTarget::default(), &[], &[]).await?;

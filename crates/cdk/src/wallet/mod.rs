@@ -121,17 +121,20 @@ impl Wallet {
     /// ```rust
     /// use std::sync::Arc;
     ///
-    /// use cdk::cdk_database::WalletMemoryDatabase;
+    /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
     /// use rand::Rng;
     ///
-    /// let seed = rand::thread_rng().gen::<[u8; 32]>();
-    /// let mint_url = "https://testnut.cashu.space";
-    /// let unit = CurrencyUnit::Sat;
+    /// async fn test() -> anyhow::Result<()> {
+    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let unit = CurrencyUnit::Sat;
     ///
-    /// let localstore = WalletMemoryDatabase::default();
-    /// let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let localstore = memory::empty().await?;
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     Ok(())
+    /// }
     /// ```
     pub fn new(
         mint_url: &str,
@@ -237,7 +240,7 @@ impl Wallet {
             .ok_or(Error::UnknownKeySet)?
             .input_fee_ppk;
 
-        let fee = (input_fee_ppk * count + 999) / 1000;
+        let fee = (input_fee_ppk * count).div_ceil(1000);
 
         Ok(Amount::from(fee))
     }
@@ -265,13 +268,14 @@ impl Wallet {
     /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
-        self.mint_url = new_mint_url.clone();
-        // Where the mint_url is in the database it must be updated
+        // Update the mint URL in the wallet DB
         self.localstore
-            .update_mint_url(self.mint_url.clone(), new_mint_url)
+            .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
 
-        self.localstore.remove_mint(self.mint_url.clone()).await?;
+        // Update the mint URL in the wallet struct field
+        self.mint_url = new_mint_url;
+
         Ok(())
     }
 

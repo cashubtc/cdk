@@ -12,14 +12,14 @@ use super::{
     Mint, PaymentMethod, PublicKey, State,
 };
 use crate::amount::to_unit;
-use crate::cdk_lightning::{MintLightning, PayInvoiceResponse};
+use crate::cdk_payment::{MakePaymentResponse, MintPayment};
 use crate::mint::verification::Verification;
 use crate::mint::SigFlag;
 use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
 use crate::nuts::MeltQuoteState;
-use crate::types::LnKey;
+use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
-use crate::{cdk_lightning, Amount, Error};
+use crate::{cdk_payment, ensure_cdk, Amount, Error};
 
 impl Mint {
     #[instrument(skip_all)]
@@ -35,9 +35,7 @@ impl Mint {
         let nut05 = mint_info.nuts.nut05;
         let nut15 = mint_info.nuts.nut15;
 
-        if nut05.disabled {
-            return Err(Error::MeltingDisabled);
-        }
+        ensure_cdk!(!nut05.disabled, Error::MeltingDisabled);
 
         let settings = nut05
             .get_settings(&unit, &method)
@@ -114,22 +112,32 @@ impl Mint {
 
         let ln = self
             .ln
-            .get(&LnKey::new(unit.clone(), PaymentMethod::Bolt11))
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::Bolt11,
+            ))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
 
                 Error::UnsupportedUnit
             })?;
 
-        let payment_quote = ln.get_payment_quote(melt_request).await.map_err(|err| {
-            tracing::error!(
-                "Could not get payment quote for mint quote, {} bolt11, {}",
-                unit,
-                err
-            );
+        let payment_quote = ln
+            .get_payment_quote(
+                &melt_request.request.to_string(),
+                &melt_request.unit,
+                melt_request.options,
+            )
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for mint quote, {} bolt11, {}",
+                    unit,
+                    err
+                );
 
-            Error::UnsupportedUnit
-        })?;
+                Error::UnsupportedUnit
+            })?;
 
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
         // or we want to ignore the amount and do an mpp payment
@@ -188,6 +196,8 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             payment_preimage: quote.payment_preimage,
             change,
+            request: Some(quote.request.clone()),
+            unit: Some(quote.unit.clone()),
         })
     }
 
@@ -300,6 +310,8 @@ impl Mint {
             unit: input_unit,
         } = self.verify_inputs(&melt_request.inputs).await?;
 
+        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
+
         let input_ys = melt_request.inputs.ys()?;
 
         let fee = self.get_proofs_fee(&melt_request.inputs).await?;
@@ -330,18 +342,16 @@ impl Mint {
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
 
-        if sig_flag.eq(&SigFlag::SigAll) {
-            return Err(Error::SigAllUsedInMelt);
-        }
+        ensure_cdk!(sig_flag.ne(&SigFlag::SigAll), Error::SigAllUsedInMelt);
 
         if let Some(outputs) = &melt_request.outputs {
-            let Verification {
-                amount: _,
-                unit: output_unit,
-            } = self.verify_outputs(outputs).await?;
+            if !outputs.is_empty() {
+                let Verification {
+                    amount: _,
+                    unit: output_unit,
+                } = self.verify_outputs(outputs).await?;
 
-            if input_unit != output_unit {
-                return Err(Error::UnsupportedUnit);
+                ensure_cdk!(input_unit == output_unit, Error::UnsupportedUnit);
             }
         }
 
@@ -370,7 +380,7 @@ impl Mint {
 
         if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
             self.pubsub_manager
-                .melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
+                .melt_quote_status(quote, None, None, MeltQuoteState::Unpaid);
         }
 
         for public_key in input_ys {
@@ -389,9 +399,9 @@ impl Mint {
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         use std::sync::Arc;
         async fn check_payment_state(
-            ln: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
+            ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
             melt_quote: &MeltQuote,
-        ) -> anyhow::Result<PayInvoiceResponse> {
+        ) -> anyhow::Result<MakePaymentResponse> {
             match ln
                 .check_outgoing_payment(&melt_quote.request_lookup_id)
                 .await
@@ -468,10 +478,10 @@ impl Mint {
                     _ => None,
                 };
                 tracing::debug!("partial_amount: {:?}", partial_amount);
-                let ln = match self
-                    .ln
-                    .get(&LnKey::new(quote.unit.clone(), PaymentMethod::Bolt11))
-                {
+                let ln = match self.ln.get(&PaymentProcessorKey::new(
+                    quote.unit.clone(),
+                    PaymentMethod::Bolt11,
+                )) {
                     Some(ln) => ln,
                     None => {
                         tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
@@ -484,7 +494,7 @@ impl Mint {
                 };
 
                 let pre = match ln
-                    .pay_invoice(quote.clone(), partial_amount, Some(quote.fee_reserve))
+                    .make_payment(quote.clone(), partial_amount, Some(quote.fee_reserve))
                     .await
                 {
                     Ok(pay)
@@ -507,7 +517,7 @@ impl Mint {
                     Err(err) => {
                         // If the error is that the invoice was already paid we do not want to hold
                         // hold the proofs as pending to we reset them  and return an error.
-                        if matches!(err, cdk_lightning::Error::InvoiceAlreadyPaid) {
+                        if matches!(err, cdk_payment::Error::InvoiceAlreadyPaid) {
                             tracing::debug!("Invoice already paid, resetting melt quote");
                             if let Err(err) = self.process_unpaid_melt(melt_request).await {
                                 tracing::error!("Could not reset melt quote state: {}", err);
@@ -574,7 +584,7 @@ impl Mint {
                     }
                 }
 
-                (pre.payment_preimage, amount_spent)
+                (pre.payment_proof, amount_spent)
             }
         };
 
@@ -702,6 +712,8 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             state: MeltQuoteState::Paid,
             expiry: quote.expiry,
+            request: Some(quote.request.clone()),
+            unit: Some(quote.unit.clone()),
         })
     }
 }

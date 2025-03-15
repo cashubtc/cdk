@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -14,6 +15,8 @@ use clap::Args;
 use nostr_sdk::nips::nip04;
 use nostr_sdk::{Filter, Keys, Kind, Timestamp};
 
+use crate::nostr_storage;
+
 #[derive(Args)]
 pub struct ReceiveSubCommand {
     /// Cashu Token
@@ -27,7 +30,7 @@ pub struct ReceiveSubCommand {
     /// Nostr relay
     #[arg(short, long, action = clap::ArgAction::Append)]
     relay: Vec<String>,
-    /// Unix time to to query nostr from
+    /// Unix time to query nostr from
     #[arg(long)]
     since: Option<u64>,
     /// Preimage
@@ -40,6 +43,7 @@ pub async fn receive(
     localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync>,
     seed: &[u8],
     sub_command_args: &ReceiveSubCommand,
+    work_dir: &Path,
 ) -> Result<()> {
     let mut signing_keys = Vec::new();
 
@@ -89,11 +93,18 @@ pub async fn receive(
             signing_keys.push(nostr_key.clone());
 
             let relays = sub_command_args.relay.clone();
-            let since = localstore
-                .get_nostr_last_checked(&nostr_key.public_key())
-                .await?;
+            let since =
+                nostr_storage::get_nostr_last_checked(work_dir, &nostr_key.public_key()).await?;
 
             let tokens = nostr_receive(relays, nostr_key.clone(), since).await?;
+
+            // Store the current time as last checked
+            nostr_storage::store_nostr_last_checked(
+                work_dir,
+                &nostr_key.public_key(),
+                unix_time() as u32,
+            )
+            .await?;
 
             let mut total_amount = Amount::ZERO;
             for token_str in &tokens {
@@ -116,9 +127,6 @@ pub async fn receive(
                 }
             }
 
-            localstore
-                .add_nostr_last_checked(nostr_key.public_key(), unix_time() as u32)
-                .await?;
             total_amount
         }
     };

@@ -77,8 +77,6 @@ echo "Starting regtest mint"
 # cargo run --bin regtest_mint &
 
 export CDK_MINTD_CLN_RPC_PATH="$cdk_itests/cln/one/regtest/lightning-rpc";
-
-
 export CDK_MINTD_URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0";
 export CDK_MINTD_WORK_DIR="$cdk_itests";
 export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
@@ -86,9 +84,10 @@ export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port_0;
 export CDK_MINTD_LN_BACKEND="cln";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
 export CDK_MINTD_DATABASE=$MINT_DATABASE;
+export RUST_BACKTRACE=1
 
 echo "Starting cln mintd";
-cargo run --bin cdk-mintd &
+cargo run --bin cdk-mintd --features "redb" &
 cdk_mintd_pid=$!
 
 
@@ -139,7 +138,7 @@ export CDK_MINTD_LN_BACKEND="lnd";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
 
 echo "Starting lnd mintd";
-cargo run --bin cdk-mintd &
+cargo run --bin cdk-mintd --features "redb" &
 cdk_mintd_lnd_pid=$!
 
 URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_1/v1/info"

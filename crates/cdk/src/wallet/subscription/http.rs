@@ -70,7 +70,6 @@ async fn convert_subscription(
     Some(())
 }
 
-#[allow(clippy::incompatible_msrv)]
 #[inline]
 pub async fn http_main<S: IntoIterator<Item = SubId>>(
     initial_state: S,

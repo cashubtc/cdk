@@ -7,7 +7,6 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::{MeltOptions, Mpp};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::WalletMemoryDatabase;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
@@ -21,6 +20,7 @@ use cdk_integration_tests::init_regtest::{
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
 use cdk_integration_tests::wait_for_mint_to_be_paid;
+use cdk_sqlite::wallet::{self, memory};
 use futures::{join, SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
@@ -83,7 +83,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -110,19 +110,22 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let melt = wallet.melt_quote(invoice, None).await?;
 
     write
-        .send(Message::Text(serde_json::to_string(&json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "subscribe",
-                "params": {
-                  "kind": "bolt11_melt_quote",
-                  "filters": [
-                    melt.id.clone(),
-                  ],
-                  "subId": "test-sub",
-                }
+        .send(Message::Text(
+            serde_json::to_string(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "subscribe",
+                    "params": {
+                      "kind": "bolt11_melt_quote",
+                      "filters": [
+                        melt.id.clone(),
+                      ],
+                      "subId": "test-sub",
+                    }
 
-        }))?))
+            }))?
+            .into(),
+        ))
         .await?;
 
     assert_eq!(
@@ -167,7 +170,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -201,7 +204,7 @@ async fn test_restore() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -221,7 +224,7 @@ async fn test_restore() -> Result<()> {
     let wallet_2 = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -253,42 +256,54 @@ async fn test_restore() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_pay_invoice_twice() -> Result<()> {
+async fn test_pay_invoice_twice() -> anyhow::Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await.unwrap()),
         &seed,
         None,
     )?;
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet
+        .mint_quote(100.into(), None)
+        .await
+        .expect("Get mint quote");
 
     lnd_client
         .pay_invoice(mint_quote.request)
         .await
         .expect("Could not pay invoice");
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .expect("Mint invoice timeout not paid");
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .expect("Could not mint");
 
-    let mint_amount = proofs.total_amount()?;
+    let mint_amount = proofs.total_amount().unwrap();
 
     assert_eq!(mint_amount, 100.into());
 
-    let invoice = lnd_client.create_invoice(Some(10)).await?;
+    let invoice = lnd_client
+        .create_invoice(Some(10))
+        .await
+        .expect("Could not create invoice");
 
-    let melt_quote = wallet.melt_quote(invoice.clone(), None).await?;
+    let melt_quote = wallet
+        .melt_quote(invoice.clone(), None)
+        .await
+        .expect("Could not get melt quote");
 
     let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    let melt_two = wallet.melt_quote(invoice, None).await?;
+    let melt_two = wallet.melt_quote(invoice, None).await.unwrap();
 
     let melt_two = wallet.melt(&melt_two.id).await;
 
@@ -304,7 +319,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
         }
     }
 
-    let balance = wallet.total_balance().await?;
+    let balance = wallet.total_balance().await.unwrap();
 
     assert_eq!(balance, (Amount::from(100) - melt.fee_paid - melt.amount));
 
@@ -319,7 +334,7 @@ async fn test_internal_payment() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -341,7 +356,7 @@ async fn test_internal_payment() -> Result<()> {
     let wallet_2 = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &seed,
         None,
     )?;
@@ -414,7 +429,7 @@ async fn test_cached_mint() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -453,7 +468,7 @@ async fn test_websocket_connection() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(wallet::memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
@@ -508,14 +523,14 @@ async fn test_multimint_melt() -> Result<()> {
     let wallet1 = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
     let wallet2 = Wallet::new(
         &get_mint_url("1"),
         CurrencyUnit::Sat,
-        Arc::new(WalletMemoryDatabase::default()),
+        Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;

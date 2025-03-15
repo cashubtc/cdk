@@ -7,33 +7,32 @@ description = "SQLite storage backend for CDK"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.66.0"                            # MSRV
+rust-version = "1.75.0"                            # MSRV
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["mint", "wallet", "kvac"]
-mint = []
-wallet = []
+mint = ["cdk-common/mint"]
+wallet = ["cdk-common/wallet"]
+sqlcipher = ["libsqlite3-sys"]
 kvac = ["dep:cashu_kvac"]
 
 [dependencies]
 cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "03bcca4997f310b4e2e1b8a3b22cf444faa41e6a", optional = true }
-async-trait = "0.1"
-cdk-common = { path = "../cdk-common", version = "0.7.1" }
-bitcoin = { version = "0.32.2", default-features = false }
-sqlx = { version = "0.6.3", default-features = false, features = [
+async-trait.workspace = true
+cdk-common.workspace = true
+bitcoin.workspace = true
+sqlx = { version = "0.7.4", default-features = false, features = [
     "runtime-tokio-rustls",
-    "sqlite",
+    "sqlite", 
     "macros",
     "migrate",
     "uuid",
 ] }
-thiserror = "1"
-tokio = { version = "1", features = ["time", "macros", "sync"] }
-tracing = { version = "0.1", default-features = false, features = [
-    "attributes",
-    "log",
-] }
-serde_json = "1"
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+libsqlite3-sys = { version = "0.27.0", features = ["bundled-sqlcipher"], optional = true }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+lightning-invoice.workspace = true
+uuid.workspace = true

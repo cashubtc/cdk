@@ -6,18 +6,20 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::error::Error;
+use cdk_common::payment::Bolt11Settings;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
 use super::Nuts;
 use crate::amount::Amount;
-use crate::cdk_lightning::{self, MintLightning};
+use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod,
 };
-use crate::types::LnKey;
+use crate::types::PaymentProcessorKey;
 
 /// Cashu Mint
 #[derive(Default)]
@@ -27,7 +29,9 @@ pub struct MintBuilder {
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
     /// Ln backends for mint
-    ln: Option<HashMap<LnKey, Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>>>,
+    ln: Option<
+        HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
+    >,
     seed: Option<Vec<u8>>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -74,6 +78,12 @@ impl MintBuilder {
         self
     }
 
+    /// Set initial mint URLs
+    pub fn with_urls(mut self, urls: Vec<String>) -> Self {
+        self.mint_info.urls = Some(urls);
+        self
+    }
+
     /// Set icon url
     pub fn with_icon_url(mut self, icon_url: String) -> Self {
         self.mint_info.icon_url = Some(icon_url);
@@ -83,6 +93,12 @@ impl MintBuilder {
     /// Set icon url
     pub fn with_motd(mut self, motd: String) -> Self {
         self.mint_info.motd = Some(motd);
+        self
+    }
+
+    /// Set terms of service URL
+    pub fn with_tos_url(mut self, tos_url: String) -> Self {
+        self.mint_info.tos_url = Some(tos_url);
         self
     }
 
@@ -113,25 +129,27 @@ impl MintBuilder {
     }
 
     /// Add ln backend
-    pub fn add_ln_backend(
+    pub async fn add_ln_backend(
         mut self,
         unit: CurrencyUnit,
         method: PaymentMethod,
         limits: MintMeltLimits,
-        ln_backend: Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-    ) -> Self {
-        let ln_key = LnKey {
+        ln_backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+    ) -> Result<Self, Error> {
+        let ln_key = PaymentProcessorKey {
             unit: unit.clone(),
-            method,
+            method: method.clone(),
         };
 
         let mut ln = self.ln.unwrap_or_default();
 
-        let settings = ln_backend.get_settings();
+        let settings = ln_backend.get_settings().await?;
+
+        let settings: Bolt11Settings = settings.try_into()?;
 
         if settings.mpp {
             let mpp_settings = MppMethodSettings {
-                method,
+                method: method.clone(),
                 unit: unit.clone(),
             };
 
@@ -144,7 +162,7 @@ impl MintBuilder {
 
         if method == PaymentMethod::Bolt11 {
             let mint_method_settings = MintMethodSettings {
-                method,
+                method: method.clone(),
                 unit: unit.clone(),
                 min_amount: Some(limits.mint_min),
                 max_amount: Some(limits.mint_max),
@@ -155,7 +173,7 @@ impl MintBuilder {
             self.mint_info.nuts.nut04.disabled = false;
 
             let melt_method_settings = MeltMethodSettings {
-                method,
+                method: method.clone(),
                 unit,
                 min_amount: Some(limits.melt_min),
                 max_amount: Some(limits.melt_max),
@@ -173,7 +191,7 @@ impl MintBuilder {
 
         self.ln = Some(ln);
 
-        self
+        Ok(self)
     }
 
     /// Set pubkey

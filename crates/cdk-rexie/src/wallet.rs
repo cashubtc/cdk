@@ -27,9 +27,8 @@ const MELT_QUOTES: &str = "melt_quotes";
 const PROOFS: &str = "proofs";
 const CONFIG: &str = "config";
 const KEYSET_COUNTER: &str = "keyset_counter";
-const NOSTR_LAST_CHECKED: &str = "nostr_last_check";
 
-const DATABASE_VERSION: u32 = 3;
+const DATABASE_VERSION: u32 = 4;
 
 /// Rexie Database Error
 #[derive(Debug, Error)]
@@ -98,7 +97,6 @@ impl WalletRexieDatabase {
             .add_object_store(ObjectStore::new(MELT_QUOTES))
             .add_object_store(ObjectStore::new(CONFIG))
             .add_object_store(ObjectStore::new(KEYSET_COUNTER))
-            .add_object_store(ObjectStore::new(NOSTR_LAST_CHECKED))
             // Build the database
             .build()
             .await
@@ -750,55 +748,5 @@ impl WalletDatabase for WalletRexieDatabase {
             .and_then(|c| serde_wasm_bindgen::from_value(c).ok());
 
         Ok(current_count)
-    }
-
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), Self::Err> {
-        let rexie = self.db.lock().await;
-
-        let transaction = rexie
-            .transaction(&[NOSTR_LAST_CHECKED], TransactionMode::ReadWrite)
-            .map_err(Error::from)?;
-
-        let counter_store = transaction.store(NOSTR_LAST_CHECKED).map_err(Error::from)?;
-
-        let verifying_key = serde_wasm_bindgen::to_value(&verifying_key).map_err(Error::from)?;
-
-        let last_checked = serde_wasm_bindgen::to_value(&last_checked).map_err(Error::from)?;
-
-        counter_store
-            .put(&last_checked, Some(&verifying_key))
-            .await
-            .map_err(Error::from)?;
-
-        transaction.done().await.map_err(Error::from)?;
-
-        Ok(())
-    }
-
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
-        let rexie = self.db.lock().await;
-
-        let transaction = rexie
-            .transaction(&[NOSTR_LAST_CHECKED], TransactionMode::ReadOnly)
-            .map_err(Error::from)?;
-
-        let nostr_last_check_store = transaction.store(NOSTR_LAST_CHECKED).map_err(Error::from)?;
-
-        let verifying_key = serde_wasm_bindgen::to_value(verifying_key).map_err(Error::from)?;
-
-        let last_checked = nostr_last_check_store
-            .get(verifying_key)
-            .await
-            .map_err(Error::from)?
-            .and_then(|l| serde_wasm_bindgen::from_value(l).ok());
-
-        Ok(last_checked)
     }
 }

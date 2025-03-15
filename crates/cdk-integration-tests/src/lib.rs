@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{MintQuoteState, NotificationPayload, State};
@@ -67,7 +67,6 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::incompatible_msrv)]
 pub async fn wait_for_mint_to_be_paid(
     wallet: &Wallet,
     mint_quote_id: &str,
@@ -87,7 +86,7 @@ pub async fn wait_for_mint_to_be_paid(
                 }
             }
         }
-        Ok(())
+        Err(anyhow!("Subscription ended without quote being paid"))
     };
 
     let timeout_future = timeout(Duration::from_secs(timeout_secs), wait_future);
@@ -115,7 +114,7 @@ pub async fn wait_for_mint_to_be_paid(
         result = timeout_future => {
             match result {
                 Ok(payment_result) => payment_result,
-                Err(_) => Err(anyhow::anyhow!("Timeout waiting for mint quote to be paid")),
+                Err(_) => Err(anyhow!("Timeout waiting for mint quote to be paid")),
             }
         }
         result = periodic_task => {
