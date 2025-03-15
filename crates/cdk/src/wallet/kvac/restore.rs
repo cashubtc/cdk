@@ -105,7 +105,7 @@ impl Wallet {
 
                 // println!("amount_commitments: {:?}", amount_commitments);
 
-                // Exctract blinding factors
+                // Extract blinding factors
                 let blinding_factors = coins
                     .iter()
                     .map(|(pre_coin, _)| pre_coin.attributes.0.r.clone())

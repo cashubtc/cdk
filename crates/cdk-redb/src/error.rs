@@ -64,7 +64,7 @@ pub enum Error {
     /// Unknown Database Version
     #[error("Unknown database version")]
     UnknownDatabaseVersion,
-    /// Unimplmented
+    /// Unimplemented
     #[error("Unimplemented method")]
     Unimplemented,
 }
