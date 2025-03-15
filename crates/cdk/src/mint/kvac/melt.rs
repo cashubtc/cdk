@@ -1,3 +1,4 @@
+use crate::cdk_payment;
 use anyhow::bail;
 use cashu_kvac::secp::{GroupElement, TweakKind};
 use cashu_kvac::transcript::CashuTranscript;
@@ -11,8 +12,6 @@ use cdk_common::payment::{MakePaymentResponse, MintPayment};
 use cdk_common::{Amount, MeltQuoteState, MintQuoteState, PaymentMethod, State};
 use tracing::instrument;
 use uuid::Uuid;
-use crate::cdk_payment;
-
 
 use crate::{Error, Mint};
 
@@ -243,10 +242,10 @@ impl Mint {
                     _ => None,
                 };
                 */
-                let ln = match self
-                    .ln
-                    .get(&PaymentProcessorKey::new(quote.unit.clone(), PaymentMethod::Bolt11))
-                {
+                let ln = match self.ln.get(&PaymentProcessorKey::new(
+                    quote.unit.clone(),
+                    PaymentMethod::Bolt11,
+                )) {
                     Some(ln) => ln,
                     None => {
                         tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);

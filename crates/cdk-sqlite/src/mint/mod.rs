@@ -966,7 +966,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         .bind(keyset.valid_to.map(|v| v as i64))
         .bind(keyset.derivation_path.to_string())
         .bind(keyset.input_fee_ppk as i64)
-            .bind(keyset.derivation_path_index)
+        .bind(keyset.derivation_path_index)
         .execute(&mut *transaction)
         .await;
 

@@ -1134,7 +1134,6 @@ WHERE id=?;
         Ok(count)
     }
 
-
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     #[cfg(feature = "kvac")]
     async fn get_kvac_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {

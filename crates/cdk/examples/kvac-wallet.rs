@@ -1,10 +1,10 @@
+use cdk::wallet::Wallet;
+use cdk_common::{Amount, CurrencyUnit, MintQuoteState};
+use cdk_sqlite::wallet::memory;
+use rand::Rng;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-use cdk_sqlite::wallet::memory;
-use cdk::wallet::Wallet;
-use cdk_common::{Amount, CurrencyUnit, MintQuoteState};
-use rand::Rng;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
