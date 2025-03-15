@@ -1,4 +1,3 @@
-use crate::cdk_payment;
 use anyhow::bail;
 use cashu_kvac::secp::{GroupElement, TweakKind};
 use cashu_kvac::transcript::CashuTranscript;
@@ -13,7 +12,7 @@ use cdk_common::{Amount, MeltQuoteState, MintQuoteState, PaymentMethod, State};
 use tracing::instrument;
 use uuid::Uuid;
 
-use crate::{Error, Mint};
+use crate::{cdk_payment, Error, Mint};
 
 impl Mint {
     /// Process unpaid melt request
