@@ -24,21 +24,15 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
         .prepare_send(Amount::from(40), SendOptions::default())
         .await?;
     assert_eq!(
-        HashSet::<_, RandomState>::from_iter(prepared_send.proofs().iter().cloned()),
-        HashSet::from_iter(wallet_alice.get_reserved_proofs().await?.iter().cloned())
+        HashSet::<_, RandomState>::from_iter(prepared_send.proofs().ys()?),
+        HashSet::from_iter(wallet_alice.get_reserved_proofs().await?.ys()?)
     );
     let token = wallet_alice.send(prepared_send, None).await?;
     assert_eq!(Amount::from(40), token.proofs().total_amount()?);
     assert_eq!(Amount::from(24), wallet_alice.total_balance().await?);
     assert_eq!(
-        HashSet::<_, RandomState>::from_iter(token.proofs().iter().cloned()),
-        HashSet::from_iter(
-            wallet_alice
-                .get_pending_spent_proofs()
-                .await?
-                .iter()
-                .cloned()
-        )
+        HashSet::<_, RandomState>::from_iter(token.proofs().ys()?),
+        HashSet::from_iter(wallet_alice.get_pending_spent_proofs().await?.ys()?)
     );
 
     // Alice sends cashu, Carol receives
