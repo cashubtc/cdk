@@ -1,6 +1,9 @@
 use anyhow::Result;
 use cdk::nuts::nut18::TransportType;
-use cdk::nuts::{CurrencyUnit, PaymentRequest, PaymentRequestPayload, Token, Transport};
+use cdk::nuts::{
+    CurrencyUnit, PaymentRequest, PaymentRequestPayload, PublicKey as CdkPublicKey, Token,
+    Transport,
+};
 use cdk::wallet::MultiMintWallet;
 use clap::Args;
 use nostr_sdk::nips::nip19::Nip19Profile;
@@ -14,6 +17,9 @@ pub struct CreateRequestSubCommand {
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,
+    /// Public key
+    #[arg(short, long)]
+    pubkey: Option<CdkPublicKey>,
     /// Quote description
     description: Option<String>,
 }
@@ -48,6 +54,7 @@ pub async fn create_request(
         mints: Some(mints),
         description: sub_command_args.description.clone(),
         transports: vec![nostr_transport],
+        public_key: sub_command_args.pubkey,
     };
 
     println!("{}", req);

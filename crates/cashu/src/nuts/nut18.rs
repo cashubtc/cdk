@@ -10,7 +10,7 @@ use bitcoin::base64::{alphabet, Engine};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{CurrencyUnit, Proofs};
+use super::{CurrencyUnit, Proofs, PublicKey};
 use crate::mint_url::MintUrl;
 use crate::Amount;
 
@@ -170,6 +170,9 @@ pub struct PaymentRequest {
     /// Transport
     #[serde(rename = "t")]
     pub transports: Vec<Transport>,
+    /// NUT-11: Public Key
+    #[serde(rename = "p")]
+    pub public_key: Option<PublicKey>,
 }
 
 impl PaymentRequest {
@@ -189,6 +192,7 @@ pub struct PaymentRequestBuilder {
     mints: Option<Vec<MintUrl>>,
     description: Option<String>,
     transports: Vec<Transport>,
+    public_key: Option<PublicKey>,
 }
 
 impl PaymentRequestBuilder {
@@ -252,6 +256,12 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set public key
+    pub fn public_key(mut self, public_key: PublicKey) -> Self {
+        self.public_key = Some(public_key);
+        self
+    }
+
     /// Build the PaymentRequest
     pub fn build(self) -> PaymentRequest {
         PaymentRequest {
@@ -262,6 +272,7 @@ impl PaymentRequestBuilder {
             mints: self.mints,
             description: self.description,
             transports: self.transports,
+            public_key: self.public_key,
         }
     }
 }
@@ -355,6 +366,7 @@ mod tests {
                 .expect("valid mint url")]),
             description: None,
             transports: vec![transport.clone()],
+            public_key: None,
         };
 
         let request_str = request.to_string();
