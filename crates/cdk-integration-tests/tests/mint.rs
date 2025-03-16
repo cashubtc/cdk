@@ -1,30 +1,27 @@
 //! Mint tests
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::mint_memory::MintMemoryDatabase;
+use cdk::cdk_database::MintDatabase;
 use cdk::dhke::construct_proofs;
-use cdk::mint::MintQuote;
+use cdk::mint::{MintBuilder, MintMeltLimits, MintQuote};
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::nut17::Params;
 use cdk::nuts::{
-    CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PreMintSecrets,
-    ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MintBolt11Request, MintInfo, NotificationPayload, Nuts, PaymentMethod,
+    PreMintSecrets, ProofState, Proofs, SecretKey, SpendingConditions, State, SwapRequest,
 };
-use cdk::types::QuoteTTL;
+use cdk::subscription::{IndexableParams, Params};
+use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::Mint;
-use tokio::sync::OnceCell;
-use tokio::time::sleep;
+use cdk_fake_wallet::FakeWallet;
+use cdk_sqlite::mint::memory;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
-
-static INSTANCE: OnceCell<Mint> = OnceCell::const_new();
 
 async fn new_mint(fee: u64) -> Mint {
     let mut supported_units = HashMap::new();
@@ -41,16 +38,17 @@ async fn new_mint(fee: u64) -> Mint {
 
     let mint_info = MintInfo::new().nuts(nuts);
 
+    let localstore = memory::empty().await.expect("valid db instance");
+
+    localstore
+        .set_mint_info(mint_info)
+        .await
+        .expect("Could not set mint info");
     let mnemonic = Mnemonic::generate(12).unwrap();
 
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-
     Mint::new(
-        MINT_URL,
         &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        Arc::new(MintMemoryDatabase::default()),
+        Arc::new(localstore),
         HashMap::new(),
         supported_units,
         HashMap::new(),
@@ -59,8 +57,8 @@ async fn new_mint(fee: u64) -> Mint {
     .unwrap()
 }
 
-async fn initialize() -> &'static Mint {
-    INSTANCE.get_or_init(|| new_mint(0)).await
+async fn initialize() -> Mint {
+    new_mint(0).await
 }
 
 async fn mint_proofs(
@@ -72,7 +70,6 @@ async fn mint_proofs(
     let request_lookup = uuid::Uuid::new_v4().to_string();
 
     let quote = MintQuote::new(
-        mint.config.mint_url(),
         "".to_string(),
         CurrencyUnit::Sat,
         amount,
@@ -113,7 +110,7 @@ async fn test_mint_double_spend() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 100.into(), &SplitTarget::default())?;
 
@@ -147,7 +144,7 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let amount = 2_u64.pow(63);
 
@@ -167,6 +164,8 @@ async fn test_attempt_to_swap_by_overflowing() -> Result<()> {
         Ok(_) => bail!("Swap occurred with overflow"),
         Err(err) => match err {
             cdk::Error::NUT03(cdk::nuts::nut03::Error::Amount(_)) => (),
+            cdk::Error::AmountOverflow => (),
+            cdk::Error::AmountError(_) => (),
             _ => {
                 println!("{:?}", err);
                 bail!("Wrong error returned in swap overflow")
@@ -184,7 +183,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let secret = SecretKey::generate();
 
@@ -214,29 +213,24 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
+    // Listen for status updates on all input proof pks
     let public_keys_to_listen: Vec<_> = swap_request
         .inputs
-        .ys()
-        .expect("key")
-        .into_iter()
-        .enumerate()
-        .filter_map(|(key, pk)| {
-            if key % 2 == 0 {
-                // Only expect messages from every other key
-                Some(pk.to_string())
-            } else {
-                None
-            }
-        })
+        .ys()?
+        .iter()
+        .map(|pk| pk.to_string())
         .collect();
 
     let mut listener = mint
         .pubsub_manager
-        .try_subscribe(Params {
-            kind: cdk::nuts::nut17::Kind::ProofState,
-            filters: public_keys_to_listen.clone(),
-            id: "test".into(),
-        })
+        .try_subscribe::<IndexableParams>(
+            Params {
+                kind: cdk::nuts::nut17::Kind::ProofState,
+                filters: public_keys_to_listen.clone(),
+                id: "test".into(),
+            }
+            .into(),
+        )
         .await
         .expect("valid subscription");
 
@@ -261,21 +255,14 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     assert!(attempt_swap.is_ok());
 
-    sleep(Duration::from_millis(10)).await;
-
     let mut msgs = HashMap::new();
     while let Ok((sub_id, msg)) = listener.try_recv() {
         assert_eq!(sub_id, "test".into());
         match msg {
             NotificationPayload::ProofState(ProofState { y, state, .. }) => {
-                let pk = y.to_string();
-                msgs.get_mut(&pk)
-                    .map(|x: &mut Vec<State>| {
-                        x.push(state);
-                    })
-                    .unwrap_or_else(|| {
-                        msgs.insert(pk, vec![state]);
-                    });
+                msgs.entry(y.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(state);
             }
             _ => bail!("Wrong message received"),
         }
@@ -283,7 +270,8 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     for keys in public_keys_to_listen {
         let statuses = msgs.remove(&keys).expect("some events");
-        assert_eq!(statuses, vec![State::Pending, State::Pending, State::Spent]);
+        // Every input pk receives two state updates, as there are only two state transitions
+        assert_eq!(statuses, vec![State::Pending, State::Spent]);
     }
 
     assert!(listener.try_recv().is_err(), "no other event is happening");
@@ -299,7 +287,7 @@ async fn test_swap_unbalanced() -> Result<()> {
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
-    let proofs = mint_proofs(mint, 100.into(), &SplitTarget::default(), keys).await?;
+    let proofs = mint_proofs(&mint, 100.into(), &SplitTarget::default(), keys).await?;
 
     let preswap = PreMintSecrets::random(keyset_id, 95.into(), &SplitTarget::default())?;
 
@@ -332,7 +320,7 @@ async fn test_swap_unbalanced() -> Result<()> {
 async fn test_swap_overpay_underpay_fee() -> Result<()> {
     let mint = new_mint(1).await;
 
-    mint.rotate_keyset(CurrencyUnit::Sat, 1, 32, 1, HashMap::new())
+    mint.rotate_keyset(CurrencyUnit::Sat, 1, 32, 1, &HashMap::new())
         .await?;
 
     let keys = mint.pubkeys().await?.keysets.first().unwrap().clone().keys;
@@ -432,5 +420,78 @@ async fn test_mint_enforce_fee() -> Result<()> {
 
     let _ = mint.process_swap_request(swap_request).await?;
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_correct_keyset() -> Result<()> {
+    let mnemonic = Mnemonic::generate(12)?;
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+
+    let database = memory::empty().await.expect("valid db instance");
+
+    let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
+
+    let mut mint_builder = MintBuilder::new();
+    let localstore = Arc::new(database);
+    mint_builder = mint_builder.with_localstore(localstore.clone());
+
+    mint_builder = mint_builder
+        .add_ln_backend(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt11,
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet),
+        )
+        .await?;
+
+    mint_builder = mint_builder
+        .with_name("regtest mint".to_string())
+        .with_description("regtest mint".to_string())
+        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+
+    let mint = mint_builder.build().await?;
+
+    localstore
+        .set_mint_info(mint_builder.mint_info.clone())
+        .await?;
+    let quote_ttl = QuoteTTL::new(10000, 10000);
+    localstore.set_quote_ttl(quote_ttl).await?;
+
+    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;
+    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;
+
+    let active = mint.localstore.get_active_keysets().await?;
+
+    let active = active
+        .get(&CurrencyUnit::Sat)
+        .expect("There is a keyset for unit");
+
+    let keyset_info = mint
+        .localstore
+        .get_keyset_info(active)
+        .await?
+        .expect("There is keyset");
+
+    assert!(keyset_info.derivation_path_index == Some(2));
+
+    let mint = mint_builder.build().await?;
+
+    let active = mint.localstore.get_active_keysets().await?;
+
+    let active = active
+        .get(&CurrencyUnit::Sat)
+        .expect("There is a keyset for unit");
+
+    let keyset_info = mint
+        .localstore
+        .get_keyset_info(active)
+        .await?
+        .expect("There is keyset");
+
+    assert!(keyset_info.derivation_path_index == Some(2));
     Ok(())
 }

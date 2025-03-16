@@ -12,6 +12,7 @@ use cdk::nuts::{
 };
 use cdk::util::unix_time;
 use paste::paste;
+use tracing::instrument;
 use uuid::Uuid;
 
 use crate::ws::main_websocket;
@@ -136,7 +137,7 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
     path = "/mint/quote/bolt11",
     request_body(content = MintQuoteBolt11Request, description = "Request params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -164,7 +165,7 @@ pub async fn post_mint_bolt11_quote(
         ("quote_id" = String, description = "The quote ID"),
     ),
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -200,7 +201,7 @@ pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) ->
     post,
     context_path = "/v1",
     path = "/mint/bolt11",
-    request_body(content = MintBolt11Request, description = "Request params", content_type = "application/json"),
+    request_body(content = MintBolt11Request<String>, description = "Request params", content_type = "application/json"),
     responses(
         (status = 200, description = "Successful response", body = MintBolt11Response, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
@@ -228,10 +229,11 @@ pub async fn post_mint_bolt11(
     path = "/melt/quote/bolt11",
     request_body(content = MeltQuoteBolt11Request, description = "Quote params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[instrument(skip_all)]
 /// Request a quote for melting tokens
 pub async fn post_melt_bolt11_quote(
     State(state): State<MintState>,
@@ -254,13 +256,14 @@ pub async fn post_melt_bolt11_quote(
         ("quote_id" = String, description = "The quote ID"),
     ),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
 /// Get melt quote by ID
 ///
 /// Get melt quote state.
+#[instrument(skip_all)]
 pub async fn get_check_melt_bolt11_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
@@ -281,15 +284,16 @@ pub async fn get_check_melt_bolt11_quote(
     post,
     context_path = "/v1",
     path = "/melt/bolt11",
-    request_body(content = MeltBolt11Request, description = "Melt params", content_type = "application/json"),
+    request_body(content = MeltBolt11Request<String>, description = "Melt params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
+#[instrument(skip_all)]
 pub async fn post_melt_bolt11(
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
@@ -338,7 +342,18 @@ pub async fn post_check(
 ))]
 /// Mint information, operator contact information, and other info
 pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
-    Ok(Json(state.mint.mint_info().clone().time(unix_time())))
+    Ok(Json(
+        state
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| {
+                tracing::error!("Could not get mint info: {}", err);
+                into_response(err)
+            })?
+            .clone()
+            .time(unix_time()),
+    ))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(

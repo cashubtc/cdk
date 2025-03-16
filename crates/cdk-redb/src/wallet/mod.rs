@@ -7,15 +7,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::cdk_database::WalletDatabase;
-use cdk::mint_url::MintUrl;
-use cdk::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+use cdk_common::common::ProofInfo;
+use cdk_common::database::WalletDatabase;
+use cdk_common::mint_url::MintUrl;
+use cdk_common::util::unix_time;
+use cdk_common::wallet::{self, MintQuote};
+use cdk_common::{
+    database, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
-use cdk::types::ProofInfo;
-use cdk::util::unix_time;
-use cdk::wallet::MintQuote;
-use cdk::{cdk_database, wallet};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
 
@@ -41,7 +40,6 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
-const NOSTR_LAST_CHECKED: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
 
 const DATABASE_VERSION: u32 = 2;
 
@@ -134,7 +132,6 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
-                        let _ = write_txn.open_table(NOSTR_LAST_CHECKED)?;
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
 
@@ -153,7 +150,7 @@ impl WalletRedbDatabase {
         &self,
         ys: Vec<PublicKey>,
         state: State,
-    ) -> Result<(), cdk_database::Error> {
+    ) -> Result<(), database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
@@ -192,7 +189,7 @@ impl WalletRedbDatabase {
 
 #[async_trait]
 impl WalletDatabase for WalletRedbDatabase {
-    type Err = cdk_database::Error;
+    type Err = database::Error;
 
     #[instrument(skip(self))]
     async fn add_mint(
@@ -702,43 +699,5 @@ impl WalletDatabase for WalletRedbDatabase {
             .map_err(Error::from)?;
 
         Ok(counter.map(|c| c.value()))
-    }
-
-    #[instrument(skip_all)]
-    async fn get_nostr_last_checked(
-        &self,
-        verifying_key: &PublicKey,
-    ) -> Result<Option<u32>, Self::Err> {
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn
-            .open_table(NOSTR_LAST_CHECKED)
-            .map_err(Error::from)?;
-
-        let last_checked = table
-            .get(verifying_key.to_string().as_str())
-            .map_err(Error::from)?;
-
-        Ok(last_checked.map(|c| c.value()))
-    }
-
-    #[instrument(skip(self, verifying_key))]
-    async fn add_nostr_last_checked(
-        &self,
-        verifying_key: PublicKey,
-        last_checked: u32,
-    ) -> Result<(), Self::Err> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-        {
-            let mut table = write_txn
-                .open_table(NOSTR_LAST_CHECKED)
-                .map_err(Error::from)?;
-
-            table
-                .insert(verifying_key.to_string().as_str(), last_checked)
-                .map_err(Error::from)?;
-        }
-        write_txn.commit().map_err(Error::from)?;
-
-        Ok(())
     }
 }

@@ -13,25 +13,27 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
+use bitcoin::secp256k1::rand::{thread_rng, Rng};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
-use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+use cdk::amount::{to_unit, Amount};
+use cdk::cdk_payment::{
+    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
+    PaymentQuoteResponse,
 };
-use cdk::mint;
-use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
-use cdk::util::unix_time;
+use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk::types::FeeReserve;
+use cdk::{ensure_cdk, mint};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 
 pub mod error;
 
@@ -49,7 +51,7 @@ pub struct FakeWallet {
 }
 
 impl FakeWallet {
-    /// Creat new [`FakeWallet`]
+    /// Create new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
         payment_states: HashMap<String, MeltQuoteState>,
@@ -96,40 +98,56 @@ impl Default for FakeInvoiceDescription {
 }
 
 #[async_trait]
-impl MintLightning for FakeWallet {
-    type Err = cdk_lightning::Error;
+impl MintPayment for FakeWallet {
+    type Err = cdk_payment::Error;
 
-    fn get_settings(&self) -> Settings {
-        Settings {
+    #[instrument(skip_all)]
+    async fn get_settings(&self) -> Result<Value, Self::Err> {
+        Ok(serde_json::to_value(Bolt11Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
-        }
+        })?)
     }
 
+    #[instrument(skip_all)]
     fn is_wait_invoice_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
+    #[instrument(skip_all)]
     fn cancel_wait_invoice(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    async fn wait_any_invoice(
+    #[instrument(skip_all)]
+    async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+        tracing::info!("Starting stream for fake invoices");
         let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
         Ok(Box::pin(receiver_stream.map(|label| label)))
     }
 
+    #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
-        melt_quote_request: &MeltQuoteBolt11Request,
+        request: &str,
+        unit: &CurrencyUnit,
+        options: Option<MeltOptions>,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let amount = melt_quote_request.amount_msat()?;
+        let bolt11 = Bolt11Invoice::from_str(request)?;
 
-        let amount = amount / MSAT_IN_SAT.into();
+        let amount_msat = match options {
+            Some(amount) => amount.amount_msat(),
+            None => bolt11
+                .amount_milli_satoshis()
+                .ok_or(Error::UnknownInvoiceAmount)?
+                .into(),
+        };
+
+        let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -142,19 +160,20 @@ impl MintLightning for FakeWallet {
         };
 
         Ok(PaymentQuoteResponse {
-            request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
+            request_lookup_id: bolt11.payment_hash().to_string(),
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })
     }
 
-    async fn pay_invoice(
+    #[instrument(skip_all)]
+    async fn make_payment(
         &self,
         melt_quote: mint::MeltQuote,
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
-    ) -> Result<PayInvoiceResponse, Self::Err> {
+    ) -> Result<MakePaymentResponse, Self::Err> {
         let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
 
         let payment_hash = bolt11.payment_hash().to_string();
@@ -182,13 +201,11 @@ impl MintLightning for FakeWallet {
                 fail.insert(payment_hash.clone());
             }
 
-            if description.pay_err {
-                return Err(Error::UnknownInvoice.into());
-            }
+            ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
         }
 
-        Ok(PayInvoiceResponse {
-            payment_preimage: Some("".to_string()),
+        Ok(MakePaymentResponse {
+            payment_proof: Some("".to_string()),
             payment_lookup_id: payment_hash,
             status: payment_status,
             total_spent: melt_quote.amount,
@@ -196,17 +213,16 @@ impl MintLightning for FakeWallet {
         })
     }
 
-    async fn create_invoice(
+    #[instrument(skip_all)]
+    async fn create_incoming_payment_request(
         &self,
         amount: Amount,
-        unit: &CurrencyUnit,
+        _unit: &CurrencyUnit,
         description: String,
-        unix_expiry: u64,
-    ) -> Result<CreateInvoiceResponse, Self::Err> {
-        let time_now = unix_time();
-        assert!(unix_expiry > time_now);
-
-        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+        _unix_expiry: Option<u64>,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        // Since this is fake we just use the amount no matter the unit to create an invoice
+        let amount_msat = amount;
 
         let invoice = create_fake_invoice(amount_msat.into(), description);
 
@@ -230,24 +246,26 @@ impl MintLightning for FakeWallet {
 
         let expiry = invoice.expires_at().map(|t| t.as_secs());
 
-        Ok(CreateInvoiceResponse {
+        Ok(CreateIncomingPaymentResponse {
             request_lookup_id: payment_hash.to_string(),
-            request: invoice,
+            request: invoice.to_string(),
             expiry,
         })
     }
 
-    async fn check_incoming_invoice_status(
+    #[instrument(skip_all)]
+    async fn check_incoming_payment_status(
         &self,
         _request_lookup_id: &str,
     ) -> Result<MintQuoteState, Self::Err> {
         Ok(MintQuoteState::Paid)
     }
 
+    #[instrument(skip_all)]
     async fn check_outgoing_payment(
         &self,
         request_lookup_id: &str,
-    ) -> Result<PayInvoiceResponse, Self::Err> {
+    ) -> Result<MakePaymentResponse, Self::Err> {
         // For fake wallet if the state is not explicitly set default to paid
         let states = self.payment_states.lock().await;
         let status = states.get(request_lookup_id).cloned();
@@ -257,20 +275,21 @@ impl MintLightning for FakeWallet {
         let fail_payments = self.failed_payment_check.lock().await;
 
         if fail_payments.contains(request_lookup_id) {
-            return Err(cdk_lightning::Error::InvoicePaymentPending);
+            return Err(cdk_payment::Error::InvoicePaymentPending);
         }
 
-        Ok(PayInvoiceResponse {
-            payment_preimage: Some("".to_string()),
+        Ok(MakePaymentResponse {
+            payment_proof: Some("".to_string()),
             payment_lookup_id: request_lookup_id.to_string(),
             status,
             total_spent: Amount::ZERO,
-            unit: self.get_settings().unit,
+            unit: CurrencyUnit::Msat,
         })
     }
 }
 
 /// Create fake invoice
+#[instrument]
 pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoice {
     let private_key = SecretKey::from_slice(
         &[
@@ -281,7 +300,7 @@ pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoi
     )
     .unwrap();
 
-    let mut rng = rand::thread_rng();
+    let mut rng = thread_rng();
     let mut random_bytes = [0u8; 32];
     rng.fill(&mut random_bytes);
 

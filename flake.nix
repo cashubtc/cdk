@@ -2,7 +2,7 @@
   description = "CDK Flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -49,25 +49,20 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.82.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.83.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
         };
 
         # MSRV stable
-        msrv_toolchain = pkgs.rust-bin.stable."1.63.0".default.override {
-          targets = [ "wasm32-unknown-unknown" ]; # wasm
-        };
-
-
-        # DB MSRV stable
-        db_msrv_toolchain = pkgs.rust-bin.stable."1.66.0".default.override {
+        msrv_toolchain = pkgs.rust-bin.stable."1.75.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
 
         # Nightly used for formatting
         nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-          extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
+          extensions = [ "rustfmt" "clippy" "rust-analyzer" "rust-src" ];
+          targets = [ "wasm32-unknown-unknown" ]; # wasm
         });
 
         # Common inputs
@@ -85,6 +80,7 @@
           clightning
           bitcoind
           sqlx-cli
+          cargo-outdated
 
           # Needed for github ci
           libz
@@ -231,22 +227,17 @@
             msrv = pkgs.mkShell ({
               shellHook = "
               ${_shellHook}
-              cargo update -p half --precise 2.2.1
-              cargo update -p tokio --precise 1.38.1
-              cargo update -p tokio-util --precise 0.7.11
-              cargo update -p tokio-stream --precise 0.1.15
-              cargo update -p reqwest --precise 0.12.4
-              cargo update -p serde_with --precise 3.1.0
-              cargo update -p regex --precise 1.9.6
-              cargo update -p backtrace --precise 0.3.58
+              cargo update
               cargo update -p async-compression --precise 0.4.3
-              cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
+
+              cargo update -p home --precise 0.5.5
+              cargo update -p zerofrom --precise 0.1.5
+              cargo update -p half --precise 2.4.1
+
+              cargo update -p url --precise 2.5.2
 
               # For wasm32-unknown-unknown target
-              cargo update -p bumpalo --precise 3.12.0
-              cargo update -p moka --precise 0.11.1
               cargo update -p triomphe --precise 0.1.11
-              cargo update -p url --precise 2.5.2
 
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
@@ -260,28 +251,6 @@
             } // envVars);
 
 
-            db_shell = pkgs.mkShell ({
-              shellHook = ''
-                ${_shellHook}
-                cargo update -p half --precise 2.2.1
-                cargo update -p home --precise 0.5.5
-                cargo update -p tokio --precise 1.38.1
-                cargo update -p tokio-stream --precise 0.1.15
-                cargo update -p tokio-util --precise 0.7.11
-                cargo update -p serde_with --precise 3.1.0
-                cargo update -p reqwest --precise 0.12.4
-                cargo update -p url --precise 2.5.2
-                cargo update -p allocator-api2 --precise 0.2.18
-                cargo update -p async-compression --precise 0.4.3
-                cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
-                cargo update -p redb --precise 2.2.0
-              '';
-              buildInputs = buildInputs ++ WASMInputs ++ [ db_msrv_toolchain ];
-              inherit nativeBuildInputs;
-            } // envVars);
-
-
-
             nightly = pkgs.mkShell ({
               shellHook = ''
                 ${_shellHook}
@@ -289,6 +258,7 @@
                 export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
                   pkgs.zlib
                   ]}:$LD_LIBRARY_PATH
+                export RUST_SRC_PATH=${nightly_toolchain}/lib/rustlib/src/rust/library
               '';
               buildInputs = buildInputs ++ [ nightly_toolchain ];
               inherit nativeBuildInputs;
@@ -296,7 +266,7 @@
 
           in
           {
-            inherit msrv stable nightly db_shell;
+            inherit msrv stable nightly;
             default = stable;
           };
       }

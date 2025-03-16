@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use axum::extract::ws::{Message, WebSocket};
-use cdk::nuts::nut17::ws::{
-    NotificationInner, WsErrorBody, WsMessageOrResponse, WsMethodRequest, WsRequest,
+use cdk::nuts::nut17::NotificationPayload;
+use cdk::pub_sub::SubId;
+use cdk::ws::{
+    notification_to_ws_message, NotificationInner, WsErrorBody, WsMessageOrResponse,
+    WsMethodRequest, WsRequest,
 };
-use cdk::nuts::nut17::{NotificationPayload, SubId};
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -44,7 +46,6 @@ pub struct WsContext {
 ///
 /// For simplicity sake this function will spawn tasks for each subscription and
 /// keep them in a hashmap, and will have a single subscriber for all of them.
-#[allow(clippy::incompatible_msrv)]
 pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
     let (publisher, mut subscriber) = mpsc::channel(100);
     let mut context = WsContext {
@@ -61,10 +62,10 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     // unsubscribed from the subscription manager, just ignore it.
                     continue;
                 }
-                let notification: WsMessageOrResponse= NotificationInner {
+                let notification = notification_to_ws_message(NotificationInner {
                     sub_id,
                     payload,
-                }.into();
+                });
                 let message = match serde_json::to_string(&notification) {
                     Ok(message) => message,
                     Err(err) => {
@@ -73,7 +74,7 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     }
                 };
 
-          if let Err(err)= socket.send(Message::Text(message)).await {
+          if let Err(err)= socket.send(Message::Text(message.into())).await {
                 tracing::error!("Could not send websocket message: {}", err);
                 break;
           }
@@ -90,7 +91,7 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                 match process(&mut context, request).await {
                     Ok(result) => {
                         if let Err(err) = socket
-                            .send(Message::Text(result.to_string()))
+                            .send(Message::Text(result.to_string().into()))
                             .await
                         {
                             tracing::error!("Could not send request: {}", err);

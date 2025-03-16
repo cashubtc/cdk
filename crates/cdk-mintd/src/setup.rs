@@ -1,17 +1,32 @@
-use std::collections::{HashMap, HashSet};
+#[cfg(feature = "fakewallet")]
+use std::collections::HashMap;
+#[cfg(feature = "fakewallet")]
+use std::collections::HashSet;
+#[cfg(feature = "lnbits")]
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail};
-use axum::{async_trait, Router};
-use cdk::cdk_lightning::MintLightning;
-use cdk::mint::FeeReserve;
+#[cfg(feature = "cln")]
+use anyhow::anyhow;
+use async_trait::async_trait;
+use axum::Router;
+#[cfg(feature = "fakewallet")]
+use bip39::rand::{thread_rng, Rng};
+use cdk::cdk_payment::MintPayment;
+#[cfg(feature = "lnbits")]
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use rand::Rng;
+#[cfg(any(
+    feature = "lnbits",
+    feature = "cln",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
+use cdk::types::FeeReserve;
+#[cfg(feature = "lnbits")]
 use tokio::sync::Mutex;
-use url::Url;
 
 use crate::config::{self, Settings};
+#[cfg(feature = "cln")]
 use crate::expand_path;
 
 #[async_trait]
@@ -21,9 +36,10 @@ pub trait LnBackendSetup {
         routers: &mut Vec<Router>,
         settings: &Settings,
         unit: CurrencyUnit,
-    ) -> anyhow::Result<impl MintLightning>;
+    ) -> anyhow::Result<impl MintPayment>;
 }
 
+#[cfg(feature = "cln")]
 #[async_trait]
 impl LnBackendSetup for config::Cln {
     async fn setup(
@@ -50,40 +66,7 @@ impl LnBackendSetup for config::Cln {
     }
 }
 
-#[async_trait]
-impl LnBackendSetup for config::Strike {
-    async fn setup(
-        &self,
-        routers: &mut Vec<Router>,
-        settings: &Settings,
-        unit: CurrencyUnit,
-    ) -> anyhow::Result<cdk_strike::Strike> {
-        let api_key = &self.api_key;
-
-        // Channel used for strike web hook
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-        let webhook_endpoint = format!("/webhook/{}/invoice", unit);
-
-        let mint_url: MintUrl = settings.info.url.parse()?;
-        let webhook_url = mint_url.join(&webhook_endpoint)?;
-
-        let strike = cdk_strike::Strike::new(
-            api_key.clone(),
-            unit,
-            Arc::new(Mutex::new(Some(receiver))),
-            webhook_url.to_string(),
-        )
-        .await?;
-
-        let router = strike
-            .create_invoice_webhook(&webhook_endpoint, sender)
-            .await?;
-        routers.push(router);
-
-        Ok(strike)
-    }
-}
-
+#[cfg(feature = "lnbits")]
 #[async_trait]
 impl LnBackendSetup for config::LNbits {
     async fn setup(
@@ -127,53 +110,7 @@ impl LnBackendSetup for config::LNbits {
     }
 }
 
-#[async_trait]
-impl LnBackendSetup for config::Phoenixd {
-    async fn setup(
-        &self,
-        routers: &mut Vec<Router>,
-        settings: &Settings,
-        _unit: CurrencyUnit,
-    ) -> anyhow::Result<cdk_phoenixd::Phoenixd> {
-        let api_password = &self.api_password;
-
-        let api_url = &self.api_url;
-
-        let fee_reserve = FeeReserve {
-            min_fee_reserve: self.reserve_fee_min,
-            percent_fee_reserve: self.fee_percent,
-        };
-
-        if fee_reserve.percent_fee_reserve < 0.04 {
-            bail!("Fee reserve is too low needs to be at least 0.02");
-        }
-
-        let webhook_endpoint = "/webhook/phoenixd";
-
-        let mint_url = Url::parse(&settings.info.url)?;
-
-        let webhook_url = mint_url.join(webhook_endpoint)?.to_string();
-
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-
-        let phoenixd = cdk_phoenixd::Phoenixd::new(
-            api_password.to_string(),
-            api_url.to_string(),
-            fee_reserve,
-            Arc::new(Mutex::new(Some(receiver))),
-            webhook_url,
-        )?;
-
-        let router = phoenixd
-            .create_invoice_webhook(webhook_endpoint, sender)
-            .await?;
-
-        routers.push(router);
-
-        Ok(phoenixd)
-    }
-}
-
+#[cfg(feature = "lnd")]
 #[async_trait]
 impl LnBackendSetup for config::Lnd {
     async fn setup(
@@ -203,6 +140,7 @@ impl LnBackendSetup for config::Lnd {
     }
 }
 
+#[cfg(feature = "fakewallet")]
 #[async_trait]
 impl LnBackendSetup for config::FakeWallet {
     async fn setup(
@@ -217,7 +155,7 @@ impl LnBackendSetup for config::FakeWallet {
         };
 
         // calculate random delay time
-        let mut rng = rand::thread_rng();
+        let mut rng = thread_rng();
         let delay_time = rng.gen_range(self.min_delay_time..=self.max_delay_time);
 
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
@@ -228,5 +166,25 @@ impl LnBackendSetup for config::FakeWallet {
         );
 
         Ok(fake_wallet)
+    }
+}
+
+#[cfg(feature = "grpc-processor")]
+#[async_trait]
+impl LnBackendSetup for config::GrpcProcessor {
+    async fn setup(
+        &self,
+        _routers: &mut Vec<Router>,
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+    ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
+        let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
+            &self.addr,
+            self.port,
+            self.tls_dir.clone(),
+        )
+        .await?;
+
+        Ok(payment_processor)
     }
 }

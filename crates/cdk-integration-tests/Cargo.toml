@@ -1,67 +1,60 @@
 [package]
 name = "cdk-integration-tests"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0"                                                            # MSRV
+rust-version = "1.75.0"                                                            # MSRV
 
 
 [features]
 http_subscription = ["cdk/http_subscription"]
 
 [dependencies]
-axum = "0.6.20"
-rand = "0.8.5"
-bip39 = { version = "2.0", features = ["rand"] }
-anyhow = "1"
+async-trait.workspace = true
+axum.workspace = true
+rand.workspace = true
+bip39 = { workspace = true, features = ["rand"] }
+anyhow.workspace = true
+cashu = { path = "../cashu", features = ["mint", "wallet"] }
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-cln = { path = "../cdk-cln" }
+cdk-lnd = { path = "../cdk-lnd" }
 cdk-axum = { path = "../cdk-axum" }
 cdk-sqlite = { path = "../cdk-sqlite" }
 cdk-redb = { path = "../cdk-redb" }
 cdk-fake-wallet = { path = "../cdk-fake-wallet" }
-tower-http = { version = "0.4.4", features = ["cors"] }
-futures = { version = "0.3.28", default-features = false, features = [
+futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }
-once_cell = "1.19.0"
-uuid = { version = "1", features = ["v4"] }
-serde = "1"
-serde_json = "1"
+once_cell.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
-ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "e0ac418675" }
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-tracing = { version = "0.1", default-features = false, features = [
-    "attributes",
-    "log",
-] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "ed24716" }
+lightning-invoice.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-tungstenite.workspace = true
+tower-http = { workspace = true, features = ["cors"] }
 tower-service = "0.3.3"
-tokio-tungstenite = "0.24.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1", features = [
-    "rt-multi-thread",
-    "time",
-    "macros",
-    "sync",
-] }
+tokio.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
-instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
+instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
 
 [dev-dependencies]
-async-trait = "0.1"
-rand = "0.8.5"
-bip39 = { version = "2.0", features = ["rand"] }
-anyhow = "1"
+bip39 = { workspace = true, features = ["rand"] }
+anyhow.workspace = true
 cdk = { path = "../cdk", features = ["mint", "wallet"] }
 cdk-axum = { path = "../cdk-axum" }
 cdk-fake-wallet = { path = "../cdk-fake-wallet" }
-tower-http = { version = "0.4.4", features = ["cors"] }
+tower-http = { workspace = true, features = ["cors"] }

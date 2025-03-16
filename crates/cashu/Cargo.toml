@@ -1,0 +1,39 @@
+[package]
+name = "cashu"
+version = "0.7.1"
+edition.workspace = true
+authors = ["CDK Developers"]
+description = "Cashu shared types and crypto utilities, used as the foundation for the CDK and their crates"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.75.0" # MSRV
+license.workspace = true
+
+[features]
+default = ["mint", "wallet"]
+swagger = ["dep:utoipa"]
+mint = ["dep:uuid"]
+wallet = []
+bench = []
+
+[dependencies]
+uuid = { workspace = true, optional = true }
+bitcoin.workspace = true
+cbor-diag.workspace = true
+ciborium.workspace = true
+once_cell.workspace = true
+serde.workspace = true
+lightning-invoice.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa = { workspace = true, optional = true }
+serde_json.workspace = true
+serde_with.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
+
+[dev-dependencies]
+bip39.workspace = true
+uuid.workspace = true

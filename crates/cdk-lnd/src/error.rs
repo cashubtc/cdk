@@ -1,5 +1,6 @@
 //! LND Errors
 
+use fedimint_tonic_lnd::tonic::Status;
 use thiserror::Error;
 
 /// LND Error
@@ -23,9 +24,21 @@ pub enum Error {
     /// Unknown payment status
     #[error("LND unknown payment status")]
     UnknownPaymentStatus,
+    /// Missing last hop in route
+    #[error("LND missing last hop in route")]
+    MissingLastHop,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
+    /// Errors coming from the backend
+    #[error("LND error: `{0}`")]
+    LndError(Status),
+    /// Errors invalid config
+    #[error("LND invalid config: `{0}`")]
+    InvalidConfig(String),
 }
 
-impl From<Error> for cdk::cdk_lightning::Error {
+impl From<Error> for cdk::cdk_payment::Error {
     fn from(e: Error) -> Self {
         Self::Lightning(Box::new(e))
     }

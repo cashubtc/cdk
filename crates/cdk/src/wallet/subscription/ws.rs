@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use cdk_common::subscription::Params;
+use cdk_common::ws::{WsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::connect_async;
@@ -10,10 +12,6 @@ use tokio_tungstenite::tungstenite::Message;
 use super::http::http_main;
 use super::WsSubscriptionBody;
 use crate::mint_url::MintUrl;
-use crate::nuts::nut17::ws::{
-    WsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
-};
-use crate::nuts::nut17::Params;
 use crate::pub_sub::SubId;
 use crate::wallet::client::MintConnector;
 
@@ -36,7 +34,6 @@ async fn fallback_to_http<S: IntoIterator<Item = SubId>>(
     .await
 }
 
-#[allow(clippy::incompatible_msrv)]
 #[inline]
 pub async fn ws_main(
     http_client: Arc<dyn MintConnector + Send + Sync>,
@@ -133,7 +130,7 @@ pub async fn ws_main(
                 .get(sub_id)
                 .map(|(_, params)| get_sub_request(params.clone()))
             {
-                let _ = write.send(Message::Text(req)).await;
+                let _ = write.send(Message::Text(req.into())).await;
                 subscription_requests.insert(req_id);
             }
         }
@@ -194,7 +191,7 @@ pub async fn ws_main(
                     tracing::debug!("Subscribing to {:?}", sub.1);
                     active_subscriptions.insert(subid, sub.0.clone());
                     if let Some((req_id, json)) = get_sub_request(sub.1.clone()) {
-                        let _ = write.send(Message::Text(json)).await;
+                        let _ = write.send(Message::Text(json.into())).await;
                         subscription_requests.insert(req_id);
                     }
                 },
@@ -205,7 +202,7 @@ pub async fn ws_main(
                     }
                     tracing::debug!("Unsubscribing from {:?}", subid);
                     if let Some(json) = get_unsub_request(subid) {
-                        let _ = write.send(Message::Text(json)).await;
+                        let _ = write.send(Message::Text(json.into())).await;
                     }
                 }
             }

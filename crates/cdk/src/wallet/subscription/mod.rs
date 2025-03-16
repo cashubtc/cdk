@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use cdk_common::subscription::Params;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::mint_url::MintUrl;
-use crate::nuts::nut17::Params;
 use crate::pub_sub::SubId;
 use crate::wallet::client::MintConnector;
 
@@ -290,7 +290,6 @@ impl SubscriptionClient {
     ///
     /// This is a WebSocket based subscription, where the client will connect to
     /// the server and stay there idle waiting for server-side notifications
-    #[allow(clippy::incompatible_msrv)]
     #[cfg(all(
         not(feature = "http_subscription"),
         feature = "mint",

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::multi_mint_wallet::WalletKey;
+use cdk::wallet::types::WalletKey;
 use cdk::wallet::MultiMintWallet;
 use cdk::Amount;
 use clap::Args;

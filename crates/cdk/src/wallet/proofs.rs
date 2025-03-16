@@ -8,7 +8,7 @@ use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
-use crate::{Amount, Error, Wallet};
+use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
     /// Get unspent proofs for mint
@@ -126,7 +126,7 @@ impl Wallet {
             .await?;
 
         // Both `State::Pending` and `State::Unspent` should be included in the pending
-        // table. This is because a proof that has been crated to send will be
+        // table. This is because a proof that has been created to send will be
         // stored in the pending table in order to avoid accidentally double
         // spending but to allow it to be explicitly reclaimed
         let pending_states: HashSet<PublicKey> = states
@@ -161,11 +161,12 @@ impl Wallet {
         proofs: Proofs,
         include_fees: bool,
     ) -> Result<Proofs, Error> {
-        // TODO: Check all proofs are same unit
-
-        if proofs.total_amount()? < amount {
-            return Err(Error::InsufficientFunds);
-        }
+        tracing::debug!(
+            "Selecting proofs to send {} from {}",
+            amount,
+            proofs.total_amount()?
+        );
+        ensure_cdk!(proofs.total_amount()? >= amount, Error::InsufficientFunds);
 
         let (mut proofs_larger, mut proofs_smaller): (Proofs, Proofs) =
             proofs.into_iter().partition(|p| p.amount > amount);
@@ -228,6 +229,11 @@ impl Wallet {
         amount: Amount,
         proofs: Proofs,
     ) -> Result<Proofs, Error> {
+        tracing::debug!(
+            "Selecting proofs to swap {} from {}",
+            amount,
+            proofs.total_amount()?
+        );
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         let (mut active_proofs, mut inactive_proofs): (Proofs, Proofs) = proofs
@@ -258,6 +264,11 @@ impl Wallet {
                 return Ok(selected_proofs);
             }
         }
+
+        tracing::debug!(
+            "Could not select proofs to swap: total selected: {}",
+            selected_proofs.total_amount()?
+        );
 
         Err(Error::InsufficientFunds)
     }

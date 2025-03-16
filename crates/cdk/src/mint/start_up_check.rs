@@ -5,39 +5,19 @@
 
 use super::{Error, Mint};
 use crate::mint::{MeltQuote, MeltQuoteState, PaymentMethod};
-use crate::types::LnKey;
+use crate::types::PaymentProcessorKey;
 
 impl Mint {
     /// Check the status of all pending mint quotes in the mint db
     /// with all the lighting backends. This check that any payments
     /// received while the mint was offline are accounted for, and the wallet can mint associated ecash
     pub async fn check_pending_mint_quotes(&self) -> Result<(), Error> {
-        let mut pending_quotes = self.get_pending_mint_quotes().await?;
+        let pending_quotes = self.get_pending_mint_quotes().await?;
         tracing::info!("There are {} pending mint quotes.", pending_quotes.len());
-        let mut unpaid_quotes = self.get_unpaid_mint_quotes().await?;
-        tracing::info!("There are {} unpaid mint quotes.", unpaid_quotes.len());
-
-        unpaid_quotes.append(&mut pending_quotes);
-
-        for ln in self.ln.values() {
-            for quote in unpaid_quotes.iter() {
-                tracing::debug!("Checking status of mint quote: {}", quote.id);
-                let lookup_id = quote.request_lookup_id.as_str();
-                match ln.check_incoming_invoice_status(lookup_id).await {
-                    Ok(state) => {
-                        if state != quote.state {
-                            tracing::trace!("Mint quote status changed: {}", quote.id);
-                            self.localstore
-                                .update_mint_quote_state(&quote.id, state)
-                                .await?;
-                        }
-                    }
-
-                    Err(err) => {
-                        tracing::warn!("Could not check state of pending invoice: {}", lookup_id);
-                        tracing::error!("{}", err);
-                    }
-                }
+        for quote in pending_quotes.iter() {
+            tracing::debug!("Checking status of mint quote: {}", quote.id);
+            if let Err(err) = self.check_mint_quote_paid(&quote.id).await {
+                tracing::error!("Could not check status of {}, {}", quote.id, err);
             }
         }
         Ok(())
@@ -58,7 +38,7 @@ impl Mint {
 
             let (melt_request, ln_key) = match melt_request_ln_key {
                 None => {
-                    let ln_key = LnKey {
+                    let ln_key = PaymentProcessorKey {
                         unit: pending_quote.unit,
                         method: PaymentMethod::Bolt11,
                     };
@@ -87,7 +67,7 @@ impl Mint {
                             if let Err(err) = self
                                 .process_melt_request(
                                     &melt_request,
-                                    pay_invoice_response.payment_preimage,
+                                    pay_invoice_response.payment_proof,
                                     pay_invoice_response.total_spent,
                                 )
                                 .await

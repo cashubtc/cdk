@@ -1,41 +1,93 @@
 # Changelog
 
 <!-- All notable changes to this project will be documented in this file. -->
-
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
-<!-- Template
-
 ## [Unreleased]
-
-### Summary
-
+### Fixed
+- cdk: proof matches conditions was not matching payment conditions correctly ([thesimplekid]).
+- cdk: Updating mint_url would remove proofs when we want to keep them ([ok300]).
 ### Changed
+- Updated MSRV to 1.75.0 ([thesimplekid]).
+- cdk-sqlite: Do not use `UPDATE OR REPLACE` ([crodas]).
+- cdk: Refactor keyset init ([lollerfirst]).
+- Feature-gated lightning backends (CLN, LND, LNbits, FakeWallet) for selective compilation ([thesimplekid]).
+- cdk-sqlite: update sqlx to 0.7.4 ([benthecarman]).
+### Added
+- Added redb feature to mintd in order to meet MSRV target ([thesimplekid]).
+- cdk-sqlite: In memory sqlite database ([crodas]).
+- Add `tos_url` to `MintInfo` ([nodlAndHodl]).
+- cdk: Add tos_url setter to `MintBuilder` ([thesimplekid]).
+- Added optional "request" and "unit" fields to MeltQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
+- Added optional "amount" and "unit" fields to MintQuoteBolt11Response [NUT Change](https://github.com/cashubtc/nuts/pull/235) ([thesimplekid]).
+- Compile-time error when no lightning backend features are enabled ([thesimplekid]).
+- Add support for sqlcipher ([benthecarman]).
+- Payment processor ([thesimplekid]).
+- Payment request builder ([thesimplekid]).
+### Removed
+- Remove support for Memory Database in cdk ([crodas]).
+- Remove `AmountStr` ([crodas]).
+- Remove `get_nostr_last_checked` from `WalletDatabase` ([thesimplekid]).
+- Remove `add_nostr_last_checked` from `WalletDatabase` ([thesimplekid]).
+
+## [cdk-mind:v0.7.4](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.7.4)
+### Changed
+- cdk-mintd: update to cdk v0.7.2 ([thesimplekid]).
+
+## [cdk:v0.7.2](https://github.com/cashubtc/cdk/releases/tag/cdk-v0.7.2)
+### Fixed
+- cdk: Ordering of swap verification checks ([thesimplekid]).
+
+## [cdk-mintd-v0.7.2]
+### Fixed
+- cdk-mintd: Fixed mint and melt error on mint initialized with RPC interface disabled ([ok300]).
+
+
+## [v0.7.1](https://github.com/cashubtc/cdk/releases/tag/v0.7.1)
+### Changed
+- cdk: Debug print of `Id` is hex ([thesimplekid]).
+- cdk: Debug print of mint secret is the hash ([thesimplekid]).
+- cdk: Use check_incoming payment on attempted mint or check mint qutoe ([thesimplekid]).
+- cdk-cln: Use `call_typed` for cln rpc calls ([daywalker90]).
 
 ### Added
+- cdk: Mint builder add ability to set custom derivation paths ([thesimplekid]).
 
 ### Fixed
+- cdk-cln: return error on stream error ([thesimplekid]).
 
-### Removed
 
--->
-
-#[Unrelased]
-
+## [v0.7.0](https://github.com/cashubtc/cdk/releases/tag/v0.7.0)
 ### Changed
+* Moved db traits to `cdk-common` ([crodas]).
+* Moved other common types to `cdk-common` ([crodas]).
+* `Wallet::mint` returns the minted `Proofs` and not just the amount ([davidcaseria]).
 
 ### Added
 * `Token::to_raw_bytes` serializes generic token to raw bytes ([lollerfirst]).
 * `Token::try_from` for `Vec<u8>` constructs a generic token from raw bytes ([lollerfirst]).
 * `TokenV4::to_raw_bytes()` serializes a TokenV4 to raw bytes following the spec ([lollerfirst]).
 * `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
+* cdk-mint-rpc: Mint management gRPC client and server ([thesimplekid]).
+* cdk-common: cdk specific types and traits ([crodas]).
+* cashu: Core types and functions defined in NUTs ([crodas]).
 
 ### Fixed
+* Multimint unit check when wallet receiving token ([thesimplekid]).
+* Mint start up with most recent keyset after a rotation ([thesimplekid]).
 
-### Removed
 
-#[0.6.0]
+## [cdk-v0.6.1, cdk-mintd-v0.6.2](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.6.1)
+### Fixed
+cdk: Missing check on mint that outputs equals the quote amount ([thesimplekid]).
+cdk: Reset mint quote status if in state that cannot continue ([thesimplekid]).
+
+## [v0.6.1](https://github.com/cashubtc/cdk/releases/tag/cdk-v0.6.1)
+### Added
+cdk-mintd: Get work-dir from env var ([thesimplekid])
+
+## [v0.6.0](https://github.com/cashubtc/cdk/releases/tag/v0.6.0)
 
 ### Changed
 cdk: Enforce `quote_id` to uuid type in mint ([tdelabro]).
@@ -52,10 +104,10 @@ cdk-axum: HTTP compression support ([ok300]).
 cdk-sqlite: keyset counter was overwritten when keyset was fetched from mint ([thesimplekid]).
 cdk-cli: on `mint` use `unit` from cli args ([thesimplekid]).
 cdk-cli: on `restore` create `wallet` if it does not exist ([thesimplekid]).
-cdk: Signaling support for optional nuts ([thesimpekid]).
+cdk: Signaling support for optional nuts ([thesimplekid]).
 cdk-phd: Check payment has valid uuis ([thesimplekid]).
 
-#[0.5.0]
+## [v0.5.0](https://github.com/cashubtc/cdk/releases/tag/v0.5.0)
 ### Changed
 - cdk: Bump `bitcoin` to `0.32.2` ([prusnak]).
 - cdk: Bump `lightning-invoice` to `0.32.2` ([prusnak]).
@@ -71,7 +123,7 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 - cdk: Use `MintUrl` directly in wallet client ([ok300]).
 - cdk-cli: Change cdk-cli pay command to melt ([mubarak23]).
 - cdk: Rename `Wallet::get_proofs` to `Wallet::get_unspent_proofs` ([ok300]).
-- cdk: `Id` to `u32` changed from `TryFrom` to `From` ([vnrpc]). 
+- cdk: `Id` to `u32` changed from `TryFrom` to `From` ([vnprc]). 
 
 
 ### Added
@@ -101,7 +153,7 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 
 
 
-#[0.4.0]
+## [v0.4.0](https://github.com/cashubtc/cdk/releases/tag/v0.4.0)
 ### Summary
 
 ### Changed
@@ -131,7 +183,7 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 - cdk(mint): Removed CDK mint error ([thesimplekid]).
 
 
-## [0.3.0]
+## [0.3.0](https://github.com/cashubtc/cdk/releases/tag/v0.3.0)
 
 ### Summary
 
@@ -182,7 +234,7 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 - cdk: Remove `UncheckedUrl` in favor of `MintUrl` ([cjbeery24]).
 - cdk(cdk-database/mint): Remove `set_proof_state`, `remove_proofs` and `add_proofs` ([davidcaseria]).
 
-## [v0.2.0]
+## [v0.2.0](https://github.com/cashubtc/cdk/releases/tag/v0.2.0)
 
 ### Summary
 This release introduces TokenV4, which uses CBOR encoding as the default token format. It also includes fee support for both wallet and mint operations.
@@ -192,11 +244,11 @@ When sending, the sender can choose to include the necessary fee to ensure that 
 Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-axum crate as a web server to create a full Cashu mint. When paired with a Lightning backend, currently implemented as Core Lightning, it is included in this release as cdk-cln.
 
 ### Changed
-- cdk(wallet): `wallet:receive` will not claim `proofs` from a mint other then the wallet's mint ([thesimplekid]).
+- cdk(wallet): `wallet:receive` will not claim `proofs` from a mint other than the wallet's mint ([thesimplekid]).
 - cdk(NUT00): `Token` is changed from a `struct` to `enum` of either `TokenV4` or `Tokenv3` ([thesimplekid]).
 - cdk(NUT00): Rename `MintProofs` to `TokenV3Token` ([thesimplekid]).
 - cdk(wallet): Additional arguments in `send` `send_kind` and `include_fees` for control of how to handle fees in a send ([thesimplekid]).
-- cdk(wallet): Additional arguments in `create_swap` `include_fees` for control of if fees to redeam the send proofs are included in send amount ([thesimplekid]).
+- cdk(wallet): Additional arguments in `create_swap` `include_fees` for control of if fees to redeem the send proofs are included in send amount ([thesimplekid]).
 
 ### Added
 - cdk: TokenV4 CBOR ([davidcaseria]/[thesimplekid]).
@@ -211,7 +263,7 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 - cdk: NUT02 Support fees ([thesimplekid]).
 
 ### Fixed
-- cdk: NUT06 deseralize `MintInfo` ([thesimplekid]).
+- cdk: NUT06 deserialize `MintInfo` ([thesimplekid]).
 
 
 ## [v0.1.1]
@@ -235,7 +287,8 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [lollerfirst]: https://github.com/lollerfirst
 [prusnak]: https://github.com/prusnak
 [mubarak23]: https://github.com/mubarak23
-[vnprc]: https://github.com/vnprc
 [crodas]: https://github.com/crodas
 [tdelabro]: https://github.com/tdelabro
-
+[daywalker90]: https://github.com/daywalker90
+[nodlAndHodl]: https://github.com/nodlAndHodl
+[benthecarman]: https://github.com/benthecarman

@@ -1,0 +1,34 @@
+[package]
+name = "cdk-mint-rpc"
+version = "0.7.1"
+edition = "2021"
+authors = ["CDK Developers"]
+description = "CDK mintd mint managment RPC client and server"
+license = "MIT"
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version = "1.75.0"                            # MSRV
+
+[[bin]]
+name = "cdk-mint-cli"
+path = "src/bin/mint_rpc_cli.rs"
+
+[dependencies]
+anyhow.workspace = true
+cdk = { workspace = true, features = [
+    "mint",
+] }
+clap.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+prost.workspace = true
+home.workspace = true
+
+
+[build-dependencies]
+tonic-build.workspace = true

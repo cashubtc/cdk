@@ -4,11 +4,10 @@
 //! pairs
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
@@ -19,33 +18,13 @@ use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SecretKey, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
-use crate::{Amount, Wallet};
+use crate::{ensure_cdk, Amount, Wallet};
 
 /// Multi Mint Wallet
 #[derive(Debug, Clone)]
 pub struct MultiMintWallet {
     /// Wallets
     pub wallets: Arc<Mutex<BTreeMap<WalletKey, Wallet>>>,
-}
-
-/// Wallet Key
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct WalletKey {
-    mint_url: MintUrl,
-    unit: CurrencyUnit,
-}
-
-impl fmt::Display for WalletKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "mint_url: {}, unit: {}", self.mint_url, self.unit,)
-    }
-}
-
-impl WalletKey {
-    /// Create new [`WalletKey`]
-    pub fn new(mint_url: MintUrl, unit: CurrencyUnit) -> Self {
-        Self { mint_url, unit }
-    }
 }
 
 impl MultiMintWallet {
@@ -292,9 +271,7 @@ impl MultiMintWallet {
 
         let quote = wallet.melt_quote(bolt11.to_string(), options).await?;
         if let Some(max_fee) = max_fee {
-            if quote.fee_reserve > max_fee {
-                return Err(Error::MaxFeeExceeded);
-            }
+            ensure_cdk!(quote.fee_reserve <= max_fee, Error::MaxFeeExceeded);
         }
 
         wallet.melt(&quote.id).await

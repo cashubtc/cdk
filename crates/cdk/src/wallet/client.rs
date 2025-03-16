@@ -3,7 +3,9 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use reqwest::Client;
+use reqwest::{Client, IntoUrl};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tracing::instrument;
 #[cfg(not(target_arch = "wasm32"))]
 use url::Url;
@@ -17,18 +19,6 @@ use crate::nuts::{
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest,
     RestoreResponse, SwapRequest, SwapResponse,
 };
-
-macro_rules! convert_http_response {
-    ($type:ty, $data:ident) => {
-        serde_json::from_str::<$type>(&$data).map_err(|err| {
-            tracing::warn!("Http Response error: {}", err);
-            match ErrorResponse::from_json(&$data) {
-                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
-                Err(err) => err.into(),
-            }
-        })
-    };
-}
 
 /// Http Client
 #[derive(Debug, Clone)]
@@ -44,6 +34,53 @@ impl HttpClient {
             inner: Client::new(),
             mint_url,
         }
+    }
+
+    #[inline]
+    async fn http_get<U: IntoUrl, R: DeserializeOwned>(&self, url: U) -> Result<R, Error> {
+        let response = self
+            .inner
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| Error::HttpError(e.to_string()))?
+            .text()
+            .await
+            .map_err(|e| Error::HttpError(e.to_string()))?;
+
+        serde_json::from_str::<R>(&response).map_err(|err| {
+            tracing::warn!("Http Response error: {}", err);
+            match ErrorResponse::from_json(&response) {
+                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
+                Err(err) => err.into(),
+            }
+        })
+    }
+
+    #[inline]
+    async fn http_post<U: IntoUrl, P: Serialize + ?Sized, R: DeserializeOwned>(
+        &self,
+        url: U,
+        payload: &P,
+    ) -> Result<R, Error> {
+        let response = self
+            .inner
+            .post(url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| Error::HttpError(e.to_string()))?
+            .text()
+            .await
+            .map_err(|e| Error::HttpError(e.to_string()))?;
+
+        serde_json::from_str::<R>(&response).map_err(|err| {
+            tracing::warn!("Http Response error: {}", err);
+            match ErrorResponse::from_json(&response) {
+                Ok(ok) => <ErrorResponse as Into<Error>>::into(ok),
+                Err(err) => err.into(),
+            }
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -72,7 +109,8 @@ impl HttpClient {
                 None
             }))
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
-            .build()?;
+            .build()
+            .map_err(|e| Error::HttpError(e.to_string()))?;
 
         Ok(Self {
             inner: client,
@@ -88,9 +126,7 @@ impl MintConnector for HttpClient {
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
-        let keys = self.inner.get(url).send().await?.text().await?;
-
-        Ok(convert_http_response!(KeysResponse, keys)?.keysets)
+        Ok(self.http_get::<_, KeysResponse>(url).await?.keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
@@ -99,9 +135,8 @@ impl MintConnector for HttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
-        let keys = self.inner.get(url).send().await?.text().await?;
-
-        convert_http_response!(KeysResponse, keys)?
+        self.http_get::<_, KeysResponse>(url)
+            .await?
             .keysets
             .drain(0..1)
             .next()
@@ -112,9 +147,7 @@ impl MintConnector for HttpClient {
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
-        let res = self.inner.get(url).send().await?.text().await?;
-
-        convert_http_response!(KeysetResponse, res)
+        self.http_get(url).await
     }
 
     /// Mint Quote [NUT-04]
@@ -126,17 +159,7 @@ impl MintConnector for HttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11"])?;
-
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        convert_http_response!(MintQuoteBolt11Response<String>, res)
+        self.http_post(url, &request).await
     }
 
     /// Mint Quote status
@@ -149,9 +172,7 @@ impl MintConnector for HttpClient {
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?.text().await?;
-
-        convert_http_response!(MintQuoteBolt11Response<String>, res)
+        self.http_get(url).await
     }
 
     /// Mint Tokens [NUT-04]
@@ -161,17 +182,7 @@ impl MintConnector for HttpClient {
         request: MintBolt11Request<String>,
     ) -> Result<MintBolt11Response, Error> {
         let url = self.mint_url.join_paths(&["v1", "mint", "bolt11"])?;
-
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        convert_http_response!(MintBolt11Response, res)
+        self.http_post(url, &request).await
     }
 
     /// Melt Quote [NUT-05]
@@ -183,17 +194,7 @@ impl MintConnector for HttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11"])?;
-
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        convert_http_response!(MeltQuoteBolt11Response<String>, res)
+        self.http_post(url, &request).await
     }
 
     /// Melt Quote Status
@@ -206,9 +207,7 @@ impl MintConnector for HttpClient {
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
 
-        let res = self.inner.get(url).send().await?.text().await?;
-
-        convert_http_response!(MeltQuoteBolt11Response<String>, res)
+        self.http_get(url).await
     }
 
     /// Melt [NUT-05]
@@ -219,44 +218,21 @@ impl MintConnector for HttpClient {
         request: MeltBolt11Request<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = self.mint_url.join_paths(&["v1", "melt", "bolt11"])?;
-
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        convert_http_response!(MeltQuoteBolt11Response<String>, res)
+        self.http_post(url, &request).await
     }
 
     /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "swap"])?;
-
-        let res = self
-            .inner
-            .post(url)
-            .json(&swap_request)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        convert_http_response!(SwapResponse, res)
+        self.http_post(url, &swap_request).await
     }
 
     /// Get Mint Info [NUT-06]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-
-        let res = self.inner.get(url).send().await?.text().await?;
-
-        convert_http_response!(MintInfo, res)
+        self.http_get(url).await
     }
 
     /// Spendable check [NUT-07]
@@ -266,34 +242,14 @@ impl MintConnector for HttpClient {
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "checkstate"])?;
-
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        convert_http_response!(CheckStateResponse, res)
+        self.http_post(url, &request).await
     }
 
     /// Restore request [NUT-13]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "restore"])?;
-
-        let res = self
-            .inner
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .text()
-            .await?;
-
-        convert_http_response!(RestoreResponse, res)
+        self.http_post(url, &request).await
     }
 }
 

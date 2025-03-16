@@ -1,6 +1,7 @@
 > **Warning**
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind losing.
 
+[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk) [![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk)
 
 # Cashu Development Kit
 
@@ -21,13 +22,13 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-axum**](./crates/cdk-axum/): Axum webserver for mint.
     * [**cdk-cln**](./crates/cdk-cln/): CLN Lightning backend for mint.
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
-    * [**cdk-strike**](./crates/cdk-strike/): Strike Lightning backend for mint.
     * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint.
-    * [**cdk-phoenixd**](./crates/cdk-phoenixd/): Phoenixd Lightning backend for mint.
     * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
+    * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
+    * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint managemtn gRPC client cli.
 
 
 ## Development 
@@ -65,6 +66,7 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [17][17] | WebSocket subscriptions  | :heavy_check_mark: |
 | [18][18] | Payment Requests  | :heavy_check_mark: |
 | [19][19] | Cached responses  | :heavy_check_mark: |
+| [20][20] | Signature on Mint Quote  | :heavy_check_mark: |
 
 
 ## Bindings
@@ -104,3 +106,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [17]: https://github.com/cashubtc/nuts/blob/main/17.md
 [18]: https://github.com/cashubtc/nuts/blob/main/18.md
 [19]: https://github.com/cashubtc/nuts/blob/main/19.md
+[20]: https://github.com/cashubtc/nuts/blob/main/20.md

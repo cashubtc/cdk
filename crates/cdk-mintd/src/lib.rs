@@ -1,5 +1,6 @@
 //! Cdk mintd lib
 
+#[cfg(feature = "cln")]
 use std::path::PathBuf;
 
 pub mod cli;
@@ -7,6 +8,7 @@ pub mod config;
 pub mod env_vars;
 pub mod setup;
 
+#[cfg(feature = "cln")]
 fn expand_path(path: &str) -> Option<PathBuf> {
     if path.starts_with('~') {
         if let Some(home_dir) = home::home_dir().as_mut() {

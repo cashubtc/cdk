@@ -6,9 +6,8 @@ use std::collections::HashMap;
 
 use tracing::instrument;
 
-use crate::error::Error;
 use crate::nuts::Id;
-use crate::Amount;
+use crate::{Amount, Error};
 
 /// Fee required for proof set
 #[instrument(skip_all)]
@@ -16,7 +15,7 @@ pub fn calculate_fee(
     proofs_count: &HashMap<Id, u64>,
     keyset_fee: &HashMap<Id, u64>,
 ) -> Result<Amount, Error> {
-    let mut sum_fee = 0;
+    let mut sum_fee: u64 = 0;
 
     for (keyset_id, proof_count) in proofs_count {
         let keyset_fee_ppk = keyset_fee
@@ -25,10 +24,12 @@ pub fn calculate_fee(
 
         let proofs_fee = keyset_fee_ppk * proof_count;
 
-        sum_fee += proofs_fee;
+        sum_fee = sum_fee
+            .checked_add(proofs_fee)
+            .ok_or(Error::AmountOverflow)?;
     }
 
-    let fee = (sum_fee + 999) / 1000;
+    let fee = (sum_fee.checked_add(999).ok_or(Error::AmountOverflow)?) / 1000;
 
     Ok(fee.into())
 }

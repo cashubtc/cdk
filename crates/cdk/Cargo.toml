@@ -1,83 +1,66 @@
 [package]
 name = "cdk"
-version = "0.6.0"
+version = "0.7.2"
 edition = "2021"
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.63.0"                                                            # MSRV
+rust-version = "1.75.0"                                                            # MSRV
 license = "MIT"
 
 
 [features]
 default = ["mint", "wallet"]
-mint = ["dep:futures"]
+mint = ["dep:futures", "cdk-common/mint"]
 # We do not commit to a MSRV with swagger enabled
-swagger = ["mint", "dep:utoipa"]
-wallet = ["dep:reqwest"]
+swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
+wallet = ["dep:reqwest", "cdk-common/wallet"]
 bench = []
 http_subscription = []
 
 
 [dependencies]
-arc-swap = "1.7.1"
-async-trait = "0.1"
-anyhow = { version = "1.0.43", features = ["backtrace"] }
-bitcoin = { version = "0.32.2", features = [
-    "base64",
-    "serde",
-    "rand",
-    "rand-std",
-] }
-ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
-cbor-diag = "0.1.12"
-lightning-invoice = { version = "0.32.0", features = ["serde", "std"] }
-once_cell = "1.19"
+cdk-common.workspace = true
+cbor-diag.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+bitcoin.workspace = true
+ciborium.workspace = true
+lightning-invoice.workspace = true
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = [
-    "json",
-    "rustls-tls",
-    "rustls-tls-native-roots",
-    "socks",
-    "zstd", "brotli", "gzip", "deflate"
-], optional = true }
-serde = { version = "1", default-features = false, features = ["derive"] }
-serde_json = "1"
-serde_with = "3"
-tracing = { version = "0.1", default-features = false, features = [
-    "attributes",
-    "log",
-] }
-thiserror = "1"
-futures = { version = "0.3.28", default-features = false, optional = true, features = [
-    "alloc",
-] }
-url = "2.3"
-utoipa = { version = "4", optional = true }
-uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+futures = { workspace = true, optional = true, features = ["alloc"] }
+url.workspace = true
+utoipa = { workspace = true, optional = true }
+uuid.workspace = true
 
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.21", features = [
+tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
     "macros",
     "sync",
 ] }
 getrandom = { version = "0.2" }
-tokio-tungstenite = { version = "0.19.0", features = [
+tokio-tungstenite = { workspace = true, features = [
     "rustls",
     "rustls-tls-native-roots",
+    "connect"
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1.21", features = ["rt", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
-instant = { version = "0.1", features = ["wasm-bindgen", "inaccurate"] }
 
 [[example]]
 name = "mint-token"
@@ -97,7 +80,9 @@ required-features = ["wallet"]
 
 [dev-dependencies]
 rand = "0.8.5"
-bip39 = "2.0"
+cdk-sqlite.workspace = true
+bip39.workspace = true
+tracing-subscriber.workspace = true
 criterion = "0.5.1"
 
 [[bench]]

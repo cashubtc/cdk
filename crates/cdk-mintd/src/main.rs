@@ -3,40 +3,69 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::HashMap;
+use std::env;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use axum::http::Request;
-use axum::middleware::Next;
-use axum::response::Response;
-use axum::{middleware, Router};
+use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase};
-use cdk::cdk_lightning;
-use cdk::cdk_lightning::MintLightning;
 use cdk::mint::{MintBuilder, MintMeltLimits};
+// Feature-gated imports
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "fakewallet",
+    feature = "grpc-processor"
+))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
-use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
-use cdk::types::LnKey;
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
+use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
+use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+#[cfg(feature = "management-rpc")]
+use cdk_mint_rpc::MintRPCServer;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
+use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
+#[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
+use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
-use tower_http::cors::CorsLayer;
+use tower_http::decompression::RequestDecompressionLayer;
+use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
+
+// Ensure at least one lightning backend is enabled at compile time
+#[cfg(not(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "fakewallet",
+    feature = "grpc-processor"
+)))]
+compile_error!(
+    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, fakewallet, or grpc-processor"
+);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,28 +73,35 @@ async fn main() -> anyhow::Result<()> {
 
     let sqlx_filter = "sqlx=warn";
     let hyper_filter = "hyper=warn";
+    let h2_filter = "h2=warn";
+    let tower_http = "tower_http=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
+        "{},{},{},{},{}",
+        default_filter, sqlx_filter, hyper_filter, h2_filter, tower_http
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let args = CLIArgs::parse();
 
-    let work_dir = match args.work_dir {
-        Some(w) => w,
-        None => work_dir()?,
+    let work_dir = if let Some(work_dir) = args.work_dir {
+        tracing::info!("Using work dir from cmd arg");
+        work_dir
+    } else if let Ok(env_work_dir) = env::var(ENV_WORK_DIR) {
+        tracing::info!("Using work dir from env var");
+        env_work_dir.into()
+    } else {
+        work_dir()?
     };
+
+    tracing::info!("Using work dir: {}", work_dir.display());
 
     // get config file name from args
     let config_file_arg = match args.config {
         Some(c) => c,
         None => work_dir.join("config.toml"),
     };
-
-    tracing::info!("Using work dir: {}", work_dir.display());
 
     let mut mint_builder = MintBuilder::new();
 
@@ -84,12 +120,16 @@ async fn main() -> anyhow::Result<()> {
         match settings.database.engine {
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd.sqlite");
+                #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
+                #[cfg(feature = "sqlcipher")]
+                let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
 
                 sqlite_db.migrate().await;
 
                 Arc::new(sqlite_db)
             }
+            #[cfg(feature = "redb")]
             DatabaseEngine::Redb => {
                 let redb_path = work_dir.join("cdk-mintd.redb");
                 Arc::new(MintRedbDatabase::new(&redb_path)?)
@@ -129,10 +169,6 @@ async fn main() -> anyhow::Result<()> {
         CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
     );
 
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-    > = HashMap::new();
     let mut ln_routers = vec![];
 
     let mint_melt_limits = MintMeltLimits {
@@ -142,7 +178,10 @@ async fn main() -> anyhow::Result<()> {
         melt_max: settings.ln.max_melt,
     };
 
+    tracing::debug!("Ln backendd: {:?}", settings.ln.ln_backend);
+
     match settings.ln.ln_backend {
+        #[cfg(feature = "cln")]
         LnBackend::Cln => {
             let cln_settings = settings
                 .cln
@@ -153,119 +192,129 @@ async fn main() -> anyhow::Result<()> {
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
                 .await?;
             let cln = Arc::new(cln);
-            let ln_key = LnKey {
-                unit: CurrencyUnit::Sat,
-                method: PaymentMethod::Bolt11,
-            };
-            ln_backends.insert(ln_key, cln.clone());
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                cln.clone(),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    cln.clone(),
+                )
+                .await?;
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
-        LnBackend::Strike => {
-            let strike_settings = settings.clone().strike.expect("Checked on config load");
-
-            for unit in strike_settings
-                .clone()
-                .supported_units
-                .unwrap_or(vec![CurrencyUnit::Sat])
-            {
-                let strike = strike_settings
-                    .setup(&mut ln_routers, &settings, unit.clone())
-                    .await?;
-
-                mint_builder = mint_builder.add_ln_backend(
-                    unit.clone(),
-                    PaymentMethod::Bolt11,
-                    mint_melt_limits,
-                    Arc::new(strike),
-                );
-                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
-
-                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
-            }
-        }
+        #[cfg(feature = "lnbits")]
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnbits),
-            );
-            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
-
-            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
-        }
-        LnBackend::Phoenixd => {
-            let phd_settings = settings.clone().phoenixd.expect("Checked at config load");
-            let phd = phd_settings
-                .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(lnbits),
+                )
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(phd),
-            );
-
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
+        #[cfg(feature = "lnd")]
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
                 .setup(&mut ln_routers, &settings, CurrencyUnit::Msat)
                 .await?;
 
-            mint_builder = mint_builder.add_ln_backend(
-                CurrencyUnit::Sat,
-                PaymentMethod::Bolt11,
-                mint_melt_limits,
-                Arc::new(lnd),
-            );
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt11,
+                    mint_melt_limits,
+                    Arc::new(lnd),
+                )
+                .await?;
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
+        #[cfg(feature = "fakewallet")]
         LnBackend::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
+            tracing::info!("Using fake wallet: {:?}", fake_wallet);
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
                     .setup(&mut ln_routers, &settings, CurrencyUnit::Sat)
-                    .await?;
+                    .await
+                    .expect("hhh");
 
                 let fake = Arc::new(fake);
 
-                mint_builder = mint_builder.add_ln_backend(
-                    unit.clone(),
-                    PaymentMethod::Bolt11,
-                    mint_melt_limits,
-                    fake.clone(),
-                );
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt11,
+                        mint_melt_limits,
+                        fake.clone(),
+                    )
+                    .await?;
 
                 let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
 
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
-        LnBackend::None => bail!("Ln backend must be set"),
+        #[cfg(feature = "grpc-processor")]
+        LnBackend::GrpcProcessor => {
+            let grpc_processor = settings
+                .clone()
+                .grpc_processor
+                .expect("grpc processor config defined");
+
+            tracing::info!(
+                "Attempting to start with gRPC payment processor at {}:{}.",
+                grpc_processor.addr,
+                grpc_processor.port
+            );
+
+            tracing::info!("{:?}", grpc_processor);
+
+            for unit in grpc_processor.clone().supported_units {
+                tracing::debug!("Adding unit: {:?}", unit);
+
+                let processor = grpc_processor
+                    .setup(&mut ln_routers, &settings, unit.clone())
+                    .await?;
+
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt11,
+                        mint_melt_limits,
+                        Arc::new(processor),
+                    )
+                    .await?;
+
+                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+            }
+        }
+        LnBackend::None => {
+            tracing::error!(
+                "Pyament backend was not set or feature disabled. {:?}",
+                settings.ln.ln_backend
+            );
+            bail!("Ln backend must be")
+        }
     };
 
     if let Some(long_description) = &settings.mint_info.description_long {
@@ -290,14 +339,16 @@ async fn main() -> anyhow::Result<()> {
         mint_builder = mint_builder.with_motd(motd);
     }
 
+    if let Some(tos_url) = &settings.mint_info.tos_url {
+        mint_builder = mint_builder.with_tos_url(tos_url.to_string());
+    }
+
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
     mint_builder = mint_builder
         .with_name(settings.mint_info.name)
-        .with_mint_url(settings.info.url)
         .with_version(mint_version)
         .with_description(settings.mint_info.description)
-        .with_quote_ttl(10000, 10000)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
     let cached_endpoints = vec![
@@ -311,6 +362,8 @@ async fn main() -> anyhow::Result<()> {
     mint_builder = mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints);
 
     let mint = mint_builder.build().await?;
+
+    tracing::debug!("Mint built from builder.");
 
     let mint = Arc::new(mint);
 
@@ -333,9 +386,12 @@ async fn main() -> anyhow::Result<()> {
 
     let mut mint_service = Router::new()
         .merge(v1_service)
-        .layer(CompressionLayer::new())
-        .layer(middleware::from_fn(logging_middleware))
-        .layer(CorsLayer::permissive());
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
+        )
+        .layer(TraceLayer::new_for_http());
 
     #[cfg(feature = "swagger")]
     {
@@ -352,58 +408,93 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let shutdown = Arc::new(Notify::new());
-
+    let mint_clone = Arc::clone(&mint);
     tokio::spawn({
         let shutdown = Arc::clone(&shutdown);
-        async move { mint.wait_for_paid_invoices(shutdown).await }
+        async move { mint_clone.wait_for_paid_invoices(shutdown).await }
     });
 
-    let axum_result = axum::Server::bind(
-        &format!("{}:{}", listen_addr, listen_port)
-            .as_str()
-            .parse()?,
-    )
-    .serve(mint_service.into_make_service())
-    .await;
+    #[cfg(feature = "management-rpc")]
+    let mut rpc_enabled = false;
+    #[cfg(not(feature = "management-rpc"))]
+    let rpc_enabled = false;
 
-    shutdown.notify_waiters();
+    #[cfg(feature = "management-rpc")]
+    let mut rpc_server: Option<cdk_mint_rpc::MintRPCServer> = None;
 
-    match axum_result {
+    #[cfg(feature = "management-rpc")]
+    {
+        if let Some(rpc_settings) = settings.mint_management_rpc {
+            if rpc_settings.enabled {
+                let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
+                let port = rpc_settings.port.unwrap_or(8086);
+                let mut mint_rpc = MintRPCServer::new(&addr, port, mint.clone())?;
+
+                let tls_dir = rpc_settings.tls_dir_path.unwrap_or(work_dir.join("tls"));
+
+                if !tls_dir.exists() {
+                    tracing::error!("TLS directory does not exist: {}", tls_dir.display());
+                    bail!("Cannot start RPC server: TLS directory does not exist");
+                }
+
+                mint_rpc.start(Some(tls_dir)).await?;
+
+                rpc_server = Some(mint_rpc);
+
+                rpc_enabled = true;
+            }
+        }
+    }
+
+    if rpc_enabled {
+        if mint.mint_info().await.is_err() {
+            tracing::info!("Mint info not set on mint, setting.");
+            mint.set_mint_info(mint_builder.mint_info).await?;
+        } else {
+            tracing::info!("Mint info already set, not using config file settings.");
+        }
+    } else {
+        tracing::warn!("RPC not enabled, using mint info from config.");
+        mint.set_mint_info(mint_builder.mint_info).await?;
+        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
+    }
+
+    let socket_addr = SocketAddr::from_str(&format!("{}:{}", listen_addr, listen_port))?;
+
+    let listener = tokio::net::TcpListener::bind(socket_addr).await?;
+
+    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+
+    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal());
+
+    match axum_result.await {
         Ok(_) => {
             tracing::info!("Axum server stopped with okay status");
         }
         Err(err) => {
             tracing::warn!("Axum server stopped with error");
             tracing::error!("{}", err);
-
             bail!("Axum exited with error")
+        }
+    }
+
+    shutdown.notify_waiters();
+
+    #[cfg(feature = "management-rpc")]
+    {
+        if let Some(rpc_server) = rpc_server {
+            rpc_server.stop().await?;
         }
     }
 
     Ok(())
 }
 
-/// Logs infos about the request and the response
-async fn logging_middleware<B>(req: Request<B>, next: Next<B>) -> Response {
-    let start = std::time::Instant::now();
-    let path = req.uri().path().to_owned();
-    let method = req.method().clone();
-
-    let response = next.run(req).await;
-
-    let duration = start.elapsed();
-    let status = response.status();
-    let compression = response
-        .headers()
-        .get("content-encoding")
-        .map(|h| h.to_str().unwrap_or("none"))
-        .unwrap_or("none");
-
-    tracing::trace!(
-        "Request: {method} {path} | Status: {status} | Compression: {compression} | Duration: {duration:?}",
-    );
-
-    response
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install CTRL+C handler");
+    tracing::info!("Shutdown signal received");
 }
 
 fn work_dir() -> Result<PathBuf> {
