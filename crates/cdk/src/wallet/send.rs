@@ -286,6 +286,17 @@ impl Wallet {
     pub async fn cancel_send(&self, send: PreparedSend) -> Result<(), Error> {
         tracing::info!("Cancelling prepared send");
 
+        // Double-check proofs state
+        let reserved_proofs = self.get_reserved_proofs().await?.ys()?;
+        if !send
+            .proofs_to_send
+            .ys()?
+            .iter()
+            .all(|y| reserved_proofs.contains(y))
+        {
+            return Err(Error::UnexpectedProofState);
+        }
+
         self.localstore
             .update_proofs_state(send.proofs().ys()?, State::Unspent)
             .await?;
