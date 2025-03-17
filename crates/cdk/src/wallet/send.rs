@@ -296,6 +296,14 @@ impl Wallet {
         {
             return Err(Error::UnexpectedProofState);
         }
+        if !send
+            .proofs_to_swap
+            .ys()?
+            .iter()
+            .all(|y| reserved_proofs.contains(y))
+        {
+            return Err(Error::UnexpectedProofState);
+        }
 
         self.localstore
             .update_proofs_state(send.proofs().ys()?, State::Unspent)
