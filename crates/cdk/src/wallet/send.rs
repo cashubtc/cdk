@@ -289,15 +289,7 @@ impl Wallet {
         // Double-check proofs state
         let reserved_proofs = self.get_reserved_proofs().await?.ys()?;
         if !send
-            .proofs_to_send
-            .ys()?
-            .iter()
-            .all(|y| reserved_proofs.contains(y))
-        {
-            return Err(Error::UnexpectedProofState);
-        }
-        if !send
-            .proofs_to_swap
+            .proofs()
             .ys()?
             .iter()
             .all(|y| reserved_proofs.contains(y))
