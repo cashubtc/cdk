@@ -68,6 +68,7 @@ impl Wallet {
         }
 
         if scripts_set.len() > 1 {
+            tracing::error!("Wallet selected inputs/outputs coins with different scripts for a swap");
             return Err(Error::from(DifferentScriptsError));
         }
 
@@ -143,7 +144,7 @@ impl Wallet {
             .into_iter()
             .enumerate()
             .map(|(i, a)| {
-                KvacPreCoin::from_xpriv(id, a, unit.clone(), None, counter + (i as u32), self.xpriv)
+                KvacPreCoin::from_xpriv(id, a, unit.clone(), Some("".to_string()), counter + (i as u32), self.xpriv)
                     .map_err(Error::from)
             })
             .collect::<Result<Vec<KvacPreCoin>, Error>>()?;

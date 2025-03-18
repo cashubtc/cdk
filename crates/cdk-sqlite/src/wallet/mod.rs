@@ -9,7 +9,7 @@ use cashu_kvac::models::{AmountAttribute, Coin, MintPublicKey, ScriptAttribute, 
 use cashu_kvac::secp::{GroupElement, Scalar};
 use cdk_common::common::{KvacCoinInfo, ProofInfo};
 use cdk_common::database::WalletDatabase;
-use cdk_common::kvac::{KvacCoin, KvacKeys};
+use cdk_common::kvac::{KvacCoin, KvacKeys, KvacRandomizedCoin};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
@@ -854,17 +854,18 @@ WHERE id=?
         added: Vec<KvacCoinInfo>,
         removed_nullifiers: Vec<GroupElement>,
     ) -> Result<(), Self::Err> {
+
         for coin in added {
             sqlx::query(
                 r#"
-    INSERT OR REPLACE INTO proof
+    INSERT OR REPLACE INTO kvac_coins
     (nullifier, tag, mac, amount, amount_blinding_factor, script, script_blinding_factor, mint_url, state, unit, keyset_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             "#,
             )
+            .bind(KvacRandomizedCoin::from(&coin.coin).get_nullifier().to_bytes())
             .bind(coin.coin.coin.mac.t.to_bytes())
-            .bind(coin.mint_url.to_string())
-            .bind(coin.state.to_string())
+            .bind(coin.coin.coin.mac.V.to_bytes())
             .bind(coin.coin.amount.0 as i64)
             .bind(coin.coin.coin.amount_attribute.r.to_bytes())
             .bind(coin.coin.script.unwrap_or("".to_string()))
