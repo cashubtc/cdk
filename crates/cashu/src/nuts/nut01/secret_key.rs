@@ -8,6 +8,7 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::rand::rngs::OsRng;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Keypair, Message, Scalar};
+use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{Error, PublicKey};
@@ -115,21 +116,46 @@ impl FromStr for SecretKey {
 }
 
 impl Serialize for SecretKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_secret_hex())
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match serializer.is_human_readable() {
+            // For human-readable formats like JSON, serialize as hex string
+            true => serializer.serialize_str(&self.to_secret_hex()),
+            // For binary formats like CBOR, use the bytes serialization
+            false => serializer.serialize_bytes(self.as_secret_bytes()),
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for SecretKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secret_key: String = String::deserialize(deserializer)?;
-        Self::from_hex(secret_key).map_err(serde::de::Error::custom)
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match deserializer.is_human_readable() {
+            // For human-readable formats like JSON, deserialize from hex string
+            true => {
+                let secret_key: String = String::deserialize(deserializer)?;
+                SecretKey::from_hex(secret_key).map_err(serde::de::Error::custom)
+            }
+            // For binary formats like CBOR, use the bytes deserialization
+            false => {
+                struct SecretKeyVisitor;
+
+                impl Visitor<'_> for SecretKeyVisitor {
+                    type Value = SecretKey;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                        formatter.write_str("a byte array")
+                    }
+
+                    fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        SecretKey::from_slice(value).map_err(serde::de::Error::custom)
+                    }
+                }
+
+                deserializer.deserialize_bytes(SecretKeyVisitor)
+            }
+        }
     }
 }
 
