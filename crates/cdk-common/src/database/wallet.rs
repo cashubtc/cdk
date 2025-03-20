@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use cashu::kvac::KvacKeys;
+use cashu_kvac::secp::GroupElement;
 
 use super::Error;
-use crate::common::ProofInfo;
+use crate::common::{KvacCoinInfo, ProofInfo};
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
@@ -46,13 +48,37 @@ pub trait Database: Debug {
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err>;
+    /// Add mint kvac keyset to storage
+    #[cfg(feature = "kvac")]
+    async fn add_mint_kvac_keysets(
+        &self,
+        _mint_url: MintUrl,
+        _keysets: Vec<KeySetInfo>,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get mint keysets for mint url
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err>;
+    /// Get mint keysets for mint url
+    async fn get_mint_kvac_keysets(
+        &self,
+        _mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get mint keyset by id
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err>;
+    /// Get mint kvac keyset by id
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_keyset_by_id(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Add mint quote to storage
     async fn add_mint_quote(&self, quote: WalletMintQuote) -> Result<(), Self::Err>;
@@ -72,10 +98,25 @@ pub trait Database: Debug {
 
     /// Add [`Keys`] to storage
     async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err>;
+    /// Add [`KvacKeys`] to storage
+    #[cfg(feature = "kvac")]
+    async fn add_kvac_keys(&self, _keys: KvacKeys) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get [`Keys`] from storage
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err>;
+    /// Get [`KvacKeys`] from storage
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_keys(&self, _id: &Id) -> Result<Option<KvacKeys>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Remove [`Keys`] from storage
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err>;
+    /// Remove [`KvacKeys`] from storage
+    #[cfg(feature = "kvac")]
+    async fn remove_kvac_keys(&self, _id: &Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Update the proofs in storage by adding new proofs or removing proofs by
     /// their Y value.
@@ -84,14 +125,39 @@ pub trait Database: Debug {
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err>;
+    /// Update the coins in storage by adding new coins or removing coins
+    #[cfg(feature = "kvac")]
+    async fn update_kvac_coins(
+        &self,
+        _added: Vec<KvacCoinInfo>,
+        _removed_nullifier: Vec<GroupElement>,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Set proofs as pending in storage. Proofs are identified by their Y
     /// value.
     async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Set coins as pending in storage. Coins are identified by their `t`
+    /// value.
+    #[cfg(feature = "kvac")]
+    async fn set_pending_kvac_coins(&self, _nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Reserve proofs in storage. Proofs are identified by their Y value.
     async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Reserve kvac coins in storage. Coins are identified by their tag `t`.
+    #[cfg(feature = "kvac")]
+    async fn reserve_kvac_coins(&self, _nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Set proofs as unspent in storage. Proofs are identified by their Y
     /// value.
     async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
+    /// Set kvac coins as unspent in storage. Coins are identified by their tag `t`
+    #[cfg(feature = "kvac")]
+    async fn set_unspent_kvac_coins(&self, _nullifiers: &[GroupElement]) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get proofs from storage
     async fn get_proofs(
         &self,
@@ -100,9 +166,34 @@ pub trait Database: Debug {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err>;
+    /// Get kvac coins from storage
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_coins(
+        &self,
+        _mint_url: Option<MintUrl>,
+        _unit: Option<CurrencyUnit>,
+        _state: Option<Vec<State>>,
+        _script: Option<String>,
+    ) -> Result<Vec<KvacCoinInfo>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
+    /// Increment Kvac Keyset counter
+    #[cfg(feature = "kvac")]
+    async fn increment_kvac_keyset_counter(
+        &self,
+        _keyset_id: &Id,
+        _count: u32,
+    ) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
     /// Get current Keyset counter
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
+    /// Get current Kvac Keyset counter
+    #[cfg(feature = "kvac")]
+    async fn get_kvac_keyset_counter(&self, _keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
 }

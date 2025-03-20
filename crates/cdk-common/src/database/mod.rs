@@ -1,7 +1,7 @@
 //! CDK Database
 
 #[cfg(feature = "mint")]
-mod mint;
+pub mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
@@ -43,4 +43,7 @@ pub enum Error {
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
+    /// Unimplemented
+    #[error("Unimplemented")]
+    Unimplemented,
 }

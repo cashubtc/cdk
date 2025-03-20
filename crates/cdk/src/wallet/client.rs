@@ -3,6 +3,12 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use cdk_common::kvac::{
+    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse, KvacKeySet,
+    KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response,
+    KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse,
+    KvacSwapRequest, KvacSwapResponse,
+};
 use reqwest::{Client, IntoUrl};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -129,6 +135,16 @@ impl MintConnector for HttpClient {
         Ok(self.http_get::<_, KeysResponse>(url).await?.keysets)
     }
 
+    /// Get Active Mint Kvac Keys
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_kvac_keys(&self) -> Result<Vec<KvacKeySet>, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "keys"])?;
+        Ok(self
+            .http_get::<_, KvacKeysResponse>(url)
+            .await?
+            .kvac_keysets)
+    }
+
     /// Get Keyset Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
@@ -143,10 +159,31 @@ impl MintConnector for HttpClient {
             .ok_or_else(|| Error::UnknownKeySet)
     }
 
+    /// Get Keyset Keys [NUT-01]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_kvac_keyset(&self, keyset_id: Id) -> Result<KvacKeySet, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v2", "kvac", "keys", &keyset_id.to_string()])?;
+        self.http_get::<_, KvacKeysResponse>(url)
+            .await?
+            .kvac_keysets
+            .drain(0..1)
+            .next()
+            .ok_or_else(|| Error::UnknownKeySet)
+    }
+
     /// Get Keysets [NUT-02]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
+        self.http_get(url).await
+    }
+
+    /// Get Kvac Keysets
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_kvac_keysets(&self) -> Result<KvacKeysetResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "keysets"])?;
         self.http_get(url).await
     }
 
@@ -182,6 +219,17 @@ impl MintConnector for HttpClient {
         request: MintBolt11Request<String>,
     ) -> Result<MintBolt11Response, Error> {
         let url = self.mint_url.join_paths(&["v1", "mint", "bolt11"])?;
+        self.http_post(url, &request).await
+    }
+
+    /// Mint Kvac Coins
+    async fn post_kvac_mint(
+        &self,
+        request: KvacMintBolt11Request<String>,
+    ) -> Result<KvacMintBolt11Response, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v2", "kvac", "mint", "bolt11"])?;
         self.http_post(url, &request).await
     }
 
@@ -221,10 +269,32 @@ impl MintConnector for HttpClient {
         self.http_post(url, &request).await
     }
 
+    /// Melt KVAC coins
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_kvac_melt(
+        &self,
+        request: KvacMeltBolt11Request<String>,
+    ) -> Result<KvacMeltBolt11Response, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v2", "kvac", "melt", "bolt11"])?;
+        self.http_post(url, &request).await
+    }
+
     /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "swap"])?;
+        self.http_post(url, &swap_request).await
+    }
+
+    /// Swap Token [NUT-03]
+    #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
+    async fn post_kvac_swap(
+        &self,
+        swap_request: KvacSwapRequest,
+    ) -> Result<KvacSwapResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "swap"])?;
         self.http_post(url, &swap_request).await
     }
 
@@ -245,10 +315,36 @@ impl MintConnector for HttpClient {
         self.http_post(url, &request).await
     }
 
-    /// Restore request [NUT-13]
+    /// KVAC Spendable check
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_kvac_check_state(
+        &self,
+        request: KvacCheckStateRequest,
+    ) -> Result<KvacCheckStateResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "checkstate"])?;
+        self.http_post(url, &request).await
+    }
+
+    /// Restore request
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "restore"])?;
+        self.http_post(url, &request).await
+    }
+
+    /// KVAC Restore Request
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_kvac_restore(
+        &self,
+        request: KvacRestoreRequest,
+    ) -> Result<KvacRestoreResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "restore"])?;
+        self.http_post(url, &request).await
+    }
+
+    /// KVAC Bootstrap
+    async fn post_bootstrap(&self, request: BootstrapRequest) -> Result<BootstrapResponse, Error> {
+        let url = self.mint_url.join_paths(&["v2", "kvac", "bootstrap"])?;
         self.http_post(url, &request).await
     }
 }
@@ -259,10 +355,22 @@ impl MintConnector for HttpClient {
 pub trait MintConnector: Debug {
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;
+    /// Get Active Mint Kvac Keys
+    async fn get_mint_kvac_keys(&self) -> Result<Vec<KvacKeySet>, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Get Keyset Keys [NUT-01]
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error>;
+    /// Get Keyset Kvac Keys
+    async fn get_mint_kvac_keyset(&self, _keyset_id: Id) -> Result<KvacKeySet, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Get Keysets [NUT-02]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error>;
+    /// Get Kvac Keysets
+    async fn get_mint_kvac_keysets(&self) -> Result<KvacKeysetResponse, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Mint Quote [NUT-04]
     async fn post_mint_quote(
         &self,
@@ -278,6 +386,13 @@ pub trait MintConnector: Debug {
         &self,
         request: MintBolt11Request<String>,
     ) -> Result<MintBolt11Response, Error>;
+    /// Mint Kvac Coins
+    async fn post_kvac_mint(
+        &self,
+        _request: KvacMintBolt11Request<String>,
+    ) -> Result<KvacMintBolt11Response, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Melt Quote [NUT-05]
     async fn post_melt_quote(
         &self,
@@ -294,8 +409,19 @@ pub trait MintConnector: Debug {
         &self,
         request: MeltBolt11Request<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    /// Melt KVAC coins
+    async fn post_kvac_melt(
+        &self,
+        _request: KvacMeltBolt11Request<String>,
+    ) -> Result<KvacMeltBolt11Response, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Split Token [NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
+    /// Swap KVAC Coins
+    async fn post_kvac_swap(&self, _request: KvacSwapRequest) -> Result<KvacSwapResponse, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Get Mint Info [NUT-06]
     async fn get_mint_info(&self) -> Result<MintInfo, Error>;
     /// Spendable check [NUT-07]
@@ -303,6 +429,24 @@ pub trait MintConnector: Debug {
         &self,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error>;
+    /// KVAC Spendable check
+    async fn post_kvac_check_state(
+        &self,
+        _request: KvacCheckStateRequest,
+    ) -> Result<KvacCheckStateResponse, Error> {
+        Err(Error::NotImplemented)
+    }
     /// Restore request [NUT-13]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
+    /// Restore KVAC
+    async fn post_kvac_restore(
+        &self,
+        _request: KvacRestoreRequest,
+    ) -> Result<KvacRestoreResponse, Error> {
+        Err(Error::NotImplemented)
+    }
+    /// Kvac Bootstrap
+    async fn post_bootstrap(&self, _request: BootstrapRequest) -> Result<BootstrapResponse, Error> {
+        Err(Error::NotImplemented)
+    }
 }

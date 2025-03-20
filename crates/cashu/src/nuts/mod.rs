@@ -2,6 +2,8 @@
 //!
 //! See all at <https://github.com/cashubtc/nuts>
 
+#[cfg(feature = "kvac")]
+pub mod kvac;
 pub mod nut00;
 pub mod nut01;
 pub mod nut02;

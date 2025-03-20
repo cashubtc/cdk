@@ -603,6 +603,10 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
+    async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
+        Err(Self::Err::from(Error::Unimplemented))
+    }
+
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
