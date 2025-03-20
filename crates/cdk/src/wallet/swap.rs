@@ -20,13 +20,14 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
+        tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;
 
         let pre_swap = self
             .create_swap(
                 amount,
-                amount_split_target,
+                amount_split_target.clone(),
                 input_proofs.clone(),
                 spending_conditions.clone(),
                 include_fees,
@@ -72,13 +73,15 @@ impl Wallet {
                         let mut all_proofs = proofs_without_condition;
                         all_proofs.reverse();
 
-                        let mut proofs_to_send: Proofs = Vec::new();
-                        let mut proofs_to_keep = Vec::new();
+                        let mut proofs_to_send = Proofs::new();
+                        let mut proofs_to_keep = Proofs::new();
+                        let mut amount_split = amount.split_targeted(&amount_split_target)?;
 
                         for proof in all_proofs {
-                            let proofs_to_send_amount = proofs_to_send.total_amount()?;
-                            if proof.amount + proofs_to_send_amount <= amount + pre_swap.fee {
+                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
+                            {
                                 proofs_to_send.push(proof);
+                                amount_split.remove(idx);
                             } else {
                                 proofs_to_keep.push(proof);
                             }
@@ -163,7 +166,20 @@ impl Wallet {
 
         ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
-        let proofs = self.select_proofs_to_swap(amount, available_proofs).await?;
+        let active_keyset_ids = self
+            .get_active_mint_keysets()
+            .await?
+            .into_iter()
+            .map(|k| k.id)
+            .collect();
+        let keyset_fees = self.get_keyset_fees().await?;
+        let proofs = Wallet::select_proofs(
+            amount,
+            available_proofs,
+            &active_keyset_ids,
+            &keyset_fees,
+            true,
+        )?;
 
         self.swap(
             Some(amount),
@@ -186,13 +202,16 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<PreSwap, Error> {
+        tracing::info!("Creating swap");
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
 
         let ys: Vec<PublicKey> = proofs.ys()?;
-        self.localstore.set_pending_proofs(ys).await?;
+        self.localstore
+            .update_proofs_state(ys, State::Reserved)
+            .await?;
 
         let fee = self.get_proofs_fee(&proofs).await?;
 

@@ -31,10 +31,12 @@ pub enum State {
     ///
     /// Currently being used in a transaction i.e. melt in progress
     Pending,
-    /// Proof is reserved
+    /// Reserved
     ///
-    /// i.e. used to create a token
+    /// Proof is reserved for future token creation
     Reserved,
+    /// Pending spent (i.e., spent but not yet swapped by receiver)
+    PendingSpent,
 }
 
 impl fmt::Display for State {
@@ -44,6 +46,7 @@ impl fmt::Display for State {
             Self::Unspent => "UNSPENT",
             Self::Pending => "PENDING",
             Self::Reserved => "RESERVED",
+            Self::PendingSpent => "PENDING_SPENT",
         };
 
         write!(f, "{}", s)
@@ -59,6 +62,7 @@ impl FromStr for State {
             "UNSPENT" => Ok(Self::Unspent),
             "PENDING" => Ok(Self::Pending),
             "RESERVED" => Ok(Self::Reserved),
+            "PENDING_SPENT" => Ok(Self::PendingSpent),
             _ => Err(Error::UnknownState),
         }
     }

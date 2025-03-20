@@ -84,14 +84,6 @@ pub trait Database: Debug {
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err>;
-    /// Set proofs as pending in storage. Proofs are identified by their Y
-    /// value.
-    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
-    /// Reserve proofs in storage. Proofs are identified by their Y value.
-    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
-    /// Set proofs as unspent in storage. Proofs are identified by their Y
-    /// value.
-    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err>;
     /// Get proofs from storage
     async fn get_proofs(
         &self,
@@ -100,6 +92,8 @@ pub trait Database: Debug {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err>;
+    /// Update proofs state in storage
+    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err>;
 
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
