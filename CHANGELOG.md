@@ -8,12 +8,17 @@
 ### Fixed
 - cdk: proof matches conditions was not matching payment conditions correctly ([thesimplekid]).
 - cdk: Updating mint_url would remove proofs when we want to keep them ([ok300]).
+- Wallet: Fix ability to receive cashu tokens that include DLEQ proofs ([ok300]).
 ### Changed
 - Updated MSRV to 1.75.0 ([thesimplekid]).
 - cdk-sqlite: Do not use `UPDATE OR REPLACE` ([crodas]).
 - cdk: Refactor keyset init ([lollerfirst]).
 - Feature-gated lightning backends (CLN, LND, LNbits, FakeWallet) for selective compilation ([thesimplekid]).
 - cdk-sqlite: update sqlx to 0.7.4 ([benthecarman]).
+- Unifies and optimizes the proof selection algorithm to use Wallet::select_proofs ([davidcaseria]).
+- Wallet::send now requires a PreparedSend ([davidcaseria]).
+- WalletDatabase proof state update functions have been consolidated into update_proofs_state ([davidcaseria]).
+
 ### Added
 - Added redb feature to mintd in order to meet MSRV target ([thesimplekid]).
 - cdk-sqlite: In memory sqlite database ([crodas]).
@@ -25,6 +30,13 @@
 - Add support for sqlcipher ([benthecarman]).
 - Payment processor ([thesimplekid]).
 - Payment request builder ([thesimplekid]).
+- Sends should be initiated by calling Wallet::prepare_send ([davidcaseria]).
+- A SendOptions struct controls optional functionality for sends ([davidcaseria]).
+- Allow Amount splitting to target a fee rate amount ([davidcaseria]).
+- Utility functions for Proofs ([davidcaseria]).
+- Utility functions for SendKind ([davidcaseria]).
+- Completed checked arithmetic operations for Amount (i.e., checked_mul and checked_div) ([davidcaseria]).
+
 ### Removed
 - Remove support for Memory Database in cdk ([crodas]).
 - Remove `AmountStr` ([crodas]).
