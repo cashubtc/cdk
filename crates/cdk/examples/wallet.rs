@@ -4,8 +4,7 @@ use std::time::Duration;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
-use cdk::wallet::types::SendKind;
-use cdk::wallet::Wallet;
+use cdk::wallet::{SendOptions, Wallet};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::Rng;
@@ -59,16 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Minted {}", receive_amount);
 
     // Send the token
-    let token = wallet
-        .send(
-            amount,
-            None,
-            None,
-            &SplitTarget::None,
-            &SendKind::default(),
-            false,
-        )
-        .await?;
+    let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+    let token = wallet.send(prepared_send, None).await?;
 
     println!("{}", token);
 

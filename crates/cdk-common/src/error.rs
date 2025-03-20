@@ -169,6 +169,9 @@ pub enum Error {
     /// Insufficient Funds
     #[error("Insufficient funds")]
     InsufficientFunds,
+    /// Unexpected proof state
+    #[error("Unexpected proof state")]
+    UnexpectedProofState,
     /// No active keyset
     #[error("No active keyset")]
     NoActiveKeyset,

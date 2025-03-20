@@ -130,7 +130,9 @@ impl Wallet {
         }
 
         let ys = proofs.ys()?;
-        self.localstore.set_pending_proofs(ys).await?;
+        self.localstore
+            .update_proofs_state(ys, State::Pending)
+            .await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
@@ -287,9 +289,20 @@ impl Wallet {
 
         let available_proofs = self.get_unspent_proofs().await?;
 
-        let input_proofs = self
-            .select_proofs_to_swap(inputs_needed_amount, available_proofs)
-            .await?;
+        let active_keyset_ids = self
+            .get_active_mint_keysets()
+            .await?
+            .into_iter()
+            .map(|k| k.id)
+            .collect();
+        let keyset_fees = self.get_keyset_fees().await?;
+        let input_proofs = Wallet::select_proofs(
+            inputs_needed_amount,
+            available_proofs,
+            &active_keyset_ids,
+            &keyset_fees,
+            true,
+        )?;
 
         self.melt_proofs(quote_id, input_proofs).await
     }

@@ -43,6 +43,7 @@ mod swap;
 pub mod util;
 
 pub use cdk_common::wallet as types;
+pub use send::{PreparedSend, SendMemo, SendOptions};
 
 use crate::nuts::nut00::ProofsMethods;
 
@@ -173,25 +174,24 @@ impl Wallet {
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
-        let mut proofs_per_keyset = HashMap::new();
+        let proofs_per_keyset = proofs.count_by_keyset();
+        self.get_proofs_fee_by_count(proofs_per_keyset).await
+    }
+
+    /// Fee required for proof set by count
+    pub async fn get_proofs_fee_by_count(
+        &self,
+        proofs_per_keyset: HashMap<Id, u64>,
+    ) -> Result<Amount, Error> {
         let mut fee_per_keyset = HashMap::new();
 
-        for proof in proofs {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                fee_per_keyset.entry(proof.keyset_id)
-            {
-                let mint_keyset_info = self
-                    .localstore
-                    .get_keyset_by_id(&proof.keyset_id)
-                    .await?
-                    .ok_or(Error::UnknownKeySet)?;
-                e.insert(mint_keyset_info.input_fee_ppk);
-            }
-
-            proofs_per_keyset
-                .entry(proof.keyset_id)
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
+        for keyset_id in proofs_per_keyset.keys() {
+            let mint_keyset_info = self
+                .localstore
+                .get_keyset_by_id(keyset_id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+            fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
         let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
