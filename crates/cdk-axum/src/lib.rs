@@ -14,6 +14,7 @@ use cache::HttpCache;
 use cdk::mint::Mint;
 use router_handlers::*;
 
+#[cfg(feature = "auth")]
 mod auth;
 pub mod cache;
 mod router_handlers;
