@@ -11,8 +11,6 @@ use axum::response::Response;
 use axum::routing::{get, post};
 #[cfg(feature = "auth")]
 use axum::{Json, Router};
-#[cfg(feature = "auth")]
-use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::nuts::BlindAuthToken;
 #[cfg(feature = "auth")]
 use cdk::nuts::{AuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintBolt11Response};
@@ -163,14 +161,17 @@ pub async fn post_mint_auth(
 ) -> Result<Json<MintBolt11Response>, Response> {
     tracing::debug!("Auth Header: {:?}", auth);
     let auth_token = match auth {
-        AuthHeader::Clear(cat) => AuthToken::ClearAuth(cat),
+        AuthHeader::Clear(cat) => {
+            if cat.is_empty() {
+                tracing::debug!("Received blind auth mint request without cat");
+                return Err(into_response(cdk::Error::ClearAuthRequired));
+            }
+
+            AuthToken::ClearAuth(cat)
+        }
         _ => {
             tracing::debug!("Received blind auth mint request without cat");
-            return Err(into_response(ErrorResponse::new(
-                ErrorCode::from_code(0),
-                None,
-                None,
-            )));
+            return Err(into_response(cdk::Error::ClearAuthRequired));
         }
     };
 

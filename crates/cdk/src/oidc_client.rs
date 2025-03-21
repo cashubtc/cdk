@@ -39,7 +39,8 @@ pub enum Error {
 
 impl From<Error> for cdk_common::error::Error {
     fn from(value: Error) -> Self {
-        cdk_common::error::Error::Custom(value.to_string())
+        tracing::debug!("Clear auth verification failed: {}", value);
+        cdk_common::error::Error::ClearAuthFailed
     }
 }
 
