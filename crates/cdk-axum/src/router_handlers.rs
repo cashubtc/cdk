@@ -17,16 +17,10 @@ use paste::paste;
 use tracing::instrument;
 use uuid::Uuid;
 
+#[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
-
-#[cfg(not(feature = "auth"))]
-fn check_unused_auth(auth: &AuthHeader) {
-    if !matches!(auth, AuthHeader::None) {
-        tracing::info!("Auth header provided but auth feature is disabled");
-    }
-}
 
 macro_rules! post_cache_wrapper {
     ($handler:ident, $request_type:ty, $response_type:ty) => {
@@ -34,7 +28,7 @@ macro_rules! post_cache_wrapper {
             /// Cache wrapper function for $handler:
             /// Wrap $handler into a function that caches responses using the request as key
             pub async fn [<cache_ $handler>](
-                auth: AuthHeader,
+                #[cfg(feature = "auth")] auth: AuthHeader,
                 state: State<MintState>,
                 payload: Json<$request_type>
             ) -> Result<Json<$response_type>, Response> {
@@ -45,13 +39,19 @@ macro_rules! post_cache_wrapper {
                     Some(key) => key,
                     None => {
                         // Could not calculate key, just return the handler result
+                        #[cfg(feature = "auth")]
                         return $handler(auth, state, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler( state, payload).await;
                     }
                 };
                 if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
                     return Ok(Json(cached_response));
                 }
+                #[cfg(feature = "auth")]
                 let response = $handler(auth, state, payload).await?;
+                #[cfg(not(feature = "auth"))]
+                let response = $handler(state, payload).await?;
                 mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
             }
@@ -157,13 +157,10 @@ pub(crate) async fn get_keysets(
 ///
 /// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
 pub(crate) async fn post_mint_bolt11_quote(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     state
         .mint
@@ -199,13 +196,10 @@ pub(crate) async fn post_mint_bolt11_quote(
 ///
 /// Get mint quote state.
 pub(crate) async fn get_check_mint_bolt11_quote(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state
@@ -253,13 +247,10 @@ pub(crate) async fn ws_handler(
     )
 ))]
 pub(crate) async fn post_mint_bolt11(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,
 ) -> Result<Json<MintBolt11Response>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state
@@ -297,13 +288,10 @@ pub(crate) async fn post_mint_bolt11(
 #[instrument(skip_all)]
 /// Request a quote for melting tokens
 pub(crate) async fn post_melt_bolt11_quote(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state
@@ -342,13 +330,10 @@ pub(crate) async fn post_melt_bolt11_quote(
 /// Get melt quote state.
 #[instrument(skip_all)]
 pub(crate) async fn get_check_melt_bolt11_quote(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state
@@ -388,13 +373,10 @@ pub(crate) async fn get_check_melt_bolt11_quote(
 /// Requests tokens to be destroyed and sent out via Lightning.
 #[instrument(skip_all)]
 pub(crate) async fn post_melt_bolt11(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state
@@ -430,13 +412,10 @@ pub(crate) async fn post_melt_bolt11(
 ///
 /// Check whether a secret has been spent already or not.
 pub(crate) async fn post_check(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state
@@ -499,13 +478,10 @@ pub(crate) async fn get_mint_info(
 ///
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
 pub(crate) async fn post_swap(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state
@@ -542,13 +518,10 @@ pub(crate) async fn post_swap(
 ))]
 /// Restores blind signature for a set of outputs.
 pub(crate) async fn post_restore(
-    auth: AuthHeader,
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
-    #[cfg(not(feature = "auth"))]
-    check_unused_auth(&auth);
-
     #[cfg(feature = "auth")]
     {
         state

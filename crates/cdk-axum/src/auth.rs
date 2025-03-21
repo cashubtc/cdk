@@ -1,19 +1,16 @@
 use std::str::FromStr;
 
-use axum::extract::FromRequestParts;
-#[cfg(feature = "auth")]
-use axum::extract::State;
+use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
-#[cfg(feature = "auth")]
 use axum::response::Response;
-#[cfg(feature = "auth")]
 use axum::routing::{get, post};
-#[cfg(feature = "auth")]
 use axum::{Json, Router};
-use cdk::nuts::BlindAuthToken;
-#[cfg(feature = "auth")]
-use cdk::nuts::{AuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintBolt11Response};
+#[cfg(feature = "swagger")]
+use cdk::error::ErrorResponse;
+use cdk::nuts::{
+    AuthToken, BlindAuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintBolt11Response,
+};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "auth")]
@@ -32,7 +29,6 @@ pub enum AuthHeader {
     None,
 }
 
-#[cfg(feature = "auth")]
 impl From<AuthHeader> for Option<AuthToken> {
     fn from(value: AuthHeader) -> Option<AuthToken> {
         match value {
@@ -126,7 +122,6 @@ pub async fn get_auth_keysets(
 /// Get the public keys of the newest blind auth mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
-#[cfg(feature = "auth")]
 pub async fn get_blind_auth_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
@@ -153,7 +148,6 @@ pub async fn get_blind_auth_keys(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-#[cfg(feature = "auth")]
 pub async fn post_mint_auth(
     auth: AuthHeader,
     State(state): State<MintState>,
@@ -187,7 +181,6 @@ pub async fn post_mint_auth(
     Ok(Json(res))
 }
 
-#[cfg(feature = "auth")]
 pub fn create_auth_router(state: MintState) -> Router<MintState> {
     Router::new()
         .nest(
