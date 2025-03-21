@@ -72,7 +72,7 @@ impl Mint {
 
         if keyset.unit != CurrencyUnit::Auth {
             tracing::info!("Blind auth attempted with non auth keyset");
-            return Err(Error::AuthRequired);
+            return Err(Error::BlindAuthFailed);
         }
 
         let keypair = match keyset.keys.get(&Amount::from(1)) {
@@ -94,7 +94,7 @@ impl Mint {
         endpoint: &ProtectedEndpoint,
     ) -> Result<(), Error> {
         if let Some(auth_required) = self.is_protected(endpoint).await? {
-            let auth_token = auth_token.ok_or(Error::AuthRequired)?;
+            let auth_token = auth_token.ok_or(Error::BlindAuthRequired)?;
 
             match (auth_required, auth_token) {
                 (AuthRequired::Clear, AuthToken::ClearAuth(token)) => {
@@ -107,7 +107,8 @@ impl Mint {
 
                     self.check_blind_auth_proof_spendable(auth_proof).await?;
                 }
-                (_, _) => return Err(Error::AuthRequired),
+                (AuthRequired::Blind, _) => return Err(Error::BlindAuthRequired),
+                (AuthRequired::Clear, _) => return Err(Error::ClearAuthRequired),
             }
         }
 

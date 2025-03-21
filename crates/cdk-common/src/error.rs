@@ -58,9 +58,18 @@ pub enum Error {
     /// Multi-Part Payment not supported for unit and method
     #[error("Multi-Part payment is not supported for unit `{0}` and method `{1}`")]
     MppUnitMethodNotSupported(CurrencyUnit, PaymentMethod),
-    /// Auth Required
-    #[error("Auth Required")]
-    AuthRequired,
+    /// Clear Auth Required
+    #[error("Clear Auth Required")]
+    ClearAuthRequired,
+    /// Blind Auth Required
+    #[error("Blind Auth Required")]
+    BlindAuthRequired,
+    /// Clear Auth Failed
+    #[error("Clear Auth Failed")]
+    ClearAuthFailed,
+    /// Blind Auth Failed
+    #[error("Blind Auth Failed")]
+    BlindAuthFailed,
     /// Auth settings undefined
     #[error("Auth settings undefined")]
     AuthSettingsUndefined,
@@ -430,8 +439,23 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
-            Error::AuthRequired => ErrorResponse {
-                code: ErrorCode::AuthRequired,
+            Error::ClearAuthRequired => ErrorResponse {
+                code: ErrorCode::ClearAuthRequired,
+                error: None,
+                detail: None,
+            },
+            Error::ClearAuthFailed => ErrorResponse {
+                code: ErrorCode::ClearAuthFailed,
+                error: None,
+                detail: None,
+            },
+            Error::BlindAuthRequired => ErrorResponse {
+                code: ErrorCode::BlindAuthRequired,
+                error: None,
+                detail: None,
+            },
+            Error::BlindAuthFailed => ErrorResponse {
+                code: ErrorCode::BlindAuthFailed,
                 error: None,
                 detail: None,
             },
@@ -494,7 +518,8 @@ impl From<ErrorResponse> for Error {
             ErrorCode::DuplicateOutputs => Self::DuplicateOutputs,
             ErrorCode::MultipleUnits => Self::MultipleUnits,
             ErrorCode::UnitMismatch => Self::UnitMismatch,
-            ErrorCode::AuthRequired => Self::AuthRequired,
+            ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
+            ErrorCode::BlindAuthRequired => Self::BlindAuthRequired,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -546,8 +571,14 @@ pub enum ErrorCode {
     MultipleUnits,
     /// Input unit does not match output
     UnitMismatch,
-    /// Auth Required
-    AuthRequired,
+    /// Clear Auth Required
+    ClearAuthRequired,
+    /// Clear Auth Failed
+    ClearAuthFailed,
+    /// Blind Auth Required
+    BlindAuthRequired,
+    /// Blind Auth Failed
+    BlindAuthFailed,
     /// Unknown error code
     Unknown(u16),
 }
@@ -577,7 +608,10 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
-            20009 => Self::AuthRequired,
+            30001 => Self::ClearAuthRequired,
+            30002 => Self::ClearAuthFailed,
+            31001 => Self::BlindAuthRequired,
+            31002 => Self::BlindAuthFailed,
             _ => Self::Unknown(code),
         }
     }
@@ -606,7 +640,10 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
-            Self::AuthRequired => 20009,
+            Self::ClearAuthRequired => 30001,
+            Self::ClearAuthFailed => 30002,
+            Self::BlindAuthRequired => 31001,
+            Self::BlindAuthFailed => 31002,
             Self::Unknown(code) => *code,
         }
     }
