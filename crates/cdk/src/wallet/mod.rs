@@ -47,9 +47,11 @@ mod swap;
 pub mod util;
 
 #[cfg(feature = "auth")]
-pub use auth::AuthWallet;
+pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+#[cfg(feature = "auth")]
+pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
 pub use multi_mint_wallet::MultiMintWallet;
 pub use send::{PreparedSend, SendMemo, SendOptions};

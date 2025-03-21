@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cashu::MintInfo;
+use cashu::{MintAuthRequest, MintInfo};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
@@ -12,7 +12,7 @@ use cdk::nuts::{
     MeltQuoteBolt11Request, MeltQuoteState, MintBolt11Request, MintQuoteBolt11Request,
     RestoreRequest, State, SwapRequest,
 };
-use cdk::wallet::{HttpClient, MintConnector, WalletBuilder};
+use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::{fund_wallet, wait_for_mint_to_be_paid};
@@ -39,7 +39,7 @@ async fn test_quote_status_without_auth() {
             .await;
 
         assert!(
-            matches!(quote_res, Err(Error::AuthRequired)),
+            matches!(quote_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             quote_res
         );
@@ -52,7 +52,7 @@ async fn test_quote_status_without_auth() {
             .await;
 
         assert!(
-            matches!(quote_res, Err(Error::AuthRequired)),
+            matches!(quote_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             quote_res
         );
@@ -73,7 +73,7 @@ async fn test_mint_without_auth() {
         let quote_res = client.post_mint_quote(request).await;
 
         assert!(
-            matches!(quote_res, Err(Error::AuthRequired)),
+            matches!(quote_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             quote_res
         );
@@ -89,7 +89,7 @@ async fn test_mint_without_auth() {
         let mint_res = client.post_mint(request).await;
 
         assert!(
-            matches!(mint_res, Err(Error::AuthRequired)),
+            matches!(mint_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             mint_res
         );
@@ -101,11 +101,26 @@ async fn test_mint_without_auth() {
             .await;
 
         assert!(
-            matches!(mint_res, Err(Error::AuthRequired)),
+            matches!(mint_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             mint_res
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_bat_without_cat() {
+    let client = AuthHttpClient::new(MintUrl::from_str(MINT_URL).expect("valid mint url"), None);
+
+    let res = client
+        .post_mint_blind_auth(MintAuthRequest { outputs: vec![] })
+        .await;
+
+    assert!(
+        matches!(res, Err(Error::ClearAuthRequired)),
+        "Expected AuthRequired error, got {:?}",
+        res
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -120,7 +135,7 @@ async fn test_swap_without_auth() {
     let quote_res = client.post_swap(request).await;
 
     assert!(
-        matches!(quote_res, Err(Error::AuthRequired)),
+        matches!(quote_res, Err(Error::BlindAuthRequired)),
         "Expected AuthRequired error, got {:?}",
         quote_res
     );
@@ -141,7 +156,7 @@ async fn test_melt_without_auth() {
         let quote_res = client.post_melt_quote(request).await;
 
         assert!(
-            matches!(quote_res, Err(Error::AuthRequired)),
+            matches!(quote_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             quote_res
         );
@@ -158,7 +173,7 @@ async fn test_melt_without_auth() {
         let quote_res = client.post_melt_quote(request).await;
 
         assert!(
-            matches!(quote_res, Err(Error::AuthRequired)),
+            matches!(quote_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             quote_res
         );
@@ -175,7 +190,7 @@ async fn test_melt_without_auth() {
         let melt_res = client.post_melt(request).await;
 
         assert!(
-            matches!(melt_res, Err(Error::AuthRequired)),
+            matches!(melt_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             melt_res
         );
@@ -188,7 +203,7 @@ async fn test_melt_without_auth() {
             .await;
 
         assert!(
-            matches!(melt_res, Err(Error::AuthRequired)),
+            matches!(melt_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             melt_res
         );
@@ -204,7 +219,7 @@ async fn test_check_without_auth() {
     let quote_res = client.post_check_state(request).await;
 
     assert!(
-        matches!(quote_res, Err(Error::AuthRequired)),
+        matches!(quote_res, Err(Error::BlindAuthRequired)),
         "Expected AuthRequired error, got {:?}",
         quote_res
     );
@@ -219,7 +234,7 @@ async fn test_restore_without_auth() {
     let restore_res = client.post_restore(request).await;
 
     assert!(
-        matches!(restore_res, Err(Error::AuthRequired)),
+        matches!(restore_res, Err(Error::BlindAuthRequired)),
         "Expected AuthRequired error, got {:?}",
         restore_res
     );
@@ -541,7 +556,7 @@ async fn test_melt_with_invalid_auth() {
         let quote_res = client.post_mint_quote(request).await;
 
         assert!(
-            matches!(quote_res, Err(Error::AuthRequired)),
+            matches!(quote_res, Err(Error::BlindAuthRequired)),
             "Expected AuthRequired error, got {:?}",
             quote_res
         );
