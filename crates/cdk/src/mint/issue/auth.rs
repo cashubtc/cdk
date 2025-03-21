@@ -16,7 +16,7 @@ impl Mint {
             cat
         } else {
             tracing::debug!("Received blind auth mint without cat");
-            return Err(Error::AuthRequired);
+            return Err(Error::ClearAuthRequired);
         };
 
         self.verify_clear_auth(cat).await?;

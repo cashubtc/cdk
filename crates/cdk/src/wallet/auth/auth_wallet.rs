@@ -334,7 +334,7 @@ impl AuthWallet {
             AuthToken::ClearAuth(cat) => {
                 if cat.is_empty() {
                     tracing::warn!("Auth Cat is not set");
-                    return Err(Error::AuthRequired);
+                    return Err(Error::ClearAuthRequired);
                 }
 
                 if let Err(err) = self.verify_cat(auth_token).await {
@@ -357,8 +357,8 @@ impl AuthWallet {
                 }
             }
             AuthToken::BlindAuth(_) => {
-                tracing::warn!("Blind auth set as client cat");
-                return Err(Error::AuthRequired);
+                tracing::error!("Blind auth set as client cat");
+                return Err(Error::ClearAuthFailed);
             }
         }
 
