@@ -37,7 +37,6 @@ pub struct ReceiveSubCommand {
 
 pub async fn receive(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
     sub_command_args: &ReceiveSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
@@ -64,7 +63,6 @@ pub async fn receive(
         Some(token_str) => {
             receive_token(
                 multi_mint_wallet,
-                seed,
                 token_str,
                 &signing_keys,
                 &sub_command_args.preimage,
@@ -105,7 +103,6 @@ pub async fn receive(
             for token_str in &tokens {
                 match receive_token(
                     multi_mint_wallet,
-                    seed,
                     token_str,
                     &signing_keys,
                     &sub_command_args.preimage,
@@ -132,7 +129,6 @@ pub async fn receive(
 
 async fn receive_token(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
     token_str: &str,
     signing_keys: &[SecretKey],
     preimage: &[String],
@@ -148,7 +144,6 @@ async fn receive_token(
             .add_wallet(
                 &mint_url.to_string(),
                 token.unit().unwrap_or_default(),
-                seed,
                 None,
             )
             .await?;

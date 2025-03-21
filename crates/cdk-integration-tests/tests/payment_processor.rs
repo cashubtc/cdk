@@ -35,7 +35,7 @@ async fn test_regtest_mint() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -72,7 +72,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -121,12 +121,11 @@ async fn test_pay_invoice_twice() -> Result<()> {
         return Ok(());
     }
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &seed,
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 

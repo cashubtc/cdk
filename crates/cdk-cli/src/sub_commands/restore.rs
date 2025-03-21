@@ -18,7 +18,6 @@ pub struct RestoreSubCommand {
 
 pub async fn restore(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
     sub_command_args: &RestoreSubCommand,
 ) -> Result<()> {
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
@@ -31,7 +30,7 @@ pub async fn restore(
         Some(wallet) => wallet.clone(),
         None => {
             multi_mint_wallet
-                .add_wallet(&mint_url.to_string(), unit, seed, None)
+                .add_wallet(&mint_url.to_string(), unit, None)
                 .await?
         }
     };

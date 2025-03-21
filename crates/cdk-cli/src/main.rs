@@ -152,6 +152,7 @@ async fn main() -> Result<()> {
             mnemonic
         }
     };
+    let seed = Arc::new(mnemonic.to_seed_normalized(""));
 
     let mut wallets: Vec<Wallet> = Vec::new();
 
@@ -162,7 +163,7 @@ async fn main() -> Result<()> {
             &mint_url.to_string(),
             cdk::nuts::CurrencyUnit::Sat,
             localstore.clone(),
-            &mnemonic.to_seed_normalized(""),
+            seed.clone(),
             None,
         )?;
         if let Some(proxy_url) = args.proxy.as_ref() {
@@ -173,7 +174,7 @@ async fn main() -> Result<()> {
         wallets.push(wallet);
     }
 
-    let multi_mint_wallet = MultiMintWallet::new(localstore, wallets);
+    let multi_mint_wallet = MultiMintWallet::new(localstore, seed.clone(), wallets);
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
@@ -184,13 +185,7 @@ async fn main() -> Result<()> {
             sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Receive(sub_command_args) => {
-            sub_commands::receive::receive(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                sub_command_args,
-                &work_dir,
-            )
-            .await
+            sub_commands::receive::receive(&multi_mint_wallet, sub_command_args, &work_dir).await
         }
         Commands::Send(sub_command_args) => {
             sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
@@ -202,12 +197,7 @@ async fn main() -> Result<()> {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
-            sub_commands::mint::mint(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                sub_command_args,
-            )
-            .await
+            sub_commands::mint::mint(&multi_mint_wallet, sub_command_args).await
         }
         Commands::MintPending => {
             sub_commands::pending_mints::mint_pending(&multi_mint_wallet).await
@@ -216,12 +206,7 @@ async fn main() -> Result<()> {
             sub_commands::burn::burn(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
-            sub_commands::restore::restore(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                sub_command_args,
-            )
-            .await
+            sub_commands::restore::restore(&multi_mint_wallet, sub_command_args).await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
             sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)

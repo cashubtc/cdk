@@ -6,7 +6,7 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload, SecretKey, Sp
 use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
-use rand::Rng;
+use rand::random;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -21,10 +21,10 @@ async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // Initialize the memory store for the wallet
-    let localstore = memory::empty().await?;
+    let localstore = Arc::new(memory::empty().await?);
 
     // Generate a random seed for the wallet
-    let seed = rand::thread_rng().gen::<[u8; 32]>();
+    let seed = Arc::new(random::<[u8; 32]>());
 
     // Define the mint URL and currency unit
     let mint_url = "https://testnut.cashu.space";
@@ -32,7 +32,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(100);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, Some(1))?;
+    let wallet = Wallet::new(mint_url, unit, localstore, seed, Some(1))?;
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;

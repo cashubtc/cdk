@@ -23,7 +23,7 @@ async fn test_fake_tokens_pending() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -63,7 +63,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -126,7 +126,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -171,7 +171,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -231,7 +231,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -292,7 +292,7 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -330,7 +330,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -418,7 +418,7 @@ async fn test_fake_mint_with_witness() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
@@ -442,7 +442,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -478,7 +478,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -518,7 +518,7 @@ async fn test_fake_mint_inflated() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -570,7 +570,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -586,7 +586,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -640,7 +640,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -654,7 +654,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -744,7 +744,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -763,7 +763,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -864,7 +864,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -878,7 +878,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
     let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
@@ -919,7 +919,7 @@ async fn test_fake_mint_swap_inflated() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -961,7 +961,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -1034,7 +1034,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -1110,7 +1110,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 
@@ -1184,7 +1184,7 @@ async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
         None,
     )?;
 

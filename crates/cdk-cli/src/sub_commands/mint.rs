@@ -30,7 +30,6 @@ pub struct MintSubCommand {
 
 pub async fn mint(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
     sub_command_args: &MintSubCommand,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
@@ -44,7 +43,7 @@ pub async fn mint(
         Some(wallet) => wallet.clone(),
         None => {
             multi_mint_wallet
-                .add_wallet(&mint_url.to_string(), unit, seed, None)
+                .add_wallet(&mint_url.to_string(), unit, None)
                 .await?
         }
     };

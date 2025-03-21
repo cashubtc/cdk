@@ -31,12 +31,12 @@ use cdk_sqlite::wallet::memory;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::Wallet;
 use cdk::Amount;
-use rand::Rng;
+use rand::random;
 use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    let seed = rand::thread_rng().gen::<[u8; 32]>();
+    let seed = Arc::new(random::<[u8; 32]>());
 
     let mint_url = "https://testnut.cashu.space";
     let unit = CurrencyUnit::Sat;
@@ -44,7 +44,7 @@ async fn main() {
 
     let localstore = memory::empty().await.unwrap();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed);
 
     let quote = wallet.mint_quote(amount).await.unwrap();
 

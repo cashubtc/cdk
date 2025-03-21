@@ -123,15 +123,15 @@ impl Wallet {
     /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
-    /// use rand::Rng;
+    /// use rand::{random, Rng};
     ///
     /// async fn test() -> anyhow::Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let seed = Arc::new(random::<[u8; 32]>());
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = memory::empty().await?;
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None);
     ///     Ok(())
     /// }
     /// ```
@@ -139,10 +139,10 @@ impl Wallet {
         mint_url: &str,
         unit: CurrencyUnit,
         localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
-        seed: &[u8],
+        seed: Arc<[u8]>,
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {
-        let xpriv = Xpriv::new_master(Network::Bitcoin, seed).expect("Could not create master key");
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &seed).expect("Could not create xpriv");
         let mint_url = MintUrl::from_str(mint_url)?;
 
         let http_client = Arc::new(HttpClient::new(mint_url.clone()));
