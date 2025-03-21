@@ -173,7 +173,7 @@ async fn main() -> Result<()> {
         wallets.push(wallet);
     }
 
-    let multi_mint_wallet = MultiMintWallet::new(wallets);
+    let multi_mint_wallet = MultiMintWallet::new(localstore, wallets);
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
@@ -186,7 +186,6 @@ async fn main() -> Result<()> {
         Commands::Receive(sub_command_args) => {
             sub_commands::receive::receive(
                 &multi_mint_wallet,
-                localstore,
                 &mnemonic.to_seed_normalized(""),
                 sub_command_args,
                 &work_dir,
@@ -206,7 +205,6 @@ async fn main() -> Result<()> {
             sub_commands::mint::mint(
                 &multi_mint_wallet,
                 &mnemonic.to_seed_normalized(""),
-                localstore,
                 sub_command_args,
             )
             .await
@@ -221,7 +219,6 @@ async fn main() -> Result<()> {
             sub_commands::restore::restore(
                 &multi_mint_wallet,
                 &mnemonic.to_seed_normalized(""),
-                localstore,
                 sub_command_args,
             )
             .await

@@ -7,6 +7,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::Result;
+use cdk_common::database;
+use cdk_common::database::WalletDatabase;
 use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -23,14 +26,20 @@ use crate::{ensure_cdk, Amount, Wallet};
 /// Multi Mint Wallet
 #[derive(Debug, Clone)]
 pub struct MultiMintWallet {
+    /// Storage backend
+    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
     /// Wallets
     pub wallets: Arc<Mutex<BTreeMap<WalletKey, Wallet>>>,
 }
 
 impl MultiMintWallet {
-    /// New Multimint wallet
-    pub fn new(wallets: Vec<Wallet>) -> Self {
+    /// Create a new [MultiMintWallet] with initial wallets
+    pub fn new(
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        wallets: Vec<Wallet>,
+    ) -> Self {
         Self {
+            localstore,
             wallets: Arc::new(Mutex::new(
                 wallets
                     .into_iter()
@@ -41,13 +50,27 @@ impl MultiMintWallet {
     }
 
     /// Add wallet to MultiMintWallet
-    #[instrument(skip(self, wallet))]
-    pub async fn add_wallet(&self, wallet: Wallet) {
+    pub async fn add_wallet(
+        &self,
+        mint_url: &str,
+        unit: CurrencyUnit,
+        seed: &[u8],
+        target_proof_count: Option<usize>,
+    ) -> Result<Wallet> {
+        let wallet = Wallet::new(
+            mint_url,
+            unit,
+            self.localstore.clone(),
+            seed,
+            target_proof_count,
+        )?;
+
         let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit.clone());
 
         let mut wallets = self.wallets.lock().await;
+        wallets.insert(wallet_key, wallet.clone());
 
-        wallets.insert(wallet_key, wallet);
+        Ok(wallet)
     }
 
     /// Remove Wallet from MultiMintWallet
