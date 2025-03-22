@@ -5,9 +5,12 @@ use tracing::instrument;
 
 use super::{Error, Mint};
 
+/// Verification result
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
+    /// Value in request
     pub amount: Amount,
+    /// Unit of request
     pub unit: Option<CurrencyUnit>,
 }
 

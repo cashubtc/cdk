@@ -8,8 +8,7 @@ use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
-use cdk::wallet::client::HttpClient;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
@@ -19,6 +18,7 @@ use url::Url;
 
 mod nostr_storage;
 mod sub_commands;
+mod token_storage;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 
@@ -83,6 +83,12 @@ enum Commands {
     PayRequest(sub_commands::pay_request::PayRequestSubCommand),
     /// Create Payment request
     CreateRequest(sub_commands::create_request::CreateRequestSubCommand),
+    /// Mint blind auth proofs
+    MintBlindAuth(sub_commands::mint_blind_auth::MintBlindAuthSubCommand),
+    /// Cat login with username/password
+    CatLogin(sub_commands::cat_login::CatLoginSubCommand),
+    /// Cat login with device code flow
+    CatDeviceLogin(sub_commands::cat_device_login::CatDeviceLoginSubCommand),
 }
 
 #[tokio::main]
@@ -158,17 +164,18 @@ async fn main() -> Result<()> {
     let mints = localstore.get_mints().await?;
 
     for (mint_url, _) in mints {
-        let mut wallet = Wallet::new(
-            &mint_url.to_string(),
-            cdk::nuts::CurrencyUnit::Sat,
-            localstore.clone(),
-            &mnemonic.to_seed_normalized(""),
-            None,
-        )?;
+        let mut builder = WalletBuilder::new()
+            .mint_url(mint_url.clone())
+            .unit(cdk::nuts::CurrencyUnit::Sat)
+            .localstore(localstore.clone())
+            .seed(&mnemonic.to_seed_normalized(""));
+
         if let Some(proxy_url) = args.proxy.as_ref() {
             let http_client = HttpClient::with_proxy(mint_url, proxy_url.clone(), None, true)?;
-            wallet.set_client(http_client);
+            builder = builder.client(http_client);
         }
+
+        let wallet = builder.build()?;
 
         wallets.push(wallet);
     }
@@ -241,6 +248,36 @@ async fn main() -> Result<()> {
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::MintBlindAuth(sub_command_args) => {
+            sub_commands::mint_blind_auth::mint_blind_auth(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+                &work_dir,
+            )
+            .await
+        }
+        Commands::CatLogin(sub_command_args) => {
+            sub_commands::cat_login::cat_login(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+                &work_dir,
+            )
+            .await
+        }
+        Commands::CatDeviceLogin(sub_command_args) => {
+            sub_commands::cat_device_login::cat_device_login(
+                &multi_mint_wallet,
+                &mnemonic.to_seed_normalized(""),
+                localstore,
+                sub_command_args,
+                &work_dir,
+            )
+            .await
         }
     }
 }

@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let localstore = memory::empty().await?;
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;

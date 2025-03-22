@@ -8,6 +8,8 @@ mod info;
 mod ln;
 mod mint_info;
 
+#[cfg(feature = "auth")]
+mod auth;
 #[cfg(feature = "cln")]
 mod cln;
 #[cfg(feature = "fakewallet")]
@@ -25,6 +27,8 @@ use std::env;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Result};
+#[cfg(feature = "auth")]
+pub use auth::*;
 #[cfg(feature = "cln")]
 pub use cln::*;
 pub use common::*;
@@ -53,6 +57,25 @@ impl Settings {
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
         self.ln = self.ln.clone().from_env();
+
+        #[cfg(feature = "auth")]
+        {
+            // Check env vars for auth config even if None
+            let auth = self.auth.clone().unwrap_or_default().from_env();
+
+            // Only set auth if env vars are present and have non-default values
+            if auth.openid_discovery != String::default()
+                || auth.openid_client_id != String::default()
+                || auth.mint_max_bat != 0
+                || auth.enabled_mint
+                || auth.enabled_melt
+                || auth.enabled_swap
+            {
+                self.auth = Some(auth);
+            } else {
+                self.auth = None;
+            }
+        }
 
         #[cfg(feature = "management-rpc")]
         {
