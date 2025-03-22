@@ -14,8 +14,6 @@ use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
-#[cfg(feature = "mint")]
-use crate::mint::{self, MeltQuote};
 use crate::nuts::MeltQuoteState;
 use crate::{Amount, Bolt11Invoice};
 
@@ -222,24 +220,6 @@ impl From<MeltQuoteBolt11Response<Uuid>> for MeltQuoteBolt11Response<String> {
     }
 }
 
-#[cfg(feature = "mint")]
-impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
-    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
-        MeltQuoteBolt11Response {
-            quote: melt_quote.id,
-            payment_preimage: None,
-            change: None,
-            state: melt_quote.state,
-            paid: Some(melt_quote.state == MeltQuoteState::Paid),
-            expiry: melt_quote.expiry,
-            amount: melt_quote.amount,
-            fee_reserve: melt_quote.fee_reserve,
-            request: None,
-            unit: Some(melt_quote.unit.clone()),
-        }
-    }
-}
-
 // A custom deserializer is needed until all mints
 // update some will return without the required state.
 impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
@@ -331,25 +311,6 @@ impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
             request,
             unit,
         })
-    }
-}
-
-#[cfg(feature = "mint")]
-impl From<mint::MeltQuote> for MeltQuoteBolt11Response<Uuid> {
-    fn from(melt_quote: mint::MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
-        let paid = melt_quote.state == QuoteState::Paid;
-        MeltQuoteBolt11Response {
-            quote: melt_quote.id,
-            amount: melt_quote.amount,
-            fee_reserve: melt_quote.fee_reserve,
-            paid: Some(paid),
-            state: melt_quote.state,
-            expiry: melt_quote.expiry,
-            payment_preimage: melt_quote.payment_preimage,
-            change: None,
-            request: Some(melt_quote.request.clone()),
-            unit: Some(melt_quote.unit.clone()),
-        }
     }
 }
 
