@@ -1,6 +1,7 @@
 //! Mint types
 
 use bitcoin::bip32::DerivationPath;
+use cashu::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -146,6 +147,55 @@ impl From<MintKeySetInfo> for KeySetInfo {
             unit: keyset_info.unit,
             active: keyset_info.active,
             input_fee_ppk: keyset_info.input_fee_ppk,
+        }
+    }
+}
+
+impl From<MintQuote> for MintQuoteBolt11Response<Uuid> {
+    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<Uuid> {
+        MintQuoteBolt11Response {
+            quote: mint_quote.id,
+            request: mint_quote.request,
+            state: mint_quote.state,
+            expiry: Some(mint_quote.expiry),
+            pubkey: mint_quote.pubkey,
+            amount: Some(mint_quote.amount),
+            unit: Some(mint_quote.unit.clone()),
+        }
+    }
+}
+
+impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
+        MeltQuoteBolt11Response {
+            quote: melt_quote.id,
+            payment_preimage: None,
+            change: None,
+            state: melt_quote.state,
+            paid: Some(melt_quote.state == MeltQuoteState::Paid),
+            expiry: melt_quote.expiry,
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
+            request: None,
+            unit: Some(melt_quote.unit.clone()),
+        }
+    }
+}
+
+impl From<MeltQuote> for MeltQuoteBolt11Response<Uuid> {
+    fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
+        let paid = melt_quote.state == MeltQuoteState::Paid;
+        MeltQuoteBolt11Response {
+            quote: melt_quote.id,
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
+            paid: Some(paid),
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            payment_preimage: melt_quote.payment_preimage,
+            change: None,
+            request: Some(melt_quote.request.clone()),
+            unit: Some(melt_quote.unit.clone()),
         }
     }
 }

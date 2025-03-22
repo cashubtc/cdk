@@ -1,8 +1,6 @@
 //! CDK common types and traits
 pub mod amount;
 pub mod dhke;
-#[cfg(feature = "mint")]
-pub mod mint;
 pub mod mint_url;
 pub mod nuts;
 pub mod secret;
