@@ -1,0 +1,24 @@
+[package]
+name = "cdk-signatory"
+version = "0.9.2"
+edition = "2021"
+description = "CDK signatory default implementation"
+
+[features]
+default = []
+grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
+
+[dependencies]
+async-trait = "0.1.83"
+cashu.workspace = true
+bitcoin.workspace = true
+cdk-common = { workspace = true, default-features=false, features = [
+    "mint",
+] }
+tracing.workspace = true
+tokio.workspace = true
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+
+[build-dependencies]
+tonic-build = { workspace = true, features = ["prost"], optional = true }

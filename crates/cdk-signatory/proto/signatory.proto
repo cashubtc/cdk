@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package signatory;
+
+service Signatory {
+    rpc BlindSign(BlindedMessage) returns (BlindSignature);
+
+    rpc VerifyProof(Proof) returns (Empty);
+
+    rpc AuthKeysets(Empty) returns (VecSignatoryKeySet);
+
+    rpc Keysets(Empty) returns (VecSignatoryKeySet);
+
+    rpc RotateKeyset(RotateKeyArguments) returns (MintKeySetInfo);
+}
+
+message Empty {}
+
+message VecSignatoryKeySet {
+    repeated SignatoryKeySet keysets = 1;
+
+    optional bool is_none = 2;
+}
+
+message SignatoryKeySet {
+    KeySet key = 1;
+    MintKeySetInfo info = 2;
+}
+
+message KeySet {
+    Id id = 1;
+    CurrencyUnit unit = 2;
+    Keys keys = 3;
+}
+
+message Keys {
+    map<uint64, bytes> keys = 1;
+}
+
+
+message RotateKeyArguments {
+    CurrencyUnit unit = 1;
+    uint32 derivation_path_index = 2;
+    uint32 max_order = 3;
+    uint64 input_fee_ppk = 4;
+}
+
+message CustomDerivationPath {
+    CurrencyUnit unit = 1;
+    repeated DerivationPath derivation_path = 2;
+}
+
+enum CurrencyUnitType {
+  CURRENCY_UNIT_SAT = 0;
+  CURRENCY_UNIT_MSAT = 1;
+  CURRENCY_UNIT_USD = 2;
+  CURRENCY_UNIT_EUR = 3;
+}
+
+message CurrencyUnit {
+    oneof currency_unit {
+        CurrencyUnitType unit = 1;
+        string custom_unit = 2;
+    }
+}
+
+message Proof {
+    uint64 amount = 1;
+    string keyset_id = 2;
+    string secret = 3;
+    bytes C = 4;
+    optional Witness witness = 5;
+    optional ProofDLEQ dleq = 6;
+}
+
+message ProofDLEQ {
+    bytes e = 1;
+    bytes s = 2;
+    bytes r = 3;
+}
+
+message BlindSignature {
+    uint64 amount = 1;
+    string keyset_id = 2;
+    bytes blinded_secret = 3;
+    optional BlindSignatureDLEQ dleq = 4;
+}
+
+message BlindSignatureDLEQ {
+    bytes e = 1;
+    bytes s = 2;
+}
+
+message KeySetInfo {
+    Id id = 1;
+    CurrencyUnit unit = 2;
+    bool active = 3;
+    uint64 input_fee_ppk = 4;
+}
+
+// Witness type
+message Witness {
+    oneof witness_type {
+        P2PKWitness p2pk_witness = 1;
+        HTLCWitness htlc_witness = 2;
+    }
+}
+
+// P2PKWitness type
+message P2PKWitness {
+    // List of signatures
+    repeated string signatures = 1;
+}
+
+// HTLCWitness type
+message HTLCWitness {
+    // Preimage
+    string preimage = 1;
+
+    // List of signatures
+    repeated string signatures = 2;
+}
+
+message BlindedMessage {
+    uint64 amount = 1;
+    string keyset_id = 2;
+    bytes blinded_secret = 3;
+    optional Witness witness = 4; // This field is optional by default in proto3
+}
+
+message KeysResponse {
+    repeated KeySet keysets = 1;
+}
+
+
+message Id {
+    bytes inner = 1;
+}
+
+message DerivationPath {
+    oneof child_number {
+        uint32 normal = 1;
+        uint32 hardened = 2;
+    }
+}
+
+message MintKeySetInfo {
+    Id id = 1;
+    CurrencyUnit unit = 2;
+    bool active = 3;
+    uint64 valid_from = 4;
+    optional uint64 valid_to = 5;
+    repeated DerivationPath derivation_path = 6;
+    optional uint32 derivation_path_index = 7;
+    uint32 max_order = 8;
+    uint64 input_fee_ppk = 9;
+}

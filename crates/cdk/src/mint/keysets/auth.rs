@@ -2,7 +2,7 @@
 
 use tracing::instrument;
 
-use crate::mint::{CurrencyUnit, Id, KeySetInfo, KeysResponse, KeysetResponse};
+use crate::mint::{KeysResponse, KeysetResponse};
 use crate::{Error, Mint};
 
 impl Mint {
@@ -10,56 +10,28 @@ impl Mint {
     /// clients
     #[instrument(skip_all)]
     pub async fn auth_pubkeys(&self) -> Result<KeysResponse, Error> {
-        let active_keyset_id = self
-            .auth_localstore
-            .as_ref()
-            .ok_or(Error::AuthLocalstoreUndefined)?
-            .get_active_keyset_id()
+        let key = self
+            .signatory
+            .auth_keysets()
             .await?
-            .ok_or(Error::AmountKey)?;
-
-        self.ensure_blind_auth_keyset_loaded(&active_keyset_id)
-            .await?;
-
-        let keysets = self.keysets.read().await;
+            .ok_or(Error::AuthLocalstoreUndefined)?
+            .pop()
+            .ok_or(Error::AuthLocalstoreUndefined)?;
 
         Ok(KeysResponse {
-            keysets: vec![keysets
-                .get(&active_keyset_id)
-                .ok_or(Error::KeysetUnknown(active_keyset_id))?
-                .clone()
-                .into()],
+            keysets: vec![key.key],
         })
     }
 
     /// Return a list of auth keysets
     #[instrument(skip_all)]
     pub async fn auth_keysets(&self) -> Result<KeysetResponse, Error> {
-        let keysets = self
-            .auth_localstore
-            .clone()
-            .ok_or(Error::AuthLocalstoreUndefined)?
-            .get_keyset_infos()
-            .await?;
-        let active_keysets: Id = self
-            .auth_localstore
-            .as_ref()
-            .ok_or(Error::AuthLocalstoreUndefined)?
-            .get_active_keyset_id()
+        self.signatory
+            .auth_keysets()
             .await?
-            .ok_or(Error::NoActiveKeyset)?;
-
-        let keysets = keysets
-            .into_iter()
-            .filter(|k| k.unit == CurrencyUnit::Auth)
-            .map(|k| KeySetInfo {
-                id: k.id,
-                unit: k.unit,
-                active: active_keysets == k.id,
-                input_fee_ppk: k.input_fee_ppk,
+            .map(|all_keysets| KeysetResponse {
+                keysets: all_keysets.into_iter().map(|k| k.info.into()).collect(),
             })
-            .collect();
-
-        Ok(KeysetResponse { keysets })
+            .ok_or(Error::AuthLocalstoreUndefined)
     }
 }
