@@ -18,6 +18,7 @@
 - Unifies and optimizes the proof selection algorithm to use Wallet::select_proofs ([davidcaseria]).
 - Wallet::send now requires a PreparedSend ([davidcaseria]).
 - WalletDatabase proof state update functions have been consolidated into update_proofs_state ([davidcaseria]).
+- Moved `MintQuote` and `MeltQuote` from `cashu` to `cdk-common` ([thesimplekid]).
 
 ### Added
 - Added redb feature to mintd in order to meet MSRV target ([thesimplekid]).
