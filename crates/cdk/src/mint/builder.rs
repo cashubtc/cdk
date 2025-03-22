@@ -9,6 +9,7 @@ use cdk_common::database::{self, MintDatabase};
 use cdk_common::error::Error;
 use cdk_common::payment::Bolt11Settings;
 use cdk_common::{nut21, nut22};
+use cdk_signatory::signatory::Signatory;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
@@ -45,6 +46,7 @@ pub struct MintBuilder {
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     // protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     openid_discovery: Option<String>,
+    signatory: Option<Arc<dyn Signatory + Sync + Send + 'static>>,
 }
 
 impl MintBuilder {
@@ -67,6 +69,18 @@ impl MintBuilder {
         builder
     }
 
+    /// Set signatory service
+    pub fn with_signatory(mut self, signatory: Arc<dyn Signatory + Sync + Send + 'static>) -> Self {
+        self.signatory = Some(signatory);
+        self
+    }
+
+    /// Set seed
+    pub fn with_seed(mut self, seed: Vec<u8>) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     /// Set localstore
     pub fn with_localstore(
         mut self,
@@ -86,15 +100,9 @@ impl MintBuilder {
         self
     }
 
-    /// Set Openid discovery url    
+    /// Set Openid discovery url
     pub fn with_openid_discovery(mut self, openid_discovery: String) -> Self {
         self.openid_discovery = Some(openid_discovery);
-        self
-    }
-
-    /// Set seed
-    pub fn with_seed(mut self, seed: Vec<u8>) -> Self {
-        self.seed = Some(seed);
         self
     }
 
@@ -313,8 +321,25 @@ impl MintBuilder {
             .localstore
             .clone()
             .ok_or(anyhow!("Localstore not set"))?;
-        let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
         let ln = self.ln.clone().ok_or(anyhow!("Ln backends not set"))?;
+
+        let signatory = if let Some(signatory) = self.signatory.as_ref() {
+            signatory.clone()
+        } else {
+            let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
+            let in_memory_signatory = cdk_signatory::memory::Memory::new(
+                localstore.clone(),
+                None,
+                seed,
+                self.supported_units.clone(),
+                HashMap::new(),
+            )
+            .await?;
+
+            Arc::new(cdk_signatory::service::Service::new(Arc::new(
+                in_memory_signatory,
+            )))
+        };
 
         #[cfg(feature = "auth")]
         if let Some(openid_discovery) = &self.openid_discovery {
@@ -324,12 +349,10 @@ impl MintBuilder {
                 .ok_or(anyhow!("Auth localstore not set"))?;
 
             return Ok(Mint::new_with_auth(
-                seed,
+                signatory,
                 localstore,
                 auth_localstore,
                 ln,
-                self.supported_units.clone(),
-                self.custom_paths.clone(),
                 openid_discovery.clone(),
             )
             .await?);
@@ -342,14 +365,7 @@ impl MintBuilder {
             ));
         }
 
-        Ok(Mint::new(
-            seed,
-            localstore,
-            ln,
-            self.supported_units.clone(),
-            self.custom_paths.clone(),
-        )
-        .await?)
+        Ok(Mint::new(signatory, localstore, ln).await?)
     }
 }
 
