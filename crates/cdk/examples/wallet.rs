@@ -7,13 +7,13 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::{SendOptions, Wallet};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
-use rand::Rng;
+use rand::random;
 use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate a random seed for the wallet
-    let seed = rand::thread_rng().gen::<[u8; 32]>();
+    let seed = Arc::new(random::<[u8; 32]>());
 
     // Mint URL and currency unit
     let mint_url = "https://testnut.cashu.space";
@@ -21,10 +21,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let amount = Amount::from(10);
 
     // Initialize the memory store
-    let localstore = memory::empty().await?;
+    let localstore = Arc::new(memory::empty().await?);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;
