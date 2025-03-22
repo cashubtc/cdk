@@ -153,7 +153,6 @@ pub async fn post_mint_auth(
     State(state): State<MintState>,
     Json(payload): Json<MintAuthRequest>,
 ) -> Result<Json<MintBolt11Response>, Response> {
-    tracing::debug!("Auth Header: {:?}", auth);
     let auth_token = match auth {
         AuthHeader::Clear(cat) => {
             if cat.is_empty() {

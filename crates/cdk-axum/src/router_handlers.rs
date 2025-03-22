@@ -82,6 +82,7 @@ post_cache_wrapper!(
 /// Get the public keys of the newest mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
+#[instrument(skip_all)]
 pub(crate) async fn get_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
@@ -108,6 +109,7 @@ pub(crate) async fn get_keys(
 /// Get the public keys of a specific keyset
 ///
 /// Get the public keys of the mint from a specific keyset ID.
+#[instrument(skip_all, fields(keyset_id = ?keyset_id))]
 pub(crate) async fn get_keyset_pubkeys(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
@@ -132,6 +134,7 @@ pub(crate) async fn get_keyset_pubkeys(
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
+#[instrument(skip_all)]
 pub(crate) async fn get_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KeysetResponse>, Response> {
@@ -156,6 +159,7 @@ pub(crate) async fn get_keysets(
 /// Request a quote for minting of new tokens
 ///
 /// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
+#[instrument(skip_all, fields(amount = ?payload.amount))]
 pub(crate) async fn post_mint_bolt11_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -195,6 +199,7 @@ pub(crate) async fn post_mint_bolt11_quote(
 /// Get mint quote by ID
 ///
 /// Get mint quote state.
+#[instrument(skip_all, fields(quote_id = ?quote_id))]
 pub(crate) async fn get_check_mint_bolt11_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -224,6 +229,7 @@ pub(crate) async fn get_check_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
+#[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     State(state): State<MintState>,
     ws: WebSocketUpgrade,
@@ -246,6 +252,7 @@ pub(crate) async fn ws_handler(
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
+#[instrument(skip_all, fields(quote_id = ?payload.quote))]
 pub(crate) async fn post_mint_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -328,7 +335,7 @@ pub(crate) async fn post_melt_bolt11_quote(
 /// Get melt quote by ID
 ///
 /// Get melt quote state.
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(quote_id = ?quote_id))]
 pub(crate) async fn get_check_melt_bolt11_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -411,6 +418,7 @@ pub(crate) async fn post_melt_bolt11(
 /// Check whether a proof is spent already or is pending in a transaction
 ///
 /// Check whether a secret has been spent already or not.
+#[instrument(skip_all, fields(y_count = ?payload.ys.len()))]
 pub(crate) async fn post_check(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -445,6 +453,7 @@ pub(crate) async fn post_check(
     )
 ))]
 /// Mint information, operator contact information, and other info
+#[instrument(skip_all)]
 pub(crate) async fn get_mint_info(
     State(state): State<MintState>,
 ) -> Result<Json<MintInfo>, Response> {
@@ -477,6 +486,7 @@ pub(crate) async fn get_mint_info(
 /// Requests a set of Proofs to be swapped for another set of BlindSignatures.
 ///
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
+#[instrument(skip_all, fields(inputs_count = ?payload.inputs.len()))]
 pub(crate) async fn post_swap(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -517,6 +527,7 @@ pub(crate) async fn post_swap(
     )
 ))]
 /// Restores blind signature for a set of outputs.
+#[instrument(skip_all, fields(outputs_count = ?payload.outputs.len()))]
 pub(crate) async fn post_restore(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
@@ -542,6 +553,7 @@ pub(crate) async fn post_restore(
     Ok(Json(restore_response))
 }
 
+#[instrument(skip_all)]
 pub(crate) fn into_response<T>(error: T) -> Response
 where
     T: Into<ErrorResponse>,
