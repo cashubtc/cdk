@@ -60,3 +60,7 @@ home.workspace = true
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
+
+[build-dependencies]
+# Dep of utopia 2.5.0 breaks so keeping here for now
+zip = "=2.4.2"
