@@ -92,12 +92,12 @@ async fn main() -> Result<(), Error> {
 
     println!("Created token: {}", token);
 
-    let remaining_blind_auth = wallet.get_unspent_auth_proofs().await?.total_amount()?;
+    let remaining_blind_auth = wallet.get_unspent_auth_proofs().await?.len();
 
     // We started with 10 blind tokens we expect 8 ath this point
     // 1 is used for the mint quote + 1 used for the mint
     // The swap is not expected to use one as it will be offline or we have "/swap" as an unprotected endpoint in the mint config
-    assert_eq!(remaining_blind_auth, 8.into());
+    assert_eq!(remaining_blind_auth, 8);
 
     println!("Remaining blind auth: {}", remaining_blind_auth);
 

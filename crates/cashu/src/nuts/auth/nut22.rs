@@ -11,7 +11,7 @@ use super::nut21::ProtectedEndpoint;
 use crate::dhke::hash_to_curve;
 use crate::secret::Secret;
 use crate::util::hex;
-use crate::{BlindedMessage, Id, Proof, PublicKey};
+use crate::{BlindedMessage, Id, Proof, ProofDleq, PublicKey};
 
 /// NUT22 Error
 #[derive(Debug, Error)]
@@ -19,6 +19,9 @@ pub enum Error {
     /// Invalid Prefix
     #[error("Invalid prefix")]
     InvalidPrefix,
+    /// Dleq proof not included
+    #[error("Dleq Proof not included for auth proof")]
+    DleqProofNotIncluded,
     /// Hex Error
     #[error(transparent)]
     HexError(#[from] hex::Error),
@@ -110,7 +113,7 @@ impl<'de> Deserialize<'de> for Settings {
 }
 
 /// Auth Token
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthToken {
     /// Clear Auth token
     ClearAuth(String),
@@ -147,7 +150,7 @@ pub enum AuthRequired {
 }
 
 /// Auth Proofs
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct AuthProof {
     /// `Keyset id`
@@ -160,6 +163,8 @@ pub struct AuthProof {
     #[serde(rename = "C")]
     #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub c: PublicKey,
+    /// Auth Proof Dleq
+    pub dleq: ProofDleq,
 }
 
 impl AuthProof {
@@ -177,23 +182,28 @@ impl From<AuthProof> for Proof {
             secret: value.secret,
             c: value.c,
             witness: None,
-            dleq: None,
+            dleq: Some(value.dleq),
         }
     }
 }
 
-impl From<Proof> for AuthProof {
-    fn from(value: Proof) -> Self {
-        Self {
+impl TryFrom<Proof> for AuthProof {
+    type Error = Error;
+    fn try_from(value: Proof) -> Result<Self, Self::Error> {
+        Ok(Self {
             keyset_id: value.keyset_id,
             secret: value.secret,
             c: value.c,
-        }
+            dleq: value.dleq.ok_or({
+                tracing::warn!("Dleq proof not included in auth");
+                Error::DleqProofNotIncluded
+            })?,
+        })
     }
 }
 
 /// Blind Auth Token
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindAuthToken {
     /// [AuthProof]
     pub auth_proof: AuthProof,

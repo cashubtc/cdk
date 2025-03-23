@@ -3,7 +3,7 @@ mod auth_wallet;
 
 pub use auth_connector::AuthMintConnector;
 pub use auth_wallet::AuthWallet;
-use cdk_common::{Amount, AuthToken, Proof, Proofs};
+use cdk_common::{Amount, AuthProof, AuthToken, Proofs};
 use tracing::instrument;
 
 use super::Wallet;
@@ -24,7 +24,7 @@ impl Wallet {
 
     /// Get unspent auth proofs
     #[instrument(skip_all)]
-    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<Proof>, Error> {
+    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, Error> {
         self.auth_wallet
             .read()
             .await

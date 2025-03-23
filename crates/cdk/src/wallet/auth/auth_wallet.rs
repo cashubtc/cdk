@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
-use cdk_common::{Id, Keys, MintInfo};
+use cdk_common::{AuthProof, Id, Keys, MintInfo};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::instrument;
@@ -11,7 +11,6 @@ use tracing::instrument;
 use super::AuthMintConnector;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
-use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets,
@@ -246,7 +245,7 @@ impl AuthWallet {
 
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
-    pub async fn get_unspent_auth_proofs(&self) -> Result<Proofs, Error> {
+    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, Error> {
         Ok(self
             .localstore
             .get_proofs(
@@ -257,8 +256,8 @@ impl AuthWallet {
             )
             .await?
             .into_iter()
-            .map(|p| p.proof)
-            .collect())
+            .map(|p| p.proof.try_into())
+            .collect::<Result<Vec<AuthProof>, _>>()?)
     }
 
     /// Check if and what kind of auth is required for a method
@@ -285,7 +284,7 @@ impl AuthWallet {
         };
 
         Ok(Some(AuthToken::BlindAuth(BlindAuthToken {
-            auth_proof: auth_proof.clone().into(),
+            auth_proof: auth_proof.clone(),
         })))
     }
 
@@ -377,12 +376,14 @@ impl AuthWallet {
 
         // Verify the signature DLEQ is valid
         {
+            assert!(mint_res.signatures.len() == premint_secrets.secrets.len());
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
                 let keys = self.get_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) => (),
                     Err(nut12::Error::MissingDleqProof) => {
+                        println!("Mint do not return dleq");
                         tracing::warn!("Signature for bat returned without dleq proof.");
                         return Err(Error::DleqProofNotProvided);
                     }
@@ -397,6 +398,8 @@ impl AuthWallet {
             premint_secrets.secrets(),
             &keys,
         )?;
+
+        println!("{:?}", proofs);
 
         let proof_infos = proofs
             .clone()
@@ -420,6 +423,8 @@ impl AuthWallet {
     /// Total unspent balance of wallet
     #[instrument(skip(self))]
     pub async fn total_blind_auth_balance(&self) -> Result<Amount, Error> {
-        Ok(self.get_unspent_auth_proofs().await?.total_amount()?)
+        Ok(Amount::from(
+            self.get_unspent_auth_proofs().await?.len() as u64
+        ))
     }
 }

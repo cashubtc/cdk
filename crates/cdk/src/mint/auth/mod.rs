@@ -293,8 +293,7 @@ impl Mint {
                 tracing::trace!("Token was in state {:?}, now marked as spent", other_state);
             }
             None => {
-                tracing::error!("Token not added to database");
-                return Err(Error::UnexpectedProofState);
+                tracing::trace!("Token was in state None, now marked as spent");
             }
         };
 
