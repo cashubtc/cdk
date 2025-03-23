@@ -623,13 +623,13 @@ WHERE id=?
                     .map(|w| serde_json::to_string(&w).unwrap()),
             )
             .bind(
-                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_string()),
+                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
             )
             .bind(
-                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_string()),
+                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
             )
             .bind(
-                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_string()),
+                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
             )
             .execute(&self.pool)
             .await
@@ -884,9 +884,9 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
     let row_witness: Option<String> = row.try_get("witness").map_err(Error::from)?;
 
     // Get DLEQ fields
-    let row_dleq_e: Option<String> = row.try_get("dleq_e").map_err(Error::from)?;
-    let row_dleq_s: Option<String> = row.try_get("dleq_s").map_err(Error::from)?;
-    let row_dleq_r: Option<String> = row.try_get("dleq_r").map_err(Error::from)?;
+    let row_dleq_e: Option<Vec<u8>> = row.try_get("dleq_e").map_err(Error::from)?;
+    let row_dleq_s: Option<Vec<u8>> = row.try_get("dleq_s").map_err(Error::from)?;
+    let row_dleq_r: Option<Vec<u8>> = row.try_get("dleq_r").map_err(Error::from)?;
 
     let y: Vec<u8> = row.try_get("y").map_err(Error::from)?;
     let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
@@ -898,9 +898,9 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
     // Create DLEQ proof if all fields are present
     let dleq = match (row_dleq_e, row_dleq_s, row_dleq_r) {
         (Some(e), Some(s), Some(r)) => {
-            let e_key = SecretKey::from_str(&e)?;
-            let s_key = SecretKey::from_str(&s)?;
-            let r_key = SecretKey::from_str(&r)?;
+            let e_key = SecretKey::from_slice(&e)?;
+            let s_key = SecretKey::from_slice(&s)?;
+            let r_key = SecretKey::from_slice(&r)?;
 
             Some(ProofDleq::new(e_key, s_key, r_key))
         }
@@ -992,15 +992,9 @@ mod tests {
         let secret = Secret::new("test_secret_for_dleq");
 
         // Create DLEQ components
-        let e =
-            SecretKey::from_str("b31e58ac6527f34975ffab13e70a48b6d2b0d35abc4b03f0151f09ee1a9763d4")
-                .unwrap();
-        let s =
-            SecretKey::from_str("8fbae004c59e754d71df67e392b6ae4e29293113ddc2ec86592a0431d16306d8")
-                .unwrap();
-        let r =
-            SecretKey::from_str("a6d13fcd7a18442e6076f5e1e7c887ad5de40a019824bdfa9fe740d302e8d861")
-                .unwrap();
+        let e = SecretKey::generate();
+        let s = SecretKey::generate();
+        let r = SecretKey::generate();
 
         let dleq = ProofDleq::new(e.clone(), s.clone(), r.clone());
 
