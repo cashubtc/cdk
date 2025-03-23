@@ -12,8 +12,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, PublicKey, SecretKey,
-    SpendingConditions, State,
+    database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, ProofDleq, PublicKey,
+    SecretKey, SpendingConditions, State,
 };
 use error::Error;
 use sqlx::sqlite::SqliteRow;
@@ -585,8 +585,8 @@ WHERE id=?
             sqlx::query(
                 r#"
     INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(y) DO UPDATE SET
         mint_url = excluded.mint_url,
         state = excluded.state,
@@ -596,7 +596,10 @@ WHERE id=?
         keyset_id = excluded.keyset_id,
         secret = excluded.secret,
         c = excluded.c,
-        witness = excluded.witness
+        witness = excluded.witness,
+        dleq_e = excluded.dleq_e,
+        dleq_s = excluded.dleq_s,
+        dleq_r = excluded.dleq_r
     ;
             "#,
             )
@@ -618,6 +621,15 @@ WHERE id=?
                     .proof
                     .witness
                     .map(|w| serde_json::to_string(&w).unwrap()),
+            )
+            .bind(
+                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
             )
             .execute(&self.pool)
             .await
@@ -871,6 +883,11 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
     let row_c: Vec<u8> = row.try_get("c").map_err(Error::from)?;
     let row_witness: Option<String> = row.try_get("witness").map_err(Error::from)?;
 
+    // Get DLEQ fields
+    let row_dleq_e: Option<Vec<u8>> = row.try_get("dleq_e").map_err(Error::from)?;
+    let row_dleq_s: Option<Vec<u8>> = row.try_get("dleq_s").map_err(Error::from)?;
+    let row_dleq_r: Option<Vec<u8>> = row.try_get("dleq_r").map_err(Error::from)?;
+
     let y: Vec<u8> = row.try_get("y").map_err(Error::from)?;
     let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
     let row_state: String = row.try_get("state").map_err(Error::from)?;
@@ -878,13 +895,25 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         row.try_get("spending_condition").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
 
+    // Create DLEQ proof if all fields are present
+    let dleq = match (row_dleq_e, row_dleq_s, row_dleq_r) {
+        (Some(e), Some(s), Some(r)) => {
+            let e_key = SecretKey::from_slice(&e)?;
+            let s_key = SecretKey::from_slice(&s)?;
+            let r_key = SecretKey::from_slice(&r)?;
+
+            Some(ProofDleq::new(e_key, s_key, r_key))
+        }
+        _ => None,
+    };
+
     let proof = Proof {
         amount: Amount::from(row_amount as u64),
         keyset_id: Id::from_str(&keyset_id)?,
         secret: Secret::from_str(&row_secret)?,
         c: PublicKey::from_slice(&row_c)?,
         witness: row_witness.and_then(|w| serde_json::from_str(&w).ok()),
-        dleq: None,
+        dleq,
     };
 
     Ok(ProofInfo {
@@ -899,6 +928,11 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
 
 #[cfg(test)]
 mod tests {
+    use cdk_common::database::WalletDatabase;
+    use cdk_common::nuts::{ProofDleq, State};
+    use cdk_common::secret::Secret;
+
+    use crate::WalletSqliteDatabase;
 
     #[tokio::test]
     #[cfg(feature = "sqlcipher")]
@@ -926,5 +960,89 @@ mod tests {
         let res = db.get_mint(mint_url).await.unwrap();
         assert_eq!(mint_info, res.clone().unwrap());
         assert_eq!("test", &res.unwrap().description.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_proof_with_dleq() {
+        use std::str::FromStr;
+
+        use cdk_common::common::ProofInfo;
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::{CurrencyUnit, Id, Proof, PublicKey, SecretKey};
+        use cdk_common::Amount;
+
+        // Create a temporary database
+        let path = std::env::temp_dir()
+            .to_path_buf()
+            .join(format!("cdk-test-dleq-{}.sqlite", uuid::Uuid::new_v4()));
+
+        #[cfg(feature = "sqlcipher")]
+        let db = WalletSqliteDatabase::new(path, "password".to_string())
+            .await
+            .unwrap();
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = WalletSqliteDatabase::new(path).await.unwrap();
+
+        db.migrate().await;
+
+        // Create a proof with DLEQ
+        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let secret = Secret::new("test_secret_for_dleq");
+
+        // Create DLEQ components
+        let e = SecretKey::generate();
+        let s = SecretKey::generate();
+        let r = SecretKey::generate();
+
+        let dleq = ProofDleq::new(e.clone(), s.clone(), r.clone());
+
+        let mut proof = Proof::new(
+            Amount::from(64),
+            keyset_id,
+            secret,
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+
+        // Add DLEQ to the proof
+        proof.dleq = Some(dleq);
+
+        // Create ProofInfo
+        let proof_info =
+            ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
+
+        // Store the proof in the database
+        db.update_proofs(vec![proof_info.clone()], vec![])
+            .await
+            .unwrap();
+
+        // Retrieve the proof from the database
+        let retrieved_proofs = db
+            .get_proofs(
+                Some(mint_url),
+                Some(CurrencyUnit::Sat),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Verify we got back exactly one proof
+        assert_eq!(retrieved_proofs.len(), 1);
+
+        // Verify the DLEQ data was preserved
+        let retrieved_proof = &retrieved_proofs[0];
+        assert!(retrieved_proof.proof.dleq.is_some());
+
+        let retrieved_dleq = retrieved_proof.proof.dleq.as_ref().unwrap();
+
+        // Verify DLEQ components match what we stored
+        assert_eq!(retrieved_dleq.e.to_string(), e.to_string());
+        assert_eq!(retrieved_dleq.s.to_string(), s.to_string());
+        assert_eq!(retrieved_dleq.r.to_string(), r.to_string());
     }
 }

@@ -9,6 +9,7 @@
 - cdk: proof matches conditions was not matching payment conditions correctly ([thesimplekid]).
 - cdk: Updating mint_url would remove proofs when we want to keep them ([ok300]).
 - Wallet: Fix ability to receive cashu tokens that include DLEQ proofs ([ok300]).
+- cdk-sqlite: Wallet was not storing dleq proofs ([thesimplekid]).
 ### Changed
 - Updated MSRV to 1.75.0 ([thesimplekid]).
 - cdk-sqlite: Do not use `UPDATE OR REPLACE` ([crodas]).
