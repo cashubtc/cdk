@@ -33,3 +33,8 @@ redis = { version = "0.23.3", features = [
     "tokio-rustls-comp",
 ], optional = true }
 
+
+[build-dependencies]
+# Dep of utopia 2.5.0 breaks so keeping here for now
+time = "=0.3.39"
+
