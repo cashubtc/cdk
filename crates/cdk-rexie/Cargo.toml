@@ -1,13 +1,13 @@
 [package]
 name = "cdk-rexie"
-version = "0.7.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["CDK Developers"]
 description = "Indexdb storage backend for CDK in the browser"
-license = "MIT"
+license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0" # MSRV
+rust-version.workspace = true # MSRV
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]

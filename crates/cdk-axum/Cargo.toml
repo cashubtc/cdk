@@ -1,11 +1,11 @@
 [package]
 name = "cdk-axum"
-version = "0.7.1"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0"                            # MSRV
+rust-version.workspace = true                            # MSRV
 description = "Cashu CDK axum webserver"
 
 

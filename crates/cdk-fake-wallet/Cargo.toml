@@ -1,12 +1,12 @@
 [package]
 name = "cdk-fake-wallet"
-version = "0.7.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["CDK Developers"]
-license = "MIT"
+license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0" # MSRV
+rust-version.workspace = true # MSRV
 description = "CDK fake ln backend"
 
 [dependencies]

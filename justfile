@@ -132,10 +132,9 @@ release m="":
     "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-strike"
-    "-p cdk-phoenixd"
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
+    "-p cdk-payment-processor"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
