@@ -8,8 +8,7 @@ use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, Proofs,
     SecretKey, State, SwapRequest,
 };
-use cdk::wallet::client::{HttpClient, MintConnector};
-use cdk::wallet::Wallet;
+use cdk::wallet::{HttpClient, MintConnector, Wallet};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::{attempt_to_swap_pending, wait_for_mint_to_be_paid};
 use cdk_sqlite::wallet::memory;
@@ -354,7 +353,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let premint_secrets = PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default())?;
 
-    let client = HttpClient::new(MINT_URL.parse()?);
+    let client = HttpClient::new(MINT_URL.parse()?, None);
 
     let melt_request = MeltBolt11Request {
         quote: melt_quote.id.clone(),
@@ -450,7 +449,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
 
@@ -486,7 +485,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
 
@@ -545,7 +544,7 @@ async fn test_fake_mint_inflated() -> Result<()> {
     if let Some(secret_key) = quote_info.secret_key {
         mint_request.sign(secret_key)?;
     }
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
 
     let response = http_client.post_mint(mint_request.clone()).await;
 
@@ -615,7 +614,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
     if let Some(secret_key) = quote_info.secret_key {
         mint_request.sign(secret_key)?;
     }
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
 
     let response = http_client.post_mint(mint_request.clone()).await;
 
@@ -682,7 +681,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
             outputs: pre_mint.blinded_messages(),
         };
 
-        let http_client = HttpClient::new(MINT_URL.parse()?);
+        let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_swap(swap_request.clone()).await;
 
         match response {
@@ -719,7 +718,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
             outputs: usd_outputs,
         };
 
-        let http_client = HttpClient::new(MINT_URL.parse()?);
+        let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_swap(swap_request.clone()).await;
 
         match response {
@@ -793,7 +792,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
             outputs: None,
         };
 
-        let http_client = HttpClient::new(MINT_URL.parse()?);
+        let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_melt(melt_request.clone()).await;
 
         match response {
@@ -837,7 +836,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
             outputs: Some(usd_outputs),
         };
 
-        let http_client = HttpClient::new(MINT_URL.parse()?);
+        let http_client = HttpClient::new(MINT_URL.parse()?, None);
 
         let response = http_client.post_melt(melt_request.clone()).await;
 
@@ -896,7 +895,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -936,7 +935,7 @@ async fn test_fake_mint_swap_inflated() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -979,7 +978,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     assert!(response.is_ok());
@@ -991,7 +990,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1009,7 +1008,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1052,7 +1051,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     assert!(response.is_ok());
@@ -1064,7 +1063,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1085,7 +1084,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
         outputs: None,
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_melt(melt_request.clone()).await;
 
     match response {
@@ -1132,7 +1131,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
         outputs: pre_mint.blinded_messages(),
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1156,7 +1155,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
 
     let swap_request = SwapRequest { inputs, outputs };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
@@ -1206,7 +1205,7 @@ async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
         outputs: None,
     };
 
-    let http_client = HttpClient::new(MINT_URL.parse()?);
+    let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_melt(melt_request.clone()).await;
 
     match response {

@@ -16,7 +16,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::key::Secp256k1;
 #[cfg(feature = "mint")]
 use bitcoin::secp256k1;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
@@ -49,6 +49,7 @@ pub enum Error {
 
 /// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Current Version 00
     Version00,
@@ -85,6 +86,7 @@ impl fmt::Display for KeySetVersion {
 /// which mint or keyset it was generated from.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Id {
     version: KeySetVersion,
     id: [u8; Self::BYTELEN],
@@ -258,8 +260,20 @@ pub struct KeySetInfo {
     /// Mint will only sign from an active keyset
     pub active: bool,
     /// Input Fee PPK
-    #[serde(default = "default_input_fee_ppk")]
+    #[serde(
+        deserialize_with = "deserialize_input_fee_ppk",
+        default = "default_input_fee_ppk"
+    )]
     pub input_fee_ppk: u64,
+}
+
+fn deserialize_input_fee_ppk<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // This will either give us a u64 or null (which becomes None)
+    let opt = Option::<u64>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_else(default_input_fee_ppk))
 }
 
 fn default_input_fee_ppk() -> u64 {
@@ -482,6 +496,10 @@ mod test {
     #[test]
     fn test_deserialization_keyset_info() {
         let h = r#"{"id":"009a1f293253e41e","unit":"sat","active":true}"#;
+
+        let _keyset_response: KeySetInfo = serde_json::from_str(h).unwrap();
+
+        let h = r#"{"id":"009a1f293253e41e","unit":"sat","active":true, "input_fee_ppk":null}"#;
 
         let _keyset_response: KeySetInfo = serde_json::from_str(h).unwrap();
     }

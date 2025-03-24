@@ -1,0 +1,27 @@
+{
+  "realm" : "cdk-test-realm",
+  "users" : [ {
+    "id" : "6ea5cccc-bb0d-4757-a676-2515056fb4c6",
+    "username" : "cdk-test",
+    "firstName" : "test",
+    "lastName" : "test",
+    "email" : "test@email.com",
+    "emailVerified" : false,
+    "createdTimestamp" : 1740501176107,
+    "enabled" : true,
+    "totp" : false,
+    "credentials" : [ {
+      "id" : "a184d280-ee03-48c1-bd99-b60cbec7f828",
+      "type" : "password",
+      "userLabel" : "My password",
+      "createdDate" : 1740501197395,
+      "secretData" : "{\"value\":\"qIQdnJ76MfwoPE0NgGxjpNPOrWvlvnIhreaCA0fX88g=\",\"salt\":\"npddG2eT8Ofp/M2QORJu0Q==\",\"additionalParameters\":{}}",
+      "credentialData" : "{\"hashIterations\":5,\"algorithm\":\"argon2\",\"additionalParameters\":{\"hashLength\":[\"32\"],\"memory\":[\"7168\"],\"type\":[\"id\"],\"version\":[\"1.3\"],\"parallelism\":[\"1\"]}}"
+    } ],
+    "disableableCredentialTypes" : [ ],
+    "requiredActions" : [ ],
+    "realmRoles" : [ "default-roles-cdk-test-realm" ],
+    "notBefore" : 0,
+    "groups" : [ ]
+  } ]
+}

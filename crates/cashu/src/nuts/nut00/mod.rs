@@ -445,6 +445,8 @@ pub enum CurrencyUnit {
     Usd,
     /// Euro
     Eur,
+    /// Auth
+    Auth,
     /// Custom currency unit
     Custom(String),
 }
@@ -458,6 +460,7 @@ impl CurrencyUnit {
             Self::Msat => Some(1),
             Self::Usd => Some(2),
             Self::Eur => Some(3),
+            Self::Auth => Some(4),
             _ => None,
         }
     }
@@ -472,6 +475,7 @@ impl FromStr for CurrencyUnit {
             "MSAT" => Ok(Self::Msat),
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
+            "AUTH" => Ok(Self::Auth),
             c => Ok(Self::Custom(c.to_string())),
         }
     }
@@ -484,6 +488,7 @@ impl fmt::Display for CurrencyUnit {
             CurrencyUnit::Msat => "MSAT",
             CurrencyUnit::Usd => "USD",
             CurrencyUnit::Eur => "EUR",
+            CurrencyUnit::Auth => "AUTH",
             CurrencyUnit::Custom(unit) => unit,
         };
         if let Some(width) = f.width() {

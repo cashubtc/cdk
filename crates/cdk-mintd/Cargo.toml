@@ -10,7 +10,7 @@ description = "CDK mint binary"
 rust-version = "1.75.0"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "auth"]
 # Ensure at least one lightning backend is enabled
 management-rpc = ["cdk-mint-rpc"]
 cln = ["dep:cdk-cln"]
@@ -23,6 +23,7 @@ sqlcipher = ["cdk-sqlite/sqlcipher"]
 redb = ["dep:cdk-redb"]
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
+auth = ["cdk/auth", "cdk-sqlite/auth"]
 
 [dependencies]
 anyhow.workspace = true
@@ -33,6 +34,7 @@ cdk = { workspace = true, features = [
 ] }
 cdk-redb = { workspace = true, features = [
     "mint",
+    "auth"
 ], optional = true }
 cdk-sqlite = { workspace = true, features = [
     "mint",

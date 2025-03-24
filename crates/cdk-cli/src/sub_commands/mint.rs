@@ -53,6 +53,8 @@ pub async fn mint(
         }
     };
 
+    wallet.get_mint_info().await?;
+
     let quote_id = match &sub_command_args.quote_id {
         None => {
             let amount = sub_command_args

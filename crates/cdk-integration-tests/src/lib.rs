@@ -2,32 +2,29 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{MintQuoteState, NotificationPayload, State};
 use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
 use tokio::time::{sleep, timeout, Duration};
 
+pub mod init_auth_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
 
-pub async fn wallet_mint(
-    wallet: Arc<Wallet>,
-    amount: Amount,
-    split_target: SplitTarget,
-    description: Option<String>,
-) -> Result<()> {
-    let quote = wallet.mint_quote(amount, description).await?;
+pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
+    let quote = wallet
+        .mint_quote(amount, None)
+        .await
+        .expect("Could not get mint quote");
 
-    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &quote.id, 60)
+        .await
+        .expect("Waiting for mint failed");
 
-    let proofs = wallet.mint(&quote.id, split_target, None).await?;
-
-    let receive_amount = proofs.total_amount()?;
-
-    println!("Minted: {}", receive_amount);
-
-    Ok(())
+    let _proofs = wallet
+        .mint(&quote.id, SplitTarget::default(), None)
+        .await
+        .expect("Could not mint");
 }
 
 // Get all pending from wallet and attempt to swap

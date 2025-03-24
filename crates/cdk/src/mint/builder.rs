@@ -8,11 +8,16 @@ use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::error::Error;
 use cdk_common::payment::Bolt11Settings;
+use cdk_common::{nut21, nut22};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
+#[cfg(feature = "auth")]
+use super::MintAuthDatabase;
 use super::Nuts;
 use crate::amount::Amount;
+#[cfg(feature = "auth")]
+use crate::cdk_database;
 use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
 use crate::nuts::{
@@ -28,6 +33,9 @@ pub struct MintBuilder {
     pub mint_info: MintInfo,
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
+    /// Mint Storage backend
+    #[cfg(feature = "auth")]
+    auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
     /// Ln backends for mint
     ln: Option<
         HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
@@ -35,6 +43,8 @@ pub struct MintBuilder {
     seed: Option<Vec<u8>>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    // protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+    openid_discovery: Option<String>,
 }
 
 impl MintBuilder {
@@ -63,6 +73,22 @@ impl MintBuilder {
         localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
+        self
+    }
+
+    /// Set auth localstore
+    #[cfg(feature = "auth")]
+    pub fn with_auth_localstore(
+        mut self,
+        localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>,
+    ) -> MintBuilder {
+        self.auth_localstore = Some(localstore);
+        self
+    }
+
+    /// Set Openid discovery url    
+    pub fn with_openid_discovery(mut self, openid_discovery: String) -> Self {
+        self.openid_discovery = Some(openid_discovery);
         self
     }
 
@@ -140,6 +166,9 @@ impl MintBuilder {
             unit: unit.clone(),
             method: method.clone(),
         };
+
+        tracing::debug!("Adding ln backed for {}, {}", unit, method);
+        tracing::debug!("with limits {:?}", limits);
 
         let mut ln = self.ln.unwrap_or_default();
 
@@ -235,17 +264,73 @@ impl MintBuilder {
         self
     }
 
+    /// Set clear auth settings
+    pub fn set_clear_auth_settings(mut self, openid_discovery: String, client_id: String) -> Self {
+        let mut nuts = self.mint_info.nuts;
+
+        nuts.nut21 = Some(nut21::Settings::new(
+            openid_discovery.clone(),
+            client_id,
+            vec![],
+        ));
+
+        self.openid_discovery = Some(openid_discovery);
+
+        self.mint_info.nuts = nuts;
+
+        self
+    }
+
+    /// Set blind auth settings
+    pub fn set_blind_auth_settings(mut self, bat_max_mint: u64) -> Self {
+        let mut nuts = self.mint_info.nuts;
+
+        nuts.nut22 = Some(nut22::Settings::new(bat_max_mint, vec![]));
+
+        self.mint_info.nuts = nuts;
+
+        self
+    }
+
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
         let localstore = self
             .localstore
             .clone()
             .ok_or(anyhow!("Localstore not set"))?;
+        let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
+        let ln = self.ln.clone().ok_or(anyhow!("Ln backends not set"))?;
+
+        #[cfg(feature = "auth")]
+        if let Some(openid_discovery) = &self.openid_discovery {
+            let auth_localstore = self
+                .auth_localstore
+                .clone()
+                .ok_or(anyhow!("Auth localstore not set"))?;
+
+            return Ok(Mint::new_with_auth(
+                seed,
+                localstore,
+                auth_localstore,
+                ln,
+                self.supported_units.clone(),
+                self.custom_paths.clone(),
+                openid_discovery.clone(),
+            )
+            .await?);
+        }
+
+        #[cfg(not(feature = "auth"))]
+        if self.openid_discovery.is_some() {
+            return Err(anyhow!(
+                "OpenID discovery URL provided but auth feature is not enabled"
+            ));
+        }
 
         Ok(Mint::new(
-            self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?,
+            seed,
             localstore,
-            self.ln.clone().ok_or(anyhow!("Ln backends not set"))?,
+            ln,
             self.supported_units.clone(),
             self.custom_paths.clone(),
         )

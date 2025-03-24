@@ -32,7 +32,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(100);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, Some(1))?;
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;

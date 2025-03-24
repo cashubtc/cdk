@@ -6,6 +6,8 @@
 pub mod cdk_database {
     //! CDK Database
     pub use cdk_common::database::Error;
+    #[cfg(all(feature = "mint", feature = "auth"))]
+    pub use cdk_common::database::MintAuthDatabase;
     #[cfg(feature = "mint")]
     pub use cdk_common::database::MintDatabase;
     #[cfg(feature = "wallet")]
@@ -16,6 +18,12 @@ pub mod cdk_database {
 pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
+
+#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+mod oidc_client;
+
+#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+pub use oidc_client::OidcClient;
 
 pub mod pub_sub;
 
@@ -45,7 +53,7 @@ pub use wallet::{Wallet, WalletSubscription};
 pub use self::util::SECP256K1;
 #[cfg(feature = "wallet")]
 #[doc(hidden)]
-pub use self::wallet::client::HttpClient;
+pub use self::wallet::HttpClient;
 
 /// Result
 #[doc(hidden)]

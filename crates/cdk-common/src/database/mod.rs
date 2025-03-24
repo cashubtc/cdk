@@ -7,6 +7,8 @@ mod wallet;
 
 #[cfg(feature = "mint")]
 pub use mint::Database as MintDatabase;
+#[cfg(all(feature = "mint", feature = "auth"))]
+pub use mint::MintAuthDatabase;
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 
@@ -25,6 +27,10 @@ pub enum Error {
     /// NUT02 Error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
+    /// NUT22 Error
+    #[error(transparent)]
+    #[cfg(feature = "auth")]
+    NUT22(#[from] crate::nuts::nut22::Error),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),

@@ -15,7 +15,7 @@ sqlcipher = ["cdk-sqlite/sqlcipher"]
 [dependencies]
 anyhow.workspace = true
 bip39.workspace = true
-cdk = { workspace = true, default-features = false, features = ["wallet"]}
+cdk = { workspace = true, default-features = false, features = ["wallet", "auth"]}
 cdk-redb = { workspace = true, features = ["wallet"] }
 cdk-sqlite = { workspace = true, features = ["wallet"] }
 clap.workspace = true
