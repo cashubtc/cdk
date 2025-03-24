@@ -296,12 +296,18 @@ impl AuthWallet {
     ) -> Result<Option<AuthToken>, Error> {
         match self.is_protected(method).await {
             Some(auth) => match auth {
-                AuthRequired::Clear => self.client.get_auth_token().await.map(Some),
+                AuthRequired::Clear => {
+                    tracing::trace!("Clear auth needed for request.");
+                    self.client.get_auth_token().await.map(Some)
+                }
                 AuthRequired::Blind => {
-                    let proof = self
-                        .get_blind_auth_token()
-                        .await?
-                        .ok_or(Error::InsufficientBlindAuthTokens)?;
+                    tracing::trace!("Blind auth needed for request getting Auth proof.");
+                    let proof = self.get_blind_auth_token().await?.ok_or_else(|| {
+                        tracing::debug!(
+                            "Insufficient blind auth proofs in wallet. Must mint bats."
+                        );
+                        Error::InsufficientBlindAuthTokens
+                    })?;
 
                     Ok(Some(proof))
                 }
