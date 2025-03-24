@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+use std::cmp::max;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -198,10 +199,7 @@ impl MintPayment for Cln {
 
         let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
-        let fee = match relative_fee_reserve > absolute_fee_reserve {
-            true => relative_fee_reserve,
-            false => absolute_fee_reserve,
-        };
+        let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: bolt11.payment_hash().to_string(),
