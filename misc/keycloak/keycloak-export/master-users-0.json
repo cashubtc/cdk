@@ -1,0 +1,26 @@
+{
+  "realm" : "master",
+  "users" : [ {
+    "id" : "3ba20234-cfa8-4ff7-ae64-dac4870470e5",
+    "username" : "admin",
+    "emailVerified" : false,
+    "createdTimestamp" : 1740500953408,
+    "enabled" : true,
+    "totp" : false,
+    "credentials" : [ {
+      "id" : "98ceebfb-8dbe-4842-a335-e900d84eb2ef",
+      "type" : "password",
+      "createdDate" : 1740500953499,
+      "secretData" : "{\"value\":\"J5GuTpzJwSHGrfMzp7yPoBBmyQZ+Ijk5AozNbxkHcI0=\",\"salt\":\"uVtNH1+Non3hg/mKYy3XMQ==\",\"additionalParameters\":{}}",
+      "credentialData" : "{\"hashIterations\":5,\"algorithm\":\"argon2\",\"additionalParameters\":{\"hashLength\":[\"32\"],\"memory\":[\"7168\"],\"type\":[\"id\"],\"version\":[\"1.3\"],\"parallelism\":[\"1\"]}}"
+    } ],
+    "disableableCredentialTypes" : [ ],
+    "requiredActions" : [ ],
+    "realmRoles" : [ "default-roles-master", "admin" ],
+    "clientRoles" : {
+      "cdk-test-realm-realm" : [ "view-identity-providers", "manage-realm", "query-users", "manage-users", "create-client", "view-events", "manage-clients", "view-clients", "view-authorization", "manage-authorization", "view-realm", "manage-identity-providers", "query-realms", "manage-events", "view-users", "query-clients", "query-groups" ]
+    },
+    "notBefore" : 0,
+    "groups" : [ ]
+  } ]
+}

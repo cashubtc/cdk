@@ -26,8 +26,13 @@ use uuid::Uuid;
 
 use crate::common::create_sqlite_pool;
 
+#[cfg(feature = "auth")]
+mod auth;
 pub mod error;
 pub mod memory;
+
+#[cfg(feature = "auth")]
+pub use auth::MintSqliteAuthDatabase;
 
 /// Mint SQLite Database
 #[derive(Debug, Clone)]
@@ -1565,7 +1570,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
     let row_valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
     let row_derivation_path: String = row.try_get("derivation_path").map_err(Error::from)?;
     let row_max_order: u8 = row.try_get("max_order").map_err(Error::from)?;
-    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
+    let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").ok();
     let row_derivation_path_index: Option<i64> =
         row.try_get("derivation_path_index").map_err(Error::from)?;
 
@@ -1748,7 +1753,7 @@ mod tests {
         // Create a keyset and add it to the database
         let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
         let keyset_info = MintKeySetInfo {
-            id: keyset_id.clone(),
+            id: keyset_id,
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
@@ -1763,7 +1768,7 @@ mod tests {
         let proofs = vec![
             Proof {
                 amount: Amount::from(100),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1771,7 +1776,7 @@ mod tests {
             },
             Proof {
                 amount: Amount::from(200),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1816,7 +1821,7 @@ mod tests {
         // Create a keyset and add it to the database
         let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
         let keyset_info = MintKeySetInfo {
-            id: keyset_id.clone(),
+            id: keyset_id,
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
@@ -1831,7 +1836,7 @@ mod tests {
         let proofs = vec![
             Proof {
                 amount: Amount::from(100),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1839,7 +1844,7 @@ mod tests {
             },
             Proof {
                 amount: Amount::from(200),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
