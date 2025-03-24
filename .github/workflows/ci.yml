@@ -56,6 +56,7 @@ jobs:
         build-args:
           [
             mint-token,
+            melt-token,
             p2pk,
             proof-selection,
             wallet
