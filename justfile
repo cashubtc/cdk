@@ -125,9 +125,9 @@ release m="":
   args=(
     "-p cashu"
     "-p cdk-common"
-    "-p cdk"
-    "-p cdk-redb"
     "-p cdk-sqlite"
+    "-p cdk-redb"
+    "-p cdk"
     "-p cdk-rexie"
     "-p cdk-axum"
     "-p cdk-mint-rpc"
