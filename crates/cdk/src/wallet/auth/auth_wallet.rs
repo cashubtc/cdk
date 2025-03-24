@@ -383,7 +383,6 @@ impl AuthWallet {
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) => (),
                     Err(nut12::Error::MissingDleqProof) => {
-                        println!("Mint do not return dleq");
                         tracing::warn!("Signature for bat returned without dleq proof.");
                         return Err(Error::DleqProofNotProvided);
                     }
@@ -398,8 +397,6 @@ impl AuthWallet {
             premint_secrets.secrets(),
             &keys,
         )?;
-
-        println!("{:?}", proofs);
 
         let proof_infos = proofs
             .clone()

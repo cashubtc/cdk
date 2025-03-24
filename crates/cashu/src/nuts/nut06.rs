@@ -250,6 +250,12 @@ impl MintInfo {
     pub fn client_id(&self) -> Option<String> {
         self.nuts.nut21.as_ref().map(|s| s.client_id.clone())
     }
+
+    /// Max bat mint
+    #[cfg(feature = "auth")]
+    pub fn bat_max_mint(&self) -> Option<u64> {
+        self.nuts.nut22.as_ref().map(|s| s.bat_max_mint)
+    }
 }
 
 /// Supported nuts and settings

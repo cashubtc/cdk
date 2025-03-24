@@ -2,7 +2,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintInfo};
@@ -19,7 +19,7 @@ pub struct MintBlindAuthSubCommand {
     /// Mint url
     mint_url: MintUrl,
     /// Amount
-    amount: u64,
+    amount: Option<u64>,
     /// Cat (access token)
     #[arg(long)]
     cat: Option<String>,
@@ -138,14 +138,24 @@ pub async fn mint_blind_auth(
 
     println!("Attempting to mint blind auth");
 
-    let proofs = wallet
-        .mint_blind_auth(Amount::from(sub_command_args.amount))
-        .await?;
+    let amount = match sub_command_args.amount {
+        Some(amount) => amount,
+        None => {
+            let mint_info = wallet
+                .get_mint_info()
+                .await?
+                .ok_or(anyhow!("Unknown mint info"))?;
+            let max_bat = mint_info
+                .bat_max_mint()
+                .ok_or(anyhow!("Unknown max bat mint"))?;
 
-    println!(
-        "Received {} from auth proofs for mint {mint_url}",
-        proofs.len()
-    );
+            max_bat
+        }
+    };
+
+    let proofs = wallet.mint_blind_auth(Amount::from(amount)).await?;
+
+    println!("Received {} auth proofs for mint {mint_url}", proofs.len());
 
     Ok(())
 }
