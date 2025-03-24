@@ -18,7 +18,7 @@ pub struct BurnSubCommand {
 }
 
 pub async fn burn(
-    multi_mint_wallet: &MultiMintWallet<'_>,
+    multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &BurnSubCommand,
 ) -> Result<()> {
     let mut total_burnt = Amount::ZERO;

@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
         wallets.push(wallet);
     }
 
-    let multi_mint_wallet = MultiMintWallet::new(localstore, &seed, wallets);
+    let multi_mint_wallet = MultiMintWallet::new(localstore, Arc::new(seed), wallets);
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {

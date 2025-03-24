@@ -23,7 +23,7 @@ pub struct MeltSubCommand {
 }
 
 pub async fn pay(
-    multi_mint_wallet: &MultiMintWallet<'_>,
+    multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &MeltSubCommand,
 ) -> Result<()> {
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;

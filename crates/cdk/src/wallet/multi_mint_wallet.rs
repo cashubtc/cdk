@@ -25,19 +25,19 @@ use crate::{ensure_cdk, Amount, Wallet};
 
 /// Multi Mint Wallet
 #[derive(Debug, Clone)]
-pub struct MultiMintWallet<'a> {
+pub struct MultiMintWallet {
     /// Storage backend
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
-    seed: &'a [u8],
+    seed: Arc<[u8]>,
     /// Wallets
     pub wallets: Arc<Mutex<BTreeMap<WalletKey, Wallet>>>,
 }
 
-impl<'a> MultiMintWallet<'a> {
+impl MultiMintWallet {
     /// Create a new [MultiMintWallet] with initial wallets
     pub fn new(
         localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
-        seed: &'a [u8],
+        seed: Arc<[u8]>,
         wallets: Vec<Wallet>,
     ) -> Self {
         Self {
@@ -63,7 +63,7 @@ impl<'a> MultiMintWallet<'a> {
             mint_url,
             unit,
             self.localstore.clone(),
-            self.seed,
+            self.seed.as_ref(),
             target_proof_count,
         )?;
 

@@ -49,7 +49,7 @@ pub struct SendSubCommand {
 }
 
 pub async fn send(
-    multi_mint_wallet: &MultiMintWallet<'_>,
+    multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;

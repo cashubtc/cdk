@@ -5,13 +5,13 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, Proof};
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 
-pub async fn proofs(multi_mint_wallet: &MultiMintWallet<'_>) -> Result<()> {
+pub async fn proofs(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
     list_proofs(multi_mint_wallet).await?;
     Ok(())
 }
 
 async fn list_proofs(
-    multi_mint_wallet: &MultiMintWallet<'_>,
+    multi_mint_wallet: &MultiMintWallet,
 ) -> Result<Vec<(MintUrl, (Vec<Proof>, CurrencyUnit))>> {
     let wallets_proofs: BTreeMap<MintUrl, (Vec<Proof>, CurrencyUnit)> =
         multi_mint_wallet.list_proofs().await?;

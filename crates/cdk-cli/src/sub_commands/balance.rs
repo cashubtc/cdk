@@ -6,13 +6,13 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::Amount;
 
-pub async fn balance(multi_mint_wallet: &MultiMintWallet<'_>) -> Result<()> {
+pub async fn balance(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
     mint_balances(multi_mint_wallet, &CurrencyUnit::Sat).await?;
     Ok(())
 }
 
 pub async fn mint_balances(
-    multi_mint_wallet: &MultiMintWallet<'_>,
+    multi_mint_wallet: &MultiMintWallet,
     unit: &CurrencyUnit,
 ) -> Result<Vec<(MintUrl, Amount)>> {
     let wallets: BTreeMap<MintUrl, Amount> = multi_mint_wallet.get_balances(unit).await?;
