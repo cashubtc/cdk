@@ -1,12 +1,12 @@
 [package]
 name = "cdk-common"
-version = "0.7.1"
+version.workspace = true
 authors = ["CDK Developers"]
 description = "CDK common types and traits"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 edition.workspace = true
-rust-version = "1.75.0"                     # MSRV
+rust-version.workspace = true # MSRV
 license.workspace = true
 
 [features]

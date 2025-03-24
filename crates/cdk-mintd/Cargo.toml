@@ -1,13 +1,13 @@
 [package]
 name = "cdk-mintd"
-version = "0.7.2"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["CDK Developers"]
-license = "MIT"
+license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 description = "CDK mint binary"
-rust-version = "1.75.0"
+rust-version.workspace = true
 
 [features]
 default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "auth"]
