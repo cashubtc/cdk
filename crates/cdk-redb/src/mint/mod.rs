@@ -970,7 +970,7 @@ mod tests {
         let proofs = vec![
             Proof {
                 amount: Amount::from(100),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -978,7 +978,7 @@ mod tests {
             },
             Proof {
                 amount: Amount::from(200),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1031,7 +1031,7 @@ mod tests {
         let proofs = vec![
             Proof {
                 amount: Amount::from(100),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1039,7 +1039,7 @@ mod tests {
             },
             Proof {
                 amount: Amount::from(200),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,

@@ -1753,7 +1753,7 @@ mod tests {
         // Create a keyset and add it to the database
         let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
         let keyset_info = MintKeySetInfo {
-            id: keyset_id.clone(),
+            id: keyset_id,
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
@@ -1768,7 +1768,7 @@ mod tests {
         let proofs = vec![
             Proof {
                 amount: Amount::from(100),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1776,7 +1776,7 @@ mod tests {
             },
             Proof {
                 amount: Amount::from(200),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1821,7 +1821,7 @@ mod tests {
         // Create a keyset and add it to the database
         let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
         let keyset_info = MintKeySetInfo {
-            id: keyset_id.clone(),
+            id: keyset_id,
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
@@ -1836,7 +1836,7 @@ mod tests {
         let proofs = vec![
             Proof {
                 amount: Amount::from(100),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,
@@ -1844,7 +1844,7 @@ mod tests {
             },
             Proof {
                 amount: Amount::from(200),
-                keyset_id: keyset_id.clone(),
+                keyset_id,
                 secret: Secret::generate(),
                 c: SecretKey::generate().public_key(),
                 witness: None,

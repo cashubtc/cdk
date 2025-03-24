@@ -145,11 +145,9 @@ pub async fn mint_blind_auth(
                 .get_mint_info()
                 .await?
                 .ok_or(anyhow!("Unknown mint info"))?;
-            let max_bat = mint_info
+            mint_info
                 .bat_max_mint()
-                .ok_or(anyhow!("Unknown max bat mint"))?;
-
-            max_bat
+                .ok_or(anyhow!("Unknown max bat mint"))?
         }
     };
 
