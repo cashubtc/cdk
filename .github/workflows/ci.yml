@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  release:
+    types: [created]
 
 env:
   CARGO_TERM_COLOR: always
@@ -388,4 +390,20 @@ jobs:
       - name: Stop and clean up Docker Compose
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
-
+          
+  doc-tests:
+    name: "Documentation Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run doc tests
+        run: nix develop -i -L .#stable --command cargo test --doc
