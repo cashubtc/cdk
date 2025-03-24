@@ -1,13 +1,13 @@
 [package]
 name = "cdk"
-version = "0.7.2"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0"                                                            # MSRV
-license = "MIT"
+rust-version.workspace = true                                                            # MSRV
+license.workspace = true
 
 
 [features]
@@ -40,7 +40,7 @@ futures = { workspace = true, optional = true, features = ["alloc"] }
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
-jsonwebtoken = { version = "9", optional = true }
+jsonwebtoken = { workspace = true, optional = true }
 
 # -Z minimal-versions
 sync_wrapper = "0.1.2"

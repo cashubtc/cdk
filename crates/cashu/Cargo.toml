@@ -1,12 +1,12 @@
 [package]
 name = "cashu"
-version = "0.7.1"
+version.workspace = true
 edition.workspace = true
 authors = ["CDK Developers"]
 description = "Cashu shared types and crypto utilities, used as the foundation for the CDK and their crates"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0" # MSRV
+rust-version.workspace = true # MSRV
 license.workspace = true
 
 [features]

@@ -1,13 +1,13 @@
 [package]
 name = "cdk-integration-tests"
-version = "0.7.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["CDK Developers"]
 description = "Core Cashu Development Kit library implementing the Cashu protocol"
-license = "MIT"
+license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0"                                                            # MSRV
+rust-version.workspace = true                                                            # MSRV
 
 
 [features]
@@ -19,14 +19,14 @@ axum.workspace = true
 rand.workspace = true
 bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
-cashu = { path = "../cashu", features = ["mint", "wallet"] }
-cdk = { path = "../cdk", features = ["mint", "wallet", "auth"] }
-cdk-cln = { path = "../cdk-cln" }
-cdk-lnd = { path = "../cdk-lnd" }
-cdk-axum = { path = "../cdk-axum" }
-cdk-sqlite = { path = "../cdk-sqlite" }
-cdk-redb = { path = "../cdk-redb" }
-cdk-fake-wallet = { path = "../cdk-fake-wallet" }
+cashu = { workspace = true, features = ["mint", "wallet"] }
+cdk = { workspace = true, features = ["mint", "wallet", "auth"] }
+cdk-cln = { workspace = true }
+cdk-lnd = { workspace = true }
+cdk-axum = { workspace = true }
+cdk-sqlite = { workspace = true }
+cdk-redb = { workspace = true }
+cdk-fake-wallet = { workspace = true }
 futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }
@@ -55,7 +55,7 @@ instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
 [dev-dependencies]
 bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
-cdk = { path = "../cdk", features = ["mint", "wallet"] }
-cdk-axum = { path = "../cdk-axum" }
-cdk-fake-wallet = { path = "../cdk-fake-wallet" }
+cdk = { workspace = true, features = ["mint", "wallet"] }
+cdk-axum = { workspace = true }
+cdk-fake-wallet = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
