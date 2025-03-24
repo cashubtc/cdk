@@ -194,7 +194,7 @@ impl TryFrom<Proof> for AuthProof {
             keyset_id: value.keyset_id,
             secret: value.secret,
             c: value.c,
-            dleq: value.dleq.ok_or({
+            dleq: value.dleq.ok_or_else(|| {
                 tracing::warn!("Dleq proof not included in auth");
                 Error::DleqProofNotIncluded
             })?,
