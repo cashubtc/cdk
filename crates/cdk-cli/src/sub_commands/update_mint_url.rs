@@ -14,7 +14,7 @@ pub struct UpdateMintUrlSubCommand {
 }
 
 pub async fn update_mint_url(
-    multi_mint_wallet: &MultiMintWallet,
+    multi_mint_wallet: &MultiMintWallet<'_>,
     sub_command_args: &UpdateMintUrlSubCommand,
 ) -> Result<()> {
     let UpdateMintUrlSubCommand {

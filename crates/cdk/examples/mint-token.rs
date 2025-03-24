@@ -25,7 +25,7 @@ async fn main() -> Result<(), Error> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Generate a random seed for the wallet
-    let seed = Arc::new(random::<[u8; 32]>());
+    let seed = random::<[u8; 32]>();
 
     // Define the mint URL and currency unit
     let mint_url = "https://testnut.cashu.space";
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(10);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::new(mint_url, unit, localstore, &seed, None)?;
 
     // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;

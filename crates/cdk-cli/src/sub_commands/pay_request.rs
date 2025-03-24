@@ -15,7 +15,7 @@ pub struct PayRequestSubCommand {
 }
 
 pub async fn pay_request(
-    multi_mint_wallet: &MultiMintWallet,
+    multi_mint_wallet: &MultiMintWallet<'_>,
     sub_command_args: &PayRequestSubCommand,
 ) -> Result<()> {
     let payment_request = &sub_command_args.payment_request;

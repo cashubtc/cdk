@@ -14,7 +14,7 @@ use rand::random;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate a random seed for the wallet
-    let seed = Arc::new(random::<[u8; 32]>());
+    let seed = random::<[u8; 32]>();
 
     // Mint URL and currency unit
     let mint_url = "https://testnut.cashu.space";
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::new(mint_url, unit, localstore, &seed, None)?;
 
     // Amount to mint
     for amount in [64] {

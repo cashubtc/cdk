@@ -17,7 +17,7 @@ pub struct RestoreSubCommand {
 }
 
 pub async fn restore(
-    multi_mint_wallet: &MultiMintWallet,
+    multi_mint_wallet: &MultiMintWallet<'_>,
     sub_command_args: &RestoreSubCommand,
 ) -> Result<()> {
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;

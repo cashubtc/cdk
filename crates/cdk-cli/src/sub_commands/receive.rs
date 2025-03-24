@@ -36,7 +36,7 @@ pub struct ReceiveSubCommand {
 }
 
 pub async fn receive(
-    multi_mint_wallet: &MultiMintWallet,
+    multi_mint_wallet: &MultiMintWallet<'_>,
     sub_command_args: &ReceiveSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
@@ -128,7 +128,7 @@ pub async fn receive(
 }
 
 async fn receive_token(
-    multi_mint_wallet: &MultiMintWallet,
+    multi_mint_wallet: &MultiMintWallet<'_>,
     token_str: &str,
     signing_keys: &[SecretKey],
     preimage: &[String],

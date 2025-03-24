@@ -28,12 +28,12 @@ impl Wallet {
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///     let seed = Arc::new(random::<[u8; 32]>());
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = memory::empty().await?;
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -151,12 +151,12 @@ impl Wallet {
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
-    ///     let seed = Arc::new(random::<[u8; 32]>());
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = memory::empty().await?;
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None).unwrap();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;

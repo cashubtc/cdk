@@ -19,7 +19,7 @@ pub struct CreateRequestSubCommand {
 }
 
 pub async fn create_request(
-    multi_mint_wallet: &MultiMintWallet,
+    multi_mint_wallet: &MultiMintWallet<'_>,
     sub_command_args: &CreateRequestSubCommand,
 ) -> Result<()> {
     let keys = Keys::generate();

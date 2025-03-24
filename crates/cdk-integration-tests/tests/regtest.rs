@@ -84,7 +84,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -171,7 +171,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -200,12 +200,12 @@ async fn test_regtest_mint_melt() -> Result<()> {
 async fn test_restore() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let seed = Arc::new(Mnemonic::generate(12)?.to_seed_normalized(""));
+    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        seed.clone(),
+        &seed,
         None,
     )?;
 
@@ -225,7 +225,7 @@ async fn test_restore() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        seed.clone(),
+        &seed,
         None,
     )?;
 
@@ -263,7 +263,7 @@ async fn test_pay_invoice_twice() -> anyhow::Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        Arc::new(Mnemonic::generate(12).unwrap().to_seed_normalized("")),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )?;
 
@@ -333,7 +333,7 @@ async fn test_internal_payment() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -353,7 +353,7 @@ async fn test_internal_payment() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -426,7 +426,7 @@ async fn test_cached_mint() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -465,7 +465,7 @@ async fn test_websocket_connection() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(wallet::memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -520,14 +520,14 @@ async fn test_multimint_melt() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
     let wallet2 = Wallet::new(
         &get_mint_url("1"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 

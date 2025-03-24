@@ -36,7 +36,7 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    let seed = Arc::new(random::<[u8; 32]>());
+    let seed = random::<[u8; 32]>();
 
     let mint_url = "https://testnut.cashu.space";
     let unit = CurrencyUnit::Sat;

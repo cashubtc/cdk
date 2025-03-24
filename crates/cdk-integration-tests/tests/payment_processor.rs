@@ -35,7 +35,7 @@ async fn test_regtest_mint() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -72,7 +72,7 @@ async fn test_regtest_mint_melt() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -125,7 +125,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        Arc::new(Mnemonic::generate(12)?.to_seed_normalized("")),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 

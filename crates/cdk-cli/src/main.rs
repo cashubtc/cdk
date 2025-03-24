@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
             mnemonic
         }
     };
-    let seed = Arc::new(mnemonic.to_seed_normalized(""));
+    let seed = mnemonic.to_seed_normalized("");
 
     let mut wallets: Vec<Wallet> = Vec::new();
 
@@ -163,7 +163,7 @@ async fn main() -> Result<()> {
             &mint_url.to_string(),
             cdk::nuts::CurrencyUnit::Sat,
             localstore.clone(),
-            seed.clone(),
+            &seed,
             None,
         )?;
         if let Some(proxy_url) = args.proxy.as_ref() {
@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
         wallets.push(wallet);
     }
 
-    let multi_mint_wallet = MultiMintWallet::new(localstore, seed.clone(), wallets);
+    let multi_mint_wallet = MultiMintWallet::new(localstore, &seed, wallets);
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {

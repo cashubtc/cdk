@@ -229,10 +229,10 @@ async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
         .first()
         .ok_or(anyhow!("Test mint has empty URLs list"))?;
 
-    let seed = Arc::new(Mnemonic::generate(12)?.to_seed_normalized(""));
+    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let unit = CurrencyUnit::Sat;
     let localstore = cdk_sqlite::wallet::memory::empty().await?;
-    let mut wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
+    let mut wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
 
     wallet.set_client(connector);
 
