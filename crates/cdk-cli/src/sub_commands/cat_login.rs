@@ -45,7 +45,7 @@ pub async fn cat_login(
         Some(wallet) => wallet.clone(),
         None => {
             multi_mint_wallet
-                .add_wallet(&mint_url.to_string(), unit, None)
+                .create_and_add_wallet(&mint_url.to_string(), unit, None)
                 .await?
         }
     };

@@ -52,8 +52,18 @@ impl MultiMintWallet {
         }
     }
 
-    /// Add wallet to MultiMintWallet
-    pub async fn add_wallet(
+    /// Adds a [Wallet] to this [MultiMintWallet]
+    #[instrument(skip(self, wallet))]
+    pub async fn add_wallet(&self, wallet: Wallet) {
+        let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit.clone());
+
+        let mut wallets = self.wallets.lock().await;
+
+        wallets.insert(wallet_key, wallet);
+    }
+
+    /// Creates a new [Wallet] and adds it to this [MultiMintWallet]
+    pub async fn create_and_add_wallet(
         &self,
         mint_url: &str,
         unit: CurrencyUnit,
@@ -67,10 +77,7 @@ impl MultiMintWallet {
             target_proof_count,
         )?;
 
-        let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit.clone());
-
-        let mut wallets = self.wallets.lock().await;
-        wallets.insert(wallet_key, wallet.clone());
+        self.add_wallet(wallet.clone()).await;
 
         Ok(wallet)
     }

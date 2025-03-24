@@ -141,7 +141,7 @@ async fn receive_token(
 
     if multi_mint_wallet.get_wallet(&wallet_key).await.is_none() {
         multi_mint_wallet
-            .add_wallet(
+            .create_and_add_wallet(
                 &mint_url.to_string(),
                 token.unit().unwrap_or_default(),
                 None,
