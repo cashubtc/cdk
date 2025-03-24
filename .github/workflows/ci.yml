@@ -84,16 +84,26 @@ jobs:
             -p cashu --no-default-features --features wallet,
             -p cashu --no-default-features --features mint,
             -p cashu --no-default-features --features "mint swagger",
+            -p cashu --no-default-features --features auth,
+            -p cashu --no-default-features --features "mint auth",
+            -p cashu --no-default-features --features "wallet auth",
             -p cdk-common,
             -p cdk-common --no-default-features,
             -p cdk-common --no-default-features --features wallet,
             -p cdk-common --no-default-features --features mint,
             -p cdk-common --no-default-features --features "mint swagger",
+            -p cdk-common --no-default-features --features "auth",
+            -p cdk-common --no-default-features --features "mint auth",
+            -p cdk-common --no-default-features --features "wallet auth",
             -p cdk,
             -p cdk --no-default-features,
             -p cdk --no-default-features --features wallet,
             -p cdk --no-default-features --features mint,
             -p cdk --no-default-features --features "mint swagger",
+            -p cdk --no-default-features --features auth,
+            -p cdk --features auth,
+            -p cdk --no-default-features --features "auth mint",
+            -p cdk --no-default-features --features "auth wallet",
             -p cdk-redb,
             -p cdk-sqlite,
             -p cdk-sqlite --features sqlcipher,
@@ -101,6 +111,7 @@ jobs:
             -p cdk-axum --no-default-features --features swagger,
             -p cdk-axum --no-default-features --features redis,
             -p cdk-axum --no-default-features --features "redis swagger",
+            -p cdk-axum --no-default-features --features "auth redis",
             -p cdk-axum,
             -p cdk-cln,
             -p cdk-lnd,
@@ -126,6 +137,8 @@ jobs:
             --bin cdk-mintd --no-default-features --features "swagger lnd",
             --bin cdk-mintd --no-default-features --features "swagger cln",
             --bin cdk-mintd --no-default-features --features "swagger lnbits",
+            --bin cdk-mintd --no-default-features --features "auth lnd",
+            --bin cdk-mintd --no-default-features --features "auth cln",
             --bin cdk-mint-cli,
           ]
     steps:
@@ -142,11 +155,11 @@ jobs:
       - name: Test
         run: nix develop -i -L .#stable --command cargo test ${{ matrix.build-args }}
 
-  itest:
+  regtest-itest:
     name: "Integration regtest tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [pre-commit-checks, clippy, pure-itest, fake-wallet-itest]
+    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
       matrix:
         build-args:
@@ -167,13 +180,11 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v6
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
           
-  fake-wallet-itest:
-    name: "Integration fake wallet tests"
+  fake-mint-itest:
+    name: "Integration fake mint tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [pre-commit-checks, clippy]
@@ -198,8 +209,8 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
-      - name: Test fake mint
+        run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
+      - name: Test fake auth mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
                 
   pure-itest:
@@ -224,7 +235,7 @@ jobs:
     name: "Payment processor tests"
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [pre-commit-checks, clippy, pure-itest, fake-wallet-itest, itest]
+    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest, regtest-itest]
     strategy:
       matrix:
         ln: 
@@ -256,7 +267,10 @@ jobs:
           [
             -p cashu --no-default-features --features "wallet mint",
             -p cdk-common --no-default-features --features "wallet mint",
-            -p cdk --no-default-features --features "mint mint",
+            -p cdk,
+            -p cdk --no-default-features --features "mint auth",
+            -p cdk --no-default-features --features "wallet auth",
+            -p cdk --no-default-features --features "http_subscription",
             -p cdk-axum,
             -p cdk-axum --no-default-features --features redis,
             -p cdk-lnbits,
@@ -339,3 +353,39 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Build cdk wasm
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
+
+  fake-mint-auth-itest:
+    name: "Integration fake mint auth tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
+    strategy:
+      matrix:
+        database: 
+          [
+          REDB,
+          SQLITE,
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Start Keycloak with Backup
+        run: |
+          docker compose -f misc/keycloak/docker-compose-recover.yml up -d
+          until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do sleep 1; done
+
+      - name: Verify Keycloak Import
+        run: |
+          docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Imported"
+      - name: Test fake auth mint
+        run: nix develop -i -L .#stable --command just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
+      - name: Stop and clean up Docker Compose
+        run: |
+          docker compose -f misc/keycloak/docker-compose-recover.yml down
+

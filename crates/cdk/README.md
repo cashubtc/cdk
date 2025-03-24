@@ -44,7 +44,7 @@ async fn main() {
 
     let localstore = memory::empty().await.unwrap();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
 
     let quote = wallet.mint_quote(amount).await.unwrap();
 

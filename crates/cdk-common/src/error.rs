@@ -58,6 +58,36 @@ pub enum Error {
     /// Multi-Part Payment not supported for unit and method
     #[error("Multi-Part payment is not supported for unit `{0}` and method `{1}`")]
     MppUnitMethodNotSupported(CurrencyUnit, PaymentMethod),
+    /// Clear Auth Required
+    #[error("Clear Auth Required")]
+    ClearAuthRequired,
+    /// Blind Auth Required
+    #[error("Blind Auth Required")]
+    BlindAuthRequired,
+    /// Clear Auth Failed
+    #[error("Clear Auth Failed")]
+    ClearAuthFailed,
+    /// Blind Auth Failed
+    #[error("Blind Auth Failed")]
+    BlindAuthFailed,
+    /// Auth settings undefined
+    #[error("Auth settings undefined")]
+    AuthSettingsUndefined,
+    /// Mint time outside of tolerance
+    #[error("Mint time outside of tolerance")]
+    MintTimeExceedsTolerance,
+    /// Insufficient blind auth tokens
+    #[error("Insufficient blind auth tokens, must reauth")]
+    InsufficientBlindAuthTokens,
+    /// Auth localstore undefined
+    #[error("Auth localstore undefined")]
+    AuthLocalstoreUndefined,
+    /// Wallet cat not set
+    #[error("Wallet cat not set")]
+    CatNotSet,
+    /// Could not get mint info
+    #[error("Could not get mint info")]
+    CouldNotGetMintInfo,
 
     // Mint Errors
     /// Minting is disabled
@@ -126,6 +156,9 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
+    /// Oidc config not set
+    #[error("Oidc client not set")]
+    OidcNotSet,
 
     // Wallet Errors
     /// P2PK spending conditions not met
@@ -156,6 +189,9 @@ pub enum Error {
     /// Invalid DLEQ proof
     #[error("Could not verify DLEQ proof")]
     CouldNotVerifyDleq,
+    /// Dleq Proof not provided for signature
+    #[error("Dleq proof not provided for signature")]
+    DleqProofNotProvided,
     /// Incorrect Mint
     /// Token does not match wallet mint
     #[error("Token does not match wallet mint")]
@@ -213,7 +249,7 @@ pub enum Error {
     /// Http transport error
     #[error("Http transport error: {0}")]
     HttpError(String),
-
+    #[cfg(feature = "wallet")]
     // Crate error conversions
     /// Cashu Url Error
     #[error(transparent)]
@@ -264,6 +300,12 @@ pub enum Error {
     /// NUT20 Error
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
+    /// NUTXX Error
+    #[error(transparent)]
+    NUT21(#[from] crate::nuts::nut21::Error),
+    /// NUTXX1 Error
+    #[error(transparent)]
+    NUT22(#[from] crate::nuts::nut22::Error),
     /// Database Error
     #[error(transparent)]
     Database(#[from] crate::database::Error),
@@ -397,6 +439,26 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::ClearAuthRequired => ErrorResponse {
+                code: ErrorCode::ClearAuthRequired,
+                error: None,
+                detail: None,
+            },
+            Error::ClearAuthFailed => ErrorResponse {
+                code: ErrorCode::ClearAuthFailed,
+                error: None,
+                detail: None,
+            },
+            Error::BlindAuthRequired => ErrorResponse {
+                code: ErrorCode::BlindAuthRequired,
+                error: None,
+                detail: None,
+            },
+            Error::BlindAuthFailed => ErrorResponse {
+                code: ErrorCode::BlindAuthFailed,
+                error: None,
+                detail: None,
+            },
             Error::NUT20(err) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 error: Some(err.to_string()),
@@ -456,6 +518,8 @@ impl From<ErrorResponse> for Error {
             ErrorCode::DuplicateOutputs => Self::DuplicateOutputs,
             ErrorCode::MultipleUnits => Self::MultipleUnits,
             ErrorCode::UnitMismatch => Self::UnitMismatch,
+            ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
+            ErrorCode::BlindAuthRequired => Self::BlindAuthRequired,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -507,6 +571,14 @@ pub enum ErrorCode {
     MultipleUnits,
     /// Input unit does not match output
     UnitMismatch,
+    /// Clear Auth Required
+    ClearAuthRequired,
+    /// Clear Auth Failed
+    ClearAuthFailed,
+    /// Blind Auth Required
+    BlindAuthRequired,
+    /// Blind Auth Failed
+    BlindAuthFailed,
     /// Unknown error code
     Unknown(u16),
 }
@@ -536,6 +608,10 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
+            30001 => Self::ClearAuthRequired,
+            30002 => Self::ClearAuthFailed,
+            31001 => Self::BlindAuthRequired,
+            31002 => Self::BlindAuthFailed,
             _ => Self::Unknown(code),
         }
     }
@@ -564,6 +640,10 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
+            Self::ClearAuthRequired => 30001,
+            Self::ClearAuthFailed => 30002,
+            Self::BlindAuthRequired => 31001,
+            Self::BlindAuthFailed => 31002,
             Self::Unknown(code) => *code,
         }
     }

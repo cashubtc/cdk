@@ -2,15 +2,14 @@ use cdk_common::payment::Bolt11Settings;
 use tracing::instrument;
 use uuid::Uuid;
 
-use super::verification::Verification;
-use super::{
-    nut04, CurrencyUnit, Mint, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    NotificationPayload, PaymentMethod, PublicKey,
+use crate::mint::{
+    CurrencyUnit, MintBolt11Request, MintBolt11Response, MintQuote, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteState, NotificationPayload, PublicKey, Verification,
 };
-use crate::nuts::MintQuoteState;
+use crate::nuts::PaymentMethod;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
-use crate::{ensure_cdk, Amount, Error};
+use crate::{ensure_cdk, Amount, Error, Mint};
 
 impl Mint {
     /// Checks that minting is enabled, request is supported unit and within range
@@ -260,8 +259,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_mint_request(
         &self,
-        mint_request: nut04::MintBolt11Request<Uuid>,
-    ) -> Result<nut04::MintBolt11Response, Error> {
+        mint_request: MintBolt11Request<Uuid>,
+    ) -> Result<MintBolt11Response, Error> {
         let mint_quote = self
             .localstore
             .get_mint_quote(&mint_request.quote)
@@ -356,7 +355,7 @@ impl Mint {
         self.pubsub_manager
             .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);
 
-        Ok(nut04::MintBolt11Response {
+        Ok(MintBolt11Response {
             signatures: blind_signatures,
         })
     }

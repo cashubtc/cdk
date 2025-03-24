@@ -98,3 +98,14 @@ reserve_fee_min = 4
 # addr = "127.0.0.1"
 # port = 50051
 # tls_dir = "/path/to/tls"
+
+# [auth]
+# openid_discovery = "http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
+# openid_client_id = "cashu-client"
+# mint_max_bat=50
+# enabled_mint=true
+# enabled_melt=true
+# enabled_swap=true
+# enabled_check_mint_quote=true
+# enabled_check_melt_quote=true
+# enabled_restore=true

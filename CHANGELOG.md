@@ -9,6 +9,7 @@
 - cdk: proof matches conditions was not matching payment conditions correctly ([thesimplekid]).
 - cdk: Updating mint_url would remove proofs when we want to keep them ([ok300]).
 - Wallet: Fix ability to receive cashu tokens that include DLEQ proofs ([ok300]).
+- cdk-sqlite: Wallet was not storing dleq proofs ([thesimplekid]).
 ### Changed
 - Updated MSRV to 1.75.0 ([thesimplekid]).
 - cdk-sqlite: Do not use `UPDATE OR REPLACE` ([crodas]).
@@ -18,6 +19,7 @@
 - Unifies and optimizes the proof selection algorithm to use Wallet::select_proofs ([davidcaseria]).
 - Wallet::send now requires a PreparedSend ([davidcaseria]).
 - WalletDatabase proof state update functions have been consolidated into update_proofs_state ([davidcaseria]).
+- Moved `MintQuote` and `MeltQuote` from `cashu` to `cdk-common` ([thesimplekid]).
 
 ### Added
 - Added redb feature to mintd in order to meet MSRV target ([thesimplekid]).

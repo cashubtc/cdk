@@ -139,21 +139,6 @@ impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
     }
 }
 
-#[cfg(feature = "mint")]
-impl From<crate::mint::MintQuote> for MintQuoteBolt11Response<Uuid> {
-    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<Uuid> {
-        MintQuoteBolt11Response {
-            quote: mint_quote.id,
-            request: mint_quote.request,
-            state: mint_quote.state,
-            expiry: Some(mint_quote.expiry),
-            pubkey: mint_quote.pubkey,
-            amount: Some(mint_quote.amount),
-            unit: Some(mint_quote.unit.clone()),
-        }
-    }
-}
-
 /// Mint request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]

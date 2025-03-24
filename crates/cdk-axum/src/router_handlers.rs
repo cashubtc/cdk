@@ -4,6 +4,8 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
+#[cfg(feature = "auth")]
+use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
@@ -15,6 +17,8 @@ use paste::paste;
 use tracing::instrument;
 use uuid::Uuid;
 
+#[cfg(feature = "auth")]
+use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
@@ -24,25 +28,29 @@ macro_rules! post_cache_wrapper {
             /// Cache wrapper function for $handler:
             /// Wrap $handler into a function that caches responses using the request as key
             pub async fn [<cache_ $handler>](
+                #[cfg(feature = "auth")] auth: AuthHeader,
                 state: State<MintState>,
                 payload: Json<$request_type>
             ) -> Result<Json<$response_type>, Response> {
                 use std::ops::Deref;
-
                 let json_extracted_payload = payload.deref();
                 let State(mint_state) = state.clone();
                 let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
                     Some(key) => key,
                     None => {
                         // Could not calculate key, just return the handler result
-                        return $handler(state, payload).await;
+                        #[cfg(feature = "auth")]
+                        return $handler(auth, state, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler( state, payload).await;
                     }
                 };
-
                 if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
                     return Ok(Json(cached_response));
                 }
-
+                #[cfg(feature = "auth")]
+                let response = $handler(auth, state, payload).await?;
+                #[cfg(not(feature = "auth"))]
                 let response = $handler(state, payload).await?;
                 mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
@@ -74,7 +82,10 @@ post_cache_wrapper!(
 /// Get the public keys of the newest mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
-pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysResponse>, Response> {
+#[instrument(skip_all)]
+pub(crate) async fn get_keys(
+    State(state): State<MintState>,
+) -> Result<Json<KeysResponse>, Response> {
     let pubkeys = state.mint.pubkeys().await.map_err(|err| {
         tracing::error!("Could not get keys: {}", err);
         into_response(err)
@@ -98,7 +109,8 @@ pub async fn get_keys(State(state): State<MintState>) -> Result<Json<KeysRespons
 /// Get the public keys of a specific keyset
 ///
 /// Get the public keys of the mint from a specific keyset ID.
-pub async fn get_keyset_pubkeys(
+#[instrument(skip_all, fields(keyset_id = ?keyset_id))]
+pub(crate) async fn get_keyset_pubkeys(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
 ) -> Result<Json<KeysResponse>, Response> {
@@ -122,7 +134,10 @@ pub async fn get_keyset_pubkeys(
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
-pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetResponse>, Response> {
+#[instrument(skip_all)]
+pub(crate) async fn get_keysets(
+    State(state): State<MintState>,
+) -> Result<Json<KeysetResponse>, Response> {
     let keysets = state.mint.keysets().await.map_err(|err| {
         tracing::error!("Could not get keysets: {}", err);
         into_response(err)
@@ -144,10 +159,22 @@ pub async fn get_keysets(State(state): State<MintState>) -> Result<Json<KeysetRe
 /// Request a quote for minting of new tokens
 ///
 /// Request minting of new tokens. The mint responds with a Lightning invoice. This endpoint can be used for a Lightning invoice UX flow.
-pub async fn post_mint_bolt11_quote(
+#[instrument(skip_all, fields(amount = ?payload.amount))]
+pub(crate) async fn post_mint_bolt11_quote(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(feature = "auth")]
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
+        )
+        .await
+        .map_err(into_response)?;
+
     let quote = state
         .mint
         .get_mint_bolt11_quote(payload)
@@ -172,10 +199,24 @@ pub async fn post_mint_bolt11_quote(
 /// Get mint quote by ID
 ///
 /// Get mint quote state.
-pub async fn get_check_mint_bolt11_quote(
+#[instrument(skip_all, fields(quote_id = ?quote_id))]
+pub(crate) async fn get_check_mint_bolt11_quote(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let quote = state
         .mint
         .check_mint_quote(&quote_id)
@@ -188,7 +229,11 @@ pub async fn get_check_mint_bolt11_quote(
     Ok(Json(quote))
 }
 
-pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+#[instrument(skip_all)]
+pub(crate) async fn ws_handler(
+    State(state): State<MintState>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
     ws.on_upgrade(|ws| main_websocket(ws, state))
 }
 
@@ -207,10 +252,24 @@ pub async fn ws_handler(State(state): State<MintState>, ws: WebSocketUpgrade) ->
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-pub async fn post_mint_bolt11(
+#[instrument(skip_all, fields(quote_id = ?payload.quote))]
+pub(crate) async fn post_mint_bolt11(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,
 ) -> Result<Json<MintBolt11Response>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let res = state
         .mint
         .process_mint_request(payload)
@@ -235,10 +294,23 @@ pub async fn post_mint_bolt11(
 ))]
 #[instrument(skip_all)]
 /// Request a quote for melting tokens
-pub async fn post_melt_bolt11_quote(
+pub(crate) async fn post_melt_bolt11_quote(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let quote = state
         .mint
         .get_melt_bolt11_quote(&payload)
@@ -263,11 +335,24 @@ pub async fn post_melt_bolt11_quote(
 /// Get melt quote by ID
 ///
 /// Get melt quote state.
-#[instrument(skip_all)]
-pub async fn get_check_melt_bolt11_quote(
+#[instrument(skip_all, fields(quote_id = ?quote_id))]
+pub(crate) async fn get_check_melt_bolt11_quote(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let quote = state
         .mint
         .check_melt_quote(&quote_id)
@@ -294,10 +379,23 @@ pub async fn get_check_melt_bolt11_quote(
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
 #[instrument(skip_all)]
-pub async fn post_melt_bolt11(
+pub(crate) async fn post_melt_bolt11(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltBolt11Request<Uuid>>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let res = state
         .mint
         .melt_bolt11(&payload)
@@ -320,10 +418,24 @@ pub async fn post_melt_bolt11(
 /// Check whether a proof is spent already or is pending in a transaction
 ///
 /// Check whether a secret has been spent already or not.
-pub async fn post_check(
+#[instrument(skip_all, fields(y_count = ?payload.ys.len()))]
+pub(crate) async fn post_check(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<CheckStateRequest>,
 ) -> Result<Json<CheckStateResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let state = state.mint.check_state(&payload).await.map_err(|err| {
         tracing::error!("Could not check state of proofs");
         into_response(err)
@@ -341,7 +453,10 @@ pub async fn post_check(
     )
 ))]
 /// Mint information, operator contact information, and other info
-pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintInfo>, Response> {
+#[instrument(skip_all)]
+pub(crate) async fn get_mint_info(
+    State(state): State<MintState>,
+) -> Result<Json<MintInfo>, Response> {
     Ok(Json(
         state
             .mint
@@ -371,10 +486,24 @@ pub async fn get_mint_info(State(state): State<MintState>) -> Result<Json<MintIn
 /// Requests a set of Proofs to be swapped for another set of BlindSignatures.
 ///
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
-pub async fn post_swap(
+#[instrument(skip_all, fields(inputs_count = ?payload.inputs.len()))]
+pub(crate) async fn post_swap(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let swap_response = state
         .mint
         .process_swap_request(payload)
@@ -383,6 +512,7 @@ pub async fn post_swap(
             tracing::error!("Could not process swap request: {}", err);
             into_response(err)
         })?;
+
     Ok(Json(swap_response))
 }
 
@@ -397,10 +527,24 @@ pub async fn post_swap(
     )
 ))]
 /// Restores blind signature for a set of outputs.
-pub async fn post_restore(
+#[instrument(skip_all, fields(outputs_count = ?payload.outputs.len()))]
+pub(crate) async fn post_restore(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
     let restore_response = state.mint.restore(payload).await.map_err(|err| {
         tracing::error!("Could not process restore: {}", err);
         into_response(err)
@@ -409,7 +553,8 @@ pub async fn post_restore(
     Ok(Json(restore_response))
 }
 
-pub fn into_response<T>(error: T) -> Response
+#[instrument(skip_all)]
+pub(crate) fn into_response<T>(error: T) -> Response
 where
     T: Into<ErrorResponse>,
 {
