@@ -93,6 +93,7 @@ fake-auth-mint-itest db openid_discovery:
 run-examples:
   cargo r --example p2pk
   cargo r --example mint-token
+  cargo r --example melt-token
   cargo r --example proof_selection
   cargo r --example wallet
 

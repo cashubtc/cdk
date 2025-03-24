@@ -22,6 +22,7 @@ check-wasm *ARGS="--target wasm32-unknown-unknown":
 run-examples:
   cargo r --example p2pk
   cargo r --example mint-token
+  cargo r --example melt-token
   cargo r --example proof_selection
   cargo r --example wallet
 

@@ -69,6 +69,10 @@ name = "mint-token"
 required-features = ["wallet"]
 
 [[example]]
+name = "melt-token"
+required-features = ["wallet"]
+
+[[example]]
 name = "p2pk"
 required-features = ["wallet"]
 
