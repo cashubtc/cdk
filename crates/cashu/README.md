@@ -60,20 +60,20 @@ println!("Token amount: {}", amount);
 
 | # | Description | Status
 | --- | --- | --- |
-| [07][07] | Token state check | :heavy_check_mark: |
-| [08][08] | Overpaid Lightning fees | :heavy_check_mark: |
-| [09][09] | Signature restore | :heavy_check_mark: |
-| [10][10] | Spending conditions | :heavy_check_mark: |
-| [11][11] | Pay-To-Pubkey (P2PK) | :heavy_check_mark: |
-| [12][12] | DLEQ proofs | :heavy_check_mark: |
-| [13][13] | Deterministic secrets | :heavy_check_mark: |
-| [14][14] | Hashed Timelock Contracts (HTLCs) | :heavy_check_mark: |
-| [15][15] | Partial multi-path payments (MPP) | :heavy_check_mark: |
-| [16][16] | Animated QR codes | :x: |
-| [17][17] | WebSocket subscriptions  | :heavy_check_mark: |
-| [18][18] | Payment Requests  | :heavy_check_mark: |
-| [19][19] | Cached responses  | :heavy_check_mark: |
-| [20][20] | Signature on Mint Quote  | :heavy_check_mark: |
+| [07][07] | Token state check | Implemented |
+| [08][08] | Overpaid Lightning fees | Implemented |
+| [09][09] | Signature restore | Implemented |
+| [10][10] | Spending conditions | Implemented |
+| [11][11] | Pay-To-Pubkey (P2PK) | Implemented |
+| [12][12] | DLEQ proofs | Implemented |
+| [13][13] | Deterministic secrets | Implemented |
+| [14][14] | Hashed Timelock Contracts (HTLCs) | Implemented |
+| [15][15] | Partial multi-path payments (MPP) | Implemented |
+| [16][16] | Animated QR codes | Not implemented |
+| [17][17] | WebSocket subscriptions  | Implemented |
+| [18][18] | Payment Requests  | Implemented |
+| [19][19] | Cached responses  | Implemented |
+| [20][20] | Signature on Mint Quote  | Implemented |
 
 ## License
 
