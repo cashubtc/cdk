@@ -4,6 +4,26 @@ members = [
 ]
 resolver = "2"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused = "warn"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+pedantic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+clone_on_ref_ptr = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_safety_doc = "warn"
+nursery = "warn"
+redundant_else = "warn"
+redundant_closure_for_method_calls = "warn"
+unneeded_field_pattern = "warn"
+use_debug = "warn"
+
 [workspace.lints.rustdoc]
 missing_docs = "warn"
 bare_urls = "warn"
