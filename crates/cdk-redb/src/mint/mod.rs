@@ -722,7 +722,7 @@ impl MintDatabase for MintRedbDatabase {
         }
 
         // Check if any proofs are spent
-        if states.iter().any(|state| *state == Some(State::Spent)) {
+        if states.contains(&Some(State::Spent)) {
             write_txn.abort().map_err(Error::from)?;
             return Err(database::Error::AttemptUpdateSpentProof);
         }
