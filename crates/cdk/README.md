@@ -102,3 +102,87 @@ cargo update -p bumpalo --precise 3.12.0
 ## License
 
 This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details
+# CDK (Cashu Development Kit)
+
+[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk)
+[![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
+
+The core implementation of the Cashu protocol for building wallets and mints.
+
+## Overview
+
+The `cdk` crate provides the main implementation of the Cashu protocol, offering a comprehensive toolkit for building Cashu wallets and mints. It builds upon the primitives defined in the `cashu` crate and provides higher-level abstractions for working with the Cashu ecosystem.
+
+## Features
+
+- **Wallet Implementation**: Complete wallet functionality for managing tokens, proofs, and transactions
+- **Mint Implementation**: Server-side functionality for operating a Cashu mint
+- **Database Abstractions**: Interfaces for persistent storage of wallet and mint data
+- **Payment Processing**: Handling of Lightning Network payments and other payment methods
+- **NUTs Implementation**: Full implementation of the Cashu NUTs (Notation, Usage, and Terminology)
+
+## Usage
+
+Add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+cdk = "0.8.1"
+```
+
+### Wallet Example
+
+```rust
+use cdk::wallet::{Wallet, WalletBuilder};
+use cdk_common::mint_url::MintUrl;
+use std::str::FromStr;
+
+async fn create_wallet() {
+    // Create a wallet with an in-memory database
+    let wallet = WalletBuilder::default()
+        .build()
+        .await
+        .expect("Failed to create wallet");
+    
+    // Add a mint to the wallet
+    let mint_url = MintUrl::from_str("https://example.mint").expect("Valid mint URL");
+    wallet.add_mint(mint_url).await.expect("Failed to add mint");
+    
+    // Now you can receive, send tokens, etc.
+}
+```
+
+### Mint Example
+
+```rust
+use cdk::mint::{Mint, MintBuilder};
+use cdk::mint::config::MintConfig;
+
+async fn create_mint() {
+    // Create a mint configuration
+    let config = MintConfig::default();
+    
+    // Build a mint with the configuration
+    let mint = MintBuilder::new(config)
+        .build()
+        .await
+        .expect("Failed to create mint");
+    
+    // The mint can now process requests, issue tokens, etc.
+}
+```
+
+## Components
+
+The crate includes several key modules:
+
+- **wallet**: Implementation of the Cashu wallet
+- **mint**: Implementation of the Cashu mint
+- **database**: Database abstractions for persistent storage
+- **payment**: Payment processing functionality
+- **nuts**: Implementation of the Cashu NUTs
+
+## License
+
+This project is licensed under the [MIT License](https://github.com/cashubtc/cdk/blob/main/LICENSE).
