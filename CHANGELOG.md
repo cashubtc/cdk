@@ -4,6 +4,14 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+
+## [v0.8.1](https://github.com/cashubtc/cdk/releases/tag/v0.8.1)
+### Fixed
+- cashu: Handle url with paths [PR](https://github.com/cashubtc/cdk/pull/678) ([benthecarmane]).
+
+### Changed
+- cdk: export `MintKeySetInfo` [PR](https://github.com/cashubtc/cdk/pull/673) ([davidcaseria]).
+
 ## [v0.8.0](https://github.com/cashubtc/cdk/releases/tag/v0.8.0)
 ### Fixed
 - cdk: proof matches conditions was not matching payment conditions correctly ([thesimplekid]).
