@@ -71,6 +71,7 @@ impl MintPayment for Cln {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
+            amountless: true,
         })?)
     }
 

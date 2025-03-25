@@ -108,6 +108,7 @@ impl MintPayment for FakeWallet {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
+            amountless: false,
         })?)
     }
 
