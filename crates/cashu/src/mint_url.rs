@@ -56,7 +56,7 @@ impl MintUrl {
             .join("/");
         let mut formatted_url = format!("{}://{}", protocol, host);
         if !path.is_empty() {
-            formatted_url.push_str(&format!("/{}", path));
+            formatted_url.push_str(&format!("/{}/", path));
         }
         Ok(formatted_url)
     }
@@ -121,12 +121,47 @@ mod tests {
         assert_eq!(correct_cased_url, cased_url_formatted.to_string());
 
         let wrong_cased_url_with_path = "http://URL-to-check.com/PATH/to/check";
-        let correct_cased_url_with_path = "http://url-to-check.com/PATH/to/check";
+        let correct_cased_url_with_path = "http://url-to-check.com/PATH/to/check/";
 
         let cased_url_with_path_formatted = MintUrl::from_str(wrong_cased_url_with_path).unwrap();
         assert_eq!(
             correct_cased_url_with_path,
             cased_url_with_path_formatted.to_string()
+        );
+    }
+
+    #[test]
+    fn test_join_paths() {
+        let url_no_path = "http://url-to-check.com";
+
+        let url = MintUrl::from_str(url_no_path).unwrap();
+        assert_eq!(
+            format!("{url_no_path}/hello/world"),
+            url.join_paths(&["hello", "world"]).unwrap().to_string()
+        );
+
+        let url_no_path_with_slash = "http://url-to-check.com/";
+
+        let url = MintUrl::from_str(url_no_path_with_slash).unwrap();
+        assert_eq!(
+            format!("{url_no_path_with_slash}hello/world"),
+            url.join_paths(&["hello", "world"]).unwrap().to_string()
+        );
+
+        let url_with_path = "http://url-to-check.com/my/path";
+
+        let url = MintUrl::from_str(url_with_path).unwrap();
+        assert_eq!(
+            format!("{url_with_path}/hello/world"),
+            url.join_paths(&["hello", "world"]).unwrap().to_string()
+        );
+
+        let url_with_path_with_slash = "http://url-to-check.com/my/path/";
+
+        let url = MintUrl::from_str(url_with_path_with_slash).unwrap();
+        assert_eq!(
+            format!("{url_with_path_with_slash}hello/world"),
+            url.join_paths(&["hello", "world"]).unwrap().to_string()
         );
     }
 }
