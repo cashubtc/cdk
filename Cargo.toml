@@ -6,6 +6,7 @@ resolver = "2"
 
 [workspace.lints.rustdoc]
 missing_docs = "warn"
+bare_urls = "warn"
 
 [workspace.package]
 edition = "2021"
