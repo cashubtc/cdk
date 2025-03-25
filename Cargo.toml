@@ -8,7 +8,7 @@ resolver = "2"
 unsafe_code = "forbid"
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
-large_enum_variant = { level = "allow", priority = 1 }
+large_enum_variant = "warn"
 
 [workspace.lints.clippy]
 pedantic = "warn"
