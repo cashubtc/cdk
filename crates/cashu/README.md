@@ -34,11 +34,11 @@ use cashu::nuts::nut00::Token;
 use std::str::FromStr;
 
 // Parse a Cashu token from a string
-let token_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vZXhhbXBsZS5jb20iLCJwcm9vZnMiOlt7ImlkIjoiMDAwMDAwMDAwMDAwMDAwMCIsImFtb3VudCI6MX1dfV19";
+let token_str = "cashuBo2FteCJodHRwczovL25vZmVlcy50ZXN0bnV0LmNhc2h1LnNwYWNlYXVjc2F0YXSBomFpSAC0zSfYhhpEYXCCpGFhAmFzeEAzYzNlOWRhMDU3ZjQzNmExOTc2MmRhOWYyYTBjMzc5YzE5N2RlNDMzZDY5MWU1NDI0ZmRjODcxNjZjMmNlMjZmYWNYIQKKtwESLR-yn5rqNAL3_8_H5BtpwjSPs7uOJ18kPn2mV2Fko2FlWCCsMAK1xoLlwVRxpv8hfsxKYXlXTOomiVt3JCbzNgQpUmFzWCD9MfRUr0asiF_jUJMSylphLvKUd2SLz9oSpcvuLCXPp2FyWCA_1toQ_l158xW0zorqTBXvh76o-_D3e-Ru1Ea-51UrFaRhYQhhc3hAMTM5YWRjZDJlY2Q5MWQyNjNjMDhhMzdhNjBmODZjNDVkYWE3NjNmNjM4NTY0NzEyMmFiZjhlMDM3OGQ0NjA5OGFjWCECHZh5Qx9o-8PaY6t0d5hRTbWeez1dh3md7ehfE25f2N5hZKNhZVgg5MLkVzIw2tDzdUpYwFe-MLhIPJ4hkCpPGL0X7RxpPIRhc1ggyEtcsq3FX8wZOGpwTXOP7BsqfdYdMhGG1X8jVjncDcVhclggyLVOc2xy4m1_YeYGef2HQ8WyJX7LjZq403CS9Dt_eME=";
 let token = Token::from_str(token_str).expect("Valid token");
 
 // Get the total amount
-let amount: Amount = token.amount();
+let amount: Amount = token.value().expect("Value");
 println!("Token amount: {}", amount);
 ```
 
