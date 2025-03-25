@@ -7,7 +7,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure tonic build to generate code with documentation
     tonic_build::configure()
         .protoc_arg("--experimental_allow_proto3_optional")
-        // Add #[allow(missing_docs)] attribute to all generated items
         .type_attribute(".", "#[allow(missing_docs)]")
         .field_attribute(".", "#[allow(missing_docs)]")
         .compile_protos(&["src/proto/cdk-mint-rpc.proto"], &["src/proto"])?;
