@@ -123,6 +123,8 @@ jobs:
             -p cdk-payment-processor,
             --bin cdk-cli,
             --bin cdk-cli --features sqlcipher,
+            --bin cdk-cli --features redb,
+            --bin cdk-cli --features "sqlcipher redb",
             --bin cdk-mintd,
             --bin cdk-mintd --features redis,
             --bin cdk-mintd --features redb,
