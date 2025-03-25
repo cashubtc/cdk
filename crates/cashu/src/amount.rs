@@ -49,7 +49,7 @@ impl Amount {
     /// Amount zero
     pub const ZERO: Amount = Amount(0);
 
-    // Amount one
+    /// Amount one
     pub const ONE: Amount = Amount(1);
 
     /// Split into parts that are powers of two
@@ -126,12 +126,12 @@ impl Amount {
     pub fn split_with_fee(&self, fee_ppk: u64) -> Result<Vec<Self>, Error> {
         let without_fee_amounts = self.split();
         let fee_ppk = fee_ppk * without_fee_amounts.len() as u64;
-        let fee = Amount::from((fee_ppk + 999) / 1000);
+        let fee = Amount::from(fee_ppk.div_ceil(1000));
         let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
         let split = new_amount.split();
         let split_fee_ppk = split.len() as u64 * fee_ppk;
-        let split_fee = Amount::from((split_fee_ppk + 999) / 1000);
+        let split_fee = Amount::from(split_fee_ppk.div_ceil(1000));
 
         if let Some(net_amount) = new_amount.checked_sub(split_fee) {
             if net_amount >= *self {

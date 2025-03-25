@@ -1,3 +1,5 @@
+//! Proto types for payment processor
+
 use std::str::FromStr;
 
 use cdk_common::payment::{

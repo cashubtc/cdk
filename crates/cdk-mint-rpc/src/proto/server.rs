@@ -48,6 +48,12 @@ pub struct MintRPCServer {
 }
 
 impl MintRPCServer {
+    /// Creates a new MintRPCServer instance
+    ///
+    /// # Arguments
+    /// * `addr` - The address to bind to
+    /// * `port` - The port to listen on
+    /// * `mint` - The Mint instance to serve
     pub fn new(addr: &str, port: u16, mint: Arc<Mint>) -> Result<Self, Error> {
         Ok(Self {
             socket_addr: format!("{addr}:{port}").parse()?,
@@ -57,6 +63,15 @@ impl MintRPCServer {
         })
     }
 
+    /// Starts the RPC server
+    ///
+    /// # Arguments
+    /// * `tls_dir` - Optional directory containing TLS certificates
+    ///
+    /// If TLS directory is provided, it must contain:
+    /// - server.pem: Server certificate
+    /// - server.key: Server private key
+    /// - ca.pem: CA certificate for client authentication
     pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> Result<(), Error> {
         tracing::info!("Starting RPC server {}", self.socket_addr);
 
@@ -137,6 +152,7 @@ impl MintRPCServer {
         Ok(())
     }
 
+    /// Stops the RPC server gracefully
     pub async fn stop(&self) -> Result<(), Error> {
         self.shutdown.notify_one();
         if let Some(handle) = &self.handle {
@@ -160,6 +176,7 @@ impl Drop for MintRPCServer {
 
 #[tonic::async_trait]
 impl CdkMint for MintRPCServer {
+    /// Returns information about the mint
     async fn get_info(
         &self,
         _request: Request<GetInfoRequest>,
@@ -212,6 +229,7 @@ impl CdkMint for MintRPCServer {
         }))
     }
 
+    /// Updates the mint's message of the day
     async fn update_motd(
         &self,
         request: Request<UpdateMotdRequest>,
@@ -232,6 +250,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates the mint's short description
     async fn update_short_description(
         &self,
         request: Request<UpdateDescriptionRequest>,
@@ -252,6 +271,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates the mint's long description
     async fn update_long_description(
         &self,
         request: Request<UpdateDescriptionRequest>,
@@ -272,6 +292,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates the mint's name
     async fn update_name(
         &self,
         request: Request<UpdateNameRequest>,
@@ -292,6 +313,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates the mint's icon URL
     async fn update_icon_url(
         &self,
         request: Request<UpdateIconUrlRequest>,
@@ -313,6 +335,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Adds a URL to the mint's list of URLs
     async fn add_url(
         &self,
         request: Request<UpdateUrlRequest>,
@@ -335,6 +358,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Removes a URL from the mint's list of URLs
     async fn remove_url(
         &self,
         request: Request<UpdateUrlRequest>,
@@ -357,6 +381,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Adds a contact method to the mint's contact information
     async fn add_contact(
         &self,
         request: Request<UpdateContactRequest>,
@@ -381,6 +406,7 @@ impl CdkMint for MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
         Ok(Response::new(UpdateResponse {}))
     }
+    /// Removes a contact method from the mint's contact information
     async fn remove_contact(
         &self,
         request: Request<UpdateContactRequest>,
@@ -405,6 +431,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates the mint's NUT-04 (mint) settings
     async fn update_nut04(
         &self,
         request: Request<UpdateNut04Request>,
@@ -465,6 +492,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates the mint's NUT-05 (melt) settings
     async fn update_nut05(
         &self,
         request: Request<UpdateNut05Request>,
@@ -518,6 +546,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates the mint's quote time-to-live settings
     async fn update_quote_ttl(
         &self,
         request: Request<UpdateQuoteTtlRequest>,
@@ -543,6 +572,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateResponse {}))
     }
 
+    /// Updates a specific NUT-04 quote's state
     async fn update_nut04_quote(
         &self,
         request: Request<UpdateNut04QuoteRequest>,
@@ -597,6 +627,7 @@ impl CdkMint for MintRPCServer {
         }))
     }
 
+    /// Rotates to the next keyset for the specified currency unit
     async fn rotate_next_keyset(
         &self,
         request: Request<RotateNextKeysetRequest>,

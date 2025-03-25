@@ -361,7 +361,7 @@ impl Mint {
 
     /// Process unpaid melt request
     /// In the event that a melt request fails and the lighthing payment is not
-    /// made The [`Proofs`] should be returned to an unspent state and the
+    /// made The proofs should be returned to an unspent state and the
     /// quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(
@@ -600,7 +600,7 @@ impl Mint {
 
         Ok(res)
     }
-    /// Process melt request marking [`Proofs`] as spent
+    /// Process melt request marking proofs as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]

@@ -69,7 +69,7 @@ const DEFAULT_TTI_SECS: u64 = 60;
 
 /// Http cache key.
 ///
-/// This type ensures no Vec<u8> is used as a key, which is error-prone.
+/// This type ensures no `Vec<u8>` is used as a key, which is error-prone.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpCacheKey([u8; 32]);
 

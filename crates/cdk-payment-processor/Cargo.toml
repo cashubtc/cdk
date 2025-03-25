@@ -8,6 +8,7 @@ homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version.workspace = true                     # MSRV
 license.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "cdk-payment-processor"
