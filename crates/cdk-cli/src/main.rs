@@ -9,6 +9,7 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+#[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
@@ -132,9 +133,15 @@ async fn main() -> Result<()> {
                 Arc::new(sql)
             }
             "redb" => {
-                let redb_path = work_dir.join("cdk-cli.redb");
-
-                Arc::new(WalletRedbDatabase::new(&redb_path)?)
+                #[cfg(feature = "redb")]
+                {
+                    let redb_path = work_dir.join("cdk-cli.redb");
+                    Arc::new(WalletRedbDatabase::new(&redb_path)?)
+                }
+                #[cfg(not(feature = "redb"))]
+                {
+                    bail!("redb feature not enabled");
+                }
             }
             _ => bail!("Unknown DB engine"),
         };
