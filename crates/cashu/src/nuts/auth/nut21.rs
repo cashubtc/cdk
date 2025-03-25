@@ -103,7 +103,7 @@ pub struct ProtectedEndpoint {
 }
 
 impl ProtectedEndpoint {
-    /// Create [`CachedEndpoint`]
+    /// Create [`ProtectedEndpoint`]
     pub fn new(method: Method, path: RoutePath) -> Self {
         Self { method, path }
     }
