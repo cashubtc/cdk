@@ -23,27 +23,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cdk-common = "0.8.1"
-```
-
-### Example
-
-```rust
-use cdk_common::mint_url::MintUrl;
-use cdk_common::common::ProofInfo;
-use std::str::FromStr;
-
-// Parse a mint URL
-let mint_url = MintUrl::from_str("https://example.mint").expect("Valid mint URL");
-
-// Work with common Cashu types
-let proof_info = ProofInfo::new(
-    proof,
-    y,
-    mint_url,
-    state,
-    spending_conditions,
-);
+cdk-common = "*"
 ```
 
 ## Components

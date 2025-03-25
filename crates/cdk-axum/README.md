@@ -23,29 +23,9 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cdk-axum = "0.8.1"
-```
-
-### Example
-
-```rust
-use cdk_axum::{MintServer, MintServerConfig};
-use std::net::SocketAddr;
-
-async fn start_mint_server(mint: impl MintTrait, db: impl MintDatabase) {
-    let config = MintServerConfig {
-        listen_addr: SocketAddr::from(([127, 0, 0, 1], 3338)),
-        cors_allowed_origins: vec!["*".to_string()],
-        cache_ttl: std::time::Duration::from_secs(60),
-        cache_tti: std::time::Duration::from_secs(30),
-        ..Default::default()
-    };
-    
-    let server = MintServer::new(mint, db, config);
-    server.start().await.unwrap();
-}
+cdk-axum = "*"
 ```
 
 ## License
 
-This project is licensed under the [MIT License](../../LICENSE).
+This project is licensed under the [MIT License](https://github.com/cashubtc/cdk/blob/main/LICENSE).

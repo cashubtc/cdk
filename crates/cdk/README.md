@@ -20,7 +20,7 @@ See <https://github.com/cashubtc/cdk/blob/main/README.md>
 
 ## Examples
 
-```rust
+```rust,no_run
 //! Wallet example with memory store
 
 use std::sync::Arc;
@@ -30,6 +30,7 @@ use cdk::amount::SplitTarget;
 use cdk_sqlite::wallet::memory;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::Wallet;
+use cdk::wallet::SendOptions;
 use cdk::Amount;
 use rand::Rng;
 use tokio::time::sleep;
@@ -44,9 +45,9 @@ async fn main() {
 
     let localstore = memory::empty().await.unwrap();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None, None);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
-    let quote = wallet.mint_quote(amount).await.unwrap();
+    let quote = wallet.mint_quote(amount, None).await.unwrap();
 
     println!("Pay request: {}", quote.request);
 
@@ -67,12 +68,11 @@ async fn main() {
         .await
         .unwrap();
 
-    println!("Minted {}", receive_amount);
+    println!("Minted {:?}", receive_amount);
 
-    let token = wallet
-        .send(amount, None, None, &SplitTarget::None)
-        .await
-        .unwrap();
+    // Send the token
+    let prepared_send = wallet.prepare_send(Amount::ONE, SendOptions::default()).await.unwrap();
+    let token = wallet.send(prepared_send, None).await.unwrap();
 
     println!("{}", token);
 }
@@ -134,42 +134,34 @@ cdk = "0.8.1"
 ### Wallet Example
 
 ```rust
-use cdk::wallet::{Wallet, WalletBuilder};
-use cdk_common::mint_url::MintUrl;
+use std::sync::Arc;
 use std::str::FromStr;
 
+use cdk::wallet::{Wallet, WalletBuilder};
+use cdk::mint_url::MintUrl;
+use cdk::Amount;
+use cdk::nuts::CurrencyUnit;
+use cdk_sqlite::wallet::memory;
+use rand::Rng;
+
 async fn create_wallet() {
-    // Create a wallet with an in-memory database
-    let wallet = WalletBuilder::default()
-        .build()
-        .await
-        .expect("Failed to create wallet");
-    
-    // Add a mint to the wallet
-    let mint_url = MintUrl::from_str("https://example.mint").expect("Valid mint URL");
-    wallet.add_mint(mint_url).await.expect("Failed to add mint");
-    
-    // Now you can receive, send tokens, etc.
-}
-```
+    // Initialize the memory store for the wallet
+    let localstore = memory::empty().await.unwrap();
 
-### Mint Example
+    // Generate a random seed for the wallet
+    let seed = rand::thread_rng().gen::<[u8; 32]>();
 
-```rust
-use cdk::mint::{Mint, MintBuilder};
-use cdk::mint::config::MintConfig;
+    // Define the mint URL and currency unit
+    let mint_url = "https://testnut.cashu.space";
+    let unit = CurrencyUnit::Sat;
+    let amount = Amount::from(10);
 
-async fn create_mint() {
-    // Create a mint configuration
-    let config = MintConfig::default();
+    // Create a new wallet
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+
+    // Request a mint quote from the wallet
+    let quote = wallet.mint_quote(amount, None).await.unwrap();
     
-    // Build a mint with the configuration
-    let mint = MintBuilder::new(config)
-        .build()
-        .await
-        .expect("Failed to create mint");
-    
-    // The mint can now process requests, issue tokens, etc.
 }
 ```
 

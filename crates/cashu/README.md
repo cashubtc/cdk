@@ -23,7 +23,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cashu = "0.8.1"
+cashu = "*"
 ```
 
 ### Basic Example

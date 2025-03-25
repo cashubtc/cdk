@@ -21,32 +21,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cdk-fake-wallet = "0.8.1"
-```
-
-### Example
-
-```rust
-use cdk_fake_wallet::FakeWallet;
-use cdk_common::payment::MintPayment;
-use serde_json::Value;
-
-async fn setup_fake_wallet() -> FakeWallet {
-    FakeWallet::default()
-}
-
-async fn create_test_invoice(wallet: &FakeWallet, amount_msat: u64) {
-    let invoice = wallet.create_invoice(
-        amount_msat,
-        "Test payment",
-        Some(600),
-    ).await.unwrap();
-    
-    println!("Test invoice: {}", invoice.payment_request);
-    
-    // In the fake wallet, payments are automatically marked as paid
-    // No need to actually pay the invoice
-}
+cdk-fake-wallet = "*"
 ```
 
 ## Warning
@@ -57,4 +32,4 @@ The fake wallet should never be used in production environments as it does not p
 
 ## License
 
-This project is licensed under the [MIT License](../../LICENSE).
+This project is licensed under the [MIT License](https://github.com/cashubtc/cdk/blob/main/LICENSE).
