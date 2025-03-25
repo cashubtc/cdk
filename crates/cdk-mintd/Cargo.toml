@@ -8,6 +8,7 @@ homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 description = "CDK mint binary"
 rust-version.workspace = true
+readme = "README.md"
 
 [features]
 default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "auth"]

@@ -8,6 +8,7 @@ license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version.workspace = true                            # MSRV
+readme = "README.md"
 
 # Disable missing docs warnings for generated code
 [package.metadata]
