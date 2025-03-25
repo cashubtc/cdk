@@ -54,7 +54,7 @@ impl MintQuote {
     }
 }
 
-// Melt Quote Info
+/// Melt Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id

@@ -8,7 +8,7 @@ Common types, traits, and utilities for the Cashu Development Kit (CDK).
 
 ## Overview
 
-The `cdk-common` crate provides shared functionality used across the CDK ecosystem. It contains core data structures, error types, and utility functions that are essential for implementing Cashu wallets and mints.
+The `cdk-common` crate provides shared functionality used across the CDK crates. It contains core data structures, error types, and utility functions that are essential for implementing Cashu wallets and mints.
 
 ## Features
 

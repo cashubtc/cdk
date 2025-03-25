@@ -1,10 +1,12 @@
-#![doc = include_str!("../README.md")]
-
 //! This crate is the base foundation to build things that can interact with the CDK (Cashu
 //! Development Kit) and their internal crates.
 //!
 //! This is meant to contain the shared types, traits and common functions that are used across the
 //! internal crates.
+
+#![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
+#![warn(rustdoc::bare_urls)]
 
 pub mod common;
 pub mod database;
