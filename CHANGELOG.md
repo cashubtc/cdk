@@ -5,6 +5,11 @@
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
 
+## [Unreleased]
+### Changed
+- cashu move wallet mod to cdk-common ([thesimplekid]).
+
+
 ## [v0.8.1](https://github.com/cashubtc/cdk/releases/tag/v0.8.1)
 ### Fixed
 - cashu: Handle url with paths [PR](https://github.com/cashubtc/cdk/pull/678) ([benthecarmane]).
