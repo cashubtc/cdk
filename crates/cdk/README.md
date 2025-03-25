@@ -16,18 +16,21 @@ The following crate feature flags are available:
 |-------------|:-------:|------------------------------------|
 | `wallet`    |   Yes   | Enable cashu wallet features       |
 | `mint`      |   Yes   | Enable cashu mint wallet features  |
+| `auth`      |   Yes   | Enable blind and clear auth  |
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
 See <https://github.com/cashubtc/cdk/blob/main/README.md>
 
-## Features
+## Components
 
-- **Wallet Implementation**: Complete wallet functionality for managing tokens, proofs, and transactions
-- **Mint Implementation**: Server-side functionality for operating a Cashu mint
-- **Database Abstractions**: Interfaces for persistent storage of wallet and mint data
-- **Payment Processing**: Handling of Lightning Network payments and other payment methods
-- **NUTs Implementation**: Full implementation of the Cashu NUTs (Notation, Usage, and Terminology)
+The crate includes several key modules:
+
+- **wallet**: Implementation of the Cashu wallet
+- **mint**: Implementation of the Cashu mint
+- **database**: Database abstractions for persistent storage
+- **payment**: Payment processing functionality
+- **nuts**: Implementation of the Cashu NUTs
 
 ## Usage
 
@@ -107,16 +110,6 @@ async fn main() {
 
 See more examples in the [examples](./examples) folder.
 
-## Components
-
-The crate includes several key modules:
-
-- **wallet**: Implementation of the Cashu wallet
-- **mint**: Implementation of the Cashu mint
-- **database**: Database abstractions for persistent storage
-- **payment**: Payment processing functionality
-- **nuts**: Implementation of the Cashu NUTs
-
 ## Minimum Supported Rust Version (MSRV)
 
 The `cdk` library should always compile with any combination of features on Rust **1.63.0**.
@@ -124,16 +117,17 @@ The `cdk` library should always compile with any combination of features on Rust
 To build and test with the MSRV you will need to pin the below dependency versions:
 
 ```shell
-cargo update -p half --precise 2.2.1
-cargo update -p tokio --precise 1.38.1
-cargo update -p reqwest --precise 0.12.4
-cargo update -p serde_with --precise 3.1.0
-cargo update -p regex --precise 1.9.6
-cargo update -p backtrace --precise 0.3.58
-# For wasm32-unknown-unknown target
-cargo update -p bumpalo --precise 3.12.0
+    cargo update -p async-compression --precise 0.4.3
+    cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
+    cargo update -p flate2 --precise 1.0.35
+    cargo update -p home --precise 0.5.5
+    cargo update -p zerofrom --precise 0.1.5
+    cargo update -p half --precise 2.4.1
+    cargo update -p url --precise 2.5.2
+    # For wasm32-unknown-unknown target
+    cargo update -p triomphe --precise 0.1.11
 ```
 
 ## License
 
-This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details
+This project is licensed under the [MIT License](https://github.com/cashubtc/cdk/blob/main/LICENSE).
