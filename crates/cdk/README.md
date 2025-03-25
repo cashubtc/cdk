@@ -22,14 +22,18 @@ See <https://github.com/cashubtc/cdk/blob/main/README.md>
 
 ```rust,no_run
 //! Wallet example with memory store
+//! Note: This example requires the "wallet" feature to be enabled (enabled by default)
 
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "wallet")]
 use cdk::amount::SplitTarget;
 use cdk_sqlite::wallet::memory;
 use cdk::nuts::{CurrencyUnit, MintQuoteState};
+#[cfg(feature = "wallet")]
 use cdk::wallet::Wallet;
+#[cfg(feature = "wallet")]
 use cdk::wallet::SendOptions;
 use cdk::Amount;
 use rand::Rng;
@@ -37,44 +41,47 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    let seed = rand::thread_rng().gen::<[u8; 32]>();
+    #[cfg(feature = "wallet")]
+    {
+        let seed = rand::thread_rng().gen::<[u8; 32]>();
 
-    let mint_url = "https://testnut.cashu.space";
-    let unit = CurrencyUnit::Sat;
-    let amount = Amount::from(10);
+        let mint_url = "https://testnut.cashu.space";
+        let unit = CurrencyUnit::Sat;
+        let amount = Amount::from(10);
 
-    let localstore = memory::empty().await.unwrap();
+        let localstore = memory::empty().await.unwrap();
 
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+        let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
-    let quote = wallet.mint_quote(amount, None).await.unwrap();
+        let quote = wallet.mint_quote(amount, None).await.unwrap();
 
-    println!("Pay request: {}", quote.request);
+        println!("Pay request: {}", quote.request);
 
-    loop {
-        let status = wallet.mint_quote_state(&quote.id).await.unwrap();
+        loop {
+            let status = wallet.mint_quote_state(&quote.id).await.unwrap();
 
-        if status.state == MintQuoteState::Paid {
-            break;
+            if status.state == MintQuoteState::Paid {
+                break;
+            }
+
+            println!("Quote state: {}", status.state);
+
+            sleep(Duration::from_secs(5)).await;
         }
 
-        println!("Quote state: {}", status.state);
+        let receive_amount = wallet
+            .mint(&quote.id, SplitTarget::default(), None)
+            .await
+            .unwrap();
 
-        sleep(Duration::from_secs(5)).await;
+        println!("Minted {:?}", receive_amount);
+
+        // Send the token
+        let prepared_send = wallet.prepare_send(Amount::ONE, SendOptions::default()).await.unwrap();
+        let token = wallet.send(prepared_send, None).await.unwrap();
+
+        println!("{}", token);
     }
-
-    let receive_amount = wallet
-        .mint(&quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
-
-    println!("Minted {:?}", receive_amount);
-
-    // Send the token
-    let prepared_send = wallet.prepare_send(Amount::ONE, SendOptions::default()).await.unwrap();
-    let token = wallet.send(prepared_send, None).await.unwrap();
-
-    println!("{}", token);
 }
 
 ```
@@ -137,6 +144,8 @@ cdk = "0.8.1"
 use std::sync::Arc;
 use std::str::FromStr;
 
+// Note: This example requires the "wallet" feature to be enabled (enabled by default)
+#[cfg(feature = "wallet")]
 use cdk::wallet::{Wallet, WalletBuilder};
 use cdk::mint_url::MintUrl;
 use cdk::Amount;
@@ -145,23 +154,25 @@ use cdk_sqlite::wallet::memory;
 use rand::Rng;
 
 async fn create_wallet() {
-    // Initialize the memory store for the wallet
-    let localstore = memory::empty().await.unwrap();
+    #[cfg(feature = "wallet")]
+    {
+        // Initialize the memory store for the wallet
+        let localstore = memory::empty().await.unwrap();
 
-    // Generate a random seed for the wallet
-    let seed = rand::thread_rng().gen::<[u8; 32]>();
+        // Generate a random seed for the wallet
+        let seed = rand::thread_rng().gen::<[u8; 32]>();
 
-    // Define the mint URL and currency unit
-    let mint_url = "https://testnut.cashu.space";
-    let unit = CurrencyUnit::Sat;
-    let amount = Amount::from(10);
+        // Define the mint URL and currency unit
+        let mint_url = "https://testnut.cashu.space";
+        let unit = CurrencyUnit::Sat;
+        let amount = Amount::from(10);
 
-    // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+        // Create a new wallet
+        let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
 
-    // Request a mint quote from the wallet
-    let quote = wallet.mint_quote(amount, None).await.unwrap();
-    
+        // Request a mint quote from the wallet
+        let quote = wallet.mint_quote(amount, None).await.unwrap();
+    }
 }
 ```
 
