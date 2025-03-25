@@ -1,3 +1,7 @@
+//! WS Index
+//!
+//!
+
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};

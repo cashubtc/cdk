@@ -103,7 +103,7 @@ pub struct ProtectedEndpoint {
 }
 
 impl ProtectedEndpoint {
-    /// Create [`CachedEndpoint`]
+    /// Create [`ProtectedEndpoint`]
     pub fn new(method: Method, path: RoutePath) -> Self {
         Self { method, path }
     }
@@ -151,6 +151,7 @@ pub enum RoutePath {
     MintBlindAuth,
 }
 
+/// Returns [`RoutePath`]s that match regex
 pub fn matching_route_paths(pattern: &str) -> Result<Vec<RoutePath>, Error> {
     let regex = Regex::from_str(pattern)?;
 

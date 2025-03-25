@@ -410,3 +410,20 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
+        
+  strict-docs:
+    name: "Strict Documentation Check"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: doc-tests
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check docs with strict warnings
+        run: nix develop -i -L .#stable --command just docs-strict

@@ -267,6 +267,9 @@ impl TokenV3 {
         mint_urls
     }
 
+    /// Checks if a token has multiple mints
+    ///
+    /// These tokens are not supported by this crate
     pub fn is_multi_mint(&self) -> bool {
         self.token.len() > 1
     }

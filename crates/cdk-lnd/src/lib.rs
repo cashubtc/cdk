@@ -2,6 +2,7 @@
 
 // Copyright (c) 2023 Steffen (MIT)
 
+#![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 

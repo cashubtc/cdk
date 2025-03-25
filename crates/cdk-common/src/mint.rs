@@ -54,7 +54,7 @@ impl MintQuote {
     }
 }
 
-// Melt Quote Info
+/// Melt Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id
@@ -117,7 +117,7 @@ pub struct MintKeySetInfo {
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
     /// Keyset active or inactive
-    /// Mint will only issue new [`BlindSignature`] on active keysets
+    /// Mint will only issue new signatures on active keysets
     pub active: bool,
     /// Starting unix time Keyset is valid from
     pub valid_from: u64,

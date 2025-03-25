@@ -9,22 +9,22 @@ use thiserror::Error;
 pub enum Error {
     /// Redb Error
     #[error(transparent)]
-    Redb(#[from] redb::Error),
+    Redb(#[from] Box<redb::Error>),
     /// Redb Database Error
     #[error(transparent)]
-    Database(#[from] redb::DatabaseError),
+    Database(#[from] Box<redb::DatabaseError>),
     /// Redb Transaction Error
     #[error(transparent)]
-    Transaction(#[from] redb::TransactionError),
+    Transaction(#[from] Box<redb::TransactionError>),
     /// Redb Commit Error
     #[error(transparent)]
-    Commit(#[from] redb::CommitError),
+    Commit(#[from] Box<redb::CommitError>),
     /// Redb Table Error
     #[error(transparent)]
-    Table(#[from] redb::TableError),
+    Table(#[from] Box<redb::TableError>),
     /// Redb Storage Error
     #[error(transparent)]
-    Storage(#[from] redb::StorageError),
+    Storage(#[from] Box<redb::StorageError>),
     /// Serde Json Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
@@ -69,5 +69,42 @@ pub enum Error {
 impl From<Error> for cdk_common::database::Error {
     fn from(e: Error) -> Self {
         Self::Database(Box::new(e))
+    }
+}
+
+// Implement From for boxed redb errors
+impl From<redb::Error> for Error {
+    fn from(e: redb::Error) -> Self {
+        Self::Redb(Box::new(e))
+    }
+}
+
+impl From<redb::DatabaseError> for Error {
+    fn from(e: redb::DatabaseError) -> Self {
+        Self::Database(Box::new(e))
+    }
+}
+
+impl From<redb::TransactionError> for Error {
+    fn from(e: redb::TransactionError) -> Self {
+        Self::Transaction(Box::new(e))
+    }
+}
+
+impl From<redb::CommitError> for Error {
+    fn from(e: redb::CommitError) -> Self {
+        Self::Commit(Box::new(e))
+    }
+}
+
+impl From<redb::TableError> for Error {
+    fn from(e: redb::TableError) -> Self {
+        Self::Table(Box::new(e))
+    }
+}
+
+impl From<redb::StorageError> for Error {
+    fn from(e: redb::StorageError) -> Self {
+        Self::Storage(Box::new(e))
     }
 }

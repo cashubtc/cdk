@@ -4,6 +4,29 @@ members = [
 ]
 resolver = "2"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+large_enum_variant = "warn"
+
+[workspace.lints.clippy]
+pedantic = "warn"
+unwrap_used = "warn"
+clone_on_ref_ptr = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_safety_doc = "warn"
+nursery = "warn"
+redundant_else = "warn"
+redundant_closure_for_method_calls = "warn"
+unneeded_field_pattern = "warn"
+use_debug = "warn"
+
+[workspace.lints.rustdoc]
+missing_docs = "warn"
+bare_urls = "warn"
+
 [workspace.package]
 edition = "2021"
 rust-version = "1.75.0"
@@ -11,6 +34,7 @@ license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 version = "0.8.1"
+readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1"

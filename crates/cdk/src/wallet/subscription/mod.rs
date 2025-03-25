@@ -184,7 +184,7 @@ pub enum Error {
 }
 
 impl SubscriptionClient {
-    /// Create new [`WebSocketClient`]
+    /// Create new [`SubscriptionClient`]
     pub fn new(
         url: MintUrl,
         http_client: Arc<dyn MintConnector + Send + Sync>,

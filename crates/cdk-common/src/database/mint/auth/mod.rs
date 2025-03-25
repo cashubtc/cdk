@@ -27,11 +27,11 @@ pub trait MintAuthDatabase {
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
-    /// Add spent [`Proofs`]
+    /// Add spent [`AuthProof`]
     async fn add_proof(&self, proof: AuthProof) -> Result<(), Self::Err>;
-    /// Get [`Proofs`] state
+    /// Get [`AuthProof`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
-    /// Get [`Proofs`] state
+    /// Update [`AuthProof`]s state
     async fn update_proof_state(
         &self,
         y: &PublicKey,

@@ -32,6 +32,7 @@ pub struct PaymentProcessorServer {
 }
 
 impl PaymentProcessorServer {
+    /// Create new [`PaymentProcessorServer`]
     pub fn new(
         payment_processor: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
         addr: &str,

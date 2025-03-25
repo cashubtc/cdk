@@ -60,7 +60,7 @@ pub enum MeltOptions {
 }
 
 impl MeltOptions {
-    /// Create new [`Options::Mpp`]
+    /// Create new [`MeltOptions::Mpp`]
     pub fn new_mpp<A>(amount: A) -> Self
     where
         A: Into<Amount>,

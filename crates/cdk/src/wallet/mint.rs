@@ -17,7 +17,7 @@ use crate::{Amount, Error, Wallet};
 impl Wallet {
     /// Mint Quote
     /// # Synopsis
-    /// ```rust
+    /// ```rust,no_run
     /// use std::sync::Arc;
     ///
     /// use cdk::amount::Amount;
@@ -138,7 +138,7 @@ impl Wallet {
 
     /// Mint
     /// # Synopsis
-    /// ```rust
+    /// ```rust,no_run
     /// use std::sync::Arc;
     ///
     /// use anyhow::Result;
