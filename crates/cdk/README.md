@@ -1,9 +1,12 @@
+# CDK (Cashu Development Kit)
 
-# Cashu Development Kit
+[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk)
+[![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
 
-**ALPHA** This library is in early development, the api will change and should be used with caution.
+**ALPHA** This library is in early development, the API will change and should be used with caution.
 
-CDK is the core crate implementing the cashu protocol for both the Wallet and Mint.
+The core implementation of the Cashu protocol for building wallets and mints. It builds upon the primitives defined in the `cashu` crate and provides higher-level abstractions for working with the Cashu ecosystem.
 
 ## Crate Feature Flags
 
@@ -18,7 +21,24 @@ The following crate feature flags are available:
 
 See <https://github.com/cashubtc/cdk/blob/main/README.md>
 
-## Examples
+## Features
+
+- **Wallet Implementation**: Complete wallet functionality for managing tokens, proofs, and transactions
+- **Mint Implementation**: Server-side functionality for operating a Cashu mint
+- **Database Abstractions**: Interfaces for persistent storage of wallet and mint data
+- **Payment Processing**: Handling of Lightning Network payments and other payment methods
+- **NUTs Implementation**: Full implementation of the Cashu NUTs (Notation, Usage, and Terminology)
+
+## Usage
+
+Add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+cdk = "*"
+```
+
+## Example
 
 ```rust,no_run
 //! Wallet example with memory store
@@ -83,10 +103,19 @@ async fn main() {
         println!("{}", token);
     }
 }
-
 ```
 
 See more examples in the [examples](./examples) folder.
+
+## Components
+
+The crate includes several key modules:
+
+- **wallet**: Implementation of the Cashu wallet
+- **mint**: Implementation of the Cashu mint
+- **database**: Database abstractions for persistent storage
+- **payment**: Payment processing functionality
+- **nuts**: Implementation of the Cashu NUTs
 
 ## Minimum Supported Rust Version (MSRV)
 
@@ -105,87 +134,6 @@ cargo update -p backtrace --precise 0.3.58
 cargo update -p bumpalo --precise 3.12.0
 ```
 
-
 ## License
 
 This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details
-# CDK (Cashu Development Kit)
-
-[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk)
-[![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
-
-The core implementation of the Cashu protocol for building wallets and mints.
-
-## Overview
-
-The `cdk` crate provides the main implementation of the Cashu protocol, offering a comprehensive toolkit for building Cashu wallets and mints. It builds upon the primitives defined in the `cashu` crate and provides higher-level abstractions for working with the Cashu ecosystem.
-
-## Features
-
-- **Wallet Implementation**: Complete wallet functionality for managing tokens, proofs, and transactions
-- **Mint Implementation**: Server-side functionality for operating a Cashu mint
-- **Database Abstractions**: Interfaces for persistent storage of wallet and mint data
-- **Payment Processing**: Handling of Lightning Network payments and other payment methods
-- **NUTs Implementation**: Full implementation of the Cashu NUTs (Notation, Usage, and Terminology)
-
-## Usage
-
-Add this to your `Cargo.toml`:
-
-```toml
-[dependencies]
-cdk = "*"
-```
-
-### Wallet Example
-
-```rust
-use std::sync::Arc;
-use std::str::FromStr;
-
-// Note: This example requires the "wallet" feature to be enabled (enabled by default)
-#[cfg(feature = "wallet")]
-use cdk::wallet::{Wallet, WalletBuilder};
-use cdk::mint_url::MintUrl;
-use cdk::Amount;
-use cdk::nuts::CurrencyUnit;
-use cdk_sqlite::wallet::memory;
-use rand::Rng;
-
-async fn create_wallet() {
-    #[cfg(feature = "wallet")]
-    {
-        // Initialize the memory store for the wallet
-        let localstore = memory::empty().await.unwrap();
-
-        // Generate a random seed for the wallet
-        let seed = rand::thread_rng().gen::<[u8; 32]>();
-
-        // Define the mint URL and currency unit
-        let mint_url = "https://testnut.cashu.space";
-        let unit = CurrencyUnit::Sat;
-        let amount = Amount::from(10);
-
-        // Create a new wallet
-        let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
-
-        // Request a mint quote from the wallet
-        let quote = wallet.mint_quote(amount, None).await.unwrap();
-    }
-}
-```
-
-## Components
-
-The crate includes several key modules:
-
-- **wallet**: Implementation of the Cashu wallet
-- **mint**: Implementation of the Cashu mint
-- **database**: Database abstractions for persistent storage
-- **payment**: Payment processing functionality
-- **nuts**: Implementation of the Cashu NUTs
-
-## License
-
-This project is licensed under the [MIT License](https://github.com/cashubtc/cdk/blob/main/LICENSE).
