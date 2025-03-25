@@ -1,5 +1,5 @@
-//! Cashu shared types and functions.
-//!
+#![doc = include_str!("../README.md")]
+
 //! This crate is the base foundation to build things that can interact with the CDK (Cashu
 //! Development Kit) and their internal crates.
 //!
