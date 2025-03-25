@@ -155,7 +155,7 @@ pub struct PaymentProcessorKey {
 }
 
 impl PaymentProcessorKey {
-    /// Create new [`LnKey`]
+    /// Create new [`PaymentProcessorKey`]
     pub fn new(unit: CurrencyUnit, method: PaymentMethod) -> Self {
         Self { unit, method }
     }
