@@ -5,8 +5,6 @@ pub mod mint_url;
 pub mod nuts;
 pub mod secret;
 pub mod util;
-#[cfg(feature = "wallet")]
-pub mod wallet;
 
 pub use lightning_invoice::{self, Bolt11Invoice};
 
