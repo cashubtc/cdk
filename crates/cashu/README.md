@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/cashu.svg)](https://crates.io/crates/cashu)
 [![Documentation](https://docs.rs/cashu/badge.svg)](https://docs.rs/cashu)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
 
 A Rust implementation of the [Cashu](https://github.com/cashubtc) protocol, providing the core functionality for Cashu e-cash operations.
 
