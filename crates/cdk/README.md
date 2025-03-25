@@ -135,7 +135,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cdk = "0.8.1"
+cdk = "*"
 ```
 
 ### Wallet Example
