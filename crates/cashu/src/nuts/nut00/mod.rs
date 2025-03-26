@@ -20,6 +20,7 @@ use super::nut11::SpendingConditions;
 use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
 use crate::dhke::blind_message;
+use bitcoin::secp256k1::schnorr::Signature;
 use crate::dhke::hash_to_curve;
 use crate::nuts::nut01::PublicKey;
 #[cfg(feature = "wallet")]
@@ -209,6 +210,69 @@ impl ProofWithoutDleq {
     /// Where y is `hash_to_curve(secret)`
     pub fn y(&self) -> Result<PublicKey, Error> {
         Ok(hash_to_curve(self.secret.as_bytes())?)
+    }
+
+    /// Verify P2PK signature on [ProofWithoutDleq]
+    pub fn verify_p2pk(&self) -> Result<(), crate::nuts::nut11::Error> {
+        let secret: crate::nuts::nut10::Secret = self.secret.clone().try_into()?;
+        let spending_conditions: crate::nuts::nut11::Conditions =
+            secret.secret_data.tags.unwrap_or_default().try_into()?;
+        let msg: &[u8] = self.secret.as_bytes();
+
+        let mut valid_sigs = 0;
+
+        let witness_signatures = match &self.witness {
+            Some(witness) => witness.signatures(),
+            None => None,
+        };
+
+        let witness_signatures = witness_signatures.ok_or(crate::nuts::nut11::Error::SignaturesNotProvided)?;
+
+        let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
+
+        if secret.kind.eq(&crate::nuts::Kind::P2PK) {
+            pubkeys.push(crate::nuts::nut01::PublicKey::from_str(&secret.secret_data.data)?);
+        }
+
+        for signature in witness_signatures.iter() {
+            for v in &pubkeys {
+                let sig = bitcoin::secp256k1::schnorr::Signature::from_str(signature)?;
+
+                if v.verify(msg, &sig).is_ok() {
+                    valid_sigs += 1;
+                } else {
+                    tracing::debug!(
+                        "Could not verify signature: {sig} on message: {}",
+                        self.secret.to_string()
+                    )
+                }
+            }
+        }
+
+        if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
+            return Ok(());
+        }
+
+        if let (Some(locktime), Some(refund_keys)) = (
+            spending_conditions.locktime,
+            spending_conditions.refund_keys,
+        ) {
+            // If lock time has passed check if refund witness signature is valid
+            if locktime.lt(&crate::util::unix_time()) {
+                for s in witness_signatures.iter() {
+                    for v in &refund_keys {
+                        let sig = bitcoin::secp256k1::schnorr::Signature::from_str(s).map_err(|_| crate::nuts::nut11::Error::InvalidSignature)?;
+
+                        // As long as there is one valid refund signature it can be spent
+                        if v.verify(msg, &sig).is_ok() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(crate::nuts::nut11::Error::SpendConditionsNotMet)
     }
 }
 
