@@ -28,8 +28,8 @@ impl Default for PubSubManager {
     }
 }
 
-impl From<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>> for PubSubManager {
-    fn from(val: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>) -> Self {
+impl From<Arc<dyn MintDatabase<database::Error> + Send + Sync>> for PubSubManager {
+    fn from(val: Arc<dyn MintDatabase<database::Error> + Send + Sync>) -> Self {
         PubSubManager(OnSubscription(Some(val)).into())
     }
 }

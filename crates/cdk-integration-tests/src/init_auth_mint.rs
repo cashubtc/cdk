@@ -19,7 +19,7 @@ pub async fn start_fake_mint_with_auth<D, A>(
     auth_database: A,
 ) -> Result<()>
 where
-    D: MintDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+    D: MintDatabase<cdk_database::Error> + Send + Sync + 'static,
     A: MintAuthDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
 {
     let fee_reserve = FeeReserve {
