@@ -324,7 +324,7 @@ pub struct MeltBolt11Request<Q> {
     /// Quote ID
     pub quote: Q,
     /// Proofs
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::ProofWithoutDleq>))]
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::nuts::nut00::ProofWithoutDleq>))]
     pub inputs: ProofsWithoutDleq,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
@@ -345,7 +345,7 @@ impl TryFrom<MeltBolt11Request<String>> for MeltBolt11Request<Uuid> {
 }
 
 impl<Q: Serialize + DeserializeOwned> MeltBolt11Request<Q> {
-    /// Total [`Amount`] of [`Proofs`]
+    /// Total [`Amount`] of [`ProofsWithoutDleq`]
     pub fn proofs_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
             .map_err(|_| Error::AmountOverflow)
