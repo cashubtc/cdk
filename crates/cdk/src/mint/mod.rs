@@ -427,7 +427,11 @@ impl Mint {
 
     /// Verify [`Proof`] meets conditions and is signed
     #[instrument(skip_all)]
-    pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+    pub async fn verify_proof<P>(&self, proof: &P) -> Result<(), Error>
+    where
+        Proof: for<'a> From<&'a P>,
+    {
+        let proof: Proof = proof.into();
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
             <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)

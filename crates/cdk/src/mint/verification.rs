@@ -208,7 +208,7 @@ impl Mint {
         let amount = inputs.total_amount()?;
 
         for proof in inputs {
-            self.verify_proof(&proof.into()).await?;
+            self.verify_proof(&proof).await?;
         }
 
         Ok(Verification {
