@@ -1067,8 +1067,7 @@ fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
     let row_metadata: Option<String> = row.try_get("metadata").map_err(Error::from)?;
 
     let metadata: HashMap<String, String> = row_metadata
-        .map(|m| serde_json::from_str(&m).ok())
-        .flatten()
+        .and_then(|m| serde_json::from_str(&m).ok())
         .unwrap_or_default();
 
     let ys: Result<Vec<PublicKey>, nut01::Error> =
