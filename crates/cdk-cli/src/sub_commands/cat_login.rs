@@ -1,13 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::Arc;
 
-use anyhow::Result;
-use cdk::cdk_database::{Error, WalletDatabase};
+use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintInfo};
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::wallet::MultiMintWallet;
 use cdk::OidcClient;
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -34,8 +32,6 @@ pub struct CatLoginSubCommand {
 
 pub async fn cat_login(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
-    localstore: Arc<dyn WalletDatabase<Err = Error> + Sync + Send>,
     sub_command_args: &CatLoginSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
@@ -48,14 +44,16 @@ pub async fn cat_login(
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None)?;
-
-            multi_mint_wallet.add_wallet(wallet.clone()).await;
-            wallet
+            multi_mint_wallet
+                .create_and_add_wallet(&mint_url.to_string(), unit, None)
+                .await?
         }
     };
 
-    let mint_info = wallet.get_mint_info().await?.expect("Mint info not found");
+    let mint_info = wallet
+        .get_mint_info()
+        .await?
+        .ok_or(anyhow!("Mint info not found"))?;
 
     let (access_token, refresh_token) = get_access_token(
         &mint_info,

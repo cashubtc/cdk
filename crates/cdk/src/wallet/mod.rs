@@ -139,10 +139,10 @@ impl Wallet {
     /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::{Wallet, WalletBuilder};
-    /// use rand::Rng;
+    /// use rand::random;
     ///
     /// async fn test() -> anyhow::Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///

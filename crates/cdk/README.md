@@ -59,14 +59,14 @@ use cdk::wallet::Wallet;
 #[cfg(feature = "wallet")]
 use cdk::wallet::SendOptions;
 use cdk::Amount;
-use rand::Rng;
+use rand::random;
 use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
     #[cfg(feature = "wallet")]
     {
-        let seed = rand::thread_rng().gen::<[u8; 32]>();
+        let seed = random::<[u8; 32]>();
 
         let mint_url = "https://testnut.cashu.space";
         let unit = CurrencyUnit::Sat;
