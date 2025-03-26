@@ -2,6 +2,7 @@
 //!
 //! Used for testing where quotes are auto filled
 
+#![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 

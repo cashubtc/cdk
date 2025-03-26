@@ -1,13 +1,18 @@
 [package]
 name = "cdk-mint-rpc"
-version = "0.7.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["CDK Developers"]
 description = "CDK mintd mint managment RPC client and server"
-license = "MIT"
+license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0"                            # MSRV
+rust-version.workspace = true                            # MSRV
+readme = "README.md"
+
+# Disable missing docs warnings for generated code
+[package.metadata]
+rustdoc-args = ["--allow-missing-docs"]
 
 [[bin]]
 name = "cdk-mint-cli"

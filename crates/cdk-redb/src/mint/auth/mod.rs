@@ -33,7 +33,7 @@ pub struct MintRedbAuthDatabase {
 const DATABASE_VERSION: u32 = 0;
 
 impl MintRedbAuthDatabase {
-    /// Create new [`MintRedbDatabase`]
+    /// Create new [`MintRedbAuthDatabase`]
     pub fn new(path: &Path) -> Result<Self, Error> {
         {
             // Check database version

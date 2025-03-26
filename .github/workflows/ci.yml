@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  release:
+    types: [created]
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,6 +56,7 @@ jobs:
         build-args:
           [
             mint-token,
+            melt-token,
             p2pk,
             proof-selection,
             wallet
@@ -120,6 +123,8 @@ jobs:
             -p cdk-payment-processor,
             --bin cdk-cli,
             --bin cdk-cli --features sqlcipher,
+            --bin cdk-cli --features redb,
+            --bin cdk-cli --features "sqlcipher redb",
             --bin cdk-mintd,
             --bin cdk-mintd --features redis,
             --bin cdk-mintd --features redb,
@@ -388,4 +393,37 @@ jobs:
       - name: Stop and clean up Docker Compose
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
-
+          
+  doc-tests:
+    name: "Documentation Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run doc tests
+        run: nix develop -i -L .#stable --command cargo test --doc
+        
+  strict-docs:
+    name: "Strict Documentation Check"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: doc-tests
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v11
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check docs with strict warnings
+        run: nix develop -i -L .#stable --command just docs-strict

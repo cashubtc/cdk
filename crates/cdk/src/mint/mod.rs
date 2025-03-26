@@ -9,7 +9,6 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
-use cdk_common::mint::MintKeySetInfo;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -43,7 +42,7 @@ mod swap;
 mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
-pub use cdk_common::mint::{MeltQuote, MintQuote};
+pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use verification::Verification;
 
 /// Cashu Mint

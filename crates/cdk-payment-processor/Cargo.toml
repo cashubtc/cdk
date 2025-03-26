@@ -1,13 +1,14 @@
 [package]
 name = "cdk-payment-processor"
-version = "0.7.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["CDK Developers"]
 description = "CDK payment processor"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version = "1.75.0"                     # MSRV
-license = "MIT"
+rust-version.workspace = true                     # MSRV
+license.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "cdk-payment-processor"
