@@ -486,7 +486,7 @@ pub(crate) async fn get_mint_info(
 /// Requests a set of Proofs to be swapped for another set of BlindSignatures.
 ///
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
-#[instrument(skip_all, fields(inputs_count = ?payload.inputs.len()))]
+#[instrument(skip_all, fields(inputs_count = ?payload.inputs().len()))]
 pub(crate) async fn post_swap(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,

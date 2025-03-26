@@ -156,10 +156,7 @@ async fn test_mint_bat_without_cat() {
 async fn test_swap_without_auth() {
     let client = HttpClient::new(MintUrl::from_str(MINT_URL).expect("Valid mint url"), None);
 
-    let request = SwapRequest {
-        inputs: vec![],
-        outputs: vec![],
-    };
+    let request = SwapRequest::new(vec![], vec![]);
 
     let quote_res = client.post_swap(request).await;
 
@@ -210,11 +207,11 @@ async fn test_melt_without_auth() {
 
     // Test melt
     {
-        let request = MeltBolt11Request {
-            inputs: vec![],
-            outputs: None,
-            quote: "123e4567-e89b-12d3-a456-426614174000".to_string(),
-        };
+        let request = MeltBolt11Request::new(
+            "123e4567-e89b-12d3-a456-426614174000".to_string(),
+            vec![],
+            None,
+        );
 
         let melt_res = client.post_melt(request).await;
 
@@ -571,7 +568,7 @@ async fn test_melt_with_invalid_auth() {
             keyset_id: proof.keyset_id,
             secret: proof.secret.clone(),
             c: proof.c,
-            dleq: proof.dleq.clone().unwrap(),
+            dleq: proof.dleq.clone(),
         };
 
         let _auth_token = AuthToken::BlindAuth(BlindAuthToken::new(invalid_auth_proof));

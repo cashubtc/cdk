@@ -355,11 +355,11 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let client = HttpClient::new(MINT_URL.parse()?, None);
 
-    let melt_request = MeltBolt11Request {
-        quote: melt_quote.id.clone(),
-        inputs: proofs.clone(),
-        outputs: Some(premint_secrets.blinded_messages()),
-    };
+    let melt_request = MeltBolt11Request::new(
+        melt_quote.id.clone(),
+        proofs.clone(),
+        Some(premint_secrets.blinded_messages()),
+    );
 
     let melt_response = client.post_melt(melt_request).await?;
 
@@ -676,10 +676,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
         let pre_mint =
             PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
 
-        let swap_request = SwapRequest {
-            inputs,
-            outputs: pre_mint.blinded_messages(),
-        };
+        let swap_request = SwapRequest::new(inputs, pre_mint.blinded_messages());
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_swap(swap_request.clone()).await;
@@ -713,10 +710,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
 
         usd_outputs.append(&mut sat_outputs);
 
-        let swap_request = SwapRequest {
-            inputs,
-            outputs: usd_outputs,
-        };
+        let swap_request = SwapRequest::new(inputs, usd_outputs);
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_swap(swap_request.clone()).await;
@@ -786,11 +780,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
         let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-        let melt_request = MeltBolt11Request {
-            quote: melt_quote.id,
-            inputs,
-            outputs: None,
-        };
+        let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_melt(melt_request.clone()).await;
@@ -830,11 +820,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         usd_outputs.append(&mut sat_outputs);
         let quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-        let melt_request = MeltBolt11Request {
-            quote: quote.id,
-            inputs,
-            outputs: Some(usd_outputs),
-        };
+        let melt_request = MeltBolt11Request::new(quote.id, inputs, Some(usd_outputs));
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
 
@@ -890,10 +876,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
         &SplitTarget::None,
     )?;
 
-    let swap_request = SwapRequest {
-        inputs,
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(inputs, pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -930,10 +913,7 @@ async fn test_fake_mint_swap_inflated() -> Result<()> {
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs,
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs, pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -973,10 +953,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -985,10 +962,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1003,10 +977,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs,
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs, pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1046,10 +1017,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1058,10 +1026,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1078,11 +1043,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-    let melt_request = MeltBolt11Request {
-        quote: melt_quote.id,
-        inputs: proofs,
-        outputs: None,
-    };
+    let melt_request = MeltBolt11Request::new(melt_quote.id, proofs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_melt(melt_request.clone()).await;
@@ -1126,10 +1087,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
     let pre_mint =
         PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: inputs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(inputs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1153,7 +1111,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
 
     let outputs = vec![blinded_message[0].clone(), blinded_message[0].clone()];
 
-    let swap_request = SwapRequest { inputs, outputs };
+    let swap_request = SwapRequest::new(inputs, outputs);
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1199,11 +1157,7 @@ async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-    let melt_request = MeltBolt11Request {
-        quote: melt_quote.id,
-        inputs,
-        outputs: None,
-    };
+    let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_melt(melt_request.clone()).await;

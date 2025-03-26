@@ -8,6 +8,7 @@ use thiserror::Error;
 #[cfg(feature = "wallet")]
 use super::nut00::PreMintSecrets;
 use super::nut00::{BlindSignature, BlindedMessage, Proofs};
+use super::ProofsMethods;
 use crate::Amount;
 
 /// NUT03 Error
@@ -41,15 +42,33 @@ pub struct PreSwap {
 pub struct SwapRequest {
     /// Proofs that are to be spent in a `Swap`
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
-    pub inputs: Proofs,
+    inputs: Proofs,
     /// Blinded Messages for Mint to sign
-    pub outputs: Vec<BlindedMessage>,
+    outputs: Vec<BlindedMessage>,
 }
 
 impl SwapRequest {
     /// Create new [`SwapRequest`]
     pub fn new(inputs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
-        Self { inputs, outputs }
+        Self {
+            inputs: inputs.without_dleqs(),
+            outputs,
+        }
+    }
+
+    /// Get inputs (proofs)
+    pub fn inputs(&self) -> &Proofs {
+        &self.inputs
+    }
+
+    /// Get outputs (blinded messages)
+    pub fn outputs(&self) -> &Vec<BlindedMessage> {
+        &self.outputs
+    }
+
+    /// Get mutable reference to outputs (blinded messages)
+    pub fn outputs_mut(&mut self) -> &mut Vec<BlindedMessage> {
+        &mut self.outputs
     }
 
     /// Total value of proofs in [`SwapRequest`]
@@ -76,9 +95,9 @@ pub struct SwapResponse {
 }
 
 impl SwapResponse {
-    /// Create new [`SwapRequest`]
-    pub fn new(promises: Vec<BlindSignature>) -> SwapResponse {
-        SwapResponse {
+    /// Create new [`SwapResponse`]
+    pub fn new(promises: Vec<BlindSignature>) -> Self {
+        Self {
             signatures: promises,
         }
     }
