@@ -45,12 +45,23 @@ test: build
   cargo test --lib
 
   # Run pure integration tests
-  cargo test -p cdk-integration-tests --test integration_tests_pure
   cargo test -p cdk-integration-tests --test mint
 
-test-all db:
+  
+# run doc tests
+test-pure db="memory": build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+
+  # Run pure integration tests
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure
+
+test-all db="memory":
     #!/usr/bin/env bash
-    just test
+    just test {{db}}
     ./misc/itests.sh "{{db}}"
     ./misc/fake_itests.sh "{{db}}"
     
