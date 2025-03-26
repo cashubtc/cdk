@@ -2,7 +2,9 @@
 use std::collections::HashMap;
 
 use cdk_common::common::PaymentProcessorKey;
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{
+    self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nuts::{CurrencyUnit, Id, MeltBolt11Request, Proofs};
 use cdk_common::MintInfo;

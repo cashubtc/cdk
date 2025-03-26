@@ -23,7 +23,7 @@ impl Mint {
     pub async fn init_keysets(
         xpriv: Xpriv,
         secp_ctx: &Secp256k1<All>,
-        localstore: &Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        localstore: &Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         supported_units: &HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<(HashMap<Id, MintKeySet>, Vec<CurrencyUnit>), Error> {

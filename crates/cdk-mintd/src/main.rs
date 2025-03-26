@@ -121,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
     // ENV VARS will take **priority** over those in the config
     let settings = settings.from_env()?;
 
-    let localstore: Arc<dyn MintDatabase<Err = cdk_database::Error> + Send + Sync> =
+    let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
         match settings.database.engine {
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd.sqlite");
