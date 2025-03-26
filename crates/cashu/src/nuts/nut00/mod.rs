@@ -540,32 +540,6 @@ impl From<Proof> for ProofV4 {
     }
 }
 
-impl From<ProofWithoutDleq> for Proof {
-    fn from(value: ProofWithoutDleq) -> Self {
-        Proof {
-            amount: value.amount,
-            keyset_id: value.keyset_id,
-            secret: value.secret,
-            c: value.c,
-            witness: value.witness,
-            dleq: None,
-        }
-    }
-}
-
-impl From<&ProofWithoutDleq> for Proof {
-    fn from(value: &ProofWithoutDleq) -> Self {
-        Proof {
-            amount: value.amount,
-            keyset_id: value.keyset_id,
-            secret: value.secret.clone(),
-            c: value.c,
-            witness: value.witness.clone(),
-            dleq: None,
-        }
-    }
-}
-
 fn serialize_v4_pubkey<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
