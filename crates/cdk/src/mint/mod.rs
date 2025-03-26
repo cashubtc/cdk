@@ -9,7 +9,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
-use cdk_common::nut00::ProofsWithoutDleq;
+use cdk_common::nut00::{ProofWithoutDleq, ProofsWithoutDleq};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -425,13 +425,9 @@ impl Mint {
         Ok(blinded_signature)
     }
 
-    /// Verify [`Proof`] meets conditions and is signed
+    /// Verify [`ProofWithoutDleq`] meets conditions and is signed
     #[instrument(skip_all)]
-    pub async fn verify_proof<P>(&self, proof: &P) -> Result<(), Error>
-    where
-        Proof: for<'a> From<&'a P>,
-    {
-        let proof: Proof = proof.into();
+    pub async fn verify_proof(&self, proof: &ProofWithoutDleq) -> Result<(), Error> {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) =
             <&crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(&proof.secret)

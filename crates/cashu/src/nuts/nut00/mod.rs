@@ -20,7 +20,6 @@ use super::nut11::SpendingConditions;
 use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
 use crate::dhke::blind_message;
-use bitcoin::secp256k1::schnorr::Signature;
 use crate::dhke::hash_to_curve;
 use crate::nuts::nut01::PublicKey;
 #[cfg(feature = "wallet")]
@@ -226,12 +225,15 @@ impl ProofWithoutDleq {
             None => None,
         };
 
-        let witness_signatures = witness_signatures.ok_or(crate::nuts::nut11::Error::SignaturesNotProvided)?;
+        let witness_signatures =
+            witness_signatures.ok_or(crate::nuts::nut11::Error::SignaturesNotProvided)?;
 
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
 
         if secret.kind.eq(&crate::nuts::Kind::P2PK) {
-            pubkeys.push(crate::nuts::nut01::PublicKey::from_str(&secret.secret_data.data)?);
+            pubkeys.push(crate::nuts::nut01::PublicKey::from_str(
+                &secret.secret_data.data,
+            )?);
         }
 
         for signature in witness_signatures.iter() {
@@ -261,7 +263,8 @@ impl ProofWithoutDleq {
             if locktime.lt(&crate::util::unix_time()) {
                 for s in witness_signatures.iter() {
                     for v in &refund_keys {
-                        let sig = bitcoin::secp256k1::schnorr::Signature::from_str(s).map_err(|_| crate::nuts::nut11::Error::InvalidSignature)?;
+                        let sig = bitcoin::secp256k1::schnorr::Signature::from_str(s)
+                            .map_err(|_| crate::nuts::nut11::Error::InvalidSignature)?;
 
                         // As long as there is one valid refund signature it can be spent
                         if v.verify(msg, &sig).is_ok() {

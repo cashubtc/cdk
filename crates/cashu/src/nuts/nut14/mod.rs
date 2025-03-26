@@ -10,7 +10,7 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut00::Witness;
+use super::nut00::{ProofWithoutDleq, Witness};
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
 use super::{Conditions, Proof};
@@ -64,6 +64,23 @@ pub struct HTLCWitness {
 
 impl Proof {
     /// Verify HTLC
+    pub fn verify_htlc(&self) -> Result<(), Error> {
+        let proof = ProofWithoutDleq::from(self);
+        proof.verify_htlc()
+    }
+
+    /// Add Preimage
+    #[inline]
+    pub fn add_preimage(&mut self, preimage: String) {
+        self.witness = Some(Witness::HTLCWitness(HTLCWitness {
+            preimage,
+            signatures: None,
+        }))
+    }
+}
+
+impl ProofWithoutDleq {
+    /// Veridy htlc
     pub fn verify_htlc(&self) -> Result<(), Error> {
         let secret: Secret = self.secret.clone().try_into()?;
         let conditions: Option<Conditions> =
@@ -132,14 +149,5 @@ impl Proof {
         }
 
         Ok(())
-    }
-
-    /// Add Preimage
-    #[inline]
-    pub fn add_preimage(&mut self, preimage: String) {
-        self.witness = Some(Witness::HTLCWitness(HTLCWitness {
-            preimage,
-            signatures: None,
-        }))
     }
 }

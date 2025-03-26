@@ -340,14 +340,7 @@ impl Mint {
 
         self.check_ys_spendable(&input_ys, State::Pending).await?;
 
-        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(
-            melt_request
-                .inputs
-                .clone()
-                .iter()
-                .map(|p| p.into())
-                .collect(),
-        );
+        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
 
         ensure_cdk!(sig_flag.ne(&SigFlag::SigAll), Error::SigAllUsedInMelt);
 

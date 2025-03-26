@@ -14,9 +14,9 @@ use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-use super::nut00::Witness;
+use super::nut00::{ProofWithoutDleq, ProofsWithoutDleq, Witness};
 use super::nut01::PublicKey;
-use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
+use super::{Kind, Nut10Secret, Proof, SecretKey};
 use crate::ensure_cdk;
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;
@@ -123,65 +123,9 @@ impl Proof {
 
     /// Verify P2PK signature on [Proof]
     pub fn verify_p2pk(&self) -> Result<(), Error> {
-        let secret: Nut10Secret = self.secret.clone().try_into()?;
-        let spending_conditions: Conditions =
-            secret.secret_data.tags.unwrap_or_default().try_into()?;
-        let msg: &[u8] = self.secret.as_bytes();
+        let proof = ProofWithoutDleq::from(self);
 
-        let mut valid_sigs = 0;
-
-        let witness_signatures = match &self.witness {
-            Some(witness) => witness.signatures(),
-            None => None,
-        };
-
-        let witness_signatures = witness_signatures.ok_or(Error::SignaturesNotProvided)?;
-
-        let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
-
-        if secret.kind.eq(&Kind::P2PK) {
-            pubkeys.push(PublicKey::from_str(&secret.secret_data.data)?);
-        }
-
-        for signature in witness_signatures.iter() {
-            for v in &pubkeys {
-                let sig = Signature::from_str(signature)?;
-
-                if v.verify(msg, &sig).is_ok() {
-                    valid_sigs += 1;
-                } else {
-                    tracing::debug!(
-                        "Could not verify signature: {sig} on message: {}",
-                        self.secret.to_string()
-                    )
-                }
-            }
-        }
-
-        if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
-            return Ok(());
-        }
-
-        if let (Some(locktime), Some(refund_keys)) = (
-            spending_conditions.locktime,
-            spending_conditions.refund_keys,
-        ) {
-            // If lock time has passed check if refund witness signature is valid
-            if locktime.lt(&unix_time()) {
-                for s in witness_signatures.iter() {
-                    for v in &refund_keys {
-                        let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
-
-                        // As long as there is one valid refund signature it can be spent
-                        if v.verify(msg, &sig).is_ok() {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(Error::SpendConditionsNotMet)
+        proof.verify_p2pk()
     }
 }
 
@@ -613,7 +557,7 @@ impl FromStr for SigFlag {
 
 /// Get the signature flag that should be enforced for a set of proofs and the
 /// public keys that signatures are valid for
-pub fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
+pub fn enforce_sig_flag(proofs: ProofsWithoutDleq) -> EnforceSigFlag {
     let mut sig_flag = SigFlag::SigInputs;
     let mut pubkeys = HashSet::new();
     let mut sigs_required = 1;
