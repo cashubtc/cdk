@@ -75,9 +75,9 @@ pub trait ProofsMethods {
 
     /// Try to fetch the pubkeys of all [Proof]s
     fn ys(&self) -> Result<Vec<PublicKey>, Error>;
-    
+
     /// Create a copy of proofs without dleqs
-    fn without_dleqs(&self) -> Proofs;
+    fn without_dleqs(&self) -> ProofsWithoutDleq;
 }
 
 impl ProofsMethods for Proofs {
@@ -96,7 +96,7 @@ impl ProofsMethods for Proofs {
     fn ys(&self) -> Result<Vec<PublicKey>, Error> {
         ys(self.iter())
     }
-    
+
     fn without_dleqs(&self) -> ProofsWithoutDleq {
         self.iter()
             .map(|proof| ProofWithoutDleq::from(proof.clone()))
@@ -120,7 +120,7 @@ impl ProofsMethods for HashSet<Proof> {
     fn ys(&self) -> Result<Vec<PublicKey>, Error> {
         ys(self.iter())
     }
-    
+
     fn without_dleqs(&self) -> ProofsWithoutDleq {
         self.iter()
             .map(|proof| ProofWithoutDleq::from(proof.clone()))
@@ -156,7 +156,7 @@ impl ProofsMethods for ProofsWithoutDleq {
             .collect::<Result<Vec<PublicKey>, _>>()
             .map_err(Into::into)
     }
-    
+
     fn without_dleqs(&self) -> ProofsWithoutDleq {
         // Already without dleqs, so just clone
         self.clone()
