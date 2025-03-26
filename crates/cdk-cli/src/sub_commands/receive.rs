@@ -7,7 +7,7 @@ use cdk::nuts::{SecretKey, Token};
 use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::{ReceiveOptions, Wallet};
+use cdk::wallet::ReceiveOptions;
 use cdk::Amount;
 use clap::Args;
 use nostr_sdk::nips::nip04;

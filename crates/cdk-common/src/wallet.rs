@@ -113,23 +113,34 @@ impl SendKind {
     }
 }
 
+/// Wallet Transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
+    /// Mint Url
     pub mint_url: MintUrl,
+    /// Transaction direction
     pub direction: TransactionDirection,
+    /// Amount
     pub amount: Amount,
+    /// Fee
     pub fee: Amount,
+    /// Currency Unit
     pub unit: CurrencyUnit,
+    /// Proof Ys
     pub ys: Vec<PublicKey>,
+    /// Unix timestamp
     pub timestamp: u64,
+    /// User-defined metadata
     pub metadata: HashMap<String, String>,
 }
 
 impl Transaction {
+    /// Transaction ID
     pub fn id(&self) -> TransactionId {
         TransactionId::new(self.ys.clone())
     }
 
+    /// Check if transaction matches conditions
     pub fn matches_conditions(
         &self,
         mint_url: &Option<MintUrl>,
@@ -155,9 +166,12 @@ impl Transaction {
     }
 }
 
+/// Transaction Direction
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransactionDirection {
+    /// Incoming transaction (i.e., receive or mint)
     Incoming,
+    /// Outgoing transaction (i.e., send or melt)
     Outgoing,
 }
 
