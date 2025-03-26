@@ -50,7 +50,10 @@ impl SwapRequest {
     /// Create new [`SwapRequest`]
     pub fn new(inputs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
         // Create a new SwapRequest with proofs that don't include dleqs
-        Self { inputs, outputs }
+        Self { 
+            inputs: inputs.without_dleqs(),
+            outputs 
+        }
     }
 
     /// Total value of proofs in [`SwapRequest`]
