@@ -13,7 +13,7 @@ impl Mint {
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
         if let Err(err) = self
-            .verify_transaction_balanced(&swap_request.inputs(), &swap_request.outputs())
+            .verify_transaction_balanced(swap_request.inputs(), swap_request.outputs())
             .await
         {
             tracing::debug!("Attempt to swap unbalanced transaction, aborting: {err}");

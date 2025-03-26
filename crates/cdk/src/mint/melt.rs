@@ -289,7 +289,7 @@ impl Mint {
     ) -> Result<MeltQuote, Error> {
         let state = self
             .localstore
-            .update_melt_quote_state(&melt_request.quote(), MeltQuoteState::Pending)
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending)
             .await?;
 
         match state {
@@ -301,20 +301,20 @@ impl Mint {
 
         let quote = self
             .localstore
-            .get_melt_quote(&melt_request.quote())
+            .get_melt_quote(melt_request.quote())
             .await?
             .ok_or(Error::UnknownQuote)?;
 
         let Verification {
             amount: input_amount,
             unit: input_unit,
-        } = self.verify_inputs(&melt_request.inputs()).await?;
+        } = self.verify_inputs(melt_request.inputs()).await?;
 
         ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
 
         let input_ys = melt_request.inputs().ys()?;
 
-        let fee = self.get_proofs_fee(&melt_request.inputs()).await?;
+        let fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
         let required_total = quote.amount + quote.fee_reserve + fee;
 
@@ -371,11 +371,11 @@ impl Mint {
         let input_ys = melt_request.inputs().ys()?;
 
         self.localstore
-            .remove_proofs(&input_ys, Some(melt_request.quote().clone()))
+            .remove_proofs(&input_ys, Some(*melt_request.quote()))
             .await?;
 
         self.localstore
-            .update_melt_quote_state(&melt_request.quote(), MeltQuoteState::Unpaid)
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Unpaid)
             .await?;
 
         if let Ok(Some(quote)) = self.localstore.get_melt_quote(melt_request.quote()).await {
@@ -625,7 +625,7 @@ impl Mint {
             .await?;
 
         self.localstore
-            .update_melt_quote_state(&melt_request.quote(), MeltQuoteState::Paid)
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Paid)
             .await?;
 
         self.pubsub_manager.melt_quote_status(
