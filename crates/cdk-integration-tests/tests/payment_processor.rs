@@ -121,12 +121,11 @@ async fn test_pay_invoice_twice() -> Result<()> {
         return Ok(());
     }
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &seed,
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 

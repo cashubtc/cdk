@@ -24,11 +24,11 @@ impl Wallet {
     /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
-    /// use rand::Rng;
+    /// use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
@@ -147,11 +147,11 @@ impl Wallet {
     /// use cdk::nuts::nut00::ProofsMethods;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
-    /// use rand::Rng;
+    /// use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
