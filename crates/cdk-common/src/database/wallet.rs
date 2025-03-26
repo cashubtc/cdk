@@ -11,8 +11,9 @@ use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
-use crate::wallet::{self, Transaction, TransactionId};
-use crate::wallet::{MintQuote as WalletMintQuote, TransactionDirection};
+use crate::wallet::{
+    self, MintQuote as WalletMintQuote, Transaction, TransactionDirection, TransactionId,
+};
 
 /// Wallet Database trait
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
