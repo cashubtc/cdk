@@ -37,6 +37,9 @@ pub use token::{Token, TokenV3, TokenV4};
 /// List of [Proof]
 pub type Proofs = Vec<Proof>;
 
+/// List of [Proof] without dleqs
+pub type ProofsWithoutDleq = Vec<Proof>;
+
 /// Utility methods for [Proofs]
 pub trait ProofsMethods {
     /// Count proofs by keyset
@@ -72,7 +75,7 @@ impl ProofsMethods for Proofs {
         ys(self.iter())
     }
     
-    fn without_dleqs(&self) -> Proofs {
+    fn without_dleqs(&self) -> ProofsWithoutDleq {
         self.iter()
             .map(|proof| {
                 let mut proof_clone = proof.clone();
@@ -100,7 +103,7 @@ impl ProofsMethods for HashSet<Proof> {
         ys(self.iter())
     }
     
-    fn without_dleqs(&self) -> Proofs {
+    fn without_dleqs(&self) -> ProofsWithoutDleq {
         self.iter()
             .map(|proof| {
                 let mut proof_clone = proof.clone();
@@ -108,6 +111,30 @@ impl ProofsMethods for HashSet<Proof> {
                 proof_clone
             })
             .collect()
+    }
+}
+
+// Implement ProofsMethods for ProofsWithoutDleq
+impl ProofsMethods for ProofsWithoutDleq {
+    fn count_by_keyset(&self) -> HashMap<Id, u64> {
+        count_by_keyset(self.iter())
+    }
+
+    fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
+        sum_by_keyset(self.iter())
+    }
+
+    fn total_amount(&self) -> Result<Amount, Error> {
+        total_amount(self.iter())
+    }
+
+    fn ys(&self) -> Result<Vec<PublicKey>, Error> {
+        ys(self.iter())
+    }
+    
+    fn without_dleqs(&self) -> ProofsWithoutDleq {
+        // Already without dleqs, so just clone
+        self.clone()
     }
 }
 

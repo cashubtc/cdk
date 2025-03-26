@@ -7,7 +7,7 @@ use thiserror::Error;
 
 #[cfg(feature = "wallet")]
 use super::nut00::PreMintSecrets;
-use super::nut00::{BlindSignature, BlindedMessage, Proofs};
+use super::nut00::{BlindSignature, BlindedMessage, Proofs, ProofsWithoutDleq};
 use crate::Amount;
 
 /// NUT03 Error
@@ -41,7 +41,7 @@ pub struct PreSwap {
 pub struct SwapRequest {
     /// Proofs that are to be spent in a `Swap` (without dleqs)
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
-    pub inputs: Proofs,
+    pub inputs: ProofsWithoutDleq,
     /// Blinded Messages for Mint to sign
     pub outputs: Vec<BlindedMessage>,
 }
