@@ -9,7 +9,7 @@ use cdk::nuts::{SecretKey, Token};
 use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::Wallet;
+use cdk::wallet::{ReceiveOptions, Wallet};
 use cdk::Amount;
 use clap::Args;
 use nostr_sdk::nips::nip04;
@@ -162,7 +162,14 @@ async fn receive_token(
     }
 
     let amount = multi_mint_wallet
-        .receive(token_str, signing_keys, preimage)
+        .receive(
+            token_str,
+            ReceiveOptions {
+                p2pk_signing_keys: signing_keys.to_vec(),
+                preimages: preimage.to_vec(),
+                ..Default::default()
+            },
+        )
         .await?;
     Ok(amount)
 }

@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::fmt::Debug;
 
+use cdk_common::util::unix_time;
+use cdk_common::wallet::{Transaction, TransactionDirection};
 use tracing::instrument;
 
 use super::SendKind;
@@ -202,6 +205,7 @@ impl Wallet {
     #[instrument(skip(self), err)]
     pub async fn send(&self, send: PreparedSend, memo: Option<SendMemo>) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
+        let total_send_fee = send.fee();
         let mut proofs_to_send = send.proofs_to_send;
 
         // Get active keyset ID
@@ -267,6 +271,20 @@ impl Wallet {
         );
         self.localstore
             .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
+            .await?;
+
+        // Add transaction to store
+        self.localstore
+            .add_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Outgoing,
+                amount: send.amount,
+                fee: total_send_fee,
+                unit: self.unit.clone(),
+                ys: proofs_to_send.ys()?,
+                timestamp: unix_time(),
+                metadata: send.options.metadata,
+            })
             .await?;
 
         // Include token memo
@@ -401,6 +419,8 @@ pub struct SendOptions {
     ///
     /// When this is true the token created will include the amount of fees needed to redeem the token (amount + fee_to_redeem)
     pub include_fee: bool,
+    /// Metadata
+    pub metadata: HashMap<String, String>,
 }
 
 /// Send memo

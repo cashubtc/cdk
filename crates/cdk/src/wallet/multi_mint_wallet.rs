@@ -11,11 +11,12 @@ use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
+use super::receive::ReceiveOptions;
 use super::send::{PreparedSend, SendMemo, SendOptions};
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SecretKey, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
 use crate::{ensure_cdk, Amount, Wallet};
@@ -214,8 +215,7 @@ impl MultiMintWallet {
     pub async fn receive(
         &self,
         encoded_token: &str,
-        p2pk_signing_keys: &[SecretKey],
-        preimages: &[String],
+        opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
         let unit = token_data.unit().unwrap_or_default();
@@ -240,10 +240,7 @@ impl MultiMintWallet {
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        match wallet
-            .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
-            .await
-        {
+        match wallet.receive_proofs(proofs, opts).await {
             Ok(amount) => {
                 amount_received += amount;
             }

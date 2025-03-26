@@ -2,9 +2,8 @@ use std::assert_eq;
 use std::collections::HashSet;
 use std::hash::RandomState;
 
-use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::wallet::SendOptions;
+use cdk::wallet::{ReceiveOptions, SendOptions};
 use cdk::Amount;
 use cdk_integration_tests::init_pure_tests::*;
 
@@ -38,7 +37,7 @@ async fn test_swap_to_send() -> anyhow::Result<()> {
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_arc_for_mint(mint_bob.clone()).await?;
     let received_amount = wallet_carol
-        .receive_proofs(token.proofs(), SplitTarget::None, &[], &[])
+        .receive_proofs(token.proofs(), ReceiveOptions::default())
         .await?;
 
     assert_eq!(Amount::from(40), received_amount);
