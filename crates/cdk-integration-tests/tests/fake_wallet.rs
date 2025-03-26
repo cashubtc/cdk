@@ -1127,7 +1127,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
         PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: proofs.iter().map(|p| p.into()).collect(),
+        inputs: inputs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
