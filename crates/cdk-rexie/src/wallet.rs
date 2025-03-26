@@ -637,18 +637,6 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
-    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-        self.set_proof_states(ys, State::Pending).await
-    }
-
-    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-        self.set_proof_states(ys, State::Reserved).await
-    }
-
-    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
-        self.set_proof_states(ys, State::Unspent).await
-    }
-
     async fn get_proofs(
         &self,
         mint_url: Option<MintUrl>,

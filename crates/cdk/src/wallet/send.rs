@@ -149,9 +149,7 @@ impl Wallet {
         tracing::debug!("Send fee: {:?}", send_fee);
 
         // Reserve proofs
-        self.localstore
-            .update_proofs_state(proofs.ys()?, State::Reserved)
-            .await?;
+        self.localstore.reserve_proofs(proofs.ys()?).await?;
 
         // Check if proofs are exact send amount
         let proofs_exact_amount = proofs.total_amount()? == amount + send_fee;
@@ -298,7 +296,7 @@ impl Wallet {
         }
 
         self.localstore
-            .update_proofs_state(send.proofs().ys()?, State::Unspent)
+            .set_unspent_proofs(send.proofs().ys()?)
             .await?;
 
         Ok(())

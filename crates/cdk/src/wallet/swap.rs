@@ -208,10 +208,7 @@ impl Wallet {
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
 
-        let ys: Vec<PublicKey> = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Reserved)
-            .await?;
+        self.localstore.reserve_proofs(proofs.ys()?).await?;
 
         let fee = self.get_proofs_fee(&proofs).await?;
 

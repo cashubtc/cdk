@@ -129,10 +129,7 @@ impl Wallet {
             return Err(Error::InsufficientFunds);
         }
 
-        let ys = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Pending)
-            .await?;
+        self.localstore.set_pending_proofs(proofs.ys()?).await?;
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 

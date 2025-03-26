@@ -77,6 +77,21 @@ pub trait Database: Debug {
     /// Remove [`Keys`] from storage
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err>;
 
+    /// Set proofs as pending in storage. Proofs are identified by their Y
+    /// value.
+    async fn set_pending_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.update_proofs_state(ys, State::Pending).await
+    }
+    /// Reserve proofs in storage. Proofs are identified by their Y value.
+    async fn reserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.update_proofs_state(ys, State::Reserved).await
+    }
+    /// Set proofs as unspent in storage. Proofs are identified by their Y
+    /// value.
+    async fn set_unspent_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Self::Err> {
+        self.update_proofs_state(ys, State::Unspent).await
+    }
+
     /// Update the proofs in storage by adding new proofs or removing proofs by
     /// their Y value.
     async fn update_proofs(
