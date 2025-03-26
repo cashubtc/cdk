@@ -11,7 +11,7 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet", "auth"]
+default = ["wallet", "auth"]
 wallet = ["dep:reqwest", "cdk-common/wallet"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]

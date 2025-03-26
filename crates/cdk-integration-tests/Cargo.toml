@@ -24,8 +24,8 @@ cdk = { workspace = true, features = ["mint", "wallet", "auth"] }
 cdk-cln = { workspace = true }
 cdk-lnd = { workspace = true }
 cdk-axum = { workspace = true }
-cdk-sqlite = { workspace = true }
-cdk-redb = { workspace = true }
+cdk-sqlite = { workspace = true, features = ["mint", "wallet"] }
+cdk-redb = { workspace = true , features = ["mint", "wallet"] }
 cdk-fake-wallet = { workspace = true }
 futures = { workspace = true, default-features = false, features = [
     "executor",
