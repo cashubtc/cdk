@@ -8,6 +8,7 @@ homepage.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+readme = "README.md"
 
 [features]
 sqlcipher = ["cdk-sqlite/sqlcipher"]

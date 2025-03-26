@@ -6,7 +6,7 @@ use cdk_common::{AuthToken, MintInfo};
 use super::Error;
 use crate::nuts::{Id, KeySet, KeysetResponse, MintAuthRequest, MintBolt11Response};
 
-/// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
+/// Interface that connects a wallet to a mint. Typically represents an HttpClient.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait AuthMintConnector: Debug {

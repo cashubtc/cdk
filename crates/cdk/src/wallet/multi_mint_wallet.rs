@@ -7,6 +7,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::Result;
+use cdk_common::database;
+use cdk_common::database::WalletDatabase;
 use cdk_common::wallet::WalletKey;
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -24,14 +27,23 @@ use crate::{ensure_cdk, Amount, Wallet};
 /// Multi Mint Wallet
 #[derive(Debug, Clone)]
 pub struct MultiMintWallet {
+    /// Storage backend
+    pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    seed: Arc<[u8]>,
     /// Wallets
     pub wallets: Arc<Mutex<BTreeMap<WalletKey, Wallet>>>,
 }
 
 impl MultiMintWallet {
-    /// New Multimint wallet
-    pub fn new(wallets: Vec<Wallet>) -> Self {
+    /// Create a new [MultiMintWallet] with initial wallets
+    pub fn new(
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        seed: Arc<[u8]>,
+        wallets: Vec<Wallet>,
+    ) -> Self {
         Self {
+            localstore,
+            seed,
             wallets: Arc::new(Mutex::new(
                 wallets
                     .into_iter()
@@ -41,7 +53,7 @@ impl MultiMintWallet {
         }
     }
 
-    /// Add wallet to MultiMintWallet
+    /// Adds a [Wallet] to this [MultiMintWallet]
     #[instrument(skip(self, wallet))]
     pub async fn add_wallet(&self, wallet: Wallet) {
         let wallet_key = WalletKey::new(wallet.mint_url.clone(), wallet.unit.clone());
@@ -49,6 +61,26 @@ impl MultiMintWallet {
         let mut wallets = self.wallets.lock().await;
 
         wallets.insert(wallet_key, wallet);
+    }
+
+    /// Creates a new [Wallet] and adds it to this [MultiMintWallet]
+    pub async fn create_and_add_wallet(
+        &self,
+        mint_url: &str,
+        unit: CurrencyUnit,
+        target_proof_count: Option<usize>,
+    ) -> Result<Wallet> {
+        let wallet = Wallet::new(
+            mint_url,
+            unit,
+            self.localstore.clone(),
+            self.seed.as_ref(),
+            target_proof_count,
+        )?;
+
+        self.add_wallet(wallet.clone()).await;
+
+        Ok(wallet)
     }
 
     /// Remove Wallet from MultiMintWallet

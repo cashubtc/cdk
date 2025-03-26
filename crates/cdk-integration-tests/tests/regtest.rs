@@ -257,12 +257,11 @@ async fn test_restore() -> Result<()> {
 async fn test_pay_invoice_twice() -> anyhow::Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &seed,
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )?;
 
@@ -328,12 +327,11 @@ async fn test_pay_invoice_twice() -> anyhow::Result<()> {
 async fn test_internal_payment() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &seed,
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -349,13 +347,11 @@ async fn test_internal_payment() -> Result<()> {
 
     assert!(wallet.total_balance().await? == 100.into());
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-
     let wallet_2 = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &seed,
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 

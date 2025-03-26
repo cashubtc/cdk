@@ -24,7 +24,7 @@ pub struct MintSqliteAuthDatabase {
 }
 
 impl MintSqliteAuthDatabase {
-    /// Create new [`MintSqliteDatabase`]
+    /// Create new [`MintSqliteAuthDatabase`]
     pub async fn new(path: &Path) -> Result<Self, Error> {
         let path = path.to_str().ok_or(Error::InvalidDbPath)?;
         let db_options = SqliteConnectOptions::from_str(path)?
@@ -41,7 +41,7 @@ impl MintSqliteAuthDatabase {
         Ok(Self { pool })
     }
 
-    /// Migrate [`MintSqliteDatabase`]
+    /// Migrate [`MintSqliteAuthDatabase`]
     pub async fn migrate(&self) {
         sqlx::migrate!("./src/mint/auth/migrations")
             .run(&self.pool)

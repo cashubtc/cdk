@@ -1,7 +1,7 @@
 //! Publish–subscribe pattern.
 //!
 //! This is a generic implementation for
-//! [NUT-17(https://github.com/cashubtc/nuts/blob/main/17.md) with a type
+//! [NUT-17(<https://github.com/cashubtc/nuts/blob/main/17.md>) with a type
 //! agnostic Publish-subscribe manager.
 //!
 //! The manager has a method for subscribers to subscribe to events with a
@@ -243,7 +243,7 @@ where
 
 /// Active Subscription
 ///
-/// This struct is a wrapper around the mpsc::Receiver<Event> and it also used
+/// This struct is a wrapper around the `mpsc::Receiver<Event>` and it also used
 /// to keep track of the subscription itself. When this struct goes out of
 /// scope, it will notify the Manager about it, so it can be removed from the
 /// list of active listeners
