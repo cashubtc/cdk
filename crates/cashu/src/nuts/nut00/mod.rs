@@ -175,6 +175,18 @@ impl From<Proof> for ProofWithoutDleq {
     }
 }
 
+impl From<&Proof> for ProofWithoutDleq {
+    fn from(proof: &Proof) -> Self {
+        Self {
+            amount: proof.amount,
+            keyset_id: proof.keyset_id,
+            secret: proof.secret.clone(),
+            c: proof.c,
+            witness: proof.witness.clone(),
+        }
+    }
+}
+
 impl ProofWithoutDleq {
     /// Create new [`ProofWithoutDleq`]
     pub fn new(amount: Amount, keyset_id: Id, secret: Secret, c: PublicKey) -> Self {
@@ -528,15 +540,28 @@ impl From<Proof> for ProofV4 {
     }
 }
 
-impl From<ProofDleq> for Proof {
-    fn from(dleq: ProofDleq) -> Self {
+impl From<ProofWithoutDleq> for Proof {
+    fn from(value: ProofWithoutDleq) -> Self {
         Proof {
-            amount: dleq.amount,
-            keyset_id: dleq.id,
-            secret: dleq.secret,
-            c: dleq.c,
-            witness: None,
-            dleq: Some(dleq),
+            amount: value.amount,
+            keyset_id: value.keyset_id,
+            secret: value.secret,
+            c: value.c,
+            witness: value.witness,
+            dleq: None,
+        }
+    }
+}
+
+impl From<&ProofWithoutDleq> for Proof {
+    fn from(value: &ProofWithoutDleq) -> Self {
+        Proof {
+            amount: value.amount,
+            keyset_id: value.keyset_id,
+            secret: value.secret.clone(),
+            c: value.c,
+            witness: value.witness.clone(),
+            dleq: None,
         }
     }
 }

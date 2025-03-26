@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use cdk_common::database::{self, MintAuthDatabase};
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::MintKeySetInfo;
-use cdk_common::nuts::{AuthProof, BlindSignature, Id, PublicKey, State};
+use cdk_common::nut22::AuthProofWithoutDleq;
+use cdk_common::nuts::{BlindSignature, Id, PublicKey, State};
 use cdk_common::{AuthRequired, ProtectedEndpoint};
 use redb::{Database, ReadableTable, TableDefinition};
 
@@ -177,7 +178,7 @@ impl MintAuthDatabase for MintRedbAuthDatabase {
         Ok(keysets)
     }
 
-    async fn add_proof(&self, proof: AuthProof) -> Result<(), Self::Err> {
+    async fn add_proof(&self, proof: AuthProofWithoutDleq) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {

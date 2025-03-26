@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
-use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods, PublicKey};
+use cdk_common::nut00::ProofsWithoutDleq;
+use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, ProofsMethods, PublicKey};
 use tracing::instrument;
 
 use super::{Error, Mint};
@@ -17,7 +18,7 @@ pub struct Verification {
 impl Mint {
     /// Verify that the inputs to the transaction are unique
     #[instrument(skip_all)]
-    pub fn check_inputs_unique(inputs: &Proofs) -> Result<(), Error> {
+    pub fn check_inputs_unique(inputs: &ProofsWithoutDleq) -> Result<(), Error> {
         let proof_count = inputs.len();
 
         if inputs
@@ -108,7 +109,10 @@ impl Mint {
     ///
     /// Checks that the inputs are all of the same unit
     #[instrument(skip_all)]
-    pub async fn verify_inputs_keyset(&self, inputs: &Proofs) -> Result<CurrencyUnit, Error> {
+    pub async fn verify_inputs_keyset(
+        &self,
+        inputs: &ProofsWithoutDleq,
+    ) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
 
         let inputs_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();
@@ -198,13 +202,13 @@ impl Mint {
     /// Checks that inputs are unique and of the same unit
     /// **NOTE: This does not check if inputs have been spent
     #[instrument(skip_all)]
-    pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
+    pub async fn verify_inputs(&self, inputs: &ProofsWithoutDleq) -> Result<Verification, Error> {
         Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
         let amount = inputs.total_amount()?;
 
         for proof in inputs {
-            self.verify_proof(proof).await?;
+            self.verify_proof(&proof.into()).await?;
         }
 
         Ok(Verification {
@@ -217,7 +221,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn verify_transaction_balanced(
         &self,
-        inputs: &Proofs,
+        inputs: &ProofsWithoutDleq,
         outputs: &[BlindedMessage],
     ) -> Result<(), Error> {
         let output_verification = self.verify_outputs(outputs).await.map_err(|err| {

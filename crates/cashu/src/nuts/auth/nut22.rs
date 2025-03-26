@@ -202,17 +202,55 @@ impl TryFrom<Proof> for AuthProof {
     }
 }
 
+/// Auth Proofs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct AuthProofWithoutDleq {
+    /// `Keyset id`
+    #[serde(rename = "id")]
+    pub keyset_id: Id,
+    /// Secret message
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub secret: Secret,
+    /// Unblinded signature
+    #[serde(rename = "C")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub c: PublicKey,
+}
+
+impl AuthProofWithoutDleq {
+    /// Y of AuthProof
+    pub fn y(&self) -> Result<PublicKey, Error> {
+        Ok(hash_to_curve(self.secret.as_bytes())?)
+    }
+}
+
+impl From<AuthProof> for AuthProofWithoutDleq {
+    fn from(proof: AuthProof) -> Self {
+        Self {
+            keyset_id: proof.keyset_id,
+            secret: proof.secret.clone(),
+            c: proof.c,
+        }
+    }
+}
+
 /// Blind Auth Token
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlindAuthToken {
     /// [AuthProof]
-    pub auth_proof: AuthProof,
+    pub auth_proof: AuthProofWithoutDleq,
 }
 
 impl BlindAuthToken {
     /// Create new [ `BlindAuthToken`]
-    pub fn new(auth_proof: AuthProof) -> Self {
-        BlindAuthToken { auth_proof }
+    pub fn new<T>(auth_proof: T) -> Self
+    where
+        T: Into<AuthProofWithoutDleq>,
+    {
+        BlindAuthToken {
+            auth_proof: auth_proof.into(),
+        }
     }
 }
 
@@ -238,7 +276,7 @@ impl std::str::FromStr for BlindAuthToken {
         let json_str = String::from_utf8(json_string)?;
 
         // Deserialize the JSON string into AuthProof
-        let auth_proof: AuthProof = serde_json::from_str(&json_str)?;
+        let auth_proof: AuthProofWithoutDleq = serde_json::from_str(&json_str)?;
 
         Ok(BlindAuthToken { auth_proof })
     }

@@ -357,7 +357,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let melt_request = MeltBolt11Request {
         quote: melt_quote.id.clone(),
-        inputs: proofs.clone(),
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: Some(premint_secrets.blinded_messages()),
     };
 
@@ -677,7 +677,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
             PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
 
         let swap_request = SwapRequest {
-            inputs,
+            inputs: inputs.iter().map(|p| p.into()).collect(),
             outputs: pre_mint.blinded_messages(),
         };
 
@@ -714,7 +714,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
         usd_outputs.append(&mut sat_outputs);
 
         let swap_request = SwapRequest {
-            inputs,
+            inputs: inputs.iter().map(|p| p.into()).collect(),
             outputs: usd_outputs,
         };
 
@@ -788,7 +788,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
 
         let melt_request = MeltBolt11Request {
             quote: melt_quote.id,
-            inputs,
+            inputs: inputs.iter().map(|p| p.into()).collect(),
             outputs: None,
         };
 
@@ -832,7 +832,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
 
         let melt_request = MeltBolt11Request {
             quote: quote.id,
-            inputs,
+            inputs: inputs.iter().map(|p| p.into()).collect(),
             outputs: Some(usd_outputs),
         };
 
@@ -891,7 +891,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
     )?;
 
     let swap_request = SwapRequest {
-        inputs,
+        inputs: inputs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -931,7 +931,7 @@ async fn test_fake_mint_swap_inflated() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: proofs,
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -974,7 +974,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: proofs.clone(),
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -986,7 +986,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: proofs.clone(),
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -1004,7 +1004,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: proofs,
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -1047,7 +1047,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: proofs.clone(),
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -1059,7 +1059,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: proofs.clone(),
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -1080,7 +1080,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
 
     let melt_request = MeltBolt11Request {
         quote: melt_quote.id,
-        inputs: proofs,
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: None,
     };
 
@@ -1127,7 +1127,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
         PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
 
     let swap_request = SwapRequest {
-        inputs: inputs.clone(),
+        inputs: proofs.iter().map(|p| p.into()).collect(),
         outputs: pre_mint.blinded_messages(),
     };
 
@@ -1153,7 +1153,10 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
 
     let outputs = vec![blinded_message[0].clone(), blinded_message[0].clone()];
 
-    let swap_request = SwapRequest { inputs, outputs };
+    let swap_request = SwapRequest {
+        inputs: proofs.iter().map(|p| p.into()).collect(),
+        outputs,
+    };
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1201,7 +1204,7 @@ async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
 
     let melt_request = MeltBolt11Request {
         quote: melt_quote.id,
-        inputs,
+        inputs: inputs.iter().map(|p| p.into()).collect(),
         outputs: None,
     };
 

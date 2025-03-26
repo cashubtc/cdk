@@ -8,7 +8,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use cdk_common::database::{self, MintAuthDatabase};
 use cdk_common::mint::MintKeySetInfo;
-use cdk_common::nuts::{AuthProof, BlindSignature, Id, PublicKey, State};
+use cdk_common::nut22::AuthProofWithoutDleq;
+use cdk_common::nuts::{BlindSignature, Id, PublicKey, State};
 use cdk_common::{AuthRequired, ProtectedEndpoint};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
@@ -225,7 +226,7 @@ FROM keyset;
         }
     }
 
-    async fn add_proof(&self, proof: AuthProof) -> Result<(), Self::Err> {
+    async fn add_proof(&self, proof: AuthProofWithoutDleq) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         if let Err(err) = sqlx::query(
             r#"

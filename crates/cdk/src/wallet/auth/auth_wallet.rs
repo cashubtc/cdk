@@ -284,7 +284,7 @@ impl AuthWallet {
         };
 
         Ok(Some(AuthToken::BlindAuth(BlindAuthToken {
-            auth_proof: auth_proof.clone(),
+            auth_proof: auth_proof.clone().into(),
         })))
     }
 

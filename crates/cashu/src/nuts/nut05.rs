@@ -12,7 +12,9 @@ use thiserror::Error;
 #[cfg(feature = "mint")]
 use uuid::Uuid;
 
-use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
+use super::nut00::{
+    BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, ProofsWithoutDleq,
+};
 use super::nut15::Mpp;
 use crate::nuts::MeltQuoteState;
 use crate::{Amount, Bolt11Invoice};
@@ -322,8 +324,8 @@ pub struct MeltBolt11Request<Q> {
     /// Quote ID
     pub quote: Q,
     /// Proofs
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
-    pub inputs: Proofs,
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::ProofWithoutDleq>))]
+    pub inputs: ProofsWithoutDleq,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
     pub outputs: Option<Vec<BlindedMessage>>,

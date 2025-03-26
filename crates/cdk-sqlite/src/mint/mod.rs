@@ -9,7 +9,7 @@ use bitcoin::bip32::DerivationPath;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
-use cdk_common::nut00::ProofsMethods;
+use cdk_common::nut00::{ProofsMethods, ProofsWithoutDleq};
 use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
 use cdk_common::{
@@ -873,7 +873,11 @@ FROM keyset;
         }
     }
 
-    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
+    async fn add_proofs(
+        &self,
+        proofs: ProofsWithoutDleq,
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         for proof in proofs {
             let result = sqlx::query(
@@ -1785,7 +1789,9 @@ mod tests {
         ];
 
         // Add proofs to database
-        db.add_proofs(proofs.clone(), None).await.unwrap();
+        db.add_proofs(proofs.iter().map(|p| p.into()).collect(), None)
+            .await
+            .unwrap();
 
         // Mark one proof as spent
         db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
@@ -1853,7 +1859,9 @@ mod tests {
         ];
 
         // Add proofs to database
-        db.add_proofs(proofs.clone(), None).await.unwrap();
+        db.add_proofs(proofs.iter().map(|p| p.into()).collect(), None)
+            .await
+            .unwrap();
 
         // Mark one proof as spent
         db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
-use cdk_common::nuts::{CurrencyUnit, Id, MeltBolt11Request, Proofs};
+use cdk_common::nut00::ProofsWithoutDleq;
+use cdk_common::nuts::{CurrencyUnit, Id, MeltBolt11Request};
 use cdk_common::MintInfo;
 use uuid::Uuid;
 
@@ -27,8 +28,8 @@ pub async fn new_with_state(
     keysets: Vec<MintKeySetInfo>,
     mint_quotes: Vec<MintQuote>,
     melt_quotes: Vec<mint::MeltQuote>,
-    pending_proofs: Proofs,
-    spent_proofs: Proofs,
+    pending_proofs: ProofsWithoutDleq,
+    spent_proofs: ProofsWithoutDleq,
     melt_request: Vec<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>,
     mint_info: MintInfo,
 ) -> Result<MintSqliteDatabase, database::Error> {

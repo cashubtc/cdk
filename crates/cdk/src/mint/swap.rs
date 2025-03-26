@@ -64,7 +64,14 @@ impl Mint {
             sig_flag,
             pubkeys,
             sigs_required,
-        } = enforce_sig_flag(swap_request.inputs.clone());
+        } = enforce_sig_flag(
+            swap_request
+                .inputs
+                .clone()
+                .iter()
+                .map(|p| p.into())
+                .collect(),
+        );
 
         if sig_flag.eq(&SigFlag::SigAll) {
             let pubkeys = pubkeys.into_iter().collect();

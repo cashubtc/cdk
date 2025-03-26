@@ -1,10 +1,10 @@
+use cdk_common::nut22::AuthProofWithoutDleq;
 use cdk_common::{CurrencyUnit, MintKeySet};
 use tracing::instrument;
 
 use super::nut21::ProtectedEndpoint;
 use super::{
-    AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage, Error, Id,
-    Mint, State,
+    AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage, Error, Id, Mint, State,
 };
 use crate::dhke::{sign_message, verify_message};
 use crate::Amount;
@@ -234,7 +234,10 @@ impl Mint {
 
     /// Check state of blind auth proof and mark it as spent
     #[instrument(skip_all)]
-    pub async fn check_blind_auth_proof_spendable(&self, proof: AuthProof) -> Result<(), Error> {
+    pub async fn check_blind_auth_proof_spendable(
+        &self,
+        proof: AuthProofWithoutDleq,
+    ) -> Result<(), Error> {
         tracing::trace!(
             "Checking if blind auth proof is spendable for keyset ID: {:?}",
             proof.keyset_id

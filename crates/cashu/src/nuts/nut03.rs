@@ -8,6 +8,7 @@ use thiserror::Error;
 #[cfg(feature = "wallet")]
 use super::nut00::PreMintSecrets;
 use super::nut00::{BlindSignature, BlindedMessage, Proofs, ProofsWithoutDleq};
+use super::ProofsMethods;
 use crate::Amount;
 
 /// NUT03 Error
@@ -19,6 +20,9 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+    /// NUT00 Error
+    #[error(transparent)]
+    Nut00(#[from] crate::nut00::Error),
 }
 
 /// Preswap information
@@ -50,15 +54,15 @@ impl SwapRequest {
     /// Create new [`SwapRequest`]
     pub fn new(inputs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
         // Create a new SwapRequest with proofs that don't include dleqs
-        Self { 
+        Self {
             inputs: inputs.without_dleqs(),
-            outputs 
+            outputs,
         }
     }
 
     /// Total value of proofs in [`SwapRequest`]
     pub fn input_amount(&self) -> Result<Amount, Error> {
-        self.inputs.total_amount()
+        Ok(self.inputs.total_amount()?)
     }
 
     /// Total value of outputs in [`SwapRequest`]

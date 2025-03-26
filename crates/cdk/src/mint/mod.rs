@@ -9,6 +9,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::nut00::ProofsWithoutDleq;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -352,7 +353,7 @@ impl Mint {
 
     /// Fee required for proof set
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+    pub async fn get_proofs_fee(&self, proofs: &ProofsWithoutDleq) -> Result<Amount, Error> {
         let mut proofs_per_keyset = HashMap::new();
         let mut fee_per_keyset = HashMap::new();
 
@@ -739,8 +740,8 @@ mod tests {
         keysets: Vec<MintKeySetInfo>,
         mint_quotes: Vec<MintQuote>,
         melt_quotes: Vec<MeltQuote>,
-        pending_proofs: Proofs,
-        spent_proofs: Proofs,
+        pending_proofs: ProofsWithoutDleq,
+        spent_proofs: ProofsWithoutDleq,
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,

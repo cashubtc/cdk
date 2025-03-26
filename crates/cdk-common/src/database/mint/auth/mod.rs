@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::nut22::AuthProofWithoutDleq;
 use cashu::{AuthRequired, ProtectedEndpoint};
 
 use crate::database::Error;
 use crate::mint::MintKeySetInfo;
 use crate::nuts::nut07::State;
-use crate::nuts::{AuthProof, BlindSignature, Id, PublicKey};
+use crate::nuts::{BlindSignature, Id, PublicKey};
 
 /// Mint Database trait
 #[async_trait]
@@ -28,7 +29,7 @@ pub trait MintAuthDatabase {
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     /// Add spent [`AuthProof`]
-    async fn add_proof(&self, proof: AuthProof) -> Result<(), Self::Err>;
+    async fn add_proof(&self, proof: AuthProofWithoutDleq) -> Result<(), Self::Err>;
     /// Get [`AuthProof`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Update [`AuthProof`]s state

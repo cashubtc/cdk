@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cashu::nut00::ProofsWithoutDleq;
 use cashu::MintInfo;
 use uuid::Uuid;
 
@@ -97,8 +98,12 @@ pub trait Database {
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
-    /// Add  [`Proofs`]
-    async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
+    /// Add  [`ProofsWithoutDleq`]
+    async fn add_proofs(
+        &self,
+        proof: ProofsWithoutDleq,
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err>;
     /// Remove [`Proofs`]
     async fn remove_proofs(
         &self,

@@ -152,7 +152,7 @@ impl Wallet {
 
         let request = MeltBolt11Request {
             quote: quote_id.to_string(),
-            inputs: proofs.clone(),
+            inputs: proofs.iter().map(|p| p.into()).collect(),
             outputs: Some(premint_secrets.blinded_messages()),
         };
 
