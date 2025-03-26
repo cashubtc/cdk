@@ -39,7 +39,7 @@ pub struct PreSwap {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SwapRequest {
-    /// Proofs that are to be spent in a `Swap`
+    /// Proofs that are to be spent in a `Swap` (without dleqs)
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
     pub inputs: Proofs,
     /// Blinded Messages for Mint to sign
@@ -49,6 +49,7 @@ pub struct SwapRequest {
 impl SwapRequest {
     /// Create new [`SwapRequest`]
     pub fn new(inputs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
+        // Create a new SwapRequest with proofs that don't include dleqs
         Self { inputs, outputs }
     }
 
