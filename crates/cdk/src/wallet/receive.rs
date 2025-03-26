@@ -185,7 +185,7 @@ impl Wallet {
     ///  use cdk::amount::SplitTarget;
     ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
-    ///  use cdk::wallet::Wallet;
+    ///  use cdk::wallet::{ReceiveOptions, Wallet};
     ///  use rand::random;
     ///
     /// #[tokio::main]
@@ -234,7 +234,7 @@ impl Wallet {
     ///  use cdk::amount::SplitTarget;
     ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
-    ///  use cdk::wallet::Wallet;
+    ///  use cdk::wallet::{ReceiveOptions, Wallet};
     ///  use cdk::util::hex;
     ///  use rand::random;
     ///
