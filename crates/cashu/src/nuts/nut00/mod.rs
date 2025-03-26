@@ -37,8 +37,30 @@ pub use token::{Token, TokenV3, TokenV4};
 /// List of [Proof]
 pub type Proofs = Vec<Proof>;
 
+/// Proof without DLEQ
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct ProofWithoutDleq {
+    /// Amount
+    pub amount: Amount,
+    /// `Keyset id`
+    #[serde(rename = "id")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub keyset_id: Id,
+    /// Secret message
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub secret: Secret,
+    /// Unblinded signature
+    #[serde(rename = "C")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub c: PublicKey,
+    /// Witness
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub witness: Option<Witness>,
+}
+
 /// List of [Proof] without dleqs
-pub type ProofsWithoutDleq = Vec<Proof>;
+pub type ProofsWithoutDleq = Vec<ProofWithoutDleq>;
 
 /// Utility methods for [Proofs]
 pub trait ProofsMethods {
@@ -77,11 +99,7 @@ impl ProofsMethods for Proofs {
     
     fn without_dleqs(&self) -> ProofsWithoutDleq {
         self.iter()
-            .map(|proof| {
-                let mut proof_clone = proof.clone();
-                proof_clone.dleq = None;
-                proof_clone
-            })
+            .map(|proof| ProofWithoutDleq::from(proof.clone()))
             .collect()
     }
 }
@@ -105,11 +123,7 @@ impl ProofsMethods for HashSet<Proof> {
     
     fn without_dleqs(&self) -> ProofsWithoutDleq {
         self.iter()
-            .map(|proof| {
-                let mut proof_clone = proof.clone();
-                proof_clone.dleq = None;
-                proof_clone
-            })
+            .map(|proof| ProofWithoutDleq::from(proof.clone()))
             .collect()
     }
 }
@@ -117,24 +131,72 @@ impl ProofsMethods for HashSet<Proof> {
 // Implement ProofsMethods for ProofsWithoutDleq
 impl ProofsMethods for ProofsWithoutDleq {
     fn count_by_keyset(&self) -> HashMap<Id, u64> {
-        count_by_keyset(self.iter())
+        let mut counts = HashMap::new();
+        for proof in self {
+            *counts.entry(proof.keyset_id).or_insert(0) += 1;
+        }
+        counts
     }
 
     fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
-        sum_by_keyset(self.iter())
+        let mut sums = HashMap::new();
+        for proof in self {
+            *sums.entry(proof.keyset_id).or_insert(Amount::ZERO) += proof.amount;
+        }
+        sums
     }
 
     fn total_amount(&self) -> Result<Amount, Error> {
-        total_amount(self.iter())
+        Amount::try_sum(self.iter().map(|p| p.amount)).map_err(Into::into)
     }
 
     fn ys(&self) -> Result<Vec<PublicKey>, Error> {
-        ys(self.iter())
+        self.iter()
+            .map(|p| hash_to_curve(p.secret.as_bytes()))
+            .collect::<Result<Vec<PublicKey>, _>>()
+            .map_err(Into::into)
     }
     
     fn without_dleqs(&self) -> ProofsWithoutDleq {
         // Already without dleqs, so just clone
         self.clone()
+    }
+}
+
+impl From<Proof> for ProofWithoutDleq {
+    fn from(proof: Proof) -> Self {
+        Self {
+            amount: proof.amount,
+            keyset_id: proof.keyset_id,
+            secret: proof.secret,
+            c: proof.c,
+            witness: proof.witness,
+        }
+    }
+}
+
+impl ProofWithoutDleq {
+    /// Create new [`ProofWithoutDleq`]
+    pub fn new(amount: Amount, keyset_id: Id, secret: Secret, c: PublicKey) -> Self {
+        Self {
+            amount,
+            keyset_id,
+            secret,
+            c,
+            witness: None,
+        }
+    }
+
+    /// Check if proof is in active keyset `Id`s
+    pub fn is_active(&self, active_keyset_ids: &[Id]) -> bool {
+        active_keyset_ids.contains(&self.keyset_id)
+    }
+
+    /// Get y from proof
+    ///
+    /// Where y is `hash_to_curve(secret)`
+    pub fn y(&self) -> Result<PublicKey, Error> {
+        Ok(hash_to_curve(self.secret.as_bytes())?)
     }
 }
 

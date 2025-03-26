@@ -58,9 +58,7 @@ impl SwapRequest {
 
     /// Total value of proofs in [`SwapRequest`]
     pub fn input_amount(&self) -> Result<Amount, Error> {
-        Ok(Amount::try_sum(
-            self.inputs.iter().map(|proof| proof.amount),
-        )?)
+        self.inputs.total_amount()
     }
 
     /// Total value of outputs in [`SwapRequest`]
