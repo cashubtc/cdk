@@ -794,7 +794,7 @@ WHERE id=?;
 
         sqlx::query(
             r#"
-INSERT INTO transaction
+INSERT INTO transactions
 (id, mint_url, direction, unit, amount, fee, ys, timestamp, metadata)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -833,7 +833,7 @@ ON CONFLICT(id) DO UPDATE SET
         let rec = sqlx::query(
             r#"
 SELECT *
-FROM transaction
+FROM transactions
 WHERE id=?;
         "#,
         )
@@ -864,7 +864,7 @@ WHERE id=?;
         let recs = sqlx::query(
             r#"
 SELECT *
-FROM transaction;
+FROM transactions;
         "#,
         )
         .fetch_all(&self.pool)
@@ -897,7 +897,7 @@ FROM transaction;
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err> {
         sqlx::query(
             r#"
-DELETE FROM transaction
+DELETE FROM transactions
 WHERE id=?
         "#,
         )
