@@ -90,7 +90,7 @@ required-features = ["wallet", "auth"]
 
 [dev-dependencies]
 rand.workspace = true
-cdk-sqlite.workspace = true
+cdk-sqlite = { workspace = true, features = ["mint"] }
 bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion = "0.5.1"
