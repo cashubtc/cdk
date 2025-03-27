@@ -7,11 +7,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     fee INTEGER NOT NULL,
     unit TEXT NOT NULL,
     ys BLOB NOT NULL,
-    ts INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
     metadata TEXT
 );
 
 CREATE INDEX IF NOT EXISTS mint_url_index ON transactions(mint_url);
 CREATE INDEX IF NOT EXISTS direction_index ON transactions(direction);
 CREATE INDEX IF NOT EXISTS unit_index ON transactions(unit);
-CREATE INDEX IF NOT EXISTS timestamp_index ON transactions(ts);
+CREATE INDEX IF NOT EXISTS timestamp_index ON transactions(timestamp);

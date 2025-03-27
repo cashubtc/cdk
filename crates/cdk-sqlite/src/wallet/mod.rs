@@ -1063,7 +1063,7 @@ fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
     let amount: i64 = row.try_get("amount").map_err(Error::from)?;
     let fee: i64 = row.try_get("fee").map_err(Error::from)?;
     let ys: Vec<u8> = row.try_get("ys").map_err(Error::from)?;
-    let ts: i64 = row.try_get("ts").map_err(Error::from)?;
+    let timestamp: i64 = row.try_get("timestamp").map_err(Error::from)?;
     let row_metadata: Option<String> = row.try_get("metadata").map_err(Error::from)?;
 
     let metadata: HashMap<String, String> = row_metadata
@@ -1080,7 +1080,7 @@ fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
         amount: Amount::from(amount as u64),
         fee: Amount::from(fee as u64),
         ys: ys?,
-        timestamp: ts as u64,
+        timestamp: timestamp as u64,
         metadata,
     })
 }
