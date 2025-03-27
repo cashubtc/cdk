@@ -1,13 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::{env, fs};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::MintDatabase;
+use cdk::cdk_database::{self, MintDatabase, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -21,19 +23,19 @@ use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Notify, RwLock};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use crate::wait_for_mint_to_be_paid;
 
 pub struct DirectMintConnection {
-    pub mint: Arc<Mint>,
+    pub mint: Mint,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
 
 impl DirectMintConnection {
-    pub fn new(mint: Arc<Mint>) -> Self {
+    pub fn new(mint: Mint) -> Self {
         Self {
             mint,
             auth_wallet: Arc::new(RwLock::new(None)),
@@ -176,12 +178,42 @@ pub fn setup_tracing() {
         .try_init();
 }
 
-pub async fn create_and_start_test_mint() -> Result<Arc<Mint>> {
+pub async fn create_and_start_test_mint() -> Result<Mint> {
     let mut mint_builder = MintBuilder::new();
 
-    let database = cdk_sqlite::mint::memory::empty().await?;
+    // Read environment variable to determine database type
+    let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
-    let localstore = Arc::new(database);
+    let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
+        match db_type.to_lowercase().as_str() {
+            "sqlite" => {
+                // Create a temporary directory for SQLite database
+                let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
+                let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
+                let database = cdk_sqlite::MintSqliteDatabase::new(&path)
+                    .await
+                    .expect("Could not create sqlite db");
+                database.migrate().await;
+                Arc::new(database)
+            }
+            "redb" => {
+                // Create a temporary directory for ReDB database
+                let temp_dir = create_temp_dir("cdk-test-redb-mint")?;
+                let path = temp_dir.join("mint.redb");
+                let database = cdk_redb::MintRedbDatabase::new(&path)
+                    .expect("Could not create redb mint database");
+                Arc::new(database)
+            }
+            "memory" => {
+                let database = cdk_sqlite::mint::memory::empty().await?;
+                database.migrate().await;
+                Arc::new(database)
+            }
+            _ => {
+                bail!("Db type not set")
+            }
+        };
+
     mint_builder = mint_builder.with_localstore(localstore.clone());
 
     let fee_reserve = FeeReserve {
@@ -200,7 +232,7 @@ pub async fn create_and_start_test_mint() -> Result<Arc<Mint>> {
         .add_ln_backend(
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
-            MintMeltLimits::new(1, 1_000),
+            MintMeltLimits::new(1, 10_000),
             Arc::new(ln_fake_backend),
         )
         .await?;
@@ -221,19 +253,17 @@ pub async fn create_and_start_test_mint() -> Result<Arc<Mint>> {
 
     let mint = mint_builder.build().await?;
 
-    let mint_arc = Arc::new(mint);
-
-    let mint_arc_clone = Arc::clone(&mint_arc);
+    let mint_clone = mint.clone();
     let shutdown = Arc::new(Notify::new());
     tokio::spawn({
         let shutdown = Arc::clone(&shutdown);
-        async move { mint_arc_clone.wait_for_paid_invoices(shutdown).await }
+        async move { mint_clone.wait_for_paid_invoices(shutdown).await }
     });
 
-    Ok(mint_arc)
+    Ok(mint)
 }
 
-async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
+pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
     let connector = DirectMintConnection::new(mint.clone());
 
     let mint_info = mint.mint_info().await?;
@@ -246,12 +276,44 @@ async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
 
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let unit = CurrencyUnit::Sat;
-    let localstore = cdk_sqlite::wallet::memory::empty().await?;
+
+    // Read environment variable to determine database type
+    let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
+
+    let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
+        match db_type.to_lowercase().as_str() {
+            "sqlite" => {
+                // Create a temporary directory for SQLite database
+                let temp_dir = create_temp_dir("cdk-test-sqlite-wallet")?;
+                let path = temp_dir.join("wallet.db").to_str().unwrap().to_string();
+                let database = cdk_sqlite::WalletSqliteDatabase::new(&path)
+                    .await
+                    .expect("Could not create sqlite db");
+                database.migrate().await;
+                Arc::new(database)
+            }
+            "redb" => {
+                // Create a temporary directory for ReDB database
+                let temp_dir = create_temp_dir("cdk-test-redb-wallet")?;
+                let path = temp_dir.join("wallet.redb");
+                let database = cdk_redb::WalletRedbDatabase::new(&path)
+                    .expect("Could not create redb mint database");
+                Arc::new(database)
+            }
+            "memory" => {
+                let database = cdk_sqlite::wallet::memory::empty().await?;
+                database.migrate().await;
+                Arc::new(database)
+            }
+            _ => {
+                bail!("Db type not set")
+            }
+        };
 
     let wallet = WalletBuilder::new()
         .mint_url(mint_url.parse().unwrap())
         .unit(unit)
-        .localstore(Arc::new(localstore))
+        .localstore(localstore)
         .seed(&seed)
         .client(connector)
         .build()?;
@@ -259,27 +321,28 @@ async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
     Ok(wallet)
 }
 
-pub async fn create_test_wallet_arc_for_mint(mint: Arc<Mint>) -> Result<Arc<Wallet>> {
-    create_test_wallet_for_mint(mint).await.map(Arc::new)
-}
-
-pub async fn create_test_wallet_arc_mut_for_mint(mint: Arc<Mint>) -> Result<Arc<Mutex<Wallet>>> {
-    create_test_wallet_for_mint(mint)
-        .await
-        .map(Mutex::new)
-        .map(Arc::new)
-}
-
 /// Creates a mint quote for the given amount and checks its state in a loop. Returns when
 /// amount is minted.
-pub async fn fund_wallet(wallet: Arc<Wallet>, amount: u64) -> Result<Amount> {
+/// Creates a temporary directory with a unique name based on the prefix
+fn create_temp_dir(prefix: &str) -> Result<PathBuf> {
+    let temp_dir = env::temp_dir();
+    let unique_dir = temp_dir.join(format!("{}-{}", prefix, Uuid::new_v4()));
+    fs::create_dir_all(&unique_dir)?;
+    Ok(unique_dir)
+}
+
+pub async fn fund_wallet(
+    wallet: Wallet,
+    amount: u64,
+    split_target: Option<SplitTarget>,
+) -> Result<Amount> {
     let desired_amount = Amount::from(amount);
     let quote = wallet.mint_quote(desired_amount, None).await?;
 
     wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     Ok(wallet
-        .mint(&quote.id, SplitTarget::default(), None)
+        .mint(&quote.id, split_target.unwrap_or_default(), None)
         .await?
         .total_amount()?)
 }

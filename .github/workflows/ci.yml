@@ -223,6 +223,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [pre-commit-checks, clippy]
+    strategy:
+      matrix:
+        database: 
+          [
+          memory,
+          sqlite,
+          redb
+          ]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -233,6 +241,8 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test fake mint
+        run: nix develop -i -L .#stable --command just test-pure ${{ matrix.database }}
+      - name: Test mint
         run: nix develop -i -L .#stable --command just test
 
 

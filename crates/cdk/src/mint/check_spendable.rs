@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tracing::instrument;
 
@@ -6,6 +6,33 @@ use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, PublicKey, 
 use crate::{cdk_database, Error};
 
 impl Mint {
+    /// Helper function to reset proofs to their original state, skipping spent proofs
+    async fn reset_proofs_to_original_state(
+        &self,
+        ys: &[PublicKey],
+        original_states: Vec<Option<State>>,
+    ) -> Result<(), Error> {
+        let mut ys_by_state = HashMap::new();
+        let mut unknown_proofs = Vec::new();
+        for (y, state) in ys.iter().zip(original_states) {
+            if let Some(state) = state {
+                // Skip attempting to update proofs that were originally spent
+                if state != State::Spent {
+                    ys_by_state.entry(state).or_insert_with(Vec::new).push(*y);
+                }
+            } else {
+                unknown_proofs.push(*y);
+            }
+        }
+
+        for (state, ys) in ys_by_state {
+            self.localstore.update_proofs_states(&ys, state).await?;
+        }
+
+        self.localstore.remove_proofs(&unknown_proofs, None).await?;
+
+        Ok(())
+    }
     /// Check state
     #[instrument(skip_all)]
     pub async fn check_state(
@@ -51,6 +78,8 @@ impl Mint {
                 Err(err) => return Err(err.into()),
             };
 
+        assert!(ys.len() == original_proofs_state.len());
+
         let proofs_state = original_proofs_state
             .iter()
             .flatten()
@@ -58,30 +87,20 @@ impl Mint {
 
         if proofs_state.contains(&State::Pending) {
             // Reset states before returning error
-            for (y, state) in ys.iter().zip(original_proofs_state.iter()) {
-                if let Some(original_state) = state {
-                    self.localstore
-                        .update_proofs_states(&[*y], *original_state)
-                        .await?;
-                }
-            }
+            self.reset_proofs_to_original_state(ys, original_proofs_state)
+                .await?;
             return Err(Error::TokenPending);
         }
 
         if proofs_state.contains(&State::Spent) {
             // Reset states before returning error
-            for (y, state) in ys.iter().zip(original_proofs_state.iter()) {
-                if let Some(original_state) = state {
-                    self.localstore
-                        .update_proofs_states(&[*y], *original_state)
-                        .await?;
-                }
-            }
+            self.reset_proofs_to_original_state(ys, original_proofs_state)
+                .await?;
             return Err(Error::TokenAlreadySpent);
         }
 
         for public_key in ys {
-            tracing::debug!("proof: {} set to {}", public_key.to_hex(), proof_state);
+            tracing::trace!("proof: {} set to {}", public_key.to_hex(), proof_state);
             self.pubsub_manager.proof_state((*public_key, proof_state));
         }
 
