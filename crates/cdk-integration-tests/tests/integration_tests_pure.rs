@@ -408,7 +408,7 @@ pub async fn test_p2pk_swap() {
 
     // Listen for status updates on all input proof pks
     let public_keys_to_listen: Vec<_> = swap_request
-        .inputs
+        .inputs()
         .ys()
         .unwrap()
         .iter()
@@ -764,11 +764,7 @@ async fn test_concurrent_double_spend_melt() {
     let mint_clone2 = mint_bob.clone();
     let mint_clone3 = mint_bob.clone();
 
-    let melt_request = MeltBolt11Request {
-        quote: quote_id.parse().unwrap(),
-        inputs: proofs.clone(),
-        outputs: None,
-    };
+    let melt_request = MeltBolt11Request::new(quote_id.parse().unwrap(), proofs.clone(), None);
     let melt_request2 = melt_request.clone();
     let melt_request3 = melt_request.clone();
 
