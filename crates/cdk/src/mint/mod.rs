@@ -49,7 +49,7 @@ pub use verification::Verification;
 #[derive(Clone)]
 pub struct Mint {
     /// Mint Storage backend
-    pub localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+    pub localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     /// Auth Storage backend (only available with auth feature)
     #[cfg(feature = "auth")]
     pub auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
@@ -70,7 +70,7 @@ impl Mint {
     /// Create new [`Mint`] without authentication
     pub async fn new(
         seed: &[u8],
-        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         ln: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -96,7 +96,7 @@ impl Mint {
     #[cfg(feature = "auth")]
     pub async fn new_with_auth(
         seed: &[u8],
-        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
         ln: HashMap<
             PaymentProcessorKey,
@@ -121,7 +121,7 @@ impl Mint {
     /// Internal function to create a new [`Mint`] with shared logic
     async fn new_internal(
         seed: &[u8],
-        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         #[cfg(feature = "auth")] auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,

@@ -15,7 +15,7 @@ use cdk_sqlite::wallet::memory;
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
 
-// If both pay and check return pending input proofs should remain pending
+/// Tests that when both pay and check return pending status, input proofs should remain pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_tokens_pending() -> Result<()> {
     let wallet = Wallet::new(
@@ -54,8 +54,8 @@ async fn test_fake_tokens_pending() -> Result<()> {
     Ok(())
 }
 
-// If the pay error fails and the check returns unknown or failed
-// The inputs proofs should be unset as spending
+/// Tests that if the pay error fails and the check returns unknown or failed,
+/// the input proofs should be unset as spending (returned to unspent state)
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail() -> Result<()> {
     let wallet = Wallet::new(
@@ -117,8 +117,8 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
     Ok(())
 }
 
-// When both the pay_invoice and check_invoice both fail
-// the proofs should remain as pending
+/// Tests that when both the pay_invoice and check_invoice both fail,
+/// the proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
     let wallet = Wallet::new(
@@ -162,8 +162,8 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
     Ok(())
 }
 
-// In the case that the ln backend returns a failed status but does not error
-// The mint should do a second check, then remove proofs from pending
+/// Tests that when the ln backend returns a failed status but does not error,
+/// the mint should do a second check, then remove proofs from pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
     let wallet = Wallet::new(
@@ -222,8 +222,8 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
     Ok(())
 }
 
-// In the case that the ln backend returns a failed status but does not error
-// The mint should do a second check, then remove proofs from pending
+/// Tests that when the ln backend returns an error with unknown status,
+/// the mint should do a second check, then remove proofs from pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_error_unknown() -> Result<()> {
     let wallet = Wallet::new(
@@ -282,9 +282,8 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
     Ok(())
 }
 
-// In the case that the ln backend returns an err
-// The mint should do a second check, that returns paid
-// Proofs should remain pending
+/// Tests that when the ln backend returns an error but the second check returns paid,
+/// proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_err_paid() -> Result<()> {
     let wallet = Wallet::new(
@@ -323,6 +322,7 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
     Ok(())
 }
 
+/// Tests that change outputs in a melt quote are correctly handled
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_change_in_quote() -> Result<()> {
     let wallet = Wallet::new(
@@ -355,11 +355,11 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let client = HttpClient::new(MINT_URL.parse()?, None);
 
-    let melt_request = MeltBolt11Request {
-        quote: melt_quote.id.clone(),
-        inputs: proofs.clone(),
-        outputs: Some(premint_secrets.blinded_messages()),
-    };
+    let melt_request = MeltBolt11Request::new(
+        melt_quote.id.clone(),
+        proofs.clone(),
+        Some(premint_secrets.blinded_messages()),
+    );
 
     let melt_response = client.post_melt(melt_request).await?;
 
@@ -376,6 +376,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     Ok(())
 }
 
+/// Tests that the correct database type is used based on environment variables
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_database_type() -> Result<()> {
     // Get the database type and work dir from environment
@@ -411,6 +412,7 @@ async fn test_database_type() -> Result<()> {
     Ok(())
 }
 
+/// Tests minting tokens with a valid witness signature
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -435,6 +437,7 @@ async fn test_fake_mint_with_witness() -> Result<()> {
     Ok(())
 }
 
+/// Tests that minting without a witness signature fails with the correct error
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_without_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -471,6 +474,7 @@ async fn test_fake_mint_without_witness() -> Result<()> {
     }
 }
 
+/// Tests that minting with an incorrect witness signature fails with the correct error
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_wrong_witness() -> Result<()> {
     let wallet = Wallet::new(
@@ -511,6 +515,7 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
     }
 }
 
+/// Tests that attempting to mint more tokens than allowed by the quote fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_inflated() -> Result<()> {
     let wallet = Wallet::new(
@@ -563,6 +568,7 @@ async fn test_fake_mint_inflated() -> Result<()> {
     Ok(())
 }
 
+/// Tests that attempting to mint with multiple currency units in the same request fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_units() -> Result<()> {
     let wallet = Wallet::new(
@@ -633,6 +639,7 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
     Ok(())
 }
 
+/// Tests that attempting to swap tokens with multiple currency units fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
     let wallet = Wallet::new(
@@ -676,10 +683,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
         let pre_mint =
             PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
 
-        let swap_request = SwapRequest {
-            inputs,
-            outputs: pre_mint.blinded_messages(),
-        };
+        let swap_request = SwapRequest::new(inputs, pre_mint.blinded_messages());
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_swap(swap_request.clone()).await;
@@ -713,10 +717,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
 
         usd_outputs.append(&mut sat_outputs);
 
-        let swap_request = SwapRequest {
-            inputs,
-            outputs: usd_outputs,
-        };
+        let swap_request = SwapRequest::new(inputs, usd_outputs);
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_swap(swap_request.clone()).await;
@@ -737,6 +738,7 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
     Ok(())
 }
 
+/// Tests that attempting to melt tokens with multiple currency units fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
     let wallet = Wallet::new(
@@ -786,11 +788,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
         let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-        let melt_request = MeltBolt11Request {
-            quote: melt_quote.id,
-            inputs,
-            outputs: None,
-        };
+        let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
         let response = http_client.post_melt(melt_request.clone()).await;
@@ -830,11 +828,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
         usd_outputs.append(&mut sat_outputs);
         let quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-        let melt_request = MeltBolt11Request {
-            quote: quote.id,
-            inputs,
-            outputs: Some(usd_outputs),
-        };
+        let melt_request = MeltBolt11Request::new(quote.id, inputs, Some(usd_outputs));
 
         let http_client = HttpClient::new(MINT_URL.parse()?, None);
 
@@ -856,7 +850,7 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
     Ok(())
 }
 
-/// Test swap where input unit != output unit
+/// Tests that swapping tokens where input unit doesn't match output unit fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_input_output_mismatch() -> Result<()> {
     let wallet = Wallet::new(
@@ -890,10 +884,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
         &SplitTarget::None,
     )?;
 
-    let swap_request = SwapRequest {
-        inputs,
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(inputs, pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -911,7 +902,7 @@ async fn test_fake_mint_input_output_mismatch() -> Result<()> {
     Ok(())
 }
 
-/// Test swap where input is less the output
+/// Tests that swapping tokens where output amount is greater than input amount fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_swap_inflated() -> Result<()> {
     let wallet = Wallet::new(
@@ -930,10 +921,7 @@ async fn test_fake_mint_swap_inflated() -> Result<()> {
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs,
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs, pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -953,7 +941,7 @@ async fn test_fake_mint_swap_inflated() -> Result<()> {
     Ok(())
 }
 
-/// Test swap after failure
+/// Tests that tokens cannot be spent again after a failed swap attempt
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
     let wallet = Wallet::new(
@@ -973,10 +961,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -985,10 +970,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1003,10 +985,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs,
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs, pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1026,7 +1005,7 @@ async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
     Ok(())
 }
 
-/// Test swap after failure
+/// Tests that tokens cannot be melted after a failed swap attempt
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     let wallet = Wallet::new(
@@ -1046,10 +1025,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1058,10 +1034,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: proofs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1078,11 +1051,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-    let melt_request = MeltBolt11Request {
-        quote: melt_quote.id,
-        inputs: proofs,
-        outputs: None,
-    };
+    let melt_request = MeltBolt11Request::new(melt_quote.id, proofs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_melt(melt_request.clone()).await;
@@ -1102,7 +1071,7 @@ async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
     Ok(())
 }
 
-/// Test swap where input unit != output unit
+/// Tests that attempting to swap with duplicate proofs fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
     let wallet = Wallet::new(
@@ -1126,10 +1095,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
     let pre_mint =
         PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
 
-    let swap_request = SwapRequest {
-        inputs: inputs.clone(),
-        outputs: pre_mint.blinded_messages(),
-    };
+    let swap_request = SwapRequest::new(inputs.clone(), pre_mint.blinded_messages());
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1153,7 +1119,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
 
     let outputs = vec![blinded_message[0].clone(), blinded_message[0].clone()];
 
-    let swap_request = SwapRequest { inputs, outputs };
+    let swap_request = SwapRequest::new(inputs, outputs);
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_swap(swap_request.clone()).await;
@@ -1176,7 +1142,7 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
     Ok(())
 }
 
-/// Test duplicate proofs in melt
+/// Tests that attempting to melt with duplicate proofs fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
     let wallet = Wallet::new(
@@ -1199,11 +1165,7 @@ async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
 
-    let melt_request = MeltBolt11Request {
-        quote: melt_quote.id,
-        inputs,
-        outputs: None,
-    };
+    let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse()?, None);
     let response = http_client.post_melt(melt_request.clone()).await;

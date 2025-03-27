@@ -32,7 +32,7 @@ pub struct MintBuilder {
     /// Mint Info
     pub mint_info: MintInfo,
     /// Mint Storage backend
-    localstore: Option<Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>>,
+    localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
     /// Mint Storage backend
     #[cfg(feature = "auth")]
     auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
@@ -70,7 +70,7 @@ impl MintBuilder {
     /// Set localstore
     pub fn with_localstore(
         mut self,
-        localstore: Arc<dyn MintDatabase<Err = database::Error> + Send + Sync>,
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
         self
