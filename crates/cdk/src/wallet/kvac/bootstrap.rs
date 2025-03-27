@@ -5,7 +5,7 @@ use cashu_kvac::models::Coin;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::error::Error;
-use cdk_common::kvac::Error::{IParamsVerificationError, OutOfBounds};
+use cdk_common::kvac::Error::IParamsVerificationError;
 use cdk_common::kvac::{KvacBootstrapRequest, KvacCoin, KvacCoinMessage, KvacPreCoin};
 use cdk_common::{Amount, State};
 use tracing::instrument;
@@ -64,9 +64,9 @@ impl Wallet {
         let mut coins = vec![];
         let mint_keys = self.get_kvac_keyset_keys(active_keyset_id).await?;
         let mut verifying_transcript = CashuTranscript::new();
-        for (i, pre_coin) in pre_coins.into_iter().enumerate() {
-            let proof = response.proofs.get(i).ok_or(Error::from(OutOfBounds))?;
-            let mac = response.macs.get(i).ok_or(Error::from(OutOfBounds))?;
+        for (pre_coin, issued_mac) in pre_coins.into_iter().zip(response.issued_macs.into_iter()) {
+            let proof = issued_mac.issuance_proof;
+            let mac = issued_mac.mac;
             let inner_coin = Coin::new(
                 pre_coin.attributes.0,
                 Some(pre_coin.attributes.1),
@@ -89,6 +89,7 @@ impl Wallet {
                 script: pre_coin.script,
                 unit: pre_coin.unit,
                 coin: inner_coin,
+                issuance_proof: proof,
             })
         }
 

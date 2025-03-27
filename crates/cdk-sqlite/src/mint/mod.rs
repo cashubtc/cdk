@@ -1634,8 +1634,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             let res = sqlx::query(
                 r#"
 INSERT INTO kvac_issued_macs
-(t, V, amount_commitment, script_commitment, keyset_id, quote_id)
-VALUES (?, ?, ?, ?, ?, ?);
+(t, V, amount_commitment, script_commitment, keyset_id, quote_id, issuance_proof)
+VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
             )
             .bind(Vec::<u8>::from(&issued.mac.t))
@@ -1644,6 +1644,7 @@ VALUES (?, ?, ?, ?, ?, ?);
             .bind(issued.commitments.1.to_bytes())
             .bind(issued.keyset_id.to_string())
             .bind(quote_id.map(|q| q.hyphenated()))
+            .bind(serde_json::to_string(&issued.issuance_proof).expect("can serialize a ZKP"))
             .execute(&mut *transaction)
             .await;
 
@@ -2336,12 +2337,16 @@ fn sqlite_row_to_kvac_nullifier(row: SqliteRow) -> Result<KvacNullifier, Error> 
 
 #[cfg(feature = "kvac")]
 fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error> {
+    use cashu_kvac::models::ZKP;
+
     let row_t: Vec<u8> = row.try_get("t").map_err(Error::from)?;
     let row_v: Vec<u8> = row.try_get("V").map_err(Error::from)?;
     let row_amount_commitment: Vec<u8> = row.try_get("amount_commitment").map_err(Error::from)?;
     let row_script_commitment: Vec<u8> = row.try_get("script_commitment").map_err(Error::from)?;
     let keyset_id: String = row.try_get("keyset_id").map_err(Error::from)?;
     let quote_id: Option<Uuid> = row.try_get("quote_id").map_err(Error::from)?;
+    let issuance_proof: String = row.try_get("issuance_proof").map_err(Error::from)?;
+    let issuance_proof: ZKP = serde_json::from_str(&issuance_proof).map_err(Error::from)?;
 
     let mac = MAC {
         t: Scalar::new(&row_t),
@@ -2355,6 +2360,7 @@ fn sqlite_row_to_kvac_issued_mac(row: SqliteRow) -> Result<KvacIssuedMac, Error>
         mac,
         keyset_id,
         quote_id,
+        issuance_proof
     })
 }
 

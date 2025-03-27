@@ -5,7 +5,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cashu_kvac::models::{AmountAttribute, Coin, MintPublicKey, ScriptAttribute, MAC};
+use cashu_kvac::models::{AmountAttribute, Coin, MintPublicKey, ScriptAttribute, MAC, ZKP};
 use cashu_kvac::secp::{GroupElement, Scalar};
 use cdk_common::common::{KvacCoinInfo, ProofInfo};
 use cdk_common::database::WalletDatabase;
@@ -859,8 +859,8 @@ WHERE id=?
             sqlx::query(
                 r#"
     INSERT OR REPLACE INTO kvac_coins
-    (nullifier, tag, mac, amount, amount_blinding_factor, script, script_blinding_factor, mint_url, state, unit, keyset_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    (nullifier, tag, mac, amount, amount_blinding_factor, script, script_blinding_factor, mint_url, state, unit, keyset_id, issuance_proof)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             "#,
             )
             .bind(KvacRandomizedCoin::from(&coin.coin).get_nullifier().to_bytes())
@@ -879,6 +879,7 @@ WHERE id=?
             .bind(coin.state.to_string())
             .bind(coin.coin.unit.to_string())
             .bind(coin.coin.keyset_id.to_string())
+            .bind(serde_json::to_string(&coin.coin.issuance_proof).expect("can serialize ZKP"))
             .execute(&self.pool)
             .await
             .map_err(Error::from)?;
@@ -1305,7 +1306,8 @@ fn sqlite_row_to_kvac_coin_info(row: &SqliteRow) -> Result<KvacCoinInfo, Error> 
         mint_url TEXT NOT NULL,
         state TEXT CHECK ( state IN ('SPENT', 'UNSPENT', 'PENDING', 'RESERVED' ) ) NOT NULL,
         unit TEXT NOT NULL,
-        keyset_id TEXT NOT NULL
+        keyset_id TEXT NOT NULL,
+        issuance_proof TEXT DEFAULT NULL
     */
 
     let tag: Scalar = Scalar::new(row.try_get("tag").map_err(Error::from)?);
@@ -1318,6 +1320,8 @@ fn sqlite_row_to_kvac_coin_info(row: &SqliteRow) -> Result<KvacCoinInfo, Error> 
     let state: State = State::from_str(row.try_get("state").map_err(Error::from)?)?;
     let unit: CurrencyUnit = CurrencyUnit::from_str(row.try_get("unit").map_err(Error::from)?)?;
     let keyset_id: Id = Id::from_str(row.try_get("keyset_id").map_err(Error::from)?)?;
+    let issuance_proof: ZKP = serde_json::from_str(row.try_get("issuance_proof").map_err(Error::from)?)
+        .map_err(Error::from)?;
 
     let amount_attribute = AmountAttribute::new(amount.clone() as u64, Some(&r_a));
     let script_attribute = ScriptAttribute::new(script.as_bytes(), Some(&r_s));
@@ -1330,6 +1334,7 @@ fn sqlite_row_to_kvac_coin_info(row: &SqliteRow) -> Result<KvacCoinInfo, Error> 
         script: Some(script),
         unit,
         coin: inner_coin,
+        issuance_proof
     };
 
     Ok(KvacCoinInfo {

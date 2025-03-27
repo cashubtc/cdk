@@ -391,7 +391,6 @@ impl Mint {
 
         // Issue MACs
         let mut issued_macs = vec![];
-        let mut iparams_proofs = vec![];
         let mut proving_transcript = CashuTranscript::new();
         for output in outputs.iter() {
             let result = self.issue_mac(output, &mut proving_transcript).await;
@@ -408,8 +407,8 @@ impl Mint {
                         mac,
                         keyset_id: output.keyset_id,
                         quote_id: None,
+                        issuance_proof: proof,
                     });
-                    iparams_proofs.push(proof);
                 }
             }
         }
@@ -444,9 +443,7 @@ impl Mint {
         Ok(KvacMeltBolt11Response {
             fee_return: amount_overpaid,
             preimage,
-            outputs,
-            macs: issued_macs.into_iter().map(|m| m.mac).collect(),
-            proofs: iparams_proofs,
+            issued_macs,
         })
     }
 }

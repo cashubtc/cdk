@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS kvac_coins (
     mint_url TEXT NOT NULL,
     state TEXT CHECK ( state IN ('SPENT', 'UNSPENT', 'PENDING', 'RESERVED' ) ) NOT NULL,
     unit TEXT NOT NULL,
-    keyset_id TEXT NOT NULL
+    keyset_id TEXT NOT NULL,
+    issuance_proof TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS kvac_keyset (

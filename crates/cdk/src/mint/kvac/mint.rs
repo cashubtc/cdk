@@ -91,7 +91,6 @@ impl Mint {
 
         // Issue MACs
         let mut issued_macs = vec![];
-        let mut iparams_proofs = vec![];
         let mut proving_transcript = CashuTranscript::new();
         for output in mint_request.outputs.iter() {
             let result = self.issue_mac(output, &mut proving_transcript).await;
@@ -109,9 +108,9 @@ impl Mint {
                         commitments: output.commitments.clone(),
                         mac,
                         keyset_id: output.keyset_id,
-                        quote_id: None,
+                        quote_id: Some(mint_quote.id),
+                        issuance_proof: proof,
                     });
-                    iparams_proofs.push(proof);
                 }
             }
         }
@@ -134,8 +133,7 @@ impl Mint {
         tracing::debug!("KVAC mint request successful");
 
         Ok(KvacMintBolt11Response {
-            macs: issued_macs.into_iter().map(|m| m.mac).collect(),
-            proofs: iparams_proofs,
+            issued_macs
         })
     }
 }

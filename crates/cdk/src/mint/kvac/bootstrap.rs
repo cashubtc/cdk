@@ -5,7 +5,7 @@ use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::Error::{
     BootstrapVerificationError, InputsToProofsLengthMismatch, RequestInvalidInputLength,
 };
-use cdk_common::kvac::{KvacBootstrapRequest, KvacBootstrapResponse};
+use cdk_common::kvac::{KvacBootstrapRequest, KvacBootstrapResponse, KvacIssuedMac};
 use tracing::instrument;
 
 use super::super::Mint;
@@ -72,15 +72,19 @@ impl Mint {
 
         // Proofs are verified. Issue MACs.
         // ...And prove to the client that the correct key was used.
-        let mut macs = vec![];
-        let mut proofs = vec![];
+        let mut issued_macs: Vec<KvacIssuedMac> = vec![];
         let mut proving_transcript = CashuTranscript::new();
-        for output in outputs.iter() {
-            let (mac, proof) = self.issue_mac(output, &mut proving_transcript).await?;
-            macs.push(mac);
-            proofs.push(proof);
+        for output in outputs.into_iter() {
+            let (mac, proof) = self.issue_mac(&output, &mut proving_transcript).await?;
+            issued_macs.push(KvacIssuedMac {
+                mac,
+                commitments: output.commitments,
+                issuance_proof: proof,
+                keyset_id: output.keyset_id,
+                quote_id: None,
+            })
         }
 
-        Ok(KvacBootstrapResponse { macs, proofs })
+        Ok(KvacBootstrapResponse { issued_macs })
     }
 }

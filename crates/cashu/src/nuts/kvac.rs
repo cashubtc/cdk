@@ -352,6 +352,10 @@ pub struct KvacCoin {
     ///
     /// [`Coin`] containing [`MAC`], [`AmountAttribute`] and [`ScriptAttribute`]
     pub coin: Coin,
+    /// Issuance proof
+    /// 
+    /// [`ZKP`] proving the issuance of this coin
+    pub issuance_proof: ZKP,
 }
 
 /// Kvac Coin
@@ -434,6 +438,7 @@ pub struct KvacIssuedMac {
     pub commitments: (GroupElement, GroupElement),
     pub keyset_id: Id,
     pub quote_id: Option<Uuid>,
+    pub issuance_proof: ZKP,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -580,14 +585,7 @@ pub struct KvacKeysetResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacResponse {
-    /// MACs
-    ///
-    /// Approval stamp of the Mint
-    pub macs: Vec<MAC>,
-    /// Issuance Proofs
-    ///
-    /// Proving that a specific [`MintPrivateKey`] was used to issue each [`MAC`]
-    pub proofs: Vec<ZKP>,
+    pub issued_macs: Vec<KvacIssuedMac>
 }
 
 /// Bootstrap Response
@@ -612,26 +610,14 @@ pub struct KvacMeltBolt11Response {
     /// [`Option<String>`] holding the pre-image to the payment
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preimage: Option<String>,
-    /// Outputs
+    /// Issued MACs
     ///
-    /// Output commitments of the request.
-    pub outputs: Vec<KvacCoinMessage>,
-    /// MACs
-    ///
-    /// [`Vec<MAC>`] Approval stamp of the Mint
-    pub macs: Vec<MAC>,
-    /// IParams Proofs
-    ///
-    /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
-    pub proofs: Vec<ZKP>,
+    /// Outputs of the response with the remaining balance + returned fees
+    pub issued_macs: Vec<KvacIssuedMac>,
 }
 
 /// Restore Response
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct KvacRestoreResponse {
-    pub issued_macs: Vec<KvacIssuedMac>,
-}
+pub type KvacRestoreResponse = KvacResponse;
 
 /// Check state
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

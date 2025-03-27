@@ -151,6 +151,7 @@ impl Wallet {
                                 Some(pre_coin.attributes.1),
                                 issued_macs.mac,
                             ),
+                            issuance_proof: issued_macs.issuance_proof,
                         }
                     })
                     .collect();

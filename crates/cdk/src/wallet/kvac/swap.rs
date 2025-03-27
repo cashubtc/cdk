@@ -94,32 +94,36 @@ impl Wallet {
 
         // Assemble new coins
         let mut new_coins = vec![];
-        for (mac, coin) in response.macs.into_iter().zip(outputs.iter()) {
-            let coin = KvacCoin {
-                keyset_id: coin.keyset_id,
-                amount: coin.amount,
-                script: coin.script.clone(),
-                unit: coin.unit.clone(),
-                coin: Coin::new(
-                    coin.attributes.0.clone(),
-                    Some(coin.attributes.1.clone()),
-                    mac,
-                ),
-            };
-            new_coins.push(coin);
-        }
+        for (issued_mac, pre_coin) in response.issued_macs.into_iter().zip(outputs.into_iter()) {
+            let inner_coin = Coin::new(
+                pre_coin.attributes.0,
+                Some(pre_coin.attributes.1),
+                issued_mac.mac
+            );
 
-        // Verify each MAC issuance
-        for (new_coin, proof) in new_coins.iter().zip(response.proofs.into_iter()) {
-            let keys = self.get_kvac_keyset_keys(new_coin.keyset_id).await?;
-            if !IParamsProof::verify(&keys.0, &new_coin.coin, proof, &mut verifying_transcript) {
-                println!("couldn't verify MAC issuance! the mint is probably tagging!");
-                println!(
+            let keys = self.get_kvac_keyset_keys(pre_coin.keyset_id).await?;
+            if !IParamsProof::verify(
+                &keys.0,
+                &inner_coin,
+                issued_mac.issuance_proof.clone(),
+                &mut verifying_transcript,
+            ) {
+                tracing::error!("couldn't verify MAC issuance! the mint is probably tagging!");
+                tracing::error!(
                     "suspected MAC:\nt = {}\nV = {}",
-                    serde_json::to_string(&new_coin.coin.mac.t).unwrap(),
-                    serde_json::to_string(&new_coin.coin.mac.V).unwrap()
+                    serde_json::to_string(&inner_coin.mac.t).unwrap(),
+                    serde_json::to_string(&inner_coin.mac.V).unwrap()
                 );
             }
+            let coin = KvacCoin {
+                keyset_id: issued_mac.keyset_id,
+                amount: pre_coin.amount,
+                script: pre_coin.script.clone(),
+                unit: pre_coin.unit.clone(),
+                coin: inner_coin,
+                issuance_proof: issued_mac.issuance_proof,
+            };
+            new_coins.push(coin);
         }
 
         Ok(new_coins)
