@@ -306,6 +306,7 @@ impl Wallet {
 }
 
 /// Prepared send
+#[derive(Clone)]
 pub struct PreparedSend {
     amount: Amount,
     options: SendOptions,
