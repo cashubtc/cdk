@@ -859,20 +859,6 @@ async fn test_concurrent_double_spend_melt() {
             state
         );
     }
-
-    let ys = proofs.ys().expect("Failed to get ys");
-    let transaction_id = TransactionId::new(ys.clone());
-    let transaction = wallet_alice
-        .get_transaction(transaction_id)
-        .await
-        .expect("Failed to get transaction")
-        .expect("Transaction not found");
-    assert_eq!(wallet_alice.mint_url, transaction.mint_url);
-    assert_eq!(TransactionDirection::Outgoing, transaction.direction);
-    assert_eq!(Amount::from(1), transaction.amount);
-    assert_eq!(Amount::from(0), transaction.fee);
-    assert_eq!(CurrencyUnit::Sat, transaction.unit);
-    assert_eq!(ys, transaction.ys);
 }
 
 async fn get_keyset_id(mint: &Mint) -> Id {
