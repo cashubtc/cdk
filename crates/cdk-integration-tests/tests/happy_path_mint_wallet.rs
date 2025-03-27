@@ -19,7 +19,6 @@ use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_regtest::{
     get_lnd_dir, get_mint_url, get_mint_ws_url, LND_RPC_ADDR,
 };
-use cdk::mint_url::MintUrl;
 use cdk_integration_tests::wait_for_mint_to_be_paid;
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
@@ -80,7 +79,7 @@ fn is_regtest_env() -> bool {
 /// Checks the CDK_TEST_MINT_URL environment variable:
 /// - If set, returns that URL
 /// - Otherwise falls back to the default URL from get_mint_url("0")
-fn get_mint_url_from_env() -> MintUrl {
+fn get_mint_url_from_env() -> String {
     match env::var("CDK_TEST_MINT_URL") {
         Ok(url) => url.parse().expect("Invalid mint URL in CDK_TEST_MINT_URL"),
         Err(_) => get_mint_url("0"),

@@ -175,6 +175,7 @@ done
 
 # Run cargo test
 cargo test -p cdk-integration-tests --test regtest
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 
 # Run cargo test with the http_subscription feature
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
@@ -183,6 +184,7 @@ cargo test -p cdk-integration-tests --test regtest --features http_subscription
 export cdk_itests_mint_port_0=8087;
 export cdk_itests_mint_port_1=8085;
 cargo test -p cdk-integration-tests --test regtest
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 
 # Capture the exit status of cargo test
 test_status=$?
