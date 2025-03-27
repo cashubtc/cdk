@@ -11,7 +11,7 @@ license.workspace = true
 readme = "README.md"
 
 [features]
-default = ["mint", "wallet", "auth"]
+default = ["wallet", "auth"]
 swagger = ["dep:utoipa"]
 mint = ["dep:uuid"]
 wallet = []

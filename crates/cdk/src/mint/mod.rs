@@ -641,7 +641,6 @@ mod tests {
 
     use bitcoin::Network;
     use cdk_common::common::PaymentProcessorKey;
-    use cdk_sqlite::mint::memory::new_with_state;
     use secp256k1::Secp256k1;
     use uuid::Uuid;
 
@@ -747,9 +746,10 @@ mod tests {
         melt_requests: Vec<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>,
     }
 
+    #[cfg(feature = "mint")]
     async fn create_mint(config: MintConfig<'_>) -> Result<Mint, Error> {
         let localstore = Arc::new(
-            new_with_state(
+            cdk_sqlite::mint::memory::new_with_state(
                 config.active_keysets,
                 config.keysets,
                 config.mint_quotes,
@@ -773,6 +773,7 @@ mod tests {
         .await
     }
 
+    #[cfg(feature = "mint")]
     #[tokio::test]
     async fn mint_mod_new_mint() -> Result<(), Error> {
         let config = MintConfig::<'_> {
@@ -807,6 +808,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "mint")]
     #[tokio::test]
     async fn mint_mod_rotate_keyset() -> Result<(), Error> {
         let config = MintConfig::<'_> {
@@ -844,6 +846,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "mint")]
     #[tokio::test]
     async fn test_mint_keyset_gen() -> Result<(), Error> {
         let seed = bip39::Mnemonic::from_str(
