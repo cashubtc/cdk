@@ -220,8 +220,6 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_happy_mint_melt() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
@@ -236,7 +234,8 @@ async fn test_happy_mint_melt() -> Result<()> {
 
     assert_eq!(mint_quote.amount, mint_amount);
 
-    lnd_client.pay_invoice(mint_quote.request).await?;
+    let invoice = Bolt11Invoice::from_str(&mint_quote.request)?;
+    pay_if_regtest(&invoice).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
