@@ -36,7 +36,7 @@ async fn test_fake_nutshell_mint() -> Result<()> {
 
 /// Tests that change outputs in a melt quote are correctly handled
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_nutshell_swap() -> Result<()> {
+async fn test_fake_nutshell_receive() -> Result<()> {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
