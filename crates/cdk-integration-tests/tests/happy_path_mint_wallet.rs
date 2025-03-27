@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Result, anyhow};
+use anyhow::{anyhow, bail, Result};
 use bip39::Mnemonic;
 use cashu::{MeltOptions, Mpp};
 use cdk::amount::{Amount, SplitTarget};
@@ -51,7 +51,7 @@ async fn init_lnd_client() -> LndClient {
 /// should be skipped in other environments.
 async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
     // Check if the invoice is for the regtest network
-    if invoice.network() == lightning_invoice::Network::Regtest {
+    if invoice.network() == bitcoin::Network::Regtest {
         let lnd_client = init_lnd_client().await;
         lnd_client.pay_invoice(invoice.to_string()).await?;
         Ok(())
@@ -95,8 +95,6 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_mint_melt_round_trip() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
