@@ -150,11 +150,11 @@ impl Wallet {
             proofs_total - quote_info.amount,
         )?;
 
-        let request = MeltBolt11Request {
-            quote: quote_id.to_string(),
-            inputs: proofs.clone(),
-            outputs: Some(premint_secrets.blinded_messages()),
-        };
+        let request = MeltBolt11Request::new(
+            quote_id.to_string(),
+            proofs.clone(),
+            Some(premint_secrets.blinded_messages()),
+        );
 
         let melt_response = self.client.post_melt(request).await;
 
