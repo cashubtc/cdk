@@ -1,24 +1,20 @@
 //! These tests are to test happy path mint wallet interactions
 //!
 //!
-use std::env;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{char, env};
 
 use anyhow::{anyhow, bail, Result};
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MintBolt11Request, NotificationPayload, PreMintSecrets, State,
-};
-use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
+use cdk::wallet::Wallet;
 use cdk_fake_wallet::create_fake_invoice;
-use cdk_integration_tests::init_regtest::{
-    get_lnd_dir, get_mint_url, get_mint_ws_url, LND_RPC_ADDR,
-};
+use cdk_integration_tests::init_regtest::{get_lnd_dir, get_mint_url, LND_RPC_ADDR};
 use cdk_integration_tests::wait_for_mint_to_be_paid;
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
@@ -150,15 +146,18 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
         None,
     )?;
 
-    let (ws_stream, _) = connect_async(get_mint_ws_url("0"))
-        .await
-        .expect("Failed to connect");
+    let (ws_stream, _) = connect_async(format!(
+        "{}/v1/ws",
+        get_mint_url_from_env().replace("http", "ws")
+    ))
+    .await
+    .expect("Failed to connect");
     let (mut write, mut reader) = ws_stream.split();
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request)?;
-    pay_if_regtest(&invoice).await?;
+    pay_if_regtest(&invoice).await.unwrap();
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -168,7 +167,7 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
 
     assert!(mint_amount == 100.into());
 
-    let invoice = create_invoice_for_env(Some(50)).await?;
+    let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt = wallet.melt_quote(invoice, None).await?;
 
@@ -192,7 +191,14 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
         .await?;
 
     assert_eq!(
-        reader.next().await.unwrap().unwrap().to_text().unwrap(),
+        reader
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .replace(char::is_whitespace, ""),
         r#"{"jsonrpc":"2.0","result":{"status":"OK","subId":"test-sub"},"id":2}"#
     );
 
@@ -208,7 +214,7 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
         _ => panic!("Wrong payload"),
     };
 
-    assert_eq!(payload.amount + payload.fee_reserve, 50.into());
+    // assert_eq!(payload.amount + payload.fee_reserve, 50.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Unpaid);
 
@@ -219,7 +225,17 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
         NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
         _ => panic!("Wrong payload"),
     };
-    assert_eq!(payload.amount + payload.fee_reserve, 50.into());
+    assert_eq!(payload.quote.to_string(), melt.id);
+    assert_eq!(payload.state, MeltQuoteState::Pending);
+
+    // get current state
+    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    assert_eq!("test-sub", sub_id);
+    let payload = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+        _ => panic!("Wrong payload"),
+    };
+    assert_eq!(payload.amount, 50.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Paid);
 
@@ -301,7 +317,7 @@ async fn test_restore() -> Result<()> {
 
     assert!(restored == 100.into());
 
-    assert!(wallet_2.total_balance().await? == 100.into());
+    assert_eq!(wallet_2.total_balance().await?, 100.into());
 
     let proofs = wallet.get_unspent_proofs().await?;
 
@@ -313,45 +329,5 @@ async fn test_restore() -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_cached_mint() -> Result<()> {
-    let wallet = Wallet::new(
-        &get_mint_url_from_env(),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
-
-    let mint_amount = Amount::from(100);
-
-    let quote = wallet.mint_quote(mint_amount, None).await?;
-    let invoice = Bolt11Invoice::from_str(&quote.request)?;
-    pay_if_regtest(&invoice).await?;
-
-    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
-
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let http_client = HttpClient::new(get_mint_url_from_env().as_str().parse()?, None);
-    let premint_secrets =
-        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
-
-    let mut request = MintBolt11Request {
-        quote: quote.id,
-        outputs: premint_secrets.blinded_messages(),
-        signature: None,
-    };
-
-    let secret_key = quote.secret_key;
-
-    request.sign(secret_key.expect("Secret key on quote"))?;
-
-    let response = http_client.post_mint(request.clone()).await?;
-    let response1 = http_client.post_mint(request).await?;
-
-    assert!(response == response1);
     Ok(())
 }

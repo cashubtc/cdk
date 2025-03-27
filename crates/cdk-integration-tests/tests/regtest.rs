@@ -10,7 +10,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
-    PreMintSecrets, State,
+    PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
@@ -478,5 +478,45 @@ async fn test_database_type() -> Result<()> {
         _ => bail!("Unknown database type: {}", db_type),
     }
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_cached_mint() -> Result<()> {
+    let lnd_client = init_lnd_client().await;
+    let wallet = Wallet::new(
+        &get_mint_url("0"),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_amount = Amount::from(100);
+
+    let quote = wallet.mint_quote(mint_amount, None).await?;
+    lnd_client.pay_invoice(quote.request.clone()).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let http_client = HttpClient::new(get_mint_url("0").parse().unwrap(), None);
+    let premint_secrets =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
+
+    let mut request = MintBolt11Request {
+        quote: quote.id,
+        outputs: premint_secrets.blinded_messages(),
+        signature: None,
+    };
+
+    let secret_key = quote.secret_key;
+
+    request.sign(secret_key.expect("Secret key on quote"))?;
+
+    let response = http_client.post_mint(request.clone()).await?;
+    let response1 = http_client.post_mint(request).await?;
+
+    assert!(response == response1);
     Ok(())
 }
