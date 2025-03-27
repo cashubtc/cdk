@@ -19,6 +19,7 @@ use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_regtest::{
     get_lnd_dir, get_mint_url, get_mint_ws_url, LND_RPC_ADDR,
 };
+use cdk::mint_url::MintUrl;
 use cdk_integration_tests::wait_for_mint_to_be_paid;
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
@@ -71,6 +72,18 @@ fn is_regtest_env() -> bool {
             val == "1" || val == "true" || val == "yes"
         }
         Err(_) => false,
+    }
+}
+
+/// Gets the mint URL from environment variable or falls back to default
+///
+/// Checks the CDK_TEST_MINT_URL environment variable:
+/// - If set, returns that URL
+/// - Otherwise falls back to the default URL from get_mint_url("0")
+fn get_mint_url_from_env() -> MintUrl {
+    match env::var("CDK_TEST_MINT_URL") {
+        Ok(url) => url.parse().expect("Invalid mint URL in CDK_TEST_MINT_URL"),
+        Err(_) => get_mint_url("0"),
     }
 }
 
@@ -131,7 +144,7 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_happy_mint_melt_round_trip() -> Result<()> {
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -217,7 +230,7 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_happy_mint_melt() -> Result<()> {
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -250,7 +263,7 @@ async fn test_happy_mint_melt() -> Result<()> {
 async fn test_restore() -> Result<()> {
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &seed,
@@ -271,7 +284,7 @@ async fn test_restore() -> Result<()> {
     assert!(wallet.total_balance().await? == 100.into());
 
     let wallet_2 = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &seed,
@@ -307,7 +320,7 @@ async fn test_restore() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cached_mint() -> Result<()> {
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -323,7 +336,7 @@ async fn test_cached_mint() -> Result<()> {
     wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let http_client = HttpClient::new(get_mint_url("0").as_str().parse()?, None);
+    let http_client = HttpClient::new(get_mint_url_from_env().as_str().parse()?, None);
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
