@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use cdk_common::wallet::{Transaction, TransactionDirection};
-use cdk_common::Amount;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -251,8 +250,8 @@ impl Wallet {
             .add_transaction(Transaction {
                 mint_url: self.mint_url.clone(),
                 direction: TransactionDirection::Outgoing,
-                amount: proofs_total,
-                fee: Amount::ZERO,
+                amount: melted.amount,
+                fee: melted.fee_paid,
                 unit: self.unit.clone(),
                 ys: proofs.ys()?,
                 timestamp: unix_time(),
