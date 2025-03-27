@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Result, anyhow};
 use bip39::Mnemonic;
 use cashu::{MeltOptions, Mpp};
 use cdk::amount::{Amount, SplitTarget};
@@ -43,6 +43,22 @@ async fn init_lnd_client() -> LndClient {
     )
     .await
     .unwrap()
+}
+
+/// Pays a Bolt11Invoice if it's on the regtest network, otherwise returns Ok
+///
+/// This is useful for tests that need to pay invoices in regtest mode but
+/// should be skipped in other environments.
+async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
+    // Check if the invoice is for the regtest network
+    if invoice.network() == lightning_invoice::Network::Regtest {
+        let lnd_client = init_lnd_client().await;
+        lnd_client.pay_invoice(invoice.to_string()).await?;
+        Ok(())
+    } else {
+        // Not a regtest invoice, just return Ok
+        Ok(())
+    }
 }
 
 async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
@@ -96,7 +112,8 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    lnd_client.pay_invoice(mint_quote.request).await.unwrap();
+    let invoice = Bolt11Invoice::from_str(&mint_quote.request)?;
+    pay_if_regtest(&invoice).await?;
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
