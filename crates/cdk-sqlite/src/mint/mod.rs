@@ -900,9 +900,9 @@ ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit
         "#,
         )
-        .bind(melt_request.quote)
-        .bind(serde_json::to_string(&melt_request.inputs)?)
-        .bind(serde_json::to_string(&melt_request.outputs)?)
+        .bind(melt_request.quote())
+        .bind(serde_json::to_string(&melt_request.inputs())?)
+        .bind(serde_json::to_string(&melt_request.outputs())?)
         .bind(ln_key.method.to_string())
         .bind(ln_key.unit.to_string())
         .execute(&mut *transaction)
@@ -1746,11 +1746,11 @@ fn sqlite_row_to_melt_request(
     let row_method: String = row.try_get("method").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
 
-    let melt_request = MeltBolt11Request {
-        quote: quote_id.into_uuid(),
-        inputs: serde_json::from_str(&row_inputs)?,
-        outputs: row_outputs.and_then(|o| serde_json::from_str(&o).ok()),
-    };
+    let melt_request = MeltBolt11Request::new(
+        quote_id.into_uuid(),
+        serde_json::from_str(&row_inputs)?,
+        row_outputs.and_then(|o| serde_json::from_str(&o).ok()),
+    );
 
     let ln_key = PaymentProcessorKey {
         unit: CurrencyUnit::from_str(&row_unit)?,

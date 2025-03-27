@@ -164,7 +164,7 @@ pub struct AuthProof {
     #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub c: PublicKey,
     /// Auth Proof Dleq
-    pub dleq: ProofDleq,
+    pub dleq: Option<ProofDleq>,
 }
 
 impl AuthProof {
@@ -182,7 +182,7 @@ impl From<AuthProof> for Proof {
             secret: value.secret,
             c: value.c,
             witness: None,
-            dleq: Some(value.dleq),
+            dleq: value.dleq,
         }
     }
 }
@@ -194,10 +194,7 @@ impl TryFrom<Proof> for AuthProof {
             keyset_id: value.keyset_id,
             secret: value.secret,
             c: value.c,
-            dleq: value.dleq.ok_or_else(|| {
-                tracing::warn!("Dleq proof not included in auth");
-                Error::DleqProofNotIncluded
-            })?,
+            dleq: value.dleq,
         })
     }
 }
@@ -213,6 +210,20 @@ impl BlindAuthToken {
     /// Create new [ `BlindAuthToken`]
     pub fn new(auth_proof: AuthProof) -> Self {
         BlindAuthToken { auth_proof }
+    }
+
+    /// Remove DLEQ
+    ///
+    /// We do not send the DLEQ to the mint as it links redemption and creation
+    pub fn without_dleq(&self) -> Self {
+        Self {
+            auth_proof: AuthProof {
+                keyset_id: self.auth_proof.keyset_id,
+                secret: self.auth_proof.secret.clone(),
+                c: self.auth_proof.c,
+                dleq: None,
+            },
+        }
     }
 }
 

@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_select_proofs_many_ones() {
-        let proofs = (0..1024).into_iter().map(|_| proof(1)).collect::<Vec<_>>();
+        let proofs = (0..1024).map(|_| proof(1)).collect::<Vec<_>>();
         let selected_proofs =
             Wallet::select_proofs(1024.into(), proofs, &vec![id()], &HashMap::new(), false)
                 .unwrap();
@@ -505,12 +505,7 @@ mod tests {
     #[test]
     fn test_select_proofs_huge_proofs() {
         let proofs = (0..32)
-            .flat_map(|i| {
-                (0..5)
-                    .into_iter()
-                    .map(|_| proof(1 << i))
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|i| (0..5).map(|_| proof(1 << i)).collect::<Vec<_>>())
             .collect::<Vec<_>>();
         let mut selected_proofs = Wallet::select_proofs(
             ((1u64 << 32) - 1).into(),

@@ -270,7 +270,7 @@ impl AuthWallet {
 
     /// Get Auth Token
     #[instrument(skip(self))]
-    pub async fn get_blind_auth_token(&self) -> Result<Option<AuthToken>, Error> {
+    pub async fn get_blind_auth_token(&self) -> Result<Option<BlindAuthToken>, Error> {
         let unspent = self.get_unspent_auth_proofs().await?;
 
         let auth_proof = match unspent.first() {
@@ -283,9 +283,9 @@ impl AuthWallet {
             None => return Ok(None),
         };
 
-        Ok(Some(AuthToken::BlindAuth(BlindAuthToken {
+        Ok(Some(BlindAuthToken {
             auth_proof: auth_proof.clone(),
-        })))
+        }))
     }
 
     /// Auth for request
@@ -309,7 +309,9 @@ impl AuthWallet {
                         Error::InsufficientBlindAuthTokens
                     })?;
 
-                    Ok(Some(proof))
+                    let auth_token = AuthToken::BlindAuth(proof.without_dleq());
+
+                    Ok(Some(auth_token))
                 }
             },
             None => Ok(None),

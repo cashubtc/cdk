@@ -215,7 +215,7 @@ pub async fn test_p2pk_swap() -> Result<()> {
 
     // Listen for status updates on all input proof pks
     let public_keys_to_listen: Vec<_> = swap_request
-        .inputs
+        .inputs()
         .ys()?
         .iter()
         .map(|pk| pk.to_string())

@@ -543,7 +543,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
 
         table
             .insert(
-                melt_request.quote.as_bytes(),
+                melt_request.quote().as_bytes(),
                 (
                     serde_json::to_string(&melt_request)?.as_str(),
                     serde_json::to_string(&ln_key)?.as_str(),
