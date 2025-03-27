@@ -9,25 +9,21 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use bip39::Mnemonic;
-use cashu::{MeltOptions, Mpp};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
-    PreMintSecrets, State,
+    CurrencyUnit, MeltQuoteState, MintBolt11Request, NotificationPayload, PreMintSecrets, State,
 };
-use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
+use cdk::wallet::{HttpClient, MintConnector, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_regtest::{
-    get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
-    get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
+    get_lnd_dir, get_mint_url, get_mint_ws_url, LND_RPC_ADDR,
 };
 use cdk_integration_tests::wait_for_mint_to_be_paid;
-use cdk_sqlite::wallet::{self, memory};
-use futures::{join, SinkExt, StreamExt};
+use cdk_sqlite::wallet::memory;
+use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
-use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
-use ln_regtest_rs::InvoiceStatus;
+use ln_regtest_rs::ln_client::{LightningClient, LndClient};
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
@@ -247,5 +243,103 @@ async fn test_happy_mint_melt() -> Result<()> {
 
     assert!(mint_amount == 100.into());
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_restore() -> Result<()> {
+    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
+    let wallet = Wallet::new(
+        &get_mint_url("0"),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &seed,
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    let invoice = Bolt11Invoice::from_str(&mint_quote.request)?;
+    pay_if_regtest(&invoice).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let _mint_amount = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+
+    assert!(wallet.total_balance().await? == 100.into());
+
+    let wallet_2 = Wallet::new(
+        &get_mint_url("0"),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &seed,
+        None,
+    )?;
+
+    assert!(wallet_2.total_balance().await? == 0.into());
+
+    let restored = wallet_2.restore().await?;
+    let proofs = wallet_2.get_unspent_proofs().await?;
+
+    wallet_2
+        .swap(None, SplitTarget::default(), proofs, None, false)
+        .await?;
+
+    assert!(restored == 100.into());
+
+    assert!(wallet_2.total_balance().await? == 100.into());
+
+    let proofs = wallet.get_unspent_proofs().await?;
+
+    let states = wallet.check_proofs_spent(proofs).await?;
+
+    for state in states {
+        if state.state != State::Spent {
+            bail!("All proofs should be spent");
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_cached_mint() -> Result<()> {
+    let wallet = Wallet::new(
+        &get_mint_url("0"),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_amount = Amount::from(100);
+
+    let quote = wallet.mint_quote(mint_amount, None).await?;
+    let invoice = Bolt11Invoice::from_str(&quote.request)?;
+    pay_if_regtest(&invoice).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let http_client = HttpClient::new(get_mint_url("0").as_str().parse()?, None);
+    let premint_secrets =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
+
+    let mut request = MintBolt11Request {
+        quote: quote.id,
+        outputs: premint_secrets.blinded_messages(),
+        signature: None,
+    };
+
+    let secret_key = quote.secret_key;
+
+    request.sign(secret_key.expect("Secret key on quote"))?;
+
+    let response = http_client.post_mint(request.clone()).await?;
+    let response1 = http_client.post_mint(request).await?;
+
+    assert!(response == response1);
     Ok(())
 }

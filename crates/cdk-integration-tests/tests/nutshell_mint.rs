@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bip39::Mnemonic;
+use cashu::{MeltQuoteState, ProofsMethods};
 use cdk::amount::SplitTarget;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{SendOptions, Wallet};
+use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::wait_for_mint_to_be_paid;
 use cdk_sqlite::wallet::memory;
 
@@ -51,19 +53,21 @@ async fn test_fake_nutshell_melt() -> Result<()> {
     let mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
-    
-    assert_eq!(mint_amount, 100.into());
-    
+
+    assert_eq!(mint_amount.total_amount().unwrap(), 100.into());
+
+    let fake_invoice = create_fake_invoice(1000, "".to_string());
+
     // Create a melt quote for 50 sats
-    let melt_amount = 50.into();
-    let melt_quote = wallet.melt_quote(melt_amount, "test melt".to_string()).await?;
-    
+    let melt_quote = wallet.melt_quote(fake_invoice.to_string(), None).await?;
+
     // Execute the melt
-    let melted = wallet.melt(&melt_quote.id).await?;
-    
-    // Verify the melted amount
-    assert_eq!(melted.amount, melt_amount);
-    
+    let _melted = wallet.melt(&melt_quote.id).await?;
+
+    let status = wallet.melt_quote_status(&melt_quote.id).await?;
+
+    assert!(status.state == MeltQuoteState::Paid);
+
     Ok(())
 }
 
