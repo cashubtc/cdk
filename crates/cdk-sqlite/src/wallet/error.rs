@@ -11,6 +11,9 @@ pub enum Error {
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    /// CDK Error
+    #[error(transparent)]
+    CDK(#[from] cdk_common::Error),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),

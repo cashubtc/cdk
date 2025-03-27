@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
+use cashu::Amount;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, Proofs,
     SecretKey, State, SwapRequest,
 };
+use cdk::wallet::types::TransactionDirection;
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::{attempt_to_swap_pending, wait_for_mint_to_be_paid};
@@ -341,6 +343,17 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
+    let transaction = wallet
+        .list_transactions(Some(TransactionDirection::Incoming))
+        .await?
+        .pop()
+        .expect("No transaction found");
+    assert_eq!(wallet.mint_url, transaction.mint_url);
+    assert_eq!(TransactionDirection::Incoming, transaction.direction);
+    assert_eq!(Amount::from(100), transaction.amount);
+    assert_eq!(Amount::from(0), transaction.fee);
+    assert_eq!(CurrencyUnit::Sat, transaction.unit);
+
     let fake_description = FakeInvoiceDescription::default();
 
     let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
@@ -373,6 +386,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     check.sort_by(|a, b| a.amount.cmp(&b.amount));
 
     assert_eq!(melt_change, check);
+
     Ok(())
 }
 
