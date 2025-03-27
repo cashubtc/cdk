@@ -114,7 +114,7 @@ impl SendKind {
 }
 
 /// Wallet Transaction
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Transaction {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -163,6 +163,18 @@ impl Transaction {
             }
         }
         true
+    }
+}
+
+impl PartialOrd for Transaction {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Transaction {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.timestamp.cmp(&self.timestamp)
     }
 }
 

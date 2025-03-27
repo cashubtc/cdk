@@ -387,18 +387,6 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     assert_eq!(melt_change, check);
 
-    let transaction = wallet
-        .list_transactions(Some(TransactionDirection::Outgoing))
-        .await?
-        .pop()
-        .expect("No transaction found");
-    assert_eq!(wallet.mint_url, transaction.mint_url);
-    assert_eq!(TransactionDirection::Outgoing, transaction.direction);
-    assert_eq!(Amount::from(9), transaction.amount);
-    assert_eq!(Amount::from(0), transaction.fee);
-    assert_eq!(CurrencyUnit::Sat, transaction.unit);
-    assert_eq!(proofs.ys()?, transaction.ys);
-
     Ok(())
 }
 

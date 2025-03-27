@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use cdk_common::database;
 use cdk_common::database::WalletDatabase;
-use cdk_common::wallet::WalletKey;
+use cdk_common::wallet::{Transaction, TransactionDirection, WalletKey};
 use tokio::sync::Mutex;
 use tracing::instrument;
 
@@ -141,6 +141,24 @@ impl MultiMintWallet {
             mint_proofs.insert(mint_url.clone(), (wallet_proofs, u.clone()));
         }
         Ok(mint_proofs)
+    }
+
+    /// List transactions
+    #[instrument(skip(self))]
+    pub async fn list_transactions(
+        &self,
+        direction: Option<TransactionDirection>,
+    ) -> Result<Vec<Transaction>, Error> {
+        let mut transactions = Vec::new();
+
+        for (_, wallet) in self.wallets.lock().await.iter() {
+            let wallet_transactions = wallet.list_transactions(direction).await?;
+            transactions.extend(wallet_transactions);
+        }
+
+        transactions.sort();
+
+        Ok(transactions)
     }
 
     /// Prepare to send

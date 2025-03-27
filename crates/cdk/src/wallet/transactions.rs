@@ -8,7 +8,7 @@ impl Wallet {
         &self,
         direction: Option<TransactionDirection>,
     ) -> Result<Vec<Transaction>, Error> {
-        let transactions = self
+        let mut transactions = self
             .localstore
             .list_transactions(
                 Some(self.mint_url.clone()),
@@ -16,6 +16,8 @@ impl Wallet {
                 Some(self.unit.clone()),
             )
             .await?;
+
+        transactions.sort();
 
         Ok(transactions)
     }
