@@ -173,21 +173,29 @@ while true; do
 done
 
 
+# Initialize combined status
+combined_status=0
+
 # Run cargo test
 cargo test -p cdk-integration-tests --test regtest
+if [ $? -ne 0 ]; then combined_status=1; fi
+
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+if [ $? -ne 0 ]; then combined_status=1; fi
 
 # Run cargo test with the http_subscription feature
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
+if [ $? -ne 0 ]; then combined_status=1; fi
 
 # Switch Mints: Run tests with LND mint
-export cdk_itests_mint_port_0=8087;
-export cdk_itests_mint_port_1=8085;
+export cdk_itests_mint_port_0=8087
+export cdk_itests_mint_port_1=8085
+
 cargo test -p cdk-integration-tests --test regtest
+if [ $? -ne 0 ]; then combined_status=1; fi
+
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+if [ $? -ne 0 ]; then combined_status=1; fi
 
-# Capture the exit status of cargo test
-test_status=$?
-
-# Exit with the status of the tests
-exit $test_status
+# Exit with the combined status of the tests
+exit $combined_status

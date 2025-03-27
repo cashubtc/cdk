@@ -87,10 +87,14 @@ done
 
 # Run cargo test
 cargo test -p cdk-integration-tests --test fake_wallet
-# cargo test -p cdk-integration-tests --test mint
+status1=$?
 
-# Capture the exit status of cargo test
-test_status=$?
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+status2=$?
 
-# Exit with the status of the testexit $test_status
-exit $test_status
+# Exit with failure if either test failed
+if [ $status1 -ne 0 ] || [ $status2 -ne 0 ]; then
+    exit 1
+else
+    exit 0
+fi
