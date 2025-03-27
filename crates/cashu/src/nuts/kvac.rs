@@ -461,7 +461,7 @@ fn derive_path_from_kvac_keyset_id(id: Id) -> Result<DerivationPath, Error> {
 /// Bootstrap Request
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct BootstrapRequest {
+pub struct KvacBootstrapRequest {
     /// Outputs
     ///
     /// [`Vec<KvacCoinMessage>`] Where each element is a coin encoding 0 as an amount.
@@ -576,37 +576,22 @@ pub struct KvacKeysetResponse {
     pub kvac_keysets: Vec<KeySetInfo>,
 }
 
-/// Bootstrap Response
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct BootstrapResponse {
-    /// MACs
-    ///
-    /// [`Vec<MAC>`] Approval stamp of the Mint
-    pub macs: Vec<MAC>,
-    /// IParams Proofs
-    ///
-    /// [`Vec<ZKP>`] Proving that a certain [`MintPrivateKey`] was used to issue each [`MAC`]
-    pub proofs: Vec<ZKP>,
-}
-
 /// Swap Response
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacResponse {
-    /// Outputs
-    ///
-    /// Output commitments of the request.
-    pub outputs: Vec<KvacCoinMessage>,
     /// MACs
     ///
     /// Approval stamp of the Mint
     pub macs: Vec<MAC>,
-    /// IParams Proofs
+    /// Issuance Proofs
     ///
     /// Proving that a specific [`MintPrivateKey`] was used to issue each [`MAC`]
     pub proofs: Vec<ZKP>,
 }
+
+/// Bootstrap Response
+pub type KvacBootstrapResponse = KvacResponse;
 
 /// Swap Response
 pub type KvacSwapResponse = KvacResponse;

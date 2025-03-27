@@ -6,7 +6,7 @@ use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
 use cdk_common::error::Error;
 use cdk_common::kvac::Error::{IParamsVerificationError, OutOfBounds};
-use cdk_common::kvac::{BootstrapRequest, KvacCoin, KvacCoinMessage, KvacPreCoin};
+use cdk_common::kvac::{KvacBootstrapRequest, KvacCoin, KvacCoinMessage, KvacPreCoin};
 use cdk_common::{Amount, State};
 use tracing::instrument;
 
@@ -53,7 +53,7 @@ impl Wallet {
             pre_coins.push(pre_coin);
         }
 
-        let request = BootstrapRequest {
+        let request = KvacBootstrapRequest {
             outputs: coin_messages,
             proofs: bootstrap_proofs,
         };

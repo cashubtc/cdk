@@ -5,7 +5,7 @@ use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::Error::{
     BootstrapVerificationError, InputsToProofsLengthMismatch, RequestInvalidInputLength,
 };
-use cdk_common::kvac::{BootstrapRequest, BootstrapResponse};
+use cdk_common::kvac::{KvacBootstrapRequest, KvacBootstrapResponse};
 use tracing::instrument;
 
 use super::super::Mint;
@@ -19,8 +19,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_bootstrap_request(
         &self,
-        bootstrap_request: BootstrapRequest,
-    ) -> Result<BootstrapResponse, Error> {
+        bootstrap_request: KvacBootstrapRequest,
+    ) -> Result<KvacBootstrapResponse, Error> {
         tracing::info!("Bootstrap has been called");
 
         // Length of the input vector must be 2
@@ -81,6 +81,6 @@ impl Mint {
             proofs.push(proof);
         }
 
-        Ok(BootstrapResponse { macs, proofs })
+        Ok(KvacBootstrapResponse { macs, proofs })
     }
 }

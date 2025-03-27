@@ -73,7 +73,6 @@ impl Mint {
         tracing::debug!("KVAC swap request successful");
 
         Ok(KvacSwapResponse {
-            outputs: swap_request.outputs,
             macs: issued_macs.into_iter().map(|m| m.mac).collect(),
             proofs: iparams_proofs,
         })

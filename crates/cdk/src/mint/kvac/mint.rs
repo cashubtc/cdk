@@ -134,7 +134,6 @@ impl Mint {
         tracing::debug!("KVAC mint request successful");
 
         Ok(KvacMintBolt11Response {
-            outputs: mint_request.outputs,
             macs: issued_macs.into_iter().map(|m| m.mac).collect(),
             proofs: iparams_proofs,
         })

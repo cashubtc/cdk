@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::kvac::{
-    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse,
+    KvacBootstrapRequest, KvacBootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse,
     KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response,
     KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse,
     KvacSwapRequest, KvacSwapResponse,
@@ -68,7 +68,7 @@ post_cache_wrapper!(
     MeltBolt11Request<Uuid>,
     MeltQuoteBolt11Response<Uuid>
 );
-post_cache_wrapper!(post_bootstrap, BootstrapRequest, BootstrapResponse);
+post_cache_wrapper!(post_bootstrap, KvacBootstrapRequest, KvacBootstrapResponse);
 post_cache_wrapper!(post_kvac_swap, KvacSwapRequest, KvacSwapResponse);
 post_cache_wrapper!(
     post_kvac_mint_bolt11,
@@ -602,7 +602,7 @@ pub async fn post_kvac_swap(
     path = "/kvac/bootstrap",
     request_body(content = SwapRequest, description = "Swap params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = BootstrapResponse, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = KvacBootstrapResponse, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -612,8 +612,8 @@ pub async fn post_kvac_swap(
 /// This endpoint can be used by Alice to obtain valid zero-valued coins to be used as inputs in other requests
 pub async fn post_bootstrap(
     State(state): State<MintState>,
-    Json(payload): Json<BootstrapRequest>,
-) -> Result<Json<BootstrapResponse>, Response> {
+    Json(payload): Json<KvacBootstrapRequest>,
+) -> Result<Json<KvacBootstrapResponse>, Response> {
     let bootstrap_response = state
         .mint
         .process_bootstrap_request(payload)

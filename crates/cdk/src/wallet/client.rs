@@ -4,7 +4,7 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cdk_common::kvac::{
-    BootstrapRequest, BootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse, KvacKeySet,
+    KvacBootstrapRequest, KvacBootstrapResponse, KvacCheckStateRequest, KvacCheckStateResponse, KvacKeySet,
     KvacKeysResponse, KvacKeysetResponse, KvacMeltBolt11Request, KvacMeltBolt11Response,
     KvacMintBolt11Request, KvacMintBolt11Response, KvacRestoreRequest, KvacRestoreResponse,
     KvacSwapRequest, KvacSwapResponse,
@@ -343,7 +343,7 @@ impl MintConnector for HttpClient {
     }
 
     /// KVAC Bootstrap
-    async fn post_bootstrap(&self, request: BootstrapRequest) -> Result<BootstrapResponse, Error> {
+    async fn post_bootstrap(&self, request: KvacBootstrapRequest) -> Result<KvacBootstrapResponse, Error> {
         let url = self.mint_url.join_paths(&["v2", "kvac", "bootstrap"])?;
         self.http_post(url, &request).await
     }
@@ -446,7 +446,7 @@ pub trait MintConnector: Debug {
         Err(Error::NotImplemented)
     }
     /// Kvac Bootstrap
-    async fn post_bootstrap(&self, _request: BootstrapRequest) -> Result<BootstrapResponse, Error> {
+    async fn post_bootstrap(&self, _request: KvacBootstrapRequest) -> Result<KvacBootstrapResponse, Error> {
         Err(Error::NotImplemented)
     }
 }
