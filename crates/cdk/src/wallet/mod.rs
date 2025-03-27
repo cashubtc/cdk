@@ -44,6 +44,7 @@ mod receive;
 mod send;
 pub mod subscription;
 mod swap;
+mod transactions;
 pub mod util;
 
 #[cfg(feature = "auth")]

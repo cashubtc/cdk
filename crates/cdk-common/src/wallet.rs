@@ -214,6 +214,15 @@ impl TransactionId {
         Self(hash.to_byte_array())
     }
 
+    /// From proofs
+    pub fn from_proofs(proofs: Proofs) -> Result<Self, nut00::Error> {
+        let ys = proofs
+            .iter()
+            .map(|proof| proof.y())
+            .collect::<Result<Vec<PublicKey>, nut00::Error>>()?;
+        Ok(Self::new(ys))
+    }
+
     /// From bytes
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -266,10 +275,6 @@ impl TryFrom<Proofs> for TransactionId {
     type Error = nut00::Error;
 
     fn try_from(proofs: Proofs) -> Result<Self, Self::Error> {
-        let ys = proofs
-            .iter()
-            .map(|proof| proof.y())
-            .collect::<Result<Vec<PublicKey>, nut00::Error>>()?;
-        Ok(Self::new(ys))
+        Self::from_proofs(proofs)
     }
 }
