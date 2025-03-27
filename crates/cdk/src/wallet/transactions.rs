@@ -1,8 +1,6 @@
-use cdk_common::{
-    mint_url::MintUrl,
-    wallet::{Transaction, TransactionDirection, TransactionId},
-    CurrencyUnit,
-};
+use cdk_common::mint_url::MintUrl;
+use cdk_common::wallet::{Transaction, TransactionDirection, TransactionId};
+use cdk_common::CurrencyUnit;
 
 use crate::{Error, Wallet};
 
