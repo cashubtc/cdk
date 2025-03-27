@@ -1,6 +1,7 @@
 //! These tests are to test happy path mint wallet interactions
 //!
 //!
+use std::env;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -58,6 +59,41 @@ async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
     } else {
         // Not a regtest invoice, just return Ok
         Ok(())
+    }
+}
+
+/// Determines if we're running in regtest mode based on environment variable
+///
+/// Checks the CASHU_TEST_REGTEST environment variable:
+/// - If set to "1", "true", or "yes" (case insensitive), returns true
+/// - Otherwise returns false
+fn is_regtest_env() -> bool {
+    match env::var("CASHU_TEST_REGTEST") {
+        Ok(val) => {
+            let val = val.to_lowercase();
+            val == "1" || val == "true" || val == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
+/// Creates a real invoice if in regtest mode, otherwise returns a fake invoice
+///
+/// Uses the CASHU_TEST_REGTEST environment variable to determine whether to
+/// create a real regtest invoice or a fake one for testing.
+async fn create_invoice_for_env(amount: Option<u64>) -> Result<String> {
+    if is_regtest_env() {
+        // In regtest mode, create a real invoice
+        let lnd_client = init_lnd_client().await;
+        lnd_client.create_invoice(amount).await.map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
+    } else {
+        // Not in regtest mode, create a fake invoice
+        let amount_str = amount.unwrap_or(1000).to_string();
+        let fake_invoice = format!(
+            "lnbc{}n1pjq23jhpp5f70zs4l7jnrpcx9s8nwm3nu0yq5x7menhjcdk5z0dxfnj2w5v4sdqqcqzzsxqyz5vqsp5usyc4lk9chsfp53kvcnvq456ganh60d89reykdngsmtj6yw3nhq9qyyssqy4lgd8tj637qcjp05rdpxxykjenthxftej7a2zzmwrmrl70fyj9hvj0rewhzj7jfmxkawvzkn5fvnkjd9rt5qqtj2yr923gqkn6c4gp348lll",
+            amount_str
+        );
+        Ok(fake_invoice)
     }
 }
 
@@ -121,7 +157,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
 
     assert!(mint_amount == 100.into());
 
-    let invoice = lnd_client.create_invoice(Some(50)).await?;
+    let invoice = create_invoice_for_env(Some(50)).await?;
 
     let melt = wallet.melt_quote(invoice, None).await?;
 
