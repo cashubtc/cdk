@@ -1,6 +1,4 @@
-use cdk_common::mint_url::MintUrl;
 use cdk_common::wallet::{Transaction, TransactionDirection, TransactionId};
-use cdk_common::CurrencyUnit;
 
 use crate::{Error, Wallet};
 
@@ -8,13 +6,15 @@ impl Wallet {
     /// List transactions
     pub async fn list_transactions(
         &self,
-        mint_url: Option<MintUrl>,
         direction: Option<TransactionDirection>,
-        unit: Option<CurrencyUnit>,
     ) -> Result<Vec<Transaction>, Error> {
         let transactions = self
             .localstore
-            .list_transactions(mint_url, direction, unit)
+            .list_transactions(
+                Some(self.mint_url.clone()),
+                direction,
+                Some(self.unit.clone()),
+            )
             .await?;
 
         Ok(transactions)

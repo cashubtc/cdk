@@ -1,9 +1,8 @@
-use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
-use cashu::{Amount, MintUrl};
+use cashu::Amount;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -345,11 +344,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         .await?;
 
     let transaction = wallet
-        .list_transactions(
-            Some(MintUrl::from_str(MINT_URL)?),
-            Some(TransactionDirection::Incoming),
-            Some(CurrencyUnit::Sat),
-        )
+        .list_transactions(Some(TransactionDirection::Incoming))
         .await?
         .pop()
         .expect("No transaction found");
@@ -393,11 +388,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     assert_eq!(melt_change, check);
 
     let transaction = wallet
-        .list_transactions(
-            Some(MintUrl::from_str(MINT_URL)?),
-            Some(TransactionDirection::Outgoing),
-            Some(CurrencyUnit::Sat),
-        )
+        .list_transactions(Some(TransactionDirection::Outgoing))
         .await?
         .pop()
         .expect("No transaction found");

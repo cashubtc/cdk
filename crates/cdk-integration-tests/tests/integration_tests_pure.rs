@@ -169,7 +169,7 @@ async fn test_mint_nut06() {
     assert_eq!(Amount::from(64), balance_alice);
 
     let transaction = wallet_alice
-        .list_transactions(None, None, None)
+        .list_transactions(None)
         .await
         .expect("Failed to list transactions")
         .pop()
