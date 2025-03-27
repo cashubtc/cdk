@@ -17,6 +17,7 @@ use cdk::nuts::{
     PreMintSecrets, State,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
+use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
     get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
@@ -68,7 +69,7 @@ async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
 /// - If set to "1", "true", or "yes" (case insensitive), returns true
 /// - Otherwise returns false
 fn is_regtest_env() -> bool {
-    match env::var("CASHU_TEST_REGTEST") {
+    match env::var("CDK_TEST_REGTEST") {
         Ok(val) => {
             let val = val.to_lowercase();
             val == "1" || val == "true" || val == "yes"
@@ -81,19 +82,21 @@ fn is_regtest_env() -> bool {
 ///
 /// Uses the CASHU_TEST_REGTEST environment variable to determine whether to
 /// create a real regtest invoice or a fake one for testing.
-async fn create_invoice_for_env(amount: Option<u64>) -> Result<String> {
+async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
     if is_regtest_env() {
         // In regtest mode, create a real invoice
         let lnd_client = init_lnd_client().await;
-        lnd_client.create_invoice(amount).await.map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
+        lnd_client
+            .create_invoice(amount_sat)
+            .await
+            .map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
     } else {
         // Not in regtest mode, create a fake invoice
-        let amount_str = amount.unwrap_or(1000).to_string();
-        let fake_invoice = format!(
-            "lnbc{}n1pjq23jhpp5f70zs4l7jnrpcx9s8nwm3nu0yq5x7menhjcdk5z0dxfnj2w5v4sdqqcqzzsxqyz5vqsp5usyc4lk9chsfp53kvcnvq456ganh60d89reykdngsmtj6yw3nhq9qyyssqy4lgd8tj637qcjp05rdpxxykjenthxftej7a2zzmwrmrl70fyj9hvj0rewhzj7jfmxkawvzkn5fvnkjd9rt5qqtj2yr923gqkn6c4gp348lll",
-            amount_str
+        let fake_invoice = create_fake_invoice(
+            amount_sat.expect("Amount must be defined") * 1_000,
+            "".to_string(),
         );
-        Ok(fake_invoice)
+        Ok(fake_invoice.to_string())
     }
 }
 
@@ -130,7 +133,7 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_regtest_mint_melt_round_trip() -> Result<()> {
+async fn test_happy_mint_melt_round_trip() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url("0"),
         CurrencyUnit::Sat,
@@ -211,6 +214,39 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     assert_eq!(payload.amount + payload.fee_reserve, 50.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Paid);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_happy_mint_melt() -> Result<()> {
+    let lnd_client = init_lnd_client().await;
+
+    let wallet = Wallet::new(
+        &get_mint_url("0"),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_amount = Amount::from(100);
+
+    let mint_quote = wallet.mint_quote(mint_amount, None).await?;
+
+    assert_eq!(mint_quote.amount, mint_amount);
+
+    lnd_client.pay_invoice(mint_quote.request).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+
+    let mint_amount = proofs.total_amount()?;
+
+    assert!(mint_amount == 100.into());
 
     Ok(())
 }
