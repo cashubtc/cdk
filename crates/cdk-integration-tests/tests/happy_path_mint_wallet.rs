@@ -57,7 +57,7 @@ async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
 
 /// Determines if we're running in regtest mode based on environment variable
 ///
-/// Checks the CASHU_TEST_REGTEST environment variable:
+/// Checks the CDK_TEST_REGTEST environment variable:
 /// - If set to "1", "true", or "yes" (case insensitive), returns true
 /// - Otherwise returns false
 fn is_regtest_env() -> bool {
@@ -77,14 +77,14 @@ fn is_regtest_env() -> bool {
 /// - Otherwise falls back to the default URL from get_mint_url("0")
 fn get_mint_url_from_env() -> String {
     match env::var("CDK_TEST_MINT_URL") {
-        Ok(url) => url.parse().expect("Invalid mint URL in CDK_TEST_MINT_URL"),
+        Ok(url) => url,
         Err(_) => get_mint_url("0"),
     }
 }
 
 /// Creates a real invoice if in regtest mode, otherwise returns a fake invoice
 ///
-/// Uses the CASHU_TEST_REGTEST environment variable to determine whether to
+/// Uses the CDK_TEST_REGTEST environment variable to determine whether to
 /// create a real regtest invoice or a fake one for testing.
 async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
     if is_regtest_env() {
