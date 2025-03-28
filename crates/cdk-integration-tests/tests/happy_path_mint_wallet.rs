@@ -84,7 +84,7 @@ fn get_mint_url_from_env() -> String {
 
 /// Creates a real invoice if in regtest mode, otherwise returns a fake invoice
 ///
-/// Uses the CDK_TEST_REGTEST environment variable to determine whether to
+/// Uses the is_regtest_env() function to determine whether to
 /// create a real regtest invoice or a fake one for testing.
 async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
     if is_regtest_env() {

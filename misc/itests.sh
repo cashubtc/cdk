@@ -5,67 +5,86 @@ cleanup() {
     echo "Cleaning up..."
 
     echo "Killing the cdk mintd"
-    kill -2 $cdk_mintd_pid
-    wait $cdk_mintd_pid
+    kill -2 $CDK_MINTD_PID
+    wait $CDK_MINTD_PID
 
     
     echo "Killing the cdk lnd mintd"
-    kill -2 $cdk_mintd_lnd_pid
-    wait $cdk_mintd_lnd_pid
+    kill -2 $CDK_MINTD_LND_PID
+    wait $CDK_MINTD_LND_PID
 
     echo "Killing the cdk regtest"
-    kill -2 $cdk_regtest_pid
-    wait $cdk_regtest_pid
+    kill -2 $CDK_REGTEST_PID
+    wait $CDK_REGTEST_PID
 
 
     echo "Mint binary terminated"
 
     # Remove the temporary directory
-    rm -rf "$cdk_itests"
-    echo "Temp directory removed: $cdk_itests"
-    unset cdk_itests
-    unset cdk_itests_mint_addr
-    unset cdk_itests_mint_port
+    rm -rf "$CDK_ITESTS_DIR"
+    echo "Temp directory removed: $CDK_ITESTS_DIR"
+    
+    # Unset all environment variables
+    unset CDK_ITESTS_DIR
+    unset CDK_ITESTS_MINT_ADDR
+    unset CDK_ITESTS_MINT_PORT_0
+    unset CDK_ITESTS_MINT_PORT_1
+    unset CDK_MINTD_DATABASE
+    unset CDK_TEST_MINT_URL
+    unset CDK_MINTD_URL
+    unset CDK_MINTD_WORK_DIR
+    unset CDK_MINTD_LISTEN_HOST
+    unset CDK_MINTD_LISTEN_PORT
+    unset CDK_MINTD_LN_BACKEND
+    unset CDK_MINTD_MNEMONIC
+    unset CDK_MINTD_CLN_RPC_PATH
+    unset CDK_MINTD_LND_ADDRESS
+    unset CDK_MINTD_LND_CERT_FILE
+    unset CDK_MINTD_LND_MACAROON_FILE
+    unset CDK_MINTD_PID
+    unset CDK_MINTD_LND_PID
+    unset CDK_REGTEST_PID
+    unset RUST_BACKTRACE
 }
 
 # Set up trap to call cleanup on script exit
 trap cleanup EXIT
 
 # Create a temporary directory
-export cdk_itests=$(mktemp -d)
-export cdk_itests_mint_addr="127.0.0.1";
-export cdk_itests_mint_port_0=8085;
-export cdk_itests_mint_port_1=8087;
+export CDK_ITESTS_DIR=$(mktemp -d)
+export CDK_ITESTS_MINT_ADDR="127.0.0.1"
+export CDK_ITESTS_MINT_PORT_0=8085
+export CDK_ITESTS_MINT_PORT_1=8087
 
 # Check if the temporary directory was created successfully
-if [[ ! -d "$cdk_itests" ]]; then
+if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
     echo "Failed to create temp directory"
     exit 1
 fi
 
-echo "Temp directory created: $cdk_itests"
-export MINT_DATABASE="$1";
+echo "Temp directory created: $CDK_ITESTS_DIR"
+export CDK_MINTD_DATABASE="$1"
 
 cargo build -p cdk-integration-tests 
 
 cargo run --bin start_regtest &
 
-cdk_regtest_pid=$!
-mkfifo "$cdk_itests/progress_pipe"
-rm -f "$cdk_itests/signal_received"  # Ensure clean state
+export CDK_REGTEST_PID=$!
+mkfifo "$CDK_ITESTS_DIR/progress_pipe"
+rm -f "$CDK_ITESTS_DIR/signal_received"  # Ensure clean state
 # Start reading from pipe in background
 (while read line; do
     case "$line" in
         "checkpoint1")
             echo "Reached first checkpoint"
-            touch "$cdk_itests/signal_received"
+            touch "$CDK_ITESTS_DIR/signal_received"
             exit 0
             ;;
     esac
-done < "$cdk_itests/progress_pipe") &
+done < "$CDK_ITESTS_DIR/progress_pipe") &
 # Wait for up to 120 seconds
 for ((i=0; i<120; i++)); do
-    if [ -f "$cdk_itests/signal_received" ]; then
+    if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
         echo "break signal received"
         break
     fi
@@ -76,24 +95,23 @@ echo "Regtest set up continuing"
 echo "Starting regtest mint"
 # cargo run --bin regtest_mint &
 
-export CDK_MINTD_CLN_RPC_PATH="$cdk_itests/cln/one/regtest/lightning-rpc";
-export CDK_MINTD_URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0";
-export CDK_MINTD_WORK_DIR="$cdk_itests";
-export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
-export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port_0;
-export CDK_MINTD_LN_BACKEND="cln";
-export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
-export CDK_MINTD_DATABASE=$MINT_DATABASE;
+export CDK_MINTD_CLN_RPC_PATH="$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc"
+export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR"
+export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR
+export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0
+export CDK_MINTD_LN_BACKEND="cln"
+export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
 export RUST_BACKTRACE=1
 
-echo "Starting cln mintd";
+echo "Starting cln mintd"
 cargo run --bin cdk-mintd --features "redb" &
-cdk_mintd_pid=$!
+export CDK_MINTD_PID=$!
 
 
-echo $cdk_itests
+echo $CDK_ITESTS_DIR
 
-URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0/v1/info"
+URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0/v1/info"
 
 TIMEOUT=100
 START_TIME=$(date +%s)
@@ -125,23 +143,23 @@ while true; do
 done
 
 
-export CDK_MINTD_LND_ADDRESS="https://localhost:10010";
-export CDK_MINTD_LND_CERT_FILE="$cdk_itests/lnd/two/tls.cert";
-export CDK_MINTD_LND_MACAROON_FILE="$cdk_itests/lnd/two/data/chain/bitcoin/regtest/admin.macaroon";
+export CDK_MINTD_LND_ADDRESS="https://localhost:10010"
+export CDK_MINTD_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert"
+export CDK_MINTD_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon"
 
-export CDK_MINTD_URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_1";
-mkdir -p "$cdk_itests/lnd_mint"
-export CDK_MINTD_WORK_DIR="$cdk_itests/lnd_mint";
-export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
-export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port_1;
-export CDK_MINTD_LN_BACKEND="lnd";
+export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
+mkdir -p "$CDK_ITESTS_DIR/lnd_mint"
+export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/lnd_mint"
+export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR
+export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_1
+export CDK_MINTD_LN_BACKEND="lnd"
 export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
 
-echo "Starting lnd mintd";
+echo "Starting lnd mintd"
 cargo run --bin cdk-mintd --features "redb" &
-cdk_mintd_lnd_pid=$!
+export CDK_MINTD_LND_PID=$!
 
-URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_1/v1/info"
+URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1/v1/info"
 
 TIMEOUT=100
 START_TIME=$(date +%s)
@@ -188,8 +206,8 @@ cargo test -p cdk-integration-tests --test regtest --features http_subscription
 if [ $? -ne 0 ]; then combined_status=1; fi
 
 # Switch Mints: Run tests with LND mint
-export cdk_itests_mint_port_0=8087
-export cdk_itests_mint_port_1=8085
+export CDK_ITESTS_MINT_PORT_0=8087
+export CDK_ITESTS_MINT_PORT_1=8085
 
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then combined_status=1; fi
