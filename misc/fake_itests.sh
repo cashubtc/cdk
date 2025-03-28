@@ -16,6 +16,8 @@ cleanup() {
     unset cdk_itests
     unset cdk_itests_mint_addr
     unset cdk_itests_mint_port
+    unset MINT_DATABASE
+    unset CDK_TEST_MINT_URL
 }
 
 # Set up trap to call cleanup on script exit
@@ -88,6 +90,8 @@ done
 # Run cargo test
 cargo test -p cdk-integration-tests --test fake_wallet
 status1=$?
+
+export CDK_TEST_MINT_URL=http://127.0.0.1:8086
 
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 status2=$?
