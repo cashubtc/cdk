@@ -42,7 +42,7 @@ tti = 60
 # engine = "sqlite"
 
 [ln]
-# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'phoenixd'
+# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits'
 ln_backend = "cln"
 # min_mint=1
 # max_mint=500000
@@ -61,13 +61,6 @@ reserve_fee_min = 4
 # invoice_api_key = ""
 # lnbits_api = ""
 # fee_percent=0.04
-# reserve_fee_min=4
-
-# [phoenixd]
-# For 'phoenixd' backend, also specify fee_percent (% fee of the ln payment that mint will put in the melt quote) and reserve_fee_min (absolute amount-higher of fee_percent or reserve_fee_min is the fee reserve). 
-# api_password = ""
-# api_url = ""
-# fee_percent=0.05
 # reserve_fee_min=4
 
 # [lnd]

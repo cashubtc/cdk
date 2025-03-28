@@ -171,7 +171,6 @@ check-docs:
     "-p cdk-rexie"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-phoenixd"
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"

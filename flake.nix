@@ -143,7 +143,6 @@
             (craneLib.fileset.commonCargoSources ./crates/cdk-lnd)
             (craneLib.fileset.commonCargoSources ./crates/cdk-fake-wallet)
             (craneLib.fileset.commonCargoSources ./crates/cdk-lnbits)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-phoenixd)
             (craneLib.fileset.commonCargoSources ./crates/cdk-redb)
             (craneLib.fileset.commonCargoSources ./crates/cdk-sqlite)
             ./crates/cdk-sqlite/src/mint/migrations
