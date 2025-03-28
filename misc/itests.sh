@@ -135,7 +135,7 @@ export CDK_MINTD_WORK_DIR="$cdk_itests/lnd_mint";
 export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
 export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port_1;
 export CDK_MINTD_LN_BACKEND="lnd";
-export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
+export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
 
 echo "Starting lnd mintd";
 cargo run --bin cdk-mintd --features "redb" &
