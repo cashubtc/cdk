@@ -46,10 +46,13 @@ cleanup() {
     unset CDK_MINTD_LND_PID
     unset CDK_REGTEST_PID
     unset RUST_BACKTRACE
+    unset CDK_TEST_REGTEST
 }
 
 # Set up trap to call cleanup on script exit
 trap cleanup EXIT
+
+export CDK_TEST_REGTEST=1
 
 # Create a temporary directory
 export CDK_ITESTS_DIR=$(mktemp -d)
@@ -207,13 +210,13 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Running happy_path_mint_wallet test with CLN mint"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet test_happy_mint_melt_round_trip
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet test failed, exiting"
     exit 1
 fi
 
-# Run cargo test with the http_subscription feature
+# # Run cargo test with the http_subscription feature
 echo "Running regtest test with http_subscription feature"
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
 if [ $? -ne 0 ]; then

@@ -44,10 +44,6 @@ pub fn get_mint_url(which: &str) -> String {
     format!("http://{}:{}", get_mint_addr(), get_mint_port(which))
 }
 
-pub fn get_mint_url_from_env() -> String {
-    format!("http://{}:{}", get_mint_addr(), get_mint_port("0"))
-}
-
 pub fn get_mint_ws_url(which: &str) -> String {
     format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port(which))
 }

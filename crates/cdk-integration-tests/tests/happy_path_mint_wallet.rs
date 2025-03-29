@@ -8,6 +8,7 @@
 //! The tests use environment variables to determine which mint to connect to and
 //! whether to use real Lightning Network payments (regtest mode) or simulated payments.
 
+use core::panic;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -21,9 +22,9 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
-use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
-use cdk_integration_tests::init_regtest::{get_lnd_dir, get_mint_url, LND_RPC_ADDR};
-use cdk_integration_tests::wait_for_mint_to_be_paid;
+use cdk_fake_wallet::create_fake_invoice;
+use cdk_integration_tests::init_regtest::{get_lnd_dir, LND_RPC_ADDR};
+use cdk_integration_tests::{get_mint_url_from_env, wait_for_mint_to_be_paid};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
@@ -54,6 +55,7 @@ async fn init_lnd_client() -> LndClient {
 async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
     // Check if the invoice is for the regtest network
     if invoice.network() == bitcoin::Network::Regtest {
+        println!("Regtest invoice");
         let lnd_client = init_lnd_client().await;
         lnd_client.pay_invoice(invoice.to_string()).await?;
         Ok(())
@@ -75,18 +77,6 @@ fn is_regtest_env() -> bool {
             val == "1" || val == "true" || val == "yes"
         }
         Err(_) => false,
-    }
-}
-
-/// Gets the mint URL from environment variable or falls back to default
-///
-/// Checks the CDK_TEST_MINT_URL environment variable:
-/// - If set, returns that URL
-/// - Otherwise falls back to the default URL from get_mint_url("0")
-fn get_mint_url_from_env() -> String {
-    match env::var("CDK_TEST_MINT_URL") {
-        Ok(url) => url,
-        Err(_) => get_mint_url("0"),
     }
 }
 
@@ -398,15 +388,17 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
+    let bolt11 = Bolt11Invoice::from_str(&mint_quote.request)?;
+
+    pay_if_regtest(&bolt11).await?;
+
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
-    let fake_description = FakeInvoiceDescription::default();
-
-    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
+    let invoice = create_invoice_for_env(Some(9)).await?;
 
     let proofs = wallet.get_unspent_proofs().await?;
 
