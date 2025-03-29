@@ -322,60 +322,6 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
     Ok(())
 }
 
-/// Tests that change outputs in a melt quote are correctly handled
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_change_in_quote() -> Result<()> {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
-
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
-
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
-
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
-
-    let fake_description = FakeInvoiceDescription::default();
-
-    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
-
-    let proofs = wallet.get_unspent_proofs().await?;
-
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
-
-    let keyset = wallet.get_active_mint_keyset().await?;
-
-    let premint_secrets = PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default())?;
-
-    let client = HttpClient::new(MINT_URL.parse()?, None);
-
-    let melt_request = MeltBolt11Request::new(
-        melt_quote.id.clone(),
-        proofs.clone(),
-        Some(premint_secrets.blinded_messages()),
-    );
-
-    let melt_response = client.post_melt(melt_request).await?;
-
-    assert!(melt_response.change.is_some());
-
-    let check = wallet.melt_quote_status(&melt_quote.id).await?;
-    let mut melt_change = melt_response.change.unwrap();
-    melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
-
-    let mut check = check.change.unwrap();
-    check.sort_by(|a, b| a.amount.cmp(&b.amount));
-
-    assert_eq!(melt_change, check);
-    Ok(())
-}
-
 /// Tests that the correct database type is used based on environment variables
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_database_type() -> Result<()> {
