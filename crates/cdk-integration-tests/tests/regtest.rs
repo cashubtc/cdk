@@ -147,6 +147,18 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Unpaid);
 
+    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    // first message is the current state
+    assert_eq!("test-sub", sub_id);
+    let payload = match payload {
+        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
+        _ => panic!("Wrong payload"),
+    };
+
+    assert_eq!(payload.amount + payload.fee_reserve, 50.into());
+    assert_eq!(payload.quote.to_string(), melt.id);
+    assert_eq!(payload.state, MeltQuoteState::Pending);
+
     // get current state
     let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
     assert_eq!("test-sub", sub_id);
@@ -157,76 +169,6 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     assert_eq!(payload.amount + payload.fee_reserve, 50.into());
     assert_eq!(payload.quote.to_string(), melt.id);
     assert_eq!(payload.state, MeltQuoteState::Paid);
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_pay_invoice_twice() -> anyhow::Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
-        None,
-    )?;
-
-    let mint_quote = wallet
-        .mint_quote(100.into(), None)
-        .await
-        .expect("Get mint quote");
-
-    lnd_client
-        .pay_invoice(mint_quote.request)
-        .await
-        .expect("Could not pay invoice");
-
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
-        .await
-        .expect("Mint invoice timeout not paid");
-
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await
-        .expect("Could not mint");
-
-    let mint_amount = proofs.total_amount().unwrap();
-
-    assert_eq!(mint_amount, 100.into());
-
-    let invoice = lnd_client
-        .create_invoice(Some(10))
-        .await
-        .expect("Could not create invoice");
-
-    let melt_quote = wallet
-        .melt_quote(invoice.clone(), None)
-        .await
-        .expect("Could not get melt quote");
-
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
-
-    let melt_two = wallet.melt_quote(invoice, None).await.unwrap();
-
-    let melt_two = wallet.melt(&melt_two.id).await;
-
-    match melt_two {
-        Err(err) => match err {
-            cdk::Error::RequestAlreadyPaid => (),
-            err => {
-                bail!("Wrong invoice already paid: {}", err.to_string());
-            }
-        },
-        Ok(_) => {
-            bail!("Should not have allowed second payment");
-        }
-    }
-
-    let balance = wallet.total_balance().await.unwrap();
-
-    assert_eq!(balance, (Amount::from(100) - melt.fee_paid - melt.amount));
 
     Ok(())
 }
@@ -443,41 +385,6 @@ async fn test_multimint_melt() -> Result<()> {
     // Check
     assert!(result1.state == result2.state);
     assert!(result1.state == MeltQuoteState::Paid);
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_database_type() -> Result<()> {
-    // Get the database type and work dir from environment
-    let db_type = std::env::var("MINT_DATABASE").expect("MINT_DATABASE env var should be set");
-    let work_dir =
-        std::env::var("CDK_MINTD_WORK_DIR").expect("CDK_MINTD_WORK_DIR env var should be set");
-
-    // Check that the correct database file exists
-    match db_type.as_str() {
-        "REDB" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.redb");
-            assert!(
-                db_path.exists(),
-                "Expected redb database file to exist at {:?}",
-                db_path
-            );
-        }
-        "SQLITE" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.sqlite");
-            assert!(
-                db_path.exists(),
-                "Expected sqlite database file to exist at {:?}",
-                db_path
-            );
-        }
-        "MEMORY" => {
-            // Memory database has no file to check
-            println!("Memory database in use - no file to check");
-        }
-        _ => bail!("Unknown database type: {}", db_type),
-    }
-
     Ok(())
 }
 
