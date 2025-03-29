@@ -6,69 +6,96 @@ cleanup() {
 
 
     echo "Killing the cdk payment processor"
-    kill -2 $cdk_payment_processor_pid
-    wait $cdk_payment_processor_pid
+    kill -2 $CDK_PAYMENT_PROCESSOR_PID
+    wait $CDK_PAYMENT_PROCESSOR_PID
 
     echo "Killing the cdk mintd"
-    kill -2 $cdk_mintd_pid
-    wait $cdk_mintd_pid
+    kill -2 $CDK_MINTD_PID
+    wait $CDK_MINTD_PID
 
     echo "Killing the cdk regtest"
-    kill -2 $cdk_regtest_pid
-    wait $cdk_regtest_pid
+    kill -2 $CDK_REGTEST_PID
+    wait $CDK_REGTEST_PID
 
     echo "Mint binary terminated"
 
     # Remove the temporary directory
-    rm -rf "$cdk_itests"
-    echo "Temp directory removed: $cdk_itests"
-    unset cdk_itests
-    unset cdk_itests_mint_addr
-    unset cdk_itests_mint_port
+    rm -rf "$CDK_ITESTS_DIR"
+    echo "Temp directory removed: $CDK_ITESTS_DIR"
+    
+    # Unset all environment variables that were set
+    unset CDK_ITESTS_DIR
+    unset CDK_ITESTS_MINT_ADDR
+    unset CDK_ITESTS_MINT_PORT_0
+    unset CDK_REGTEST_PID
+    unset LN_BACKEND
+    unset MINT_DATABASE
+    unset CDK_TEST_REGTEST
+    unset CDK_TEST_MINT_URL
+    unset CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH
+    unset CDK_PAYMENT_PROCESSOR_LND_ADDRESS
+    unset CDK_PAYMENT_PROCESSOR_LND_CERT_FILE
+    unset CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE
+    unset CDK_PAYMENT_PROCESSOR_LN_BACKEND
+    unset CDK_PAYMENT_PROCESSOR_LISTEN_HOST
+    unset CDK_PAYMENT_PROCESSOR_LISTEN_PORT
+    unset CDK_PAYMENT_PROCESSOR_PID
+    unset CDK_MINTD_URL
+    unset CDK_MINTD_WORK_DIR
+    unset CDK_MINTD_LISTEN_HOST
+    unset CDK_MINTD_LISTEN_PORT
+    unset CDK_MINTD_LN_BACKEND
+    unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS
+    unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT
+    unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS
+    unset CDK_MINTD_MNEMONIC
+    unset CDK_MINTD_PID
 }
 
 # Set up trap to call cleanup on script exit
 trap cleanup EXIT
 
 # Create a temporary directory
-export cdk_itests=$(mktemp -d)
-export cdk_itests_mint_addr="127.0.0.1";
-export cdk_itests_mint_port_0=8086;
+export CDK_ITESTS_DIR=$(mktemp -d)
+export CDK_ITESTS_MINT_ADDR="127.0.0.1";
+export CDK_ITESTS_MINT_PORT_0=8086;
 
 
 export LN_BACKEND="$1";
 
-URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0/v1/info"
+URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0/v1/info"
 # Check if the temporary directory was created successfully
-if [[ ! -d "$cdk_itests" ]]; then
+if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
     echo "Failed to create temp directory"
     exit 1
 fi
 
-echo "Temp directory created: $cdk_itests"
+echo "Temp directory created: $CDK_ITESTS_DIR"
 export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
 
 
+export CDK_TEST_REGTEST=0
 if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
+    export CDK_TEST_REGTEST=1
     cargo run --bin start_regtest &
-    cdk_regtest_pid=$!
-    mkfifo "$cdk_itests/progress_pipe"
-    rm -f "$cdk_itests/signal_received"  # Ensure clean state
+    CDK_REGTEST_PID=$!
+    mkfifo "$CDK_ITESTS_DIR/progress_pipe"
+    rm -f "$CDK_ITESTS_DIR/signal_received"  # Ensure clean state
     # Start reading from pipe in background
     (while read line; do
         case "$line" in
             "checkpoint1")
                 echo "Reached first checkpoint"
-                touch "$cdk_itests/signal_received"
+                touch "$CDK_ITESTS_DIR/signal_received"
                 exit 0
                 ;;
         esac
-    done < "$cdk_itests/progress_pipe") &
+    done < "$CDK_ITESTS_DIR/progress_pipe") &
     # Wait for up to 120 seconds
     for ((i=0; i<120; i++)); do
-        if [ -f "$cdk_itests/signal_received" ]; then
+        if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
             echo "break signal received"
             break
         fi
@@ -80,11 +107,13 @@ fi
 # Start payment processor
 
 
-export CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH="$cdk_itests/cln/one/regtest/lightning-rpc";
+export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+
+export CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH="$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc";
 
 export CDK_PAYMENT_PROCESSOR_LND_ADDRESS="https://localhost:10010";
-export CDK_PAYMENT_PROCESSOR_LND_CERT_FILE="$cdk_itests/lnd/two/tls.cert";
-export CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE="$cdk_itests/lnd/two/data/chain/bitcoin/regtest/admin.macaroon";
+export CDK_PAYMENT_PROCESSOR_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert";
+export CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon";
 
 export CDK_PAYMENT_PROCESSOR_LN_BACKEND=$LN_BACKEND;
 export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1";
@@ -94,14 +123,14 @@ echo "$CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH"
 
 cargo run --bin cdk-payment-processor &
 
-cdk_payment_processor_pid=$!
+CDK_PAYMENT_PROCESSOR_PID=$!
 
 sleep 10;
 
-export CDK_MINTD_URL="http://$cdk_itests_mint_addr:$cdk_itests_mint_port_0";
-export CDK_MINTD_WORK_DIR="$cdk_itests";
-export CDK_MINTD_LISTEN_HOST=$cdk_itests_mint_addr;
-export CDK_MINTD_LISTEN_PORT=$cdk_itests_mint_port_0;
+export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0";
+export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR";
+export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR;
+export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0;
 export CDK_MINTD_LN_BACKEND="grpcprocessor";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS="http://127.0.0.1";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT="8090";
@@ -109,9 +138,9 @@ export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS="sat";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
  
 cargo run --bin cdk-mintd --no-default-features --features grpc-processor &
-cdk_mintd_pid=$!
+CDK_MINTD_PID=$!
 
-echo $cdk_itests
+echo $CDK_ITESTS_DIR
 
 TIMEOUT=100
 START_TIME=$(date +%s)
@@ -143,10 +172,8 @@ while true; do
 done
 
 
-cargo test -p cdk-integration-tests --test payment_processor
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 
-# Run cargo test
-# cargo test -p cdk-integration-tests --test fake_wallet
 # Capture the exit status of cargo test
 test_status=$?
 
