@@ -307,7 +307,7 @@ impl Mint {
 
         self.pubsub_manager.melt_quote_status(
             MeltQuoteBolt11Response::<Uuid> {
-                quote: melt_request.quote().clone(),
+                quote: *melt_request.quote(),
                 amount: quote.amount,
                 fee_reserve: quote.fee_reserve,
                 paid: None,
