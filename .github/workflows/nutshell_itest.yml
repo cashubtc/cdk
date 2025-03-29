@@ -20,7 +20,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test
-        run: nix develop -i -L .#stable --command bash -c "export CDK_TEST_MINT_URL=http://127.0.0.1:3338 && cargo test -p cdk-integration-tests --test happy_path_mint_wallet"
+        run: nix develop -i -L .#stable --command just test-nutshell
       - name: Show logs if tests fail
         if: failure()
         run: docker logs nutshell

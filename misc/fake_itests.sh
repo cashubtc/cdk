@@ -100,17 +100,26 @@ done
 
 export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT"
 
-# Run cargo test
+# Run first test
 cargo test -p cdk-integration-tests --test fake_wallet
 status1=$?
 
+# Exit immediately if the first test failed
+if [ $status1 -ne 0 ]; then
+    echo "First test failed with status $status1, exiting"
+    exit $status1
+fi
 
+# Run second test only if the first one succeeded
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 status2=$?
 
-# Exit with failure if either test failed
-if [ $status1 -ne 0 ] || [ $status2 -ne 0 ]; then
-    exit 1
-else
-    exit 0
+# Exit with the status of the second test
+if [ $status2 -ne 0 ]; then
+    echo "Second test failed with status $status2, exiting"
+    exit $status2
 fi
+
+# Both tests passed
+echo "All tests passed successfully"
+exit 0
