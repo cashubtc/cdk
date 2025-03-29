@@ -191,29 +191,49 @@ while true; do
 done
 
 
-# Initialize combined status
-combined_status=0
+# Run tests and exit immediately on failure
 
 # Run cargo test
+echo "Running regtest test with CLN mint"
 cargo test -p cdk-integration-tests --test regtest
-if [ $? -ne 0 ]; then combined_status=1; fi
+if [ $? -ne 0 ]; then
+    echo "regtest test failed, exiting"
+    exit 1
+fi
 
+echo "Running happy_path_mint_wallet test with CLN mint"
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-if [ $? -ne 0 ]; then combined_status=1; fi
+if [ $? -ne 0 ]; then
+    echo "happy_path_mint_wallet test failed, exiting"
+    exit 1
+fi
 
 # Run cargo test with the http_subscription feature
+echo "Running regtest test with http_subscription feature"
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
-if [ $? -ne 0 ]; then combined_status=1; fi
+if [ $? -ne 0 ]; then
+    echo "regtest test with http_subscription failed, exiting"
+    exit 1
+fi
 
 # Switch Mints: Run tests with LND mint
+echo "Switching to LND mint for tests"
 export CDK_ITESTS_MINT_PORT_0=8087
 export CDK_ITESTS_MINT_PORT_1=8085
 
+echo "Running regtest test with LND mint"
 cargo test -p cdk-integration-tests --test regtest
-if [ $? -ne 0 ]; then combined_status=1; fi
+if [ $? -ne 0 ]; then
+    echo "regtest test with LND mint failed, exiting"
+    exit 1
+fi
 
+echo "Running happy_path_mint_wallet test with LND mint"
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-if [ $? -ne 0 ]; then combined_status=1; fi
+if [ $? -ne 0 ]; then
+    echo "happy_path_mint_wallet test with LND mint failed, exiting"
+    exit 1
+fi
 
-# Exit with the combined status of the tests
-exit $combined_status
+echo "All tests passed successfully"
+exit 0
