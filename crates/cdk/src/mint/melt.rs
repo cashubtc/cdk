@@ -305,23 +305,8 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        self.pubsub_manager.melt_quote_status(
-            MeltQuoteBolt11Response::<Uuid> {
-                quote: *melt_request.quote(),
-                amount: quote.amount,
-                fee_reserve: quote.fee_reserve,
-                paid: None,
-                state: MeltQuoteState::Pending,
-                expiry: quote.expiry,
-                payment_preimage: None,
-                change: None,
-                request: Some(quote.request.clone()),
-                unit: Some(quote.unit.clone()),
-            },
-            None,
-            None,
-            MeltQuoteState::Pending,
-        );
+        self.pubsub_manager
+            .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
         let Verification {
             amount: input_amount,
