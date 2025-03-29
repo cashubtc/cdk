@@ -31,6 +31,7 @@ cleanup() {
     unset CDK_ITESTS_MINT_PORT_1
     unset CDK_MINTD_DATABASE
     unset CDK_TEST_MINT_URL
+    unset CDK_TEST_MINT_URL_2
     unset CDK_MINTD_URL
     unset CDK_MINTD_WORK_DIR
     unset CDK_MINTD_LISTEN_HOST
@@ -193,6 +194,7 @@ done
 
 
 export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
 
 # Run tests and exit immediately on failure
 
@@ -224,6 +226,7 @@ echo "Switching to LND mint for tests"
 export CDK_ITESTS_MINT_PORT_0=8087
 export CDK_ITESTS_MINT_PORT_1=8085
 export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
 
 echo "Running regtest test with LND mint"
 cargo test -p cdk-integration-tests --test regtest
