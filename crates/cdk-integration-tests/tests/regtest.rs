@@ -17,7 +17,7 @@ use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
     get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
-use cdk_integration_tests::{get_mint_url_from_env, wait_for_mint_to_be_paid};
+use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env, wait_for_mint_to_be_paid};
 use cdk_sqlite::wallet::{self, memory};
 use futures::{join, SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
@@ -331,7 +331,7 @@ async fn test_multimint_melt() -> Result<()> {
         None,
     )?;
     let wallet2 = Wallet::new(
-        &get_mint_url_from_env(),
+        &get_second_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),

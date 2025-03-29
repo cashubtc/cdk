@@ -133,3 +133,15 @@ pub fn get_mint_url_from_env() -> String {
         Err(_) => get_mint_url("0"),
     }
 }
+
+/// Gets the second mint URL from environment variable or falls back to default
+///
+/// Checks the CDK_TEST_MINT_URL_2 environment variable:
+/// - If set, returns that URL
+/// - Otherwise falls back to the default URL from get_mint_url("1")
+pub fn get_second_mint_url_from_env() -> String {
+    match env::var("CDK_TEST_MINT_URL_2") {
+        Ok(url) => url,
+        Err(_) => get_mint_url("1"),
+    }
+}
