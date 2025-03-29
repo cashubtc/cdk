@@ -340,7 +340,7 @@ async fn test_restore() -> Result<()> {
 /// 2. Create a melt quote for 9 sats (which requires 100 sats input with 91 sats change)
 /// 3. Manually construct a melt request with proofs and blinded messages for change
 /// 4. Verify that the change proofs in the response match what's reported by the quote status
-/// 
+///
 /// This ensures the mint correctly processes change outputs during melting operations
 /// and that the wallet can properly verify the change amounts match expectations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
