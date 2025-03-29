@@ -137,6 +137,18 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
     )
 }
 
+/// Tests a complete mint-melt round trip with WebSocket notifications
+///
+/// This test verifies the full lifecycle of tokens:
+/// 1. Creates a mint quote and pays the invoice
+/// 2. Mints tokens and verifies the correct amount
+/// 3. Creates a melt quote to spend tokens
+/// 4. Subscribes to WebSocket notifications for the melt process
+/// 5. Executes the melt and verifies the payment was successful
+/// 6. Validates all WebSocket notifications received during the process
+///
+/// This ensures the entire mint-melt flow works correctly and that
+/// WebSocket notifications are properly sent at each state transition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_happy_mint_melt_round_trip() -> Result<()> {
     let wallet = Wallet::new(
@@ -243,6 +255,16 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
     Ok(())
 }
 
+/// Tests basic minting functionality with payment verification
+///
+/// This test focuses on the core minting process:
+/// 1. Creates a mint quote for a specific amount (100 sats)
+/// 2. Verifies the quote has the correct amount
+/// 3. Pays the invoice (or simulates payment in non-regtest environments)
+/// 4. Waits for the mint to recognize the payment
+/// 5. Mints tokens and verifies the correct amount was received
+///
+/// This ensures the basic minting flow works correctly from quote to token issuance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_happy_mint_melt() -> Result<()> {
     let wallet = Wallet::new(
@@ -275,6 +297,20 @@ async fn test_happy_mint_melt() -> Result<()> {
     Ok(())
 }
 
+/// Tests wallet restoration and proof state verification
+///
+/// This test verifies the wallet restoration process:
+/// 1. Creates a wallet with a specific seed and mints tokens
+/// 2. Verifies the wallet has the expected balance
+/// 3. Creates a new wallet instance with the same seed but empty storage
+/// 4. Confirms the new wallet starts with zero balance
+/// 5. Restores the wallet state from the mint
+/// 6. Swaps the proofs to ensure they're valid
+/// 7. Verifies the restored wallet has the correct balance
+/// 8. Checks that the original proofs are now marked as spent
+///
+/// This ensures wallet restoration works correctly and that
+/// the mint properly tracks spent proofs across wallet instances.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_restore() -> Result<()> {
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
