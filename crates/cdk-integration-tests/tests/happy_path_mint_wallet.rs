@@ -451,7 +451,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
     }
 
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -460,9 +460,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await?;
 
-    let lnd_client = init_lnd_client().await;
-
-    lnd_client.pay_invoice(mint_quote.request).await?;
+    pay_if_regtest(&mint_quote.request.parse()?).await?;
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
 
@@ -474,7 +472,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
 
     assert_eq!(mint_amount, 100.into());
 
-    let invoice = lnd_client.create_invoice(Some(25)).await?;
+    let invoice = create_invoice_for_env(Some(25)).await?;
 
     let melt_quote = wallet.melt_quote(invoice.clone(), None).await?;
 
