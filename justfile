@@ -109,6 +109,10 @@ fake-auth-mint-itest db openid_discovery:
   #!/usr/bin/env bash
   ./misc/fake_auth_itests.sh "{{db}}" "{{openid_discovery}}"
 
+nutshell-wallet-itest:
+  #!/usr/bin/env bash
+  ./misc/nutshell_wallet_itest.sh
+
 run-examples:
   cargo r --example p2pk
   cargo r --example mint-token
