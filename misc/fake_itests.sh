@@ -30,8 +30,6 @@ cleanup() {
     unset CDK_MINTD_FAKE_WALLET_FEE_PERCENT
     unset CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN
     unset CDK_MINTD_PID
-
-    unset LN_BACKEND
 }
 
 # Set up trap to call cleanup on script exit
@@ -112,7 +110,6 @@ if [ $status1 -ne 0 ]; then
     exit $status1
 fi
 
-export LN_BACKEND="FAKEWALLET"
 # Run second test only if the first one succeeded
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 status2=$?
