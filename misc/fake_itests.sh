@@ -98,11 +98,12 @@ while true; do
 done
 
 
+export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT"
+
 # Run cargo test
 cargo test -p cdk-integration-tests --test fake_wallet
 status1=$?
 
-export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT"
 
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 status2=$?
