@@ -9,11 +9,12 @@ use std::{char, env};
 
 use anyhow::{anyhow, bail, Result};
 use bip39::Mnemonic;
+use cashu::{MeltBolt11Request, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
-use cdk::wallet::Wallet;
-use cdk_fake_wallet::create_fake_invoice;
+use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_integration_tests::init_regtest::{get_lnd_dir, get_mint_url, LND_RPC_ADDR};
 use cdk_integration_tests::wait_for_mint_to_be_paid;
 use cdk_sqlite::wallet::memory;
@@ -329,5 +330,59 @@ async fn test_restore() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Tests that change outputs in a melt quote are correctly handled
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fake_melt_change_in_quote() -> Result<()> {
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+
+    let _mint_amount = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+
+    let fake_description = FakeInvoiceDescription::default();
+
+    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
+
+    let proofs = wallet.get_unspent_proofs().await?;
+
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+
+    let keyset = wallet.get_active_mint_keyset().await?;
+
+    let premint_secrets = PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default())?;
+
+    let client = HttpClient::new(get_mint_url_from_env().parse()?, None);
+
+    let melt_request = MeltBolt11Request::new(
+        melt_quote.id.clone(),
+        proofs.clone(),
+        Some(premint_secrets.blinded_messages()),
+    );
+
+    let melt_response = client.post_melt(melt_request).await?;
+
+    assert!(melt_response.change.is_some());
+
+    let check = wallet.melt_quote_status(&melt_quote.id).await?;
+    let mut melt_change = melt_response.change.unwrap();
+    melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
+
+    let mut check = check.change.unwrap();
+    check.sort_by(|a, b| a.amount.cmp(&b.amount));
+
+    assert_eq!(melt_change, check);
     Ok(())
 }
