@@ -22,10 +22,34 @@ cleanup() {
     # Remove the temporary directory
     rm -rf "$CDK_ITESTS_DIR"
     echo "Temp directory removed: $CDK_ITESTS_DIR"
+    
+    # Unset all environment variables that were set
     unset CDK_ITESTS_DIR
     unset CDK_ITESTS_MINT_ADDR
     unset CDK_ITESTS_MINT_PORT_0
     unset CDK_REGTEST_PID
+    unset LN_BACKEND
+    unset MINT_DATABASE
+    unset CDK_TEST_REGTEST
+    unset CDK_TEST_MINT_URL
+    unset CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH
+    unset CDK_PAYMENT_PROCESSOR_LND_ADDRESS
+    unset CDK_PAYMENT_PROCESSOR_LND_CERT_FILE
+    unset CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE
+    unset CDK_PAYMENT_PROCESSOR_LN_BACKEND
+    unset CDK_PAYMENT_PROCESSOR_LISTEN_HOST
+    unset CDK_PAYMENT_PROCESSOR_LISTEN_PORT
+    unset CDK_PAYMENT_PROCESSOR_PID
+    unset CDK_MINTD_URL
+    unset CDK_MINTD_WORK_DIR
+    unset CDK_MINTD_LISTEN_HOST
+    unset CDK_MINTD_LISTEN_PORT
+    unset CDK_MINTD_LN_BACKEND
+    unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS
+    unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT
+    unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS
+    unset CDK_MINTD_MNEMONIC
+    unset CDK_MINTD_PID
 }
 
 # Set up trap to call cleanup on script exit
