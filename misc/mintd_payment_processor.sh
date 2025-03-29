@@ -80,6 +80,8 @@ fi
 # Start payment processor
 
 
+export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+
 export CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH="$cdk_itests/cln/one/regtest/lightning-rpc";
 
 export CDK_PAYMENT_PROCESSOR_LND_ADDRESS="https://localhost:10010";
