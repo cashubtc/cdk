@@ -305,6 +305,9 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        self.pubsub_manager
+            .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
+
         let Verification {
             amount: input_amount,
             unit: input_unit,
@@ -339,6 +342,10 @@ impl Mint {
             .await?;
 
         self.check_ys_spendable(&input_ys, State::Pending).await?;
+        for proof in melt_request.inputs() {
+            self.pubsub_manager
+                .proof_state((proof.y()?, State::Pending));
+        }
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
 

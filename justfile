@@ -65,6 +65,14 @@ test-all db="memory":
     ./misc/itests.sh "{{db}}"
     ./misc/fake_itests.sh "{{db}}"
     
+test-nutshell:
+    #!/usr/bin/env bash
+    export CDK_TEST_MINT_URL=http://127.0.0.1:3338
+    export LN_BACKEND=FAKEWALLET
+    cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+    unset CDK_TEST_MINT_URL
+    unset LN_BACKEND
+    
 
 # run `cargo clippy` on everything
 clippy *ARGS="--locked --offline --workspace --all-targets":
