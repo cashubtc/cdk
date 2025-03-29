@@ -191,6 +191,9 @@ while true; do
 done
 
 
+
+export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+
 # Run tests and exit immediately on failure
 
 # Run cargo test
@@ -220,6 +223,7 @@ fi
 echo "Switching to LND mint for tests"
 export CDK_ITESTS_MINT_PORT_0=8087
 export CDK_ITESTS_MINT_PORT_1=8085
+export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
 
 echo "Running regtest test with LND mint"
 cargo test -p cdk-integration-tests --test regtest
