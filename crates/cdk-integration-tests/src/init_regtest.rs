@@ -32,11 +32,11 @@ pub const CLN_ADDR: &str = "127.0.0.1:19846";
 pub const CLN_TWO_ADDR: &str = "127.0.0.1:19847";
 
 pub fn get_mint_addr() -> String {
-    env::var("cdk_itests_mint_addr").expect("Temp dir set")
+    env::var("CDK_ITESTS_MINT_ADDR").expect("Mint address not set")
 }
 
 pub fn get_mint_port(which: &str) -> u16 {
-    let dir = env::var(format!("cdk_itests_mint_port_{}", which)).expect("Temp dir set");
+    let dir = env::var(format!("CDK_ITESTS_MINT_PORT_{}", which)).expect("Mint port not set");
     dir.parse().unwrap()
 }
 
@@ -49,7 +49,7 @@ pub fn get_mint_ws_url(which: &str) -> String {
 }
 
 pub fn get_temp_dir() -> PathBuf {
-    let dir = env::var("cdk_itests").expect("Temp dir set");
+    let dir = env::var("CDK_ITESTS_DIR").expect("Temp dir not set");
     std::fs::create_dir_all(&dir).unwrap();
     dir.parse().expect("Valid path buf")
 }

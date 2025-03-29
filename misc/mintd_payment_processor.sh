@@ -143,10 +143,8 @@ while true; do
 done
 
 
-cargo test -p cdk-integration-tests --test payment_processor
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 
-# Run cargo test
-# cargo test -p cdk-integration-tests --test fake_wallet
 # Capture the exit status of cargo test
 test_status=$?
 
