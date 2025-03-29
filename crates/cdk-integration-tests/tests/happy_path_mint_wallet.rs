@@ -1,6 +1,12 @@
-//! These tests are to test happy path mint wallet interactions
+//! Integration tests for mint-wallet interactions that should work across all mint implementations
+//! 
+//! These tests verify the core functionality of the wallet-mint interaction protocol,
+//! including minting, melting, and wallet restoration. They are designed to be
+//! implementation-agnostic and should pass against any compliant Cashu mint,
+//! including Nutshell, CDK, and other implementations that follow the Cashu NUTs.
 //!
-//!
+//! The tests use environment variables to determine which mint to connect to and
+//! whether to use real Lightning Network payments (regtest mode) or simulated payments.
 
 use std::fmt::Debug;
 use std::str::FromStr;
