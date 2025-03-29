@@ -15,7 +15,7 @@ use cdk::nuts::{
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
-    get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
+    get_mint_url_from_env, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
 use cdk_integration_tests::wait_for_mint_to_be_paid;
 use cdk_sqlite::wallet::{self, memory};
@@ -79,7 +79,7 @@ async fn test_regtest_mint_melt_round_trip() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -178,7 +178,7 @@ async fn test_internal_payment() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -198,7 +198,7 @@ async fn test_internal_payment() -> Result<()> {
     assert!(wallet.total_balance().await? == 100.into());
 
     let wallet_2 = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -269,7 +269,7 @@ async fn test_internal_payment() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_websocket_connection() -> Result<()> {
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env("0"),
         CurrencyUnit::Sat,
         Arc::new(wallet::memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -324,14 +324,14 @@ async fn test_multimint_melt() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
     let wallet1 = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
     let wallet2 = Wallet::new(
-        &get_mint_url("1"),
+        &get_mint_url_from_env("1"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -392,7 +392,7 @@ async fn test_multimint_melt() -> Result<()> {
 async fn test_cached_mint() -> Result<()> {
     let lnd_client = init_lnd_client().await;
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env("0"),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -407,7 +407,7 @@ async fn test_cached_mint() -> Result<()> {
     wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
 
     let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let http_client = HttpClient::new(get_mint_url("0").parse().unwrap(), None);
+    let http_client = HttpClient::new(get_mint_url_from_env("0").parse().unwrap(), None);
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
