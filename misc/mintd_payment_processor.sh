@@ -25,6 +25,7 @@ cleanup() {
     unset CDK_ITESTS_DIR
     unset CDK_ITESTS_MINT_ADDR
     unset CDK_ITESTS_MINT_PORT_0
+    unset CDK_REGTEST_PID
 }
 
 # Set up trap to call cleanup on script exit
@@ -51,7 +52,9 @@ export MINT_DATABASE="$1";
 cargo build -p cdk-integration-tests 
 
 
+export CDK_TEST_REGTEST=0
 if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
+    export CDK_TEST_REGTEST=1
     cargo run --bin start_regtest &
     CDK_REGTEST_PID=$!
     mkfifo "$CDK_ITESTS_DIR/progress_pipe"
