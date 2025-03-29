@@ -20,9 +20,9 @@ cleanup() {
     echo "Mint binary terminated"
 
     # Remove the temporary directory
-    rm -rf "$CDK_ITESTS"
-    echo "Temp directory removed: $CDK_ITESTS"
-    unset CDK_ITESTS
+    rm -rf "$CDK_ITESTS_DIR"
+    echo "Temp directory removed: $CDK_ITESTS_DIR"
+    unset CDK_ITESTS_DIR
     unset CDK_ITESTS_MINT_ADDR
     unset CDK_ITESTS_MINT_PORT_0
 }
@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Create a temporary directory
-export CDK_ITESTS=$(mktemp -d)
+export CDK_ITESTS_DIR=$(mktemp -d)
 export CDK_ITESTS_MINT_ADDR="127.0.0.1";
 export CDK_ITESTS_MINT_PORT_0=8086;
 
@@ -40,12 +40,12 @@ export LN_BACKEND="$1";
 
 URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0/v1/info"
 # Check if the temporary directory was created successfully
-if [[ ! -d "$CDK_ITESTS" ]]; then
+if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
     echo "Failed to create temp directory"
     exit 1
 fi
 
-echo "Temp directory created: $CDK_ITESTS"
+echo "Temp directory created: $CDK_ITESTS_DIR"
 export MINT_DATABASE="$1";
 
 cargo build -p cdk-integration-tests 
@@ -54,21 +54,21 @@ cargo build -p cdk-integration-tests
 if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
     cargo run --bin start_regtest &
     CDK_REGTEST_PID=$!
-    mkfifo "$CDK_ITESTS/progress_pipe"
-    rm -f "$CDK_ITESTS/signal_received"  # Ensure clean state
+    mkfifo "$CDK_ITESTS_DIR/progress_pipe"
+    rm -f "$CDK_ITESTS_DIR/signal_received"  # Ensure clean state
     # Start reading from pipe in background
     (while read line; do
         case "$line" in
             "checkpoint1")
                 echo "Reached first checkpoint"
-                touch "$CDK_ITESTS/signal_received"
+                touch "$CDK_ITESTS_DIR/signal_received"
                 exit 0
                 ;;
         esac
-    done < "$CDK_ITESTS/progress_pipe") &
+    done < "$CDK_ITESTS_DIR/progress_pipe") &
     # Wait for up to 120 seconds
     for ((i=0; i<120; i++)); do
-        if [ -f "$CDK_ITESTS/signal_received" ]; then
+        if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
             echo "break signal received"
             break
         fi
@@ -82,11 +82,11 @@ fi
 
 export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
 
-export CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH="$CDK_ITESTS/cln/one/regtest/lightning-rpc";
+export CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH="$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc";
 
 export CDK_PAYMENT_PROCESSOR_LND_ADDRESS="https://localhost:10010";
-export CDK_PAYMENT_PROCESSOR_LND_CERT_FILE="$CDK_ITESTS/lnd/two/tls.cert";
-export CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE="$CDK_ITESTS/lnd/two/data/chain/bitcoin/regtest/admin.macaroon";
+export CDK_PAYMENT_PROCESSOR_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert";
+export CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon";
 
 export CDK_PAYMENT_PROCESSOR_LN_BACKEND=$LN_BACKEND;
 export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1";
@@ -101,7 +101,7 @@ CDK_PAYMENT_PROCESSOR_PID=$!
 sleep 10;
 
 export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0";
-export CDK_MINTD_WORK_DIR="$CDK_ITESTS";
+export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR";
 export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR;
 export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0;
 export CDK_MINTD_LN_BACKEND="grpcprocessor";
@@ -113,7 +113,7 @@ export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt lugg
 cargo run --bin cdk-mintd --no-default-features --features grpc-processor &
 CDK_MINTD_PID=$!
 
-echo $CDK_ITESTS
+echo $CDK_ITESTS_DIR
 
 TIMEOUT=100
 START_TIME=$(date +%s)
