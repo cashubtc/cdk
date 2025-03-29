@@ -1,6 +1,7 @@
 //! These tests are to test happy path mint wallet interactions
 //!
 //!
+
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
