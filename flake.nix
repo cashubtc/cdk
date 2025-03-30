@@ -265,9 +265,29 @@
               inherit nativeBuildInputs;
             } // envVars);
 
+            # Shell with Docker for integration tests
+            integration = pkgs.mkShell ({
+              shellHook = ''
+                ${_shellHook}
+                # Ensure Docker is available
+                if ! command -v docker &> /dev/null; then
+                  echo "Docker is not installed or not in PATH"
+                  echo "Please install Docker to run integration tests"
+                  exit 1
+                fi
+                echo "Docker is available at $(which docker)"
+                echo "Docker version: $(docker --version)"
+              '';
+              buildInputs = buildInputs ++ [ 
+                stable_toolchain
+                pkgs.docker-client
+              ];
+              inherit nativeBuildInputs;
+            } // envVars);
+
           in
           {
-            inherit msrv stable nightly;
+            inherit msrv stable nightly integration;
             default = stable;
           };
       }
