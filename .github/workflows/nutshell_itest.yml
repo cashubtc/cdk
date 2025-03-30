@@ -32,8 +32,6 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Set up Docker
-        uses: docker/setup-buildx-action@v3
       - name: Pull Nutshell Docker image
         run: docker pull cashubtc/nutshell:latest
       - name: Install Nix
@@ -43,7 +41,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell Wallet
-        run: nix develop -L .#stable --command just nutshell-wallet-itest
+        run: |
+          nix develop --command bash -c '
+            just nutshell-wallet-itest
+          '
       - name: Show Docker logs if tests fail
         if: failure()
         run: docker logs nutshell-wallet || true
