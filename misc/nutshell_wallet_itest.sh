@@ -61,35 +61,35 @@ echo "Starting fake mintd"
 cargo run --bin cdk-mintd --features "redb" &
 CDK_MINTD_PID=$!
 
-# URL="$MINT_URL/v1/info"
-# TIMEOUT=300
-# START_TIME=$(date +%s)
-# # Loop until the endpoint returns a 200 OK status or timeout is reached
-# while true; do
-#     # Get the current time
-#     CURRENT_TIME=$(date +%s)
+URL="$MINT_URL/v1/info"
+TIMEOUT=300
+START_TIME=$(date +%s)
+# Loop until the endpoint returns a 200 OK status or timeout is reached
+while true; do
+    # Get the current time
+    CURRENT_TIME=$(date +%s)
     
-#     # Calculate the elapsed time
-#     ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+    # Calculate the elapsed time
+    ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
 
-#     # Check if the elapsed time exceeds the timeout
-#     if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
-#         echo "Timeout of $TIMEOUT seconds reached. Exiting..."
-#         exit 1
-#     fi
+    # Check if the elapsed time exceeds the timeout
+    if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
+        echo "Timeout of $TIMEOUT seconds reached. Exiting..."
+        exit 1
+    fi
 
-#     # Make a request to the endpoint and capture the HTTP status code
-#     HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $URL)
+    # Make a request to the endpoint and capture the HTTP status code
+    HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $URL)
 
-#     # Check if the HTTP status is 200 OK
-#     if [ "$HTTP_STATUS" -eq 200 ]; then
-#         echo "Received 200 OK from $URL"
-#         break
-#     else
-#         echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
-#         sleep 2  # Wait for 2 seconds before retrying
-#     fi
-# done
+    # Check if the HTTP status is 200 OK
+    if [ "$HTTP_STATUS" -eq 200 ]; then
+        echo "Received 200 OK from $URL"
+        break
+    else
+        echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
+        sleep 2  # Wait for 2 seconds before retrying
+    fi
+done
 
 
 
