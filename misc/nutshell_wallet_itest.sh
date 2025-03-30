@@ -61,10 +61,15 @@ echo "Starting fake mintd"
 cargo run --bin cdk-mintd --features "redb" &
 CDK_MINTD_PID=$!
 
-URL="$MINT_URL/v1/info"
+# Wait for the mint to be ready
+echo "Waiting for mintd to start..."
 TIMEOUT=300
 START_TIME=$(date +%s)
-# Loop until the endpoint returns a 200 OK status or timeout is reached
+
+# Try different URLs since the endpoint might vary
+URLS=("http://localhost:${MINT_PORT}/v1/info" "http://127.0.0.1:${MINT_PORT}/v1/info" "http://0.0.0.0:${MINT_PORT}/v1/info")
+
+# Loop until one of the endpoints returns a 200 OK status or timeout is reached
 while true; do
     # Get the current time
     CURRENT_TIME=$(date +%s)
@@ -78,17 +83,25 @@ while true; do
         exit 1
     fi
 
-    # Make a request to the endpoint and capture the HTTP status code
-    HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $URL)
-
-    # Check if the HTTP status is 200 OK
-    if [ "$HTTP_STATUS" -eq 200 ]; then
-        echo "Received 200 OK from $URL"
-        break
-    else
-        echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
-        sleep 2  # Wait for 2 seconds before retrying
-    fi
+    # Try each URL
+    for URL in "${URLS[@]}"; do
+        # Make a request to the endpoint and capture the HTTP status code
+        HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$URL" || echo "000")
+        
+        # Check if the HTTP status is 200 OK
+        if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "Received 200 OK from $URL"
+            MINT_URL=$(echo "$URL" | sed 's|/v1/info||')
+            echo "Setting MINT_URL to $MINT_URL"
+            export MINT_URL
+            break 2  # Break out of both loops
+        else
+            echo "Waiting for 200 OK response from $URL, current status: $HTTP_STATUS"
+        fi
+    done
+    
+    # Wait before retrying
+    sleep 5
 done
 
 
