@@ -50,8 +50,6 @@ ln_backend = "cln"
 # max_melt=500000
 
 [cln]
-#Required if using cln backend path to rpc
-cln_path = ""
 rpc_path = ""
 fee_percent = 0.04
 reserve_fee_min = 4
