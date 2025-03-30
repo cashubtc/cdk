@@ -42,10 +42,10 @@ pub async fn pay(
         bail!("Invalid mint number");
     }
 
-    let wallet = mints_amounts[mint_number].0.clone();
+    let mint_url = mints_amounts[mint_number].0.clone();
 
     let wallet = multi_mint_wallet
-        .get_wallet(&WalletKey::new(wallet, unit))
+        .get_wallet(&WalletKey::new(mint_url, unit))
         .await
         .expect("Known wallet");
 
