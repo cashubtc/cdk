@@ -42,10 +42,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell Wallet
         run: |
-          nix develop .#integration -c bash -c '
-            chmod +x misc/nutshell_wallet_itest.sh
-            just nutshell-wallet-itest
-          '
+          nix develop -i -L .#integration --command just nutshell-wallet-itest
       - name: Show Docker logs if tests fail
         if: failure()
         run: docker logs nutshell-wallet || true
