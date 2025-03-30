@@ -56,7 +56,7 @@ cargo run --bin cdk-mintd --features "redb" &
 CDK_MINTD_PID=$!
 
 URL="$MINT_URL/v1/info"
-TIMEOUT=100
+TIMEOUT=300
 START_TIME=$(date +%s)
 # Loop until the endpoint returns a 200 OK status or timeout is reached
 while true; do
