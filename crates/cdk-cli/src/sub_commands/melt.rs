@@ -45,9 +45,8 @@ pub async fn pay(
     let mint_url = mints_amounts[mint_number].0.clone();
 
     let wallet = multi_mint_wallet
-        .get_wallet(&WalletKey::new(mint_url, unit))
-        .await
-        .expect("Known wallet");
+        .expect_wallet(&WalletKey::new(mint_url, unit))
+        .await?;
 
     println!("Enter bolt11 invoice request");
 

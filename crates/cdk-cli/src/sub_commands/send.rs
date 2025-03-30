@@ -156,11 +156,10 @@ pub async fn send(
         },
     };
 
-    let wallet = mints_amounts[mint_number].0.clone();
+    let mint_url = mints_amounts[mint_number].0.clone();
     let wallet = multi_mint_wallet
-        .get_wallet(&WalletKey::new(wallet, unit))
-        .await
-        .expect("Known wallet");
+        .expect_wallet(&WalletKey::new(mint_url, unit))
+        .await?;
 
     let send_kind = match (sub_command_args.offline, sub_command_args.tolerance) {
         (true, Some(amount)) => SendKind::OfflineTolerance(Amount::from(amount)),
