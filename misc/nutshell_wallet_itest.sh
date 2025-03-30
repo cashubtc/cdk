@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 # Configuration
 MINT_PORT=8085
 WALLET_PORT=4448
@@ -38,6 +40,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 
+
+# Create a temporary directory for mintd
+CDK_ITESTS=$(mktemp -d)
+echo "Created temporary directory for mintd: $CDK_ITESTS"
 
 export CDK_MINTD_URL="$MINT_URL"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS"
@@ -88,34 +94,44 @@ done
 
 
 
-# Use the MINT_URL which is already set to host.docker.internal
-docker run -d --name ${WALLET_CONTAINER_NAME} \
-  --network=host \
-  -p ${WALLET_PORT}:${WALLET_PORT} \
-  -e MINT_URL=${MINT_URL} \
-  cashubtc/nutshell:latest \
-  poetry run cashu -d
+# Check if Docker is available
+if command -v docker &> /dev/null; then
+  echo "Docker is available, starting Nutshell wallet container"
+  # Use the MINT_URL which is already set to host.docker.internal
+  docker run -d --name ${WALLET_CONTAINER_NAME} \
+    --network=host \
+    -p ${WALLET_PORT}:${WALLET_PORT} \
+    -e MINT_URL=${MINT_URL} \
+    cashubtc/nutshell:latest \
+    poetry run cashu -d
+else
+  echo "Docker is not available, skipping Nutshell wallet container setup"
+  # Set a flag to indicate we're not using Docker
+  export NO_DOCKER=true
+fi
 
-# Wait for the containers to be ready
-echo "Waiting for Nutshell Mint and Wallet to start..."
+# Wait for the mint to be ready
+echo "Waiting for Nutshell Mint to start..."
 sleep 5
 
 # Check if the Mint API is responding (use localhost for local curl check)
 echo "Checking if Nutshell Mint API is available..."
-if curl -s "http://localhost:${MINT_PORT}/info" > /dev/null; then
-  echo "Nutshell Mint is running in container '${MINT_CONTAINER_NAME}'"
-  echo "You can access it at ${MINT_URL}"
+if curl -s "http://localhost:${MINT_PORT}/v1/info" > /dev/null; then
+  echo "Nutshell Mint is running and accessible at ${MINT_URL}"
 else
-  echo "Warning: Nutshell Mint API is not responding. The container might not be ready yet."
+  echo "Warning: Nutshell Mint API is not responding. It might not be ready yet."
 fi
 
-# Check if the Wallet API is responding
-echo "Checking if Nutshell Wallet API is available..."
-if curl -s "${WALLET_URL}/info" > /dev/null; then
-  echo "Nutshell Wallet is running in container '${WALLET_CONTAINER_NAME}'"
-  echo "You can access it at ${WALLET_URL}"
-else
-  echo "Warning: Nutshell Wallet API is not responding. The container might not be ready yet."
+# Only check wallet if Docker is available
+if [ -z "$NO_DOCKER" ]; then
+  # Check if the Wallet API is responding
+  echo "Checking if Nutshell Wallet API is available..."
+  if curl -s "${WALLET_URL}/info" > /dev/null; then
+    echo "Nutshell Wallet is running in container '${WALLET_CONTAINER_NAME}'"
+    echo "You can access it at ${WALLET_URL}"
+  else
+    echo "Warning: Nutshell Wallet API is not responding. The container might not be ready yet."
+  fi
 fi
 
 # Export URLs as environment variables
