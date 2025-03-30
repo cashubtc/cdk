@@ -94,8 +94,8 @@ done
 
 
 
-# Check if Docker is available
-if command -v docker &> /dev/null; then
+# Check if Docker is available and accessible
+if docker info > /dev/null 2>&1; then
   echo "Docker is available, starting Nutshell wallet container"
   # Use the MINT_URL which is already set to host.docker.internal
   docker run -d --name ${WALLET_CONTAINER_NAME} \
@@ -105,7 +105,7 @@ if command -v docker &> /dev/null; then
     cashubtc/nutshell:latest \
     poetry run cashu -d
 else
-  echo "Docker is not available, skipping Nutshell wallet container setup"
+  echo "Docker is not accessible, skipping Nutshell wallet container setup"
   # Set a flag to indicate we're not using Docker
   export NO_DOCKER=true
 fi
