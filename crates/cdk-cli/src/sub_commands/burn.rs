@@ -27,9 +27,8 @@ pub async fn burn(
     match &sub_command_args.mint_url {
         Some(mint_url) => {
             let wallet = multi_mint_wallet
-                .get_wallet(&WalletKey::new(mint_url.clone(), unit))
-                .await
-                .unwrap();
+                .expect_wallet(&WalletKey::new(mint_url.clone(), unit))
+                .await?;
             total_burnt = wallet.check_all_pending_proofs().await?;
         }
         None => {
