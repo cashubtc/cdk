@@ -19,8 +19,10 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v6
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Test
+      - name: Test Nutshell
         run: nix develop -i -L .#stable --command just test-nutshell
+      - name: Test Nutshell Wallet
+        run: nix develop -i -L .#stable --command just test-nutshell-wallet
       - name: Show logs if tests fail
         if: failure()
         run: docker logs nutshell
