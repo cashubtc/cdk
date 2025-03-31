@@ -796,7 +796,7 @@ WHERE id=?;
             r#"
 INSERT INTO transactions
 (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
     direction = excluded.direction,
@@ -818,6 +818,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(fee)
         .bind(ys)
         .bind(transaction.timestamp as i64)
+        .bind(transaction.memo)
         .bind(serde_json::to_string(&transaction.metadata).map_err(Error::from)?)
         .execute(&self.pool)
         .await
