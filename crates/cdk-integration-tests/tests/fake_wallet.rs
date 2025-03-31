@@ -394,7 +394,7 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_database_type() -> Result<()> {
     // Get the database type and work dir from environment
-    let db_type = std::env::var("MINT_DATABASE").expect("MINT_DATABASE env var should be set");
+    let db_type = std::env::var("CDK_MINTD_DATABASE").expect("MINT_DATABASE env var should be set");
     let work_dir =
         std::env::var("CDK_MINTD_WORK_DIR").expect("CDK_MINTD_WORK_DIR env var should be set");
 

@@ -65,6 +65,14 @@ test-all db="memory":
     ./misc/itests.sh "{{db}}"
     ./misc/fake_itests.sh "{{db}}"
     
+test-nutshell:
+    #!/usr/bin/env bash
+    export CDK_TEST_MINT_URL=http://127.0.0.1:3338
+    export LN_BACKEND=FAKEWALLET
+    cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+    unset CDK_TEST_MINT_URL
+    unset LN_BACKEND
+    
 
 # run `cargo clippy` on everything
 clippy *ARGS="--locked --offline --workspace --all-targets":
@@ -100,6 +108,10 @@ itest-payment-processor ln:
 fake-auth-mint-itest db openid_discovery:
   #!/usr/bin/env bash
   ./misc/fake_auth_itests.sh "{{db}}" "{{openid_discovery}}"
+
+nutshell-wallet-itest:
+  #!/usr/bin/env bash
+  ./misc/nutshell_wallet_itest.sh
 
 run-examples:
   cargo r --example p2pk
@@ -171,8 +183,6 @@ check-docs:
     "-p cdk-rexie"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-strike"
-    "-p cdk-phoenixd"
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
