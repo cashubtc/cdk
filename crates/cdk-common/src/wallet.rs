@@ -130,6 +130,8 @@ pub struct Transaction {
     pub ys: Vec<PublicKey>,
     /// Unix timestamp
     pub timestamp: u64,
+    /// Memo
+    pub memo: Option<String>,
     /// User-defined metadata
     pub metadata: HashMap<String, String>,
 }

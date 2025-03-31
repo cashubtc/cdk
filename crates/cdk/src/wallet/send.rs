@@ -273,6 +273,10 @@ impl Wallet {
             .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
+        // Include token memo
+        let send_memo = send.options.memo.or(memo);
+        let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
+
         // Add transaction to store
         self.localstore
             .add_transaction(Transaction {
@@ -283,13 +287,10 @@ impl Wallet {
                 unit: self.unit.clone(),
                 ys: proofs_to_send.ys()?,
                 timestamp: unix_time(),
+                memo: memo.clone(),
                 metadata: send.options.metadata,
             })
             .await?;
-
-        // Include token memo
-        let send_memo = send.options.memo.or(memo);
-        let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
 
         // Create and return token
         Ok(Token::new(
@@ -430,4 +431,14 @@ pub struct SendMemo {
     pub memo: String,
     /// Include memo in token
     pub include_memo: bool,
+}
+
+impl SendMemo {
+    /// Create a new send memo
+    pub fn for_token(memo: &str) -> Self {
+        Self {
+            memo: memo.to_string(),
+            include_memo: true,
+        }
+    }
 }

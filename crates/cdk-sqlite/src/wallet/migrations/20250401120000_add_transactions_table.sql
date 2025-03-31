@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     unit TEXT NOT NULL,
     ys BLOB NOT NULL,
     timestamp INTEGER NOT NULL,
+    memo TEXT,
     metadata TEXT
 );
 

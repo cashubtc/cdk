@@ -290,7 +290,10 @@ impl MultiMintWallet {
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        match wallet.receive_proofs(proofs, opts).await {
+        match wallet
+            .receive_proofs(proofs, opts, token_data.memo().clone())
+            .await
+        {
             Ok(amount) => {
                 amount_received += amount;
             }

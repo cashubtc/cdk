@@ -255,6 +255,7 @@ impl Wallet {
                 unit: self.unit.clone(),
                 ys: proofs.ys()?,
                 timestamp: unix_time(),
+                memo: None,
                 metadata: HashMap::new(),
             })
             .await?;

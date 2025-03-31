@@ -795,7 +795,7 @@ WHERE id=?;
         sqlx::query(
             r#"
 INSERT INTO transactions
-(id, mint_url, direction, unit, amount, fee, ys, timestamp, metadata)
+(id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
@@ -805,6 +805,7 @@ ON CONFLICT(id) DO UPDATE SET
     fee = excluded.fee,
     ys = excluded.ys,
     timestamp = excluded.timestamp,
+    memo = excluded.memo,
     metadata = excluded.metadata
 ;
         "#,
@@ -1064,6 +1065,7 @@ fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
     let fee: i64 = row.try_get("fee").map_err(Error::from)?;
     let ys: Vec<u8> = row.try_get("ys").map_err(Error::from)?;
     let timestamp: i64 = row.try_get("timestamp").map_err(Error::from)?;
+    let memo: Option<String> = row.try_get("memo").map_err(Error::from)?;
     let row_metadata: Option<String> = row.try_get("metadata").map_err(Error::from)?;
 
     let metadata: HashMap<String, String> = row_metadata
@@ -1081,6 +1083,7 @@ fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
         fee: Amount::from(fee as u64),
         ys: ys?,
         timestamp: timestamp as u64,
+        memo,
         metadata,
     })
 }

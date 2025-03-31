@@ -24,6 +24,7 @@ impl Wallet {
         &self,
         proofs: Proofs,
         opts: ReceiveOptions,
+        memo: Option<String>,
     ) -> Result<Amount, Error> {
         let mint_url = &self.mint_url;
         // Add mint if it does not exist in the store
@@ -170,6 +171,7 @@ impl Wallet {
                 unit: self.unit.clone(),
                 ys: proofs_ys,
                 timestamp: unix_time(),
+                memo,
                 metadata: opts.metadata,
             })
             .await?;
@@ -221,7 +223,9 @@ impl Wallet {
 
         ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
-        let amount = self.receive_proofs(proofs, opts).await?;
+        let amount = self
+            .receive_proofs(proofs, opts, token.memo().clone())
+            .await?;
 
         Ok(amount)
     }

@@ -20,7 +20,7 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::{IndexableParams, Params};
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{ReceiveOptions, SendOptions};
+use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
@@ -69,7 +69,10 @@ async fn test_swap_to_send() {
         )
     );
     let token = wallet_alice
-        .send(prepared_send, None)
+        .send(
+            prepared_send,
+            Some(SendMemo::for_token("test_swapt_to_send")),
+        )
         .await
         .expect("Failed to send token");
     assert_eq!(
@@ -117,7 +120,11 @@ async fn test_swap_to_send() {
         .await
         .expect("Failed to create Carol's wallet");
     let received_amount = wallet_carol
-        .receive_proofs(token.proofs(), ReceiveOptions::default())
+        .receive_proofs(
+            token.proofs(),
+            ReceiveOptions::default(),
+            token.memo().clone(),
+        )
         .await
         .expect("Failed to receive proofs");
 
@@ -141,6 +148,7 @@ async fn test_swap_to_send() {
     assert_eq!(Amount::from(0), transaction.fee);
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
     assert_eq!(token.proofs().ys().unwrap(), transaction.ys);
+    assert_eq!(token.memo().clone(), transaction.memo);
 }
 
 /// Tests the NUT-06 functionality (mint discovery):
