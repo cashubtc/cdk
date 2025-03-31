@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use super::nut02::KeySetVersion;
 use super::{CurrencyUnit, Id, KeySetInfo, State};
+use crate::nut05::QuoteState;
 use crate::{Amount, SECP256K1};
 
 #[derive(Debug, Error)]
@@ -601,6 +602,8 @@ pub type KvacMintBolt11Response = KvacResponse;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacMeltBolt11Response {
+    /// Status of the operation
+    pub state: QuoteState,
     /// Lightning fee return
     ///
     /// [`Amount`] added to the first output as a lightning overpaid-fee return

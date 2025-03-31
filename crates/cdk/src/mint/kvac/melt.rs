@@ -441,6 +441,7 @@ impl Mint {
         tracing::debug!("KVAC melt request successful");
 
         Ok(KvacMeltBolt11Response {
+            state: MeltQuoteState::Paid,
             fee_return: amount_overpaid,
             preimage,
             issued_macs,
