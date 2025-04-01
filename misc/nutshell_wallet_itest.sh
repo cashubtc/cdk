@@ -33,6 +33,7 @@ cleanup() {
   unset CDK_MINTD_LN_BACKEND CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS CDK_MINTD_MNEMONIC
   unset CDK_MINTD_FAKE_WALLET_FEE_PERCENT CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN CDK_MINTD_DATABASE
   unset TEST_STATUS
+  unset CDK_MINTD_INPUT_FEE_PPK
   echo "Cleanup complete."
 }
 
@@ -55,6 +56,7 @@ export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt lugg
 export CDK_MINTD_FAKE_WALLET_FEE_PERCENT="0"
 export CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN="1"
 export CDK_MINTD_DATABASE="redb"
+export CDK_MINTD_INPUT_FEE_PPK="100"
 
 
 echo "Starting fake mintd"

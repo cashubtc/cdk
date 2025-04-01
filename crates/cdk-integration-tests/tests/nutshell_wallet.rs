@@ -194,7 +194,8 @@ async fn test_nutshell_wallet_swap() {
 
     let token_received = balance - initial_balance;
 
-    assert_eq!(token_received, send_amount);
+    let fee = 1;
+    assert_eq!(token_received, send_amount - fee);
 }
 
 /// Test the Nutshell wallet's ability to melt tokens to pay a Lightning invoice

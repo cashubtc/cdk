@@ -67,7 +67,7 @@ test-all db="memory":
     
 test-nutshell:
   #!/usr/bin/env bash
-  docker run -d -p 3338:3338 --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY cashubtc/nutshell:latest poetry run mint
+  docker run -d -p 3338:3338 --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY -e MINT_INPUT_FEE_PPK=100  cashubtc/nutshell:latest poetry run mint
   
   # Wait for the Nutshell service to be ready
   echo "Waiting for Nutshell to start..."
@@ -89,6 +89,7 @@ test-nutshell:
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
   export LN_BACKEND=FAKEWALLET
   cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+  cargo test -p cdk-integration-tests --test test_fees
   unset CDK_TEST_MINT_URL
   unset LN_BACKEND
   docker stop nutshell
