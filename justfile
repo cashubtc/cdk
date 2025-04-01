@@ -66,12 +66,15 @@ test-all db="memory":
     ./misc/fake_itests.sh "{{db}}"
     
 test-nutshell:
-    #!/usr/bin/env bash
-    export CDK_TEST_MINT_URL=http://127.0.0.1:3338
-    export LN_BACKEND=FAKEWALLET
-    cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-    unset CDK_TEST_MINT_URL
-    unset LN_BACKEND
+  #!/usr/bin/env bash
+  docker run -d -p 3338:3338 --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY cashubtc/nutshell:latest poetry run mint
+  export CDK_TEST_MINT_URL=http://127.0.0.1:3338
+  export LN_BACKEND=FAKEWALLET
+  cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+  unset CDK_TEST_MINT_URL
+  unset LN_BACKEND
+  docker stop nutshell
+  docker rm nutshell
     
 
 # run `cargo clippy` on everything
