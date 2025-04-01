@@ -634,6 +634,50 @@ async fn test_mint_enforce_fee() {
     let _ = mint_bob.process_swap_request(swap_request).await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_change_with_fee_melt() {
+    setup_tracing();
+    let mint_bob = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    mint_bob
+        .rotate_keyset(CurrencyUnit::Sat, 1, 32, 1, &HashMap::new())
+        .await
+        .unwrap();
+
+    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Alice gets 100 sats
+    fund_wallet(
+        wallet_alice.clone(),
+        100,
+        Some(SplitTarget::Value(Amount::ONE)),
+    )
+    .await
+    .expect("Failed to fund wallet");
+
+    let proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    let fake_invoice = create_fake_invoice(1000, "".to_string());
+
+    let melt_quote = wallet_alice
+        .melt_quote(fake_invoice.to_string(), None)
+        .await
+        .unwrap();
+
+    let w = wallet_alice
+        .melt_proofs(&melt_quote.id, proofs)
+        .await
+        .unwrap();
+
+    assert_eq!(w.change.unwrap().total_amount().unwrap(), 98.into());
+}
 /// Tests concurrent double-spending attempts by trying to use the same proofs
 /// in 3 swap transactions simultaneously using tokio tasks
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
