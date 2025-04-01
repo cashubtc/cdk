@@ -112,7 +112,7 @@ async fn get_wallet_balance(base_url: &str) -> u64 {
 }
 
 /// Test the Nutshell wallet's ability to mint tokens from a Lightning invoice
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[tokio::test]
 async fn test_nutshell_wallet_mint() {
     // Get the wallet URL from environment variable
     let base_url = std::env::var("WALLET_URL").expect("Wallet url is not set");
@@ -137,7 +137,7 @@ async fn test_nutshell_wallet_mint() {
 }
 
 /// Test the Nutshell wallet's ability to mint tokens from a Lightning invoice
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[tokio::test]
 async fn test_nutshell_wallet_swap() {
     // Get the wallet URL from environment variable
     let base_url = std::env::var("WALLET_URL").expect("Wallet url is not set");
@@ -198,7 +198,7 @@ async fn test_nutshell_wallet_swap() {
 }
 
 /// Test the Nutshell wallet's ability to melt tokens to pay a Lightning invoice
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[tokio::test]
 async fn test_nutshell_wallet_melt() {
     // Get the wallet URL from environment variable
     let base_url = std::env::var("WALLET_URL").expect("Wallet url is not set");
