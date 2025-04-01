@@ -176,7 +176,7 @@ impl PartialOrd for Transaction {
 
 impl Ord for Transaction {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.timestamp.cmp(&self.timestamp)
+        self.timestamp.cmp(&other.timestamp).reverse()
     }
 }
 
