@@ -68,6 +68,24 @@ test-all db="memory":
 test-nutshell:
   #!/usr/bin/env bash
   docker run -d -p 3338:3338 --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY cashubtc/nutshell:latest poetry run mint
+  
+  # Wait for the Nutshell service to be ready
+  echo "Waiting for Nutshell to start..."
+  max_attempts=30
+  attempt=0
+  while ! curl -s http://127.0.0.1:3338/v1/info > /dev/null; do
+    attempt=$((attempt+1))
+    if [ $attempt -ge $max_attempts ]; then
+      echo "Nutshell failed to start after $max_attempts attempts"
+      docker stop nutshell
+      docker rm nutshell
+      exit 1
+    fi
+    echo "Waiting for Nutshell to start (attempt $attempt/$max_attempts)..."
+    sleep 1
+  done
+  echo "Nutshell is ready!"
+  
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
   export LN_BACKEND=FAKEWALLET
   cargo test -p cdk-integration-tests --test happy_path_mint_wallet
