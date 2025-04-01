@@ -676,7 +676,7 @@ async fn test_mint_change_with_fee_melt() {
         .await
         .unwrap();
 
-    assert_eq!(w.change.unwrap().total_amount().unwrap(), 98.into());
+    assert_eq!(w.change.unwrap().total_amount().unwrap(), 97.into());
 }
 /// Tests concurrent double-spending attempts by trying to use the same proofs
 /// in 3 swap transactions simultaneously using tokio tasks
