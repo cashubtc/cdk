@@ -194,7 +194,7 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
 ///
 /// This ensures the basic minting flow works correctly from quote to token issuance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_happy_mint_melt() -> Result<()> {
+async fn test_happy_mint() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,

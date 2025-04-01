@@ -45,7 +45,7 @@ test: build
   cargo test --lib
 
   # Run pure integration tests
-  cargo test -p cdk-integration-tests --test mint
+  cargo test -p cdk-integration-tests --test mint 
 
   
 # run doc tests

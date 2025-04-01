@@ -152,10 +152,12 @@ fi
 # Export URLs as environment variables
 export MINT_URL=${MINT_URL}
 export WALLET_URL=${WALLET_URL}
+export CDK_TEST_MINT_URL=${MINT_URL}
 
 # Run the integration test
 echo "Running integration test..."
-cargo test -p cdk-integration-tests --tests nutshell_wallet
+cargo test -p cdk-integration-tests --test nutshell_wallet
+cargo test -p cdk-integration-tests --test test_fees
 TEST_STATUS=$?
 
 # Exit with the test status
