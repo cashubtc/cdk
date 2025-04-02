@@ -2,11 +2,14 @@ use std::env;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
+use cashu::Bolt11Invoice;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{MintQuoteState, NotificationPayload, State};
 use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
-use init_regtest::get_mint_url;
+use cdk_fake_wallet::create_fake_invoice;
+use init_regtest::{get_lnd_dir, get_mint_url, LND_RPC_ADDR};
+use ln_regtest_rs::ln_client::{LightningClient, LndClient};
 use tokio::time::{sleep, timeout, Duration};
 
 pub mod init_auth_mint;
@@ -143,5 +146,73 @@ pub fn get_second_mint_url_from_env() -> String {
     match env::var("CDK_TEST_MINT_URL_2") {
         Ok(url) => url,
         Err(_) => get_mint_url("1"),
+    }
+}
+
+// This is the ln wallet we use to send/receive ln payements as the wallet
+pub async fn init_lnd_client() -> LndClient {
+    let lnd_dir = get_lnd_dir("one");
+    let cert_file = lnd_dir.join("tls.cert");
+    let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
+    LndClient::new(
+        format!("https://{}", LND_RPC_ADDR),
+        cert_file,
+        macaroon_file,
+    )
+    .await
+    .unwrap()
+}
+
+/// Pays a Bolt11Invoice if it's on the regtest network, otherwise returns Ok
+///
+/// This is useful for tests that need to pay invoices in regtest mode but
+/// should be skipped in other environments.
+pub async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
+    // Check if the invoice is for the regtest network
+    if invoice.network() == bitcoin::Network::Regtest {
+        println!("Regtest invoice");
+        let lnd_client = init_lnd_client().await;
+        lnd_client.pay_invoice(invoice.to_string()).await?;
+        Ok(())
+    } else {
+        // Not a regtest invoice, just return Ok
+        Ok(())
+    }
+}
+
+/// Determines if we're running in regtest mode based on environment variable
+///
+/// Checks the CDK_TEST_REGTEST environment variable:
+/// - If set to "1", "true", or "yes" (case insensitive), returns true
+/// - Otherwise returns false
+pub fn is_regtest_env() -> bool {
+    match env::var("CDK_TEST_REGTEST") {
+        Ok(val) => {
+            let val = val.to_lowercase();
+            val == "1" || val == "true" || val == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
+/// Creates a real invoice if in regtest mode, otherwise returns a fake invoice
+///
+/// Uses the is_regtest_env() function to determine whether to
+/// create a real regtest invoice or a fake one for testing.
+pub async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
+    if is_regtest_env() {
+        // In regtest mode, create a real invoice
+        let lnd_client = init_lnd_client().await;
+        lnd_client
+            .create_invoice(amount_sat)
+            .await
+            .map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
+    } else {
+        // Not in regtest mode, create a fake invoice
+        let fake_invoice = create_fake_invoice(
+            amount_sat.expect("Amount must be defined") * 1_000,
+            "".to_string(),
+        );
+        Ok(fake_invoice.to_string())
     }
 }

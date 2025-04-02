@@ -207,7 +207,7 @@ impl MintPayment for FakeWallet {
             payment_proof: Some("".to_string()),
             payment_lookup_id: payment_hash,
             status: payment_status,
-            total_spent: melt_quote.amount,
+            total_spent: melt_quote.amount + 1.into(),
             unit: melt_quote.unit,
         })
     }

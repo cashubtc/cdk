@@ -292,6 +292,20 @@ impl MintBuilder {
         self
     }
 
+    /// Sets the input fee ppk for a given unit
+    ///
+    /// The unit **MUST** already have been added with a ln backend
+    pub fn set_unit_fee(mut self, unit: &CurrencyUnit, input_fee_ppk: u64) -> Result<Self, Error> {
+        let (input_fee, _max_order) = self
+            .supported_units
+            .get_mut(unit)
+            .ok_or(Error::UnsupportedUnit)?;
+
+        *input_fee = input_fee_ppk;
+
+        Ok(self)
+    }
+
     /// Build mint
     pub async fn build(&self) -> anyhow::Result<Mint> {
         let localstore = self
