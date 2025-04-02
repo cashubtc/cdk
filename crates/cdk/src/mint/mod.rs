@@ -10,6 +10,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
 use futures::StreamExt;
+use nut02::KeySetVersion;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
@@ -163,6 +164,8 @@ impl Mint {
                     unit.clone(),
                     max_order,
                     fee,
+                    None,
+                    KeySetVersion::Version01, // We want all new keysets to be v2
                 );
 
                 let id = keyset_info.id;
@@ -194,6 +197,8 @@ impl Mint {
                     CurrencyUnit::Auth,
                     1,
                     0,
+                    None,
+                    KeySetVersion::Version01, // We want all new keysets to be v2
                 );
 
                 let id = keyset_info.id;
@@ -601,6 +606,8 @@ fn create_new_keyset<C: secp256k1::Signing>(
     unit: CurrencyUnit,
     max_order: u8,
     input_fee_ppk: u64,
+    final_expiry: Option<u64>,
+    version: KeySetVersion,
 ) -> (MintKeySet, MintKeySetInfo) {
     let keyset = MintKeySet::generate(
         secp,
@@ -609,6 +616,8 @@ fn create_new_keyset<C: secp256k1::Signing>(
             .expect("RNG busted"),
         unit,
         max_order,
+        final_expiry,
+        version,
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
@@ -620,6 +629,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
         derivation_path_index,
         max_order,
         input_fee_ppk,
+        final_expiry,
     };
     (keyset, keyset_info)
 }
@@ -656,6 +666,8 @@ mod tests {
             2,
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            None,
+            KeySetVersion::Version01,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -700,6 +712,8 @@ mod tests {
             2,
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            None,
+            KeySetVersion::Version01,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);

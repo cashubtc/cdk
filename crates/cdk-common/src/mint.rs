@@ -133,6 +133,8 @@ pub struct MintKeySetInfo {
     /// Input Fee ppk
     #[serde(default = "default_fee")]
     pub input_fee_ppk: u64,
+    /// Final expiry
+    pub final_expiry: Option<u64>,
 }
 
 /// Default fee

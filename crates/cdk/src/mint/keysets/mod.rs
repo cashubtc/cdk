@@ -5,6 +5,7 @@ use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1::All;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::nut02::KeySetVersion;
 use tracing::instrument;
 
 use super::{
@@ -69,13 +70,15 @@ impl Mint {
                         && &highest_index_keyset.max_order == max_order
                     {
                         tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
-                        let id = highest_index_keyset.id;
+                        let id: Id = highest_index_keyset.id;
                         let keyset = MintKeySet::generate_from_xpriv(
                             secp_ctx,
                             xpriv,
                             highest_index_keyset.max_order,
                             highest_index_keyset.unit.clone(),
                             highest_index_keyset.derivation_path.clone(),
+                            None,
+                            id.get_version(),
                         );
                         active_keysets.insert(id, keyset);
                         let mut keyset_info = highest_index_keyset;
@@ -105,6 +108,8 @@ impl Mint {
                             unit.clone(),
                             *max_order,
                             *input_fee_ppk,
+                            None,
+                            KeySetVersion::Version01,
                         );
 
                         let id = keyset_info.id;
@@ -226,6 +231,8 @@ impl Mint {
             unit.clone(),
             max_order,
             input_fee_ppk,
+            None,
+            KeySetVersion::Version01,
         );
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info.clone()).await?;
@@ -309,6 +316,8 @@ impl Mint {
             keyset_info.max_order,
             keyset_info.unit,
             keyset_info.derivation_path,
+            keyset_info.final_expiry,
+            keyset_info.id.get_version(),
         )
     }
 }
