@@ -358,7 +358,7 @@ impl MultiMintWallet {
         wallet.verify_token_p2pk(token, conditions)
     }
 
-    /// Verifys all proofs in toke have valid dleq proof
+    /// Verifys all proofs in token have valid dleq proof
     #[instrument(skip(self, token))]
     pub async fn verify_token_dleq(
         &self,
