@@ -15,92 +15,23 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{char, env};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::{MeltBolt11Request, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
-use cdk_fake_wallet::create_fake_invoice;
-use cdk_integration_tests::init_regtest::{get_lnd_dir, LND_RPC_ADDR};
-use cdk_integration_tests::{get_mint_url_from_env, wait_for_mint_to_be_paid};
+use cdk_integration_tests::{
+    create_invoice_for_env, get_mint_url_from_env, pay_if_regtest, wait_for_mint_to_be_paid,
+};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
-use ln_regtest_rs::ln_client::{LightningClient, LndClient};
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
-
-// This is the ln wallet we use to send/receive ln payements as the wallet
-async fn init_lnd_client() -> LndClient {
-    let lnd_dir = get_lnd_dir("one");
-    let cert_file = lnd_dir.join("tls.cert");
-    let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
-    LndClient::new(
-        format!("https://{}", LND_RPC_ADDR),
-        cert_file,
-        macaroon_file,
-    )
-    .await
-    .unwrap()
-}
-
-/// Pays a Bolt11Invoice if it's on the regtest network, otherwise returns Ok
-///
-/// This is useful for tests that need to pay invoices in regtest mode but
-/// should be skipped in other environments.
-async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
-    // Check if the invoice is for the regtest network
-    if invoice.network() == bitcoin::Network::Regtest {
-        println!("Regtest invoice");
-        let lnd_client = init_lnd_client().await;
-        lnd_client.pay_invoice(invoice.to_string()).await?;
-        Ok(())
-    } else {
-        // Not a regtest invoice, just return Ok
-        Ok(())
-    }
-}
-
-/// Determines if we're running in regtest mode based on environment variable
-///
-/// Checks the CDK_TEST_REGTEST environment variable:
-/// - If set to "1", "true", or "yes" (case insensitive), returns true
-/// - Otherwise returns false
-fn is_regtest_env() -> bool {
-    match env::var("CDK_TEST_REGTEST") {
-        Ok(val) => {
-            let val = val.to_lowercase();
-            val == "1" || val == "true" || val == "yes"
-        }
-        Err(_) => false,
-    }
-}
-
-/// Creates a real invoice if in regtest mode, otherwise returns a fake invoice
-///
-/// Uses the is_regtest_env() function to determine whether to
-/// create a real regtest invoice or a fake one for testing.
-async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
-    if is_regtest_env() {
-        // In regtest mode, create a real invoice
-        let lnd_client = init_lnd_client().await;
-        lnd_client
-            .create_invoice(amount_sat)
-            .await
-            .map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
-    } else {
-        // Not in regtest mode, create a fake invoice
-        let fake_invoice = create_fake_invoice(
-            amount_sat.expect("Amount must be defined") * 1_000,
-            "".to_string(),
-        );
-        Ok(fake_invoice.to_string())
-    }
-}
 
 async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
@@ -263,7 +194,7 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
 ///
 /// This ensures the basic minting flow works correctly from quote to token issuance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_happy_mint_melt() -> Result<()> {
+async fn test_happy_mint() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
@@ -330,7 +261,7 @@ async fn test_restore() -> Result<()> {
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await?;
 
-    assert!(wallet.total_balance().await? == 100.into());
+    assert_eq!(wallet.total_balance().await?, 100.into());
 
     let wallet_2 = Wallet::new(
         &get_mint_url_from_env(),
@@ -340,18 +271,23 @@ async fn test_restore() -> Result<()> {
         None,
     )?;
 
-    assert!(wallet_2.total_balance().await? == 0.into());
+    assert_eq!(wallet_2.total_balance().await?, 0.into());
 
     let restored = wallet_2.restore().await?;
     let proofs = wallet_2.get_unspent_proofs().await?;
 
+    let expected_fee = wallet.get_proofs_fee(&proofs).await?;
     wallet_2
         .swap(None, SplitTarget::default(), proofs, None, false)
         .await?;
 
-    assert!(restored == 100.into());
+    assert_eq!(restored, 100.into());
 
-    assert_eq!(wallet_2.total_balance().await?, 100.into());
+    // Since we have to do a swap we expect to restore amount - fee
+    assert_eq!(
+        wallet_2.total_balance().await?,
+        Amount::from(100) - expected_fee
+    );
 
     let proofs = wallet.get_unspent_proofs().await?;
 

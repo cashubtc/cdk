@@ -207,6 +207,10 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
 
+            if let Some(input_fee) = settings.info.input_fee_ppk {
+                mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
+            }
+
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
@@ -226,6 +230,9 @@ async fn main() -> anyhow::Result<()> {
                     Arc::new(lnbits),
                 )
                 .await?;
+            if let Some(input_fee) = settings.info.input_fee_ppk {
+                mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
+            }
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
@@ -246,6 +253,9 @@ async fn main() -> anyhow::Result<()> {
                     Arc::new(lnd),
                 )
                 .await?;
+            if let Some(input_fee) = settings.info.input_fee_ppk {
+                mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
+            }
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
 
@@ -272,6 +282,9 @@ async fn main() -> anyhow::Result<()> {
                         fake.clone(),
                     )
                     .await?;
+                if let Some(input_fee) = settings.info.input_fee_ppk {
+                    mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
+                }
 
                 let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
 
@@ -308,6 +321,9 @@ async fn main() -> anyhow::Result<()> {
                         Arc::new(processor),
                     )
                     .await?;
+                if let Some(input_fee) = settings.info.input_fee_ppk {
+                    mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
+                }
 
                 let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);

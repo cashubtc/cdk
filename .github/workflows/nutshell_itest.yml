@@ -7,11 +7,6 @@ jobs:
     name: Nutshell Mint Integration Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Pull and start mint
-        run: |
-          docker run -d -p 3338:3338 --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY cashubtc/nutshell:latest poetry run mint
-      - name: Check running containers
-        run: docker ps
       - name: checkout
         uses: actions/checkout@v4
       - name: Install Nix
@@ -21,7 +16,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell
-        run: nix develop -i -L .#stable --command just test-nutshell
+        run: nix develop -i -L .#integration --command just test-nutshell
       - name: Show logs if tests fail
         if: failure()
         run: docker logs nutshell

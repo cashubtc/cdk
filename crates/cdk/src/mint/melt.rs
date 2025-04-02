@@ -669,7 +669,10 @@ impl Mint {
                     return Err(Error::BlindedMessageAlreadySigned);
                 }
 
-                let change_target = melt_request.proofs_amount()? - total_spent;
+                let fee = self.get_proofs_fee(melt_request.inputs()).await?;
+
+                let change_target = melt_request.proofs_amount()? - total_spent - fee;
+
                 let mut amounts = change_target.split();
                 let mut change_sigs = Vec::with_capacity(amounts.len());
 
