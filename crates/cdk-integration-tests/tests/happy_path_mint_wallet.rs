@@ -439,7 +439,7 @@ async fn test_pay_invoice_twice() -> Result<()> {
     };
 
     if ln_backend.map(|ln| ln.to_uppercase()) == Some("FAKEWALLET".to_string()) {
-        // We can only preform this test on regtest backends as fake wallet just marks the quote as paid
+        // We can only perform this test on regtest backends as fake wallet just marks the quote as paid
         return Ok(());
     }
 
