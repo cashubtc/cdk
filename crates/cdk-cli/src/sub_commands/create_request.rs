@@ -48,6 +48,7 @@ pub async fn create_request(
         mints: Some(mints),
         description: sub_command_args.description.clone(),
         transports: vec![nostr_transport],
+        p2pk: None,
     };
 
     println!("{}", req);
