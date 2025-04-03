@@ -268,7 +268,7 @@ impl TryFrom<String> for Id {
 
         let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
         let id = match version {
-            KeySetVersion::Version00 => IdBytes::V2(
+            KeySetVersion::Version00 => IdBytes::V1(
                 hex::decode(&s[2..])?
                     .try_into()
                     .map_err(|_| Error::Length)?,
