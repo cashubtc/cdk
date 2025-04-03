@@ -57,6 +57,7 @@ impl Mint {
                 unit: k.unit,
                 active: active_keysets == k.id,
                 input_fee_ppk: k.input_fee_ppk,
+                final_expiry: k.final_expiry,
             })
             .collect();
 

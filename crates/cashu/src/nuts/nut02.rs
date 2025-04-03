@@ -374,6 +374,9 @@ pub struct KeySetInfo {
         default = "default_input_fee_ppk"
     )]
     pub input_fee_ppk: u64,
+    /// Expiry of the keyset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_expiry: Option<u64>
 }
 
 fn deserialize_input_fee_ppk<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -523,6 +526,7 @@ mod test {
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
     use crate::util::hex;
+    use crate::CurrencyUnit;
 
     const SHORT_KEYSET_ID: &str = "00456a94ab4e1c46";
     const SHORT_KEYSET: &str = r#"
@@ -619,6 +623,18 @@ mod test {
         let id: Id = Id::v1_from_keys(&keys);
 
         assert_eq!(id, Id::from_str(KEYSET_ID).unwrap());
+    }
+
+    #[test]
+    fn test_v2_deserialization_and_id_generation() {
+        let id_from_str = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9").unwrap();    
+
+        let keys: Keys = serde_json::from_str(KEYSET).unwrap();
+        let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
+        let expiry: u64 = 2059210353; // +10 years from now
+
+        let id = Id::v2_from_data(&keys, &unit, Some(expiry));
+        assert_eq!(id, id_from_str);
     }
 
     #[test]

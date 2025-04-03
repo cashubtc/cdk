@@ -951,12 +951,14 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let active: bool = row.try_get("active").map_err(Error::from)?;
     let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
+    let valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
 
     Ok(KeySetInfo {
         id: Id::from_str(&row_id)?,
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         active,
         input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
+        final_expiry: valid_to.map(|v| v as u64),
     })
 }
 
