@@ -10,10 +10,10 @@ use cdk_common::database::WalletDatabase;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
-use cdk_common::wallet::{self, MintQuote};
+use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq,
-    PublicKey, SecretKey, SpendingConditions, State,
+    database, nut01, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, ProofDleq,
+    PublicKey, SecretKey, SpendingConditions, State, KeySet
 };
 use error::Error;
 use sqlx::sqlite::SqliteRow;
@@ -781,6 +781,138 @@ WHERE id=?;
 
         Ok(count)
     }
+
+    #[instrument(skip(self))]
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
+        let mint_url = transaction.mint_url.to_string();
+        let direction = transaction.direction.to_string();
+        let unit = transaction.unit.to_string();
+        let amount = u64::from(transaction.amount) as i64;
+        let fee = u64::from(transaction.fee) as i64;
+        let ys = transaction
+            .ys
+            .iter()
+            .flat_map(|y| y.to_bytes().to_vec())
+            .collect::<Vec<_>>();
+
+        sqlx::query(
+            r#"
+INSERT INTO transactions
+(id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    mint_url = excluded.mint_url,
+    direction = excluded.direction,
+    unit = excluded.unit,
+    amount = excluded.amount,
+    fee = excluded.fee,
+    ys = excluded.ys,
+    timestamp = excluded.timestamp,
+    memo = excluded.memo,
+    metadata = excluded.metadata
+;
+        "#,
+        )
+        .bind(transaction.id().as_slice())
+        .bind(mint_url)
+        .bind(direction)
+        .bind(unit)
+        .bind(amount)
+        .bind(fee)
+        .bind(ys)
+        .bind(transaction.timestamp as i64)
+        .bind(transaction.memo)
+        .bind(serde_json::to_string(&transaction.metadata).map_err(Error::from)?)
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_transaction(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<Transaction>, Self::Err> {
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM transactions
+WHERE id=?;
+        "#,
+        )
+        .bind(transaction_id.as_slice())
+        .fetch_one(&self.pool)
+        .await;
+
+        let rec = match rec {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(None),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        let transaction = sqlite_row_to_transaction(&rec)?;
+
+        Ok(Some(transaction))
+    }
+
+    #[instrument(skip(self))]
+    async fn list_transactions(
+        &self,
+        mint_url: Option<MintUrl>,
+        direction: Option<TransactionDirection>,
+        unit: Option<CurrencyUnit>,
+    ) -> Result<Vec<Transaction>, Self::Err> {
+        let recs = sqlx::query(
+            r#"
+SELECT *
+FROM transactions;
+        "#,
+        )
+        .fetch_all(&self.pool)
+        .await;
+
+        let recs = match recs {
+            Ok(rec) => rec,
+            Err(err) => match err {
+                sqlx::Error::RowNotFound => return Ok(vec![]),
+                _ => return Err(Error::SQLX(err).into()),
+            },
+        };
+
+        let transactions = recs
+            .iter()
+            .filter_map(|p| {
+                let transaction = sqlite_row_to_transaction(p).ok()?;
+                if transaction.matches_conditions(&mint_url, &direction, &unit) {
+                    Some(transaction)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(transactions)
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err> {
+        sqlx::query(
+            r#"
+DELETE FROM transactions
+WHERE id=?
+        "#,
+        )
+        .bind(transaction_id.as_slice())
+        .execute(&self.pool)
+        .await
+        .map_err(Error::from)?;
+
+        Ok(())
+    }
 }
 
 fn sqlite_row_to_mint_info(row: &SqliteRow) -> Result<MintInfo, Error> {
@@ -926,6 +1058,37 @@ fn sqlite_row_to_proof_info(row: &SqliteRow) -> Result<ProofInfo, Error> {
         state: State::from_str(&row_state)?,
         spending_condition: row_spending_condition.and_then(|r| serde_json::from_str(&r).ok()),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
+    })
+}
+
+fn sqlite_row_to_transaction(row: &SqliteRow) -> Result<Transaction, Error> {
+    let mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
+    let direction: String = row.try_get("direction").map_err(Error::from)?;
+    let unit: String = row.try_get("unit").map_err(Error::from)?;
+    let amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let fee: i64 = row.try_get("fee").map_err(Error::from)?;
+    let ys: Vec<u8> = row.try_get("ys").map_err(Error::from)?;
+    let timestamp: i64 = row.try_get("timestamp").map_err(Error::from)?;
+    let memo: Option<String> = row.try_get("memo").map_err(Error::from)?;
+    let row_metadata: Option<String> = row.try_get("metadata").map_err(Error::from)?;
+
+    let metadata: HashMap<String, String> = row_metadata
+        .and_then(|m| serde_json::from_str(&m).ok())
+        .unwrap_or_default();
+
+    let ys: Result<Vec<PublicKey>, nut01::Error> =
+        ys.chunks(33).map(PublicKey::from_slice).collect();
+
+    Ok(Transaction {
+        mint_url: MintUrl::from_str(&mint_url)?,
+        direction: TransactionDirection::from_str(&direction)?,
+        unit: CurrencyUnit::from_str(&unit)?,
+        amount: Amount::from(amount as u64),
+        fee: Amount::from(fee as u64),
+        ys: ys?,
+        timestamp: timestamp as u64,
+        memo,
+        metadata,
     })
 }
 

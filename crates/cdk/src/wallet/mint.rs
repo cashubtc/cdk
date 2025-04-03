@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use cdk_common::ensure_cdk;
+use cdk_common::wallet::{Transaction, TransactionDirection};
 use tracing::instrument;
 
 use super::MintQuote;
@@ -285,6 +288,21 @@ impl Wallet {
 
         // Add new proofs to store
         self.localstore.update_proofs(proof_infos, vec![]).await?;
+
+        // Add transaction to store
+        self.localstore
+            .add_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: proofs.total_amount()?,
+                fee: Amount::ZERO,
+                unit: self.unit.clone(),
+                ys: proofs.ys()?,
+                timestamp: unix_time,
+                memo: None,
+                metadata: HashMap::new(),
+            })
+            .await?;
 
         Ok(proofs)
     }

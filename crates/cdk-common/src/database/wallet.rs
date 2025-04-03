@@ -12,8 +12,9 @@ use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
-use crate::wallet;
-use crate::wallet::MintQuote as WalletMintQuote;
+use crate::wallet::{
+    self, MintQuote as WalletMintQuote, Transaction, TransactionDirection, TransactionId,
+};
 
 /// Wallet Database trait
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -100,4 +101,21 @@ pub trait Database: Debug {
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     /// Get current Keyset counter
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
+
+    /// Add transaction to storage
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err>;
+    /// Get transaction from storage
+    async fn get_transaction(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<Transaction>, Self::Err>;
+    /// List transactions from storage
+    async fn list_transactions(
+        &self,
+        mint_url: Option<MintUrl>,
+        direction: Option<TransactionDirection>,
+        unit: Option<CurrencyUnit>,
+    ) -> Result<Vec<Transaction>, Self::Err>;
+    /// Remove transaction from storage
+    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err>;
 }

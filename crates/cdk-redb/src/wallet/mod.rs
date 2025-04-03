@@ -11,7 +11,7 @@ use cdk_common::common::ProofInfo;
 use cdk_common::database::WalletDatabase;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
-use cdk_common::wallet::{self, MintQuote};
+use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
     database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions,
     State,
@@ -41,6 +41,8 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
+// <Transaction_id, Transaction>
+const TRANSACTIONS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("transactions");
 
 const DATABASE_VERSION: u32 = 2;
 
@@ -133,6 +135,7 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(MINT_KEYS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
+                        let _ = write_txn.open_table(TRANSACTIONS_TABLE)?;
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
 
@@ -689,5 +692,96 @@ impl WalletDatabase for WalletRedbDatabase {
             .map_err(Error::from)?;
 
         Ok(counter.map(|c| c.value()))
+    }
+
+    #[instrument(skip(self))]
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    transaction.id().as_slice(),
+                    serde_json::to_string(&transaction)
+                        .map_err(Error::from)?
+                        .as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_transaction(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<Transaction>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .map_err(Error::from)?;
+
+        if let Some(transaction) = table.get(transaction_id.as_slice()).map_err(Error::from)? {
+            return Ok(serde_json::from_str(transaction.value()).map_err(Error::from)?);
+        }
+
+        Ok(None)
+    }
+
+    #[instrument(skip(self))]
+    async fn list_transactions(
+        &self,
+        mint_url: Option<MintUrl>,
+        direction: Option<TransactionDirection>,
+        unit: Option<CurrencyUnit>,
+    ) -> Result<Vec<Transaction>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+
+        let table = read_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .map_err(Error::from)?;
+
+        let transactions: Vec<Transaction> = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .filter_map(|(_k, v)| {
+                let mut transaction = None;
+
+                if let Ok(tx) = serde_json::from_str::<Transaction>(v.value()) {
+                    if tx.matches_conditions(&mint_url, &direction, &unit) {
+                        transaction = Some(tx)
+                    }
+                }
+
+                transaction
+            })
+            .collect();
+
+        Ok(transactions)
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .remove(transaction_id.as_slice())
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
     }
 }
