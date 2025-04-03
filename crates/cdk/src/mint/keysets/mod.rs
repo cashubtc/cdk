@@ -229,7 +229,7 @@ impl Mint {
             unit.clone(),
             max_order,
             input_fee_ppk,
-            None
+            None,
         );
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info.clone()).await?;

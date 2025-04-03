@@ -831,6 +831,7 @@ async fn get_keyset_id(mint: &Mint) -> Id {
         .first()
         .unwrap()
         .clone();
-    keys.verify_id().expect("Keyset ID generation is successful");
+    keys.verify_id()
+        .expect("Keyset ID generation is successful");
     keys.id
 }
