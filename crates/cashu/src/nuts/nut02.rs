@@ -663,6 +663,14 @@ mod test {
         assert_eq!(864559728, id_int)
     }
 
+    #[test] 
+    fn test_v2_to_int() {
+        let id = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9").unwrap();
+
+        let id_int = u32::from(id);
+        assert_eq!(1349682077, id_int);
+    }
+
     #[test]
     fn test_id_from_invalid_byte_length() {
         let three_bytes = [0x01, 0x02, 0x03];
