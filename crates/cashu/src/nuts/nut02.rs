@@ -647,7 +647,6 @@ mod test {
         assert_eq!(864559728, id_int)
     }
 
-    /*
     #[test]
     fn test_id_from_invalid_byte_length() {
         let three_bytes = [0x01, 0x02, 0x03];
@@ -667,7 +666,6 @@ mod test {
 
         assert_eq!(id_from_bytes, id);
     }
-    */
 
     #[test]
     fn test_deserialization_keys_response() {
