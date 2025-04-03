@@ -595,6 +595,7 @@ impl Mint {
 }
 
 /// Generate new [`MintKeySetInfo`] from path
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
