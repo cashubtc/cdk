@@ -121,9 +121,6 @@ pub struct MintKeySetInfo {
     pub active: bool,
     /// Starting unix time Keyset is valid from
     pub valid_from: u64,
-    /// When the Keyset is valid to
-    /// This is not shown to the wallet and can only be used internally
-    pub valid_to: Option<u64>,
     /// [`DerivationPath`] keyset
     pub derivation_path: DerivationPath,
     /// DerivationPath index of Keyset

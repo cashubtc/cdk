@@ -785,7 +785,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(keyset.unit.to_string())
         .bind(keyset.active)
         .bind(keyset.valid_from as i64)
-        .bind(keyset.valid_to.map(|v| v as i64))
+        .bind(keyset.final_expiry.map(|v| v as i64))
         .bind(keyset.derivation_path.to_string())
         .bind(keyset.max_order)
         .bind(keyset.input_fee_ppk as i64)
@@ -1579,11 +1579,11 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         active: row_active,
         valid_from: row_valid_from as u64,
-        valid_to: row_valid_to.map(|v| v as u64),
         derivation_path: DerivationPath::from_str(&row_derivation_path).map_err(Error::from)?,
         derivation_path_index: row_derivation_path_index.map(|d| d as u32),
         max_order: row_max_order,
         input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
+        final_expiry: row_valid_to.map(|v| v as u64),
     })
 }
 
@@ -1757,11 +1757,11 @@ mod tests {
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
-            valid_to: None,
             derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
             derivation_path_index: Some(0),
             max_order: 32,
             input_fee_ppk: 0,
+            final_expiry: None,
         };
         db.add_keyset_info(keyset_info).await.unwrap();
 
@@ -1825,11 +1825,11 @@ mod tests {
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
-            valid_to: None,
             derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
             derivation_path_index: Some(0),
             max_order: 32,
             input_fee_ppk: 0,
+            final_expiry: None,
         };
         db.add_keyset_info(keyset_info).await.unwrap();
 

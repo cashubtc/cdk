@@ -19,7 +19,7 @@ impl Wallet {
 
             keys.verify_id()?;
 
-            self.localstore.add_keys(keys.keys.clone()).await?;
+            self.localstore.add_keys(keys.clone()).await?;
 
             keys.keys
         };

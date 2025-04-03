@@ -12,8 +12,7 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, ProofDleq, PublicKey,
-    SecretKey, SpendingConditions, State,
+    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq, PublicKey, SecretKey, SpendingConditions, State
 };
 use error::Error;
 use sqlx::sqlite::SqliteRow;
@@ -514,7 +513,10 @@ WHERE id=?
     }
 
     #[instrument(skip_all)]
-    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
+        // Recompute ID for verification
+        keyset.verify_id()?;
+
         sqlx::query(
             r#"
 INSERT INTO key
@@ -525,8 +527,8 @@ ON CONFLICT(id) DO UPDATE SET
 ;
         "#,
         )
-        .bind(Id::from(&keys).to_string())
-        .bind(serde_json::to_string(&keys).map_err(Error::from)?)
+        .bind(keyset.id.to_string())
+        .bind(serde_json::to_string(&keyset.keys).map_err(Error::from)?)
         .execute(&self.pool)
         .await
         .map_err(Error::from)?;

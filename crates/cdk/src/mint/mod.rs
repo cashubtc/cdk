@@ -624,7 +624,6 @@ fn create_new_keyset<C: secp256k1::Signing>(
         unit: keyset.unit.clone(),
         active: true,
         valid_from: unix_time(),
-        valid_to: None,
         derivation_path,
         derivation_path_index,
         max_order,
