@@ -5,7 +5,6 @@ use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::key::Secp256k1;
 use bitcoin::secp256k1::All;
 use cdk_common::database::{self, MintDatabase};
-use cdk_common::nut02::KeySetVersion;
 use tracing::instrument;
 
 use super::{
@@ -109,7 +108,6 @@ impl Mint {
                             *max_order,
                             *input_fee_ppk,
                             None,
-                            KeySetVersion::Version01,
                         );
 
                         let id = keyset_info.id;
@@ -231,8 +229,7 @@ impl Mint {
             unit.clone(),
             max_order,
             input_fee_ppk,
-            None,
-            KeySetVersion::Version01,
+            None
         );
         let id = keyset_info.id;
         self.localstore.add_keyset_info(keyset_info.clone()).await?;

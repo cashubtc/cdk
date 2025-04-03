@@ -165,7 +165,6 @@ impl Mint {
                     max_order,
                     fee,
                     None,
-                    KeySetVersion::Version01, // We want all new keysets to be v2
                 );
 
                 let id = keyset_info.id;
@@ -198,7 +197,6 @@ impl Mint {
                     1,
                     0,
                     None,
-                    KeySetVersion::Version01, // We want all new keysets to be v2
                 );
 
                 let id = keyset_info.id;
@@ -597,7 +595,6 @@ impl Mint {
 }
 
 /// Generate new [`MintKeySetInfo`] from path
-#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
@@ -608,7 +605,6 @@ fn create_new_keyset<C: secp256k1::Signing>(
     max_order: u8,
     input_fee_ppk: u64,
     final_expiry: Option<u64>,
-    version: KeySetVersion,
 ) -> (MintKeySet, MintKeySetInfo) {
     let keyset = MintKeySet::generate(
         secp,
@@ -618,7 +614,7 @@ fn create_new_keyset<C: secp256k1::Signing>(
         unit,
         max_order,
         final_expiry,
-        version,
+        KeySetVersion::Version00,
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
