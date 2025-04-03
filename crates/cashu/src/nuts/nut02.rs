@@ -87,6 +87,7 @@ impl fmt::Display for KeySetVersion {
 
 /// Keyset ID bytes
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum IdBytes {
     /// Bytes for v1
     V1([u8; 7]),
