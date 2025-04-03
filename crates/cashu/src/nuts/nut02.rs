@@ -166,7 +166,7 @@ impl Id {
 
         // Add the unit
         pubkeys_concat.extend(b"unit:");
-        pubkeys_concat.extend(unit.to_string().as_bytes());
+        pubkeys_concat.extend(unit.to_string().to_lowercase().as_bytes());
 
         // Add the expiration
         if let Some(expiry) = expiry {
