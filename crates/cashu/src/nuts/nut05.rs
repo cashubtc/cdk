@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::nut15::Mpp;
+use super::ProofsMethods;
 use crate::nuts::MeltQuoteState;
 use crate::{Amount, Bolt11Invoice};
 
@@ -60,7 +61,7 @@ pub enum MeltOptions {
 }
 
 impl MeltOptions {
-    /// Create new [`Options::Mpp`]
+    /// Create new [`MeltOptions::Mpp`]
     pub fn new_mpp<A>(amount: A) -> Self
     where
         A: Into<Amount>,
@@ -320,13 +321,13 @@ impl<'de, Q: DeserializeOwned> Deserialize<'de> for MeltQuoteBolt11Response<Q> {
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MeltBolt11Request<Q> {
     /// Quote ID
-    pub quote: Q,
+    quote: Q,
     /// Proofs
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
-    pub inputs: Proofs,
+    inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
-    pub outputs: Option<Vec<BlindedMessage>>,
+    outputs: Option<Vec<BlindedMessage>>,
 }
 
 #[cfg(feature = "mint")]
@@ -342,7 +343,34 @@ impl TryFrom<MeltBolt11Request<String>> for MeltBolt11Request<Uuid> {
     }
 }
 
+// Basic implementation without trait bounds
+impl<Q> MeltBolt11Request<Q> {
+    /// Get inputs (proofs)
+    pub fn inputs(&self) -> &Proofs {
+        &self.inputs
+    }
+
+    /// Get outputs (blinded messages for change)
+    pub fn outputs(&self) -> &Option<Vec<BlindedMessage>> {
+        &self.outputs
+    }
+}
+
 impl<Q: Serialize + DeserializeOwned> MeltBolt11Request<Q> {
+    /// Create new [`MeltBolt11Request`]
+    pub fn new(quote: Q, inputs: Proofs, outputs: Option<Vec<BlindedMessage>>) -> Self {
+        Self {
+            quote,
+            inputs: inputs.without_dleqs(),
+            outputs,
+        }
+    }
+
+    /// Get quote
+    pub fn quote(&self) -> &Q {
+        &self.quote
+    }
+
     /// Total [`Amount`] of [`Proofs`]
     pub fn proofs_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))

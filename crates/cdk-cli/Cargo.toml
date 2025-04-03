@@ -8,15 +8,18 @@ homepage.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+readme = "README.md"
 
 [features]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
+# MSRV is not tracked with redb enabled
+redb = ["dep:cdk-redb"]
 
 [dependencies]
 anyhow.workspace = true
 bip39.workspace = true
 cdk = { workspace = true, default-features = false, features = ["wallet", "auth"]}
-cdk-redb = { workspace = true, features = ["wallet"] }
+cdk-redb = { workspace = true, features = ["wallet"], optional = true }
 cdk-sqlite = { workspace = true, features = ["wallet"] }
 clap.workspace = true
 serde.workspace = true

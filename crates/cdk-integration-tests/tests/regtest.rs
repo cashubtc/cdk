@@ -1,4 +1,3 @@
-use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,26 +6,24 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::{MeltOptions, Mpp};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CurrencyUnit, MeltQuoteState, MintBolt11Request, MintQuoteState, NotificationPayload,
-    PreMintSecrets, State,
+    PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{
     get_cln_dir, get_lnd_cert_file_path, get_lnd_dir, get_lnd_macaroon_path, get_mint_port,
-    get_mint_url, get_mint_ws_url, LND_RPC_ADDR, LND_TWO_RPC_ADDR,
+    LND_RPC_ADDR, LND_TWO_RPC_ADDR,
 };
-use cdk_integration_tests::wait_for_mint_to_be_paid;
+use cdk_integration_tests::{
+    get_mint_url_from_env, get_second_mint_url_from_env, wait_for_mint_to_be_paid,
+};
 use cdk_sqlite::wallet::{self, memory};
-use futures::{join, SinkExt, StreamExt};
+use futures::join;
 use lightning_invoice::Bolt11Invoice;
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use ln_regtest_rs::InvoiceStatus;
-use serde_json::json;
 use tokio::time::timeout;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::protocol::Message;
 
 // This is the ln wallet we use to send/receive ln payements as the wallet
 async fn init_lnd_client() -> LndClient {
@@ -42,298 +39,15 @@ async fn init_lnd_client() -> LndClient {
     .unwrap()
 }
 
-async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
-    reader: &mut T,
-    timeout_to_wait: Duration,
-) -> (String, NotificationPayload<String>) {
-    let msg = timeout(timeout_to_wait, reader.next())
-        .await
-        .expect("timeout")
-        .unwrap()
-        .unwrap();
-
-    let mut response: serde_json::Value =
-        serde_json::from_str(msg.to_text().unwrap()).expect("valid json");
-
-    let mut params_raw = response
-        .as_object_mut()
-        .expect("object")
-        .remove("params")
-        .expect("valid params");
-
-    let params_map = params_raw.as_object_mut().expect("params is object");
-
-    (
-        params_map
-            .remove("subId")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string(),
-        serde_json::from_value(params_map.remove("payload").unwrap()).unwrap(),
-    )
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_regtest_mint_melt_round_trip() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
-
-    let (ws_stream, _) = connect_async(get_mint_ws_url("0"))
-        .await
-        .expect("Failed to connect");
-    let (mut write, mut reader) = ws_stream.split();
-
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
-
-    lnd_client.pay_invoice(mint_quote.request).await.unwrap();
-
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
-
-    let mint_amount = proofs.total_amount()?;
-
-    assert!(mint_amount == 100.into());
-
-    let invoice = lnd_client.create_invoice(Some(50)).await?;
-
-    let melt = wallet.melt_quote(invoice, None).await?;
-
-    write
-        .send(Message::Text(
-            serde_json::to_string(&json!({
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "subscribe",
-                    "params": {
-                      "kind": "bolt11_melt_quote",
-                      "filters": [
-                        melt.id.clone(),
-                      ],
-                      "subId": "test-sub",
-                    }
-
-            }))?
-            .into(),
-        ))
-        .await?;
-
-    assert_eq!(
-        reader.next().await.unwrap().unwrap().to_text().unwrap(),
-        r#"{"jsonrpc":"2.0","result":{"status":"OK","subId":"test-sub"},"id":2}"#
-    );
-
-    let melt_response = wallet.melt(&melt.id).await.unwrap();
-    assert!(melt_response.preimage.is_some());
-    assert!(melt_response.state == MeltQuoteState::Paid);
-
-    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
-    // first message is the current state
-    assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
-        _ => panic!("Wrong payload"),
-    };
-
-    assert_eq!(payload.amount + payload.fee_reserve, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Unpaid);
-
-    // get current state
-    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
-    assert_eq!("test-sub", sub_id);
-    let payload = match payload {
-        NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
-        _ => panic!("Wrong payload"),
-    };
-    assert_eq!(payload.amount + payload.fee_reserve, 50.into());
-    assert_eq!(payload.quote.to_string(), melt.id);
-    assert_eq!(payload.state, MeltQuoteState::Paid);
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_regtest_mint_melt() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
-
-    let mint_amount = Amount::from(100);
-
-    let mint_quote = wallet.mint_quote(mint_amount, None).await?;
-
-    assert_eq!(mint_quote.amount, mint_amount);
-
-    lnd_client.pay_invoice(mint_quote.request).await?;
-
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
-
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
-
-    let mint_amount = proofs.total_amount()?;
-
-    assert!(mint_amount == 100.into());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_restore() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &seed,
-        None,
-    )?;
-
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
-
-    lnd_client.pay_invoice(mint_quote.request).await?;
-
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
-
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
-
-    assert!(wallet.total_balance().await? == 100.into());
-
-    let wallet_2 = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &seed,
-        None,
-    )?;
-
-    assert!(wallet_2.total_balance().await? == 0.into());
-
-    let restored = wallet_2.restore().await?;
-    let proofs = wallet_2.get_unspent_proofs().await?;
-
-    wallet_2
-        .swap(None, SplitTarget::default(), proofs, None, false)
-        .await?;
-
-    assert!(restored == 100.into());
-
-    assert!(wallet_2.total_balance().await? == 100.into());
-
-    let proofs = wallet.get_unspent_proofs().await?;
-
-    let states = wallet.check_proofs_spent(proofs).await?;
-
-    for state in states {
-        if state.state != State::Spent {
-            bail!("All proofs should be spent");
-        }
-    }
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_pay_invoice_twice() -> anyhow::Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
-        &seed,
-        None,
-    )?;
-
-    let mint_quote = wallet
-        .mint_quote(100.into(), None)
-        .await
-        .expect("Get mint quote");
-
-    lnd_client
-        .pay_invoice(mint_quote.request)
-        .await
-        .expect("Could not pay invoice");
-
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
-        .await
-        .expect("Mint invoice timeout not paid");
-
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await
-        .expect("Could not mint");
-
-    let mint_amount = proofs.total_amount().unwrap();
-
-    assert_eq!(mint_amount, 100.into());
-
-    let invoice = lnd_client
-        .create_invoice(Some(10))
-        .await
-        .expect("Could not create invoice");
-
-    let melt_quote = wallet
-        .melt_quote(invoice.clone(), None)
-        .await
-        .expect("Could not get melt quote");
-
-    let melt = wallet.melt(&melt_quote.id).await.unwrap();
-
-    let melt_two = wallet.melt_quote(invoice, None).await.unwrap();
-
-    let melt_two = wallet.melt(&melt_two.id).await;
-
-    match melt_two {
-        Err(err) => match err {
-            cdk::Error::RequestAlreadyPaid => (),
-            err => {
-                bail!("Wrong invoice already paid: {}", err.to_string());
-            }
-        },
-        Ok(_) => {
-            bail!("Should not have allowed second payment");
-        }
-    }
-
-    let balance = wallet.total_balance().await.unwrap();
-
-    assert_eq!(balance, (Amount::from(100) - melt.fee_paid - melt.amount));
-
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &seed,
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -349,13 +63,11 @@ async fn test_internal_payment() -> Result<()> {
 
     assert!(wallet.total_balance().await? == 100.into());
 
-    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
-
     let wallet_2 = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &seed,
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -421,50 +133,9 @@ async fn test_internal_payment() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_cached_mint() -> Result<()> {
-    let lnd_client = init_lnd_client().await;
-
-    let wallet = Wallet::new(
-        &get_mint_url("0"),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
-
-    let mint_amount = Amount::from(100);
-
-    let quote = wallet.mint_quote(mint_amount, None).await?;
-    lnd_client.pay_invoice(quote.request).await?;
-
-    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
-
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let http_client = HttpClient::new(get_mint_url("0").as_str().parse()?, None);
-    let premint_secrets =
-        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
-
-    let mut request = MintBolt11Request {
-        quote: quote.id,
-        outputs: premint_secrets.blinded_messages(),
-        signature: None,
-    };
-
-    let secret_key = quote.secret_key;
-
-    request.sign(secret_key.expect("Secret key on quote"))?;
-
-    let response = http_client.post_mint(request.clone()).await?;
-    let response1 = http_client.post_mint(request).await?;
-
-    assert!(response == response1);
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_websocket_connection() -> Result<()> {
     let wallet = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(wallet::memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -519,14 +190,14 @@ async fn test_multimint_melt() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
     let wallet1 = Wallet::new(
-        &get_mint_url("0"),
+        &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
     let wallet2 = Wallet::new(
-        &get_mint_url("1"),
+        &get_second_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
         &Mnemonic::generate(12)?.to_seed_normalized(""),
@@ -584,36 +255,41 @@ async fn test_multimint_melt() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_database_type() -> Result<()> {
-    // Get the database type and work dir from environment
-    let db_type = std::env::var("MINT_DATABASE").expect("MINT_DATABASE env var should be set");
-    let work_dir =
-        std::env::var("CDK_MINTD_WORK_DIR").expect("CDK_MINTD_WORK_DIR env var should be set");
+async fn test_cached_mint() -> Result<()> {
+    let lnd_client = init_lnd_client().await;
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
 
-    // Check that the correct database file exists
-    match db_type.as_str() {
-        "REDB" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.redb");
-            assert!(
-                db_path.exists(),
-                "Expected redb database file to exist at {:?}",
-                db_path
-            );
-        }
-        "SQLITE" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.sqlite");
-            assert!(
-                db_path.exists(),
-                "Expected sqlite database file to exist at {:?}",
-                db_path
-            );
-        }
-        "MEMORY" => {
-            // Memory database has no file to check
-            println!("Memory database in use - no file to check");
-        }
-        _ => bail!("Unknown database type: {}", db_type),
-    }
+    let mint_amount = Amount::from(100);
 
+    let quote = wallet.mint_quote(mint_amount, None).await?;
+    lnd_client.pay_invoice(quote.request.clone()).await?;
+
+    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
+
+    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
+    let premint_secrets =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
+
+    let mut request = MintBolt11Request {
+        quote: quote.id,
+        outputs: premint_secrets.blinded_messages(),
+        signature: None,
+    };
+
+    let secret_key = quote.secret_key;
+
+    request.sign(secret_key.expect("Secret key on quote"))?;
+
+    let response = http_client.post_mint(request.clone()).await?;
+    let response1 = http_client.post_mint(request).await?;
+
+    assert!(response == response1);
     Ok(())
 }

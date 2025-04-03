@@ -9,6 +9,7 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+#[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
@@ -132,9 +133,15 @@ async fn main() -> Result<()> {
                 Arc::new(sql)
             }
             "redb" => {
-                let redb_path = work_dir.join("cdk-cli.redb");
-
-                Arc::new(WalletRedbDatabase::new(&redb_path)?)
+                #[cfg(feature = "redb")]
+                {
+                    let redb_path = work_dir.join("cdk-cli.redb");
+                    Arc::new(WalletRedbDatabase::new(&redb_path)?)
+                }
+                #[cfg(not(feature = "redb"))]
+                {
+                    bail!("redb feature not enabled");
+                }
             }
             _ => bail!("Unknown DB engine"),
         };
@@ -158,6 +165,7 @@ async fn main() -> Result<()> {
             mnemonic
         }
     };
+    let seed = mnemonic.to_seed_normalized("");
 
     let mut wallets: Vec<Wallet> = Vec::new();
 
@@ -180,7 +188,7 @@ async fn main() -> Result<()> {
         wallets.push(wallet);
     }
 
-    let multi_mint_wallet = MultiMintWallet::new(wallets);
+    let multi_mint_wallet = MultiMintWallet::new(localstore, Arc::new(seed), wallets);
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
@@ -191,14 +199,7 @@ async fn main() -> Result<()> {
             sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Receive(sub_command_args) => {
-            sub_commands::receive::receive(
-                &multi_mint_wallet,
-                localstore,
-                &mnemonic.to_seed_normalized(""),
-                sub_command_args,
-                &work_dir,
-            )
-            .await
+            sub_commands::receive::receive(&multi_mint_wallet, sub_command_args, &work_dir).await
         }
         Commands::Send(sub_command_args) => {
             sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
@@ -210,13 +211,7 @@ async fn main() -> Result<()> {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
-            sub_commands::mint::mint(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                localstore,
-                sub_command_args,
-            )
-            .await
+            sub_commands::mint::mint(&multi_mint_wallet, sub_command_args).await
         }
         Commands::MintPending => {
             sub_commands::pending_mints::mint_pending(&multi_mint_wallet).await
@@ -225,13 +220,7 @@ async fn main() -> Result<()> {
             sub_commands::burn::burn(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
-            sub_commands::restore::restore(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                localstore,
-                sub_command_args,
-            )
-            .await
+            sub_commands::restore::restore(&multi_mint_wallet, sub_command_args).await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
             sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)
@@ -252,28 +241,18 @@ async fn main() -> Result<()> {
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(
                 &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                localstore,
                 sub_command_args,
                 &work_dir,
             )
             .await
         }
         Commands::CatLogin(sub_command_args) => {
-            sub_commands::cat_login::cat_login(
-                &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                localstore,
-                sub_command_args,
-                &work_dir,
-            )
-            .await
+            sub_commands::cat_login::cat_login(&multi_mint_wallet, sub_command_args, &work_dir)
+                .await
         }
         Commands::CatDeviceLogin(sub_command_args) => {
             sub_commands::cat_device_login::cat_device_login(
                 &multi_mint_wallet,
-                &mnemonic.to_seed_normalized(""),
-                localstore,
                 sub_command_args,
                 &work_dir,
             )

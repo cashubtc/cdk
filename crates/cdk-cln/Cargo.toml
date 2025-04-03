@@ -8,6 +8,7 @@ homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version.workspace = true # MSRV
 description = "CDK ln backend for cln"
+readme = "README.md"
 
 [dependencies]
 async-trait.workspace = true

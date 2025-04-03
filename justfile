@@ -45,14 +45,33 @@ test: build
   cargo test --lib
 
   # Run pure integration tests
-  cargo test -p cdk-integration-tests --test integration_tests_pure
   cargo test -p cdk-integration-tests --test mint
 
-test-all db:
+  
+# run doc tests
+test-pure db="memory": build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+
+  # Run pure integration tests
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure
+
+test-all db="memory":
     #!/usr/bin/env bash
-    just test
+    just test {{db}}
     ./misc/itests.sh "{{db}}"
     ./misc/fake_itests.sh "{{db}}"
+    
+test-nutshell:
+    #!/usr/bin/env bash
+    export CDK_TEST_MINT_URL=http://127.0.0.1:3338
+    export LN_BACKEND=FAKEWALLET
+    cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+    unset CDK_TEST_MINT_URL
+    unset LN_BACKEND
     
 
 # run `cargo clippy` on everything
@@ -89,6 +108,10 @@ itest-payment-processor ln:
 fake-auth-mint-itest db openid_discovery:
   #!/usr/bin/env bash
   ./misc/fake_auth_itests.sh "{{db}}" "{{openid_discovery}}"
+
+nutshell-wallet-itest:
+  #!/usr/bin/env bash
+  ./misc/nutshell_wallet_itest.sh
 
 run-examples:
   cargo r --example p2pk
@@ -160,8 +183,6 @@ check-docs:
     "-p cdk-rexie"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-strike"
-    "-p cdk-phoenixd"
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
@@ -172,5 +193,33 @@ check-docs:
   for arg in "${args[@]}"; do
     echo  "Checking '$arg' docs"
     cargo doc $arg --all-features
+    echo
+  done
+
+# Build docs for all crates and error on warnings
+docs-strict:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  args=(
+    "-p cashu"
+    "-p cdk-common"
+    "-p cdk"
+    "-p cdk-redb"
+    "-p cdk-sqlite"
+    "-p cdk-axum"
+    "-p cdk-rexie"
+    "-p cdk-cln"
+    "-p cdk-lnd"
+    "-p cdk-lnbits"
+    "-p cdk-fake-wallet"
+    "-p cdk-mint-rpc"
+    "-p cdk-payment-processor"
+    "-p cdk-cli"
+    "-p cdk-mintd"
+  )
+
+  for arg in "${args[@]}"; do
+    echo "Building docs for $arg with strict warnings"
+    RUSTDOCFLAGS="-D warnings" cargo doc $arg --all-features --no-deps
     echo
   done

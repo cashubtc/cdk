@@ -23,11 +23,11 @@ impl Wallet {
     ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
-    ///  use rand::Rng;
+    ///  use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
@@ -150,11 +150,11 @@ impl Wallet {
             proofs_total - quote_info.amount,
         )?;
 
-        let request = MeltBolt11Request {
-            quote: quote_id.to_string(),
-            inputs: proofs.clone(),
-            outputs: Some(premint_secrets.blinded_messages()),
-        };
+        let request = MeltBolt11Request::new(
+            quote_id.to_string(),
+            proofs.clone(),
+            Some(premint_secrets.blinded_messages()),
+        );
 
         let melt_response = self.client.post_melt(request).await;
 
@@ -254,11 +254,11 @@ impl Wallet {
     ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
-    ///  use rand::Rng;
+    ///  use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///  let seed = random::<[u8; 32]>();
     ///  let mint_url = "https://testnut.cashu.space";
     ///  let unit = CurrencyUnit::Sat;
     ///

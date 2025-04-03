@@ -121,7 +121,7 @@ impl Wallet {
             .await?;
 
         if sig_flag.eq(&SigFlag::SigAll) {
-            for blinded_message in &mut pre_swap.swap_request.outputs {
+            for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
                     blinded_message.sign_p2pk(signing_key.to_owned().clone())?
                 }
@@ -167,11 +167,11 @@ impl Wallet {
     ///  use cdk_sqlite::wallet::memory;
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
-    ///  use rand::Rng;
+    ///  use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///  let seed = random::<[u8; 32]>();
     ///  let mint_url = "https://testnut.cashu.space";
     ///  let unit = CurrencyUnit::Sat;
     ///
@@ -221,11 +221,11 @@ impl Wallet {
     ///  use cdk::nuts::CurrencyUnit;
     ///  use cdk::wallet::Wallet;
     ///  use cdk::util::hex;
-    ///  use rand::Rng;
+    ///  use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///  let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///  let seed = random::<[u8; 32]>();
     ///  let mint_url = "https://testnut.cashu.space";
     ///  let unit = CurrencyUnit::Sat;
     ///

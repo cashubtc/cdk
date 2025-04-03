@@ -8,6 +8,7 @@ repository = "https://github.com/cashubtc/cdk.git"
 edition.workspace = true
 rust-version.workspace = true # MSRV
 license.workspace = true
+readme = "README.md"
 
 [features]
 default = ["mint", "wallet"]

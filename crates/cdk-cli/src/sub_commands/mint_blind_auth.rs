@@ -1,13 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use cdk::cdk_database::{Error, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintInfo};
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::{MultiMintWallet, Wallet};
+use cdk::wallet::MultiMintWallet;
 use cdk::{Amount, OidcClient};
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -31,8 +29,6 @@ pub struct MintBlindAuthSubCommand {
 
 pub async fn mint_blind_auth(
     multi_mint_wallet: &MultiMintWallet,
-    seed: &[u8],
-    localstore: Arc<dyn WalletDatabase<Err = Error> + Sync + Send>,
     sub_command_args: &MintBlindAuthSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
@@ -45,10 +41,9 @@ pub async fn mint_blind_auth(
     {
         Some(wallet) => wallet.clone(),
         None => {
-            let wallet = Wallet::new(&mint_url.to_string(), unit, localstore, seed, None)?;
-
-            multi_mint_wallet.add_wallet(wallet.clone()).await;
-            wallet
+            multi_mint_wallet
+                .create_and_add_wallet(&mint_url.to_string(), unit, None)
+                .await?
         }
     };
 

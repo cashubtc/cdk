@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
@@ -5,6 +6,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{MintQuoteState, NotificationPayload, State};
 use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
+use init_regtest::get_mint_url;
 use tokio::time::{sleep, timeout, Duration};
 
 pub mod init_auth_mint;
@@ -117,5 +119,29 @@ pub async fn wait_for_mint_to_be_paid(
         result = periodic_task => {
             result // Now propagates the result from periodic checks
         }
+    }
+}
+
+/// Gets the mint URL from environment variable or falls back to default
+///
+/// Checks the CDK_TEST_MINT_URL environment variable:
+/// - If set, returns that URL
+/// - Otherwise falls back to the default URL from get_mint_url("0")
+pub fn get_mint_url_from_env() -> String {
+    match env::var("CDK_TEST_MINT_URL") {
+        Ok(url) => url,
+        Err(_) => get_mint_url("0"),
+    }
+}
+
+/// Gets the second mint URL from environment variable or falls back to default
+///
+/// Checks the CDK_TEST_MINT_URL_2 environment variable:
+/// - If set, returns that URL
+/// - Otherwise falls back to the default URL from get_mint_url("1")
+pub fn get_second_mint_url_from_env() -> String {
+    match env::var("CDK_TEST_MINT_URL_2") {
+        Ok(url) => url,
+        Err(_) => get_mint_url("1"),
     }
 }

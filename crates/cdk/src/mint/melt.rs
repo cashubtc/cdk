@@ -289,7 +289,7 @@ impl Mint {
     ) -> Result<MeltQuote, Error> {
         let state = self
             .localstore
-            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Pending)
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending)
             .await?;
 
         match state {
@@ -301,20 +301,23 @@ impl Mint {
 
         let quote = self
             .localstore
-            .get_melt_quote(&melt_request.quote)
+            .get_melt_quote(melt_request.quote())
             .await?
             .ok_or(Error::UnknownQuote)?;
+
+        self.pubsub_manager
+            .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
         let Verification {
             amount: input_amount,
             unit: input_unit,
-        } = self.verify_inputs(&melt_request.inputs).await?;
+        } = self.verify_inputs(melt_request.inputs()).await?;
 
         ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
 
-        let input_ys = melt_request.inputs.ys()?;
+        let input_ys = melt_request.inputs().ys()?;
 
-        let fee = self.get_proofs_fee(&melt_request.inputs).await?;
+        let fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
         let required_total = quote.amount + quote.fee_reserve + fee;
 
@@ -335,16 +338,20 @@ impl Mint {
         }
 
         self.localstore
-            .add_proofs(melt_request.inputs.clone(), None)
+            .add_proofs(melt_request.inputs().clone(), None)
             .await?;
 
         self.check_ys_spendable(&input_ys, State::Pending).await?;
+        for proof in melt_request.inputs() {
+            self.pubsub_manager
+                .proof_state((proof.y()?, State::Pending));
+        }
 
-        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs.clone());
+        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
 
         ensure_cdk!(sig_flag.ne(&SigFlag::SigAll), Error::SigAllUsedInMelt);
 
-        if let Some(outputs) = &melt_request.outputs {
+        if let Some(outputs) = &melt_request.outputs() {
             if !outputs.is_empty() {
                 let Verification {
                     amount: _,
@@ -355,30 +362,30 @@ impl Mint {
             }
         }
 
-        tracing::debug!("Verified melt quote: {}", melt_request.quote);
+        tracing::debug!("Verified melt quote: {}", melt_request.quote());
         Ok(quote)
     }
 
     /// Process unpaid melt request
     /// In the event that a melt request fails and the lighthing payment is not
-    /// made The [`Proofs`] should be returned to an unspent state and the
+    /// made The proofs should be returned to an unspent state and the
     /// quote should be unpaid
     #[instrument(skip_all)]
     pub async fn process_unpaid_melt(
         &self,
         melt_request: &MeltBolt11Request<Uuid>,
     ) -> Result<(), Error> {
-        let input_ys = melt_request.inputs.ys()?;
+        let input_ys = melt_request.inputs().ys()?;
 
         self.localstore
-            .remove_proofs(&input_ys, Some(melt_request.quote))
+            .remove_proofs(&input_ys, Some(*melt_request.quote()))
             .await?;
 
         self.localstore
-            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Unpaid)
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Unpaid)
             .await?;
 
-        if let Ok(Some(quote)) = self.localstore.get_melt_quote(&melt_request.quote).await {
+        if let Ok(Some(quote)) = self.localstore.get_melt_quote(melt_request.quote()).await {
             self.pubsub_manager
                 .melt_quote_status(quote, None, None, MeltQuoteState::Unpaid);
         }
@@ -427,7 +434,7 @@ impl Mint {
                 if let Err(err) = self.process_unpaid_melt(melt_request).await {
                     tracing::error!(
                         "Could not reset melt quote {} state: {}",
-                        melt_request.quote,
+                        melt_request.quote(),
                         err
                     );
                 }
@@ -443,7 +450,7 @@ impl Mint {
                     if let Err(err) = self.process_unpaid_melt(melt_request).await {
                         tracing::error!(
                             "Could not reset melt quote {} state: {}",
-                            melt_request.quote,
+                            melt_request.quote(),
                             err
                         );
                     }
@@ -545,7 +552,7 @@ impl Mint {
                     MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
                         tracing::info!(
                             "Lightning payment for quote {} failed.",
-                            melt_request.quote
+                            melt_request.quote()
                         );
                         if let Err(err) = self.process_unpaid_melt(melt_request).await {
                             tracing::error!("Could not reset melt quote state: {}", err);
@@ -555,7 +562,7 @@ impl Mint {
                     MeltQuoteState::Pending => {
                         tracing::warn!(
                             "LN payment pending, proofs are stuck as pending for quote: {}",
-                            melt_request.quote
+                            melt_request.quote()
                         );
                         return Err(Error::PendingQuote);
                     }
@@ -600,7 +607,7 @@ impl Mint {
 
         Ok(res)
     }
-    /// Process melt request marking [`Proofs`] as spent
+    /// Process melt request marking proofs as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
@@ -610,22 +617,22 @@ impl Mint {
         payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
-        tracing::debug!("Processing melt quote: {}", melt_request.quote);
+        tracing::debug!("Processing melt quote: {}", melt_request.quote());
 
         let quote = self
             .localstore
-            .get_melt_quote(&melt_request.quote)
+            .get_melt_quote(melt_request.quote())
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let input_ys = melt_request.inputs.ys()?;
+        let input_ys = melt_request.inputs().ys()?;
 
         self.localstore
             .update_proofs_states(&input_ys, State::Spent)
             .await?;
 
         self.localstore
-            .update_melt_quote_state(&melt_request.quote, MeltQuoteState::Paid)
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Paid)
             .await?;
 
         self.pubsub_manager.melt_quote_status(
@@ -644,7 +651,7 @@ impl Mint {
         // Check if there is change to return
         if melt_request.proofs_amount()? > total_spent {
             // Check if wallet provided change outputs
-            if let Some(outputs) = melt_request.outputs.clone() {
+            if let Some(outputs) = melt_request.outputs().clone() {
                 let blinded_messages: Vec<PublicKey> =
                     outputs.iter().map(|b| b.blinded_secret).collect();
 

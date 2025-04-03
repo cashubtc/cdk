@@ -17,18 +17,18 @@ use crate::{Amount, Error, Wallet};
 impl Wallet {
     /// Mint Quote
     /// # Synopsis
-    /// ```rust
+    /// ```rust,no_run
     /// use std::sync::Arc;
     ///
     /// use cdk::amount::Amount;
     /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
-    /// use rand::Rng;
+    /// use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
@@ -138,7 +138,7 @@ impl Wallet {
 
     /// Mint
     /// # Synopsis
-    /// ```rust
+    /// ```rust,no_run
     /// use std::sync::Arc;
     ///
     /// use anyhow::Result;
@@ -147,11 +147,11 @@ impl Wallet {
     /// use cdk::nuts::nut00::ProofsMethods;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
-    /// use rand::Rng;
+    /// use rand::random;
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
-    ///     let seed = rand::thread_rng().gen::<[u8; 32]>();
+    ///     let seed = random::<[u8; 32]>();
     ///     let mint_url = "https://testnut.cashu.space";
     ///     let unit = CurrencyUnit::Sat;
     ///
