@@ -127,7 +127,6 @@ impl Wallet {
             let mint_quote_response = self.mint_quote_state(&mint_quote.id).await?;
 
             if mint_quote_response.state == MintQuoteState::Paid {
-                // TODO: Need to pass in keys here
                 let proofs = self
                     .mint(&mint_quote.id, SplitTarget::default(), None)
                     .await?;

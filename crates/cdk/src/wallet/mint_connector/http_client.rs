@@ -132,6 +132,7 @@ impl HttpClient {
 
     /// Get auth token for a protected endpoint
     #[cfg(feature = "auth")]
+    #[instrument(skip(self))]
     async fn get_auth_token(
         &self,
         method: Method,
