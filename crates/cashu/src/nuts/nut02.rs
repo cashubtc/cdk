@@ -376,7 +376,7 @@ pub struct KeySetInfo {
     pub input_fee_ppk: u64,
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub final_expiry: Option<u64>
+    pub final_expiry: Option<u64>,
 }
 
 fn deserialize_input_fee_ppk<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -519,6 +519,7 @@ impl From<&MintKeys> for Id {
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
+
     use bitcoin::secp256k1::rand::{self, RngCore};
 
     use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse};
@@ -626,7 +627,9 @@ mod test {
 
     #[test]
     fn test_v2_deserialization_and_id_generation() {
-        let id_from_str = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9").unwrap();    
+        let id_from_str =
+            Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9")
+                .unwrap();
 
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
         let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
@@ -662,9 +665,10 @@ mod test {
         assert_eq!(864559728, id_int)
     }
 
-    #[test] 
+    #[test]
     fn test_v2_to_int() {
-        let id = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9").unwrap();
+        let id = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9")
+            .unwrap();
 
         let id_int = u32::from(id);
         assert_eq!(1349682077, id_int);
@@ -704,17 +708,18 @@ mod test {
             KeySetVersion::Version00 => {
                 let mut rand_bytes = vec![0u8; 8];
                 rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
-                Id::from_bytes(&rand_bytes)
-                    .unwrap_or_else(|e| panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes)))
-            },
+                Id::from_bytes(&rand_bytes).unwrap_or_else(|e| {
+                    panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes))
+                })
+            }
             KeySetVersion::Version01 => {
                 let mut rand_bytes = vec![1u8; 32];
                 rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
-                Id::from_bytes(&rand_bytes)
-                    .unwrap_or_else(|e| panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes)))
+                Id::from_bytes(&rand_bytes).unwrap_or_else(|e| {
+                    panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes))
+                })
             }
         }
-        
     }
 
     #[test]
