@@ -217,6 +217,12 @@ pub enum Error {
     /// Invoice Description not supported
     #[error("Invoice Description not supported")]
     InvoiceDescriptionUnsupported,
+    /// Invalid transaction direction
+    #[error("Invalid transaction direction")]
+    InvalidTransactionDirection,
+    /// Invalid transaction id
+    #[error("Invalid transaction id")]
+    InvalidTransactionId,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

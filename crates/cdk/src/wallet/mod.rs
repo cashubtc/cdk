@@ -44,6 +44,7 @@ mod receive;
 mod send;
 pub mod subscription;
 mod swap;
+mod transactions;
 pub mod util;
 
 #[cfg(feature = "auth")]
@@ -54,6 +55,7 @@ pub use cdk_common::wallet as types;
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
 pub use multi_mint_wallet::MultiMintWallet;
+pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 

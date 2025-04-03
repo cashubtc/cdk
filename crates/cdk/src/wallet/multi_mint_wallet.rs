@@ -10,15 +10,16 @@ use std::sync::Arc;
 use anyhow::Result;
 use cdk_common::database;
 use cdk_common::database::WalletDatabase;
-use cdk_common::wallet::WalletKey;
+use cdk_common::wallet::{Transaction, TransactionDirection, WalletKey};
 use tokio::sync::Mutex;
 use tracing::instrument;
 
+use super::receive::ReceiveOptions;
 use super::send::{PreparedSend, SendMemo, SendOptions};
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SecretKey, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
 use crate::{ensure_cdk, Amount, Wallet};
@@ -142,6 +143,24 @@ impl MultiMintWallet {
         Ok(mint_proofs)
     }
 
+    /// List transactions
+    #[instrument(skip(self))]
+    pub async fn list_transactions(
+        &self,
+        direction: Option<TransactionDirection>,
+    ) -> Result<Vec<Transaction>, Error> {
+        let mut transactions = Vec::new();
+
+        for (_, wallet) in self.wallets.lock().await.iter() {
+            let wallet_transactions = wallet.list_transactions(direction).await?;
+            transactions.extend(wallet_transactions);
+        }
+
+        transactions.sort();
+
+        Ok(transactions)
+    }
+
     /// Prepare to send
     #[instrument(skip(self))]
     pub async fn prepare_send(
@@ -246,8 +265,7 @@ impl MultiMintWallet {
     pub async fn receive(
         &self,
         encoded_token: &str,
-        p2pk_signing_keys: &[SecretKey],
-        preimages: &[String],
+        opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
         let unit = token_data.unit().unwrap_or_default();
@@ -273,7 +291,7 @@ impl MultiMintWallet {
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         match wallet
-            .receive_proofs(proofs, SplitTarget::default(), p2pk_signing_keys, preimages)
+            .receive_proofs(proofs, opts, token_data.memo().clone())
             .await
         {
             Ok(amount) => {
