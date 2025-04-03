@@ -85,13 +85,17 @@ impl fmt::Display for KeySetVersion {
     }
 }
 
+/// Keyset ID bytes
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IdBytes {
+    /// Bytes for v1
     V1([u8; 7]),
+    /// Bytes for v2
     V2([u8; 31]),
 }
 
 impl IdBytes {
+    /// Convert [`IdBytes`] to [`Vec<u8>`]
     pub fn to_vec(&self) -> Vec<u8> {
         match self {
             IdBytes::V1(bytes) => bytes.to_vec(),
@@ -130,7 +134,8 @@ impl Id {
         };
         Ok(Self { version, id })
     }
-
+    
+    /// Get the version of the keyset
     pub fn get_version(&self) -> KeySetVersion {
         self.version
     }
