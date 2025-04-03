@@ -78,7 +78,7 @@ impl MeltOptions {
         }
     }
 
-    /// Create new [`Options::Amountless`]
+    /// Create new [`MeltOptions::Amountless`]
     pub fn new_amountless<A>(amount_msat: A) -> Self
     where
         A: Into<Amount>,
