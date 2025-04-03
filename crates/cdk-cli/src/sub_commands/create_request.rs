@@ -1,7 +1,7 @@
 use anyhow::Result;
 use cdk::nuts::nut18::TransportType;
 use cdk::nuts::{CurrencyUnit, PaymentRequest, PaymentRequestPayload, Token, Transport};
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::{MultiMintWallet, ReceiveOptions};
 use clap::Args;
 use nostr_sdk::nips::nip19::Nip19Profile;
 use nostr_sdk::prelude::*;
@@ -83,7 +83,7 @@ pub async fn create_request(
                 let token = Token::new(payload.mint, payload.proofs, payload.memo, payload.unit);
 
                 let amount = multi_mint_wallet
-                    .receive(&token.to_string(), &[], &[])
+                    .receive(&token.to_string(), ReceiveOptions::default())
                     .await?;
 
                 println!("Received {}", amount);

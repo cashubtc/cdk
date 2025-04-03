@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cdk::amount::SplitTarget;
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload, SecretKey, SpendingConditions};
-use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
+use cdk::wallet::{ReceiveOptions, SendOptions, Wallet, WalletSubscription};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -94,7 +94,13 @@ async fn main() -> Result<(), Error> {
 
     // Receive the token using the secret key
     let amount = wallet
-        .receive(&token.to_string(), SplitTarget::default(), &[secret], &[])
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret],
+                ..Default::default()
+            },
+        )
         .await?;
 
     println!("Redeemed locked token worth: {}", u64::from(amount));
