@@ -42,13 +42,12 @@ pub async fn mint(
     {
         Some(wallet) => wallet.clone(),
         None => {
+            tracing::debug!("Wallet does not exist creating..");
             multi_mint_wallet
                 .create_and_add_wallet(&mint_url.to_string(), unit, None)
                 .await?
         }
     };
-
-    wallet.get_mint_info().await?;
 
     let quote_id = match &sub_command_args.quote_id {
         None => {

@@ -185,6 +185,8 @@ async fn main() -> Result<()> {
 
         let wallet = builder.build()?;
 
+        wallet.get_mint_info().await?;
+
         wallets.push(wallet);
     }
 
