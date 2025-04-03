@@ -519,10 +519,9 @@ impl From<&MintKeys> for Id {
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
-
     use bitcoin::secp256k1::rand::{self, RngCore};
 
-    use super::{KeySetInfo, Keys, KeysetResponse};
+    use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse};
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
     use crate::util::hex;
@@ -700,20 +699,41 @@ mod test {
         assert_eq!(keys_response.keysets.len(), 2);
     }
 
-    fn generate_random_id() -> Id {
-        let mut rand_bytes = vec![0u8; 8];
-        rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
-        Id::from_bytes(&rand_bytes)
-            .unwrap_or_else(|e| panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes)))
+    fn generate_random_id(version: KeySetVersion) -> Id {
+        match version {
+            KeySetVersion::Version00 => {
+                let mut rand_bytes = vec![0u8; 8];
+                rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
+                Id::from_bytes(&rand_bytes)
+                    .unwrap_or_else(|e| panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes)))
+            },
+            KeySetVersion::Version01 => {
+                let mut rand_bytes = vec![1u8; 32];
+                rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
+                Id::from_bytes(&rand_bytes)
+                    .unwrap_or_else(|e| panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes)))
+            }
+        }
+        
     }
 
     #[test]
     fn test_id_serialization() {
-        let id = generate_random_id();
+        let id = generate_random_id(KeySetVersion::Version00);
         let id_str = id.to_string();
 
         assert!(id_str.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(16, id_str.len());
+        assert_eq!(id_str.to_lowercase(), id_str);
+    }
+
+    #[test]
+    fn test_id_v2_serialization() {
+        let id = generate_random_id(KeySetVersion::Version01);
+        let id_str = id.to_string();
+
+        assert!(id_str.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(64, id_str.len());
         assert_eq!(id_str.to_lowercase(), id_str);
     }
 
