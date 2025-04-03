@@ -12,7 +12,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq, PublicKey, SecretKey, SpendingConditions, State
+    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq,
+    PublicKey, SecretKey, SpendingConditions, State,
 };
 use error::Error;
 use sqlx::sqlite::SqliteRow;

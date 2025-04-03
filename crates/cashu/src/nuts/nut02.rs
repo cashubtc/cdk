@@ -134,7 +134,7 @@ impl Id {
         };
         Ok(Self { version, id })
     }
-    
+
     /// Get the version of the keyset
     pub fn get_version(&self) -> KeySetVersion {
         self.version

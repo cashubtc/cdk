@@ -13,7 +13,8 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote};
 use cdk_common::{
-    database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State
+    database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions,
+    State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
@@ -500,7 +501,9 @@ impl WalletDatabase for WalletRedbDatabase {
             table
                 .insert(
                     keyset.id.to_string().as_str(),
-                    serde_json::to_string(&keyset.keys).map_err(Error::from)?.as_str(),
+                    serde_json::to_string(&keyset.keys)
+                        .map_err(Error::from)?
+                        .as_str(),
                 )
                 .map_err(Error::from)?;
         }
