@@ -6,7 +6,7 @@ use bip39::Mnemonic;
 use cashu::{Bolt11Invoice, ProofsMethods};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{SendKind, SendOptions, Wallet};
+use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
 use cdk_integration_tests::{
     create_invoice_for_env, get_mint_url_from_env, pay_if_regtest, wait_for_mint_to_be_paid,
 };
@@ -60,7 +60,7 @@ async fn test_swap() -> Result<()> {
     let send = wallet.send(send, None).await?;
 
     let rec_amount = wallet
-        .receive(&send.to_string(), SplitTarget::default(), &[], &[])
+        .receive(&send.to_string(), ReceiveOptions::default())
         .await?;
 
     assert_eq!(rec_amount, 3.into());
