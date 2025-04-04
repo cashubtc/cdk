@@ -189,17 +189,21 @@ async fn test_websocket_connection() -> Result<()> {
 async fn test_multimint_melt() -> Result<()> {
     let lnd_client = init_lnd_client().await;
 
+    let db = Arc::new(memory::empty().await?);
     let wallet1 = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
+        db,
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
+
+    let db = Arc::new(memory::empty().await?);
+    db.migrate().await;
     let wallet2 = Wallet::new(
         &get_second_mint_url_from_env(),
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
+        db,
         &Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
