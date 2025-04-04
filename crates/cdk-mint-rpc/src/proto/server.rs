@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use cdk::cdk_payment::WaitPaymentResponse;
 use cdk::mint::Mint;
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
@@ -627,19 +628,22 @@ impl CdkMint for MintRPCServer {
         match state {
             MintQuoteState::Paid => {
                 self.mint
-                    .pay_mint_quote(&mint_quote)
+                    .pay_mint_quote(
+                        &mint_quote,
+                        WaitPaymentResponse {
+                            request_lookup_id: mint_quote.request_lookup_id.clone(),
+                            // TODO: Get this from rpc
+                            payment_amount: mint_quote.amount,
+                            unit: mint_quote.unit.clone(),
+                            // TODO: Get this from rpc
+                            payment_id: "".to_string(),
+                        },
+                    )
                     .await
                     .map_err(|_| Status::internal("Could not find quote".to_string()))?;
             }
             _ => {
-                let mut mint_quote = mint_quote;
-
-                mint_quote.state = state;
-
-                self.mint
-                    .update_mint_quote(mint_quote)
-                    .await
-                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
+                todo!()
             }
         }
 
@@ -652,7 +656,7 @@ impl CdkMint for MintRPCServer {
             .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
 
         Ok(Response::new(UpdateNut04QuoteRequest {
-            state: mint_quote.state.to_string(),
+            state: mint_quote.state().to_string(),
             quote_id: mint_quote.id.to_string(),
         }))
     }

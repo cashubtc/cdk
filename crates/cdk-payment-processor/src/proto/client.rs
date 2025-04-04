@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState};
 use futures::{Stream, StreamExt};
@@ -202,7 +202,7 @@ impl MintPayment for PaymentProcessorClient {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         self.wait_incoming_payment_stream_is_active
             .store(true, Ordering::SeqCst);
         tracing::debug!("Client waiting for payment");
@@ -224,10 +224,13 @@ impl MintPayment for PaymentProcessorClient {
             .take_until(cancel_fut)
             .filter_map(|item| async move {
                 match item {
-                    Ok(value) => {
-                        tracing::warn!("{}", value.lookup_id);
-                        Some(value.lookup_id)
-                    }
+                    Ok(value) => Some(WaitPaymentResponse {
+                        request_lookup_id: value.lookup_id,
+                        payment_amount: value.payment_amount.into(),
+                        // TODO: Handle this error
+                        unit: CurrencyUnit::from_str(&value.unit).expect("Valid unit"),
+                        payment_id: value.payment_id,
+                    }),
                     Err(e) => {
                         tracing::error!("Error in payment stream: {}", e);
                         None // Skip this item and continue with the stream

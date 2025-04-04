@@ -53,4 +53,7 @@ pub enum Error {
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
 }

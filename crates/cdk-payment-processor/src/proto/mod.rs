@@ -5,7 +5,7 @@ use std::str::FromStr;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse,
 };
-use cdk_common::{Bolt11Invoice, CurrencyUnit, MeltQuoteBolt11Request};
+use cdk_common::{Bolt11Invoice, CurrencyUnit, MeltQuoteBolt11Request, PaymentMethod};
 use melt_options::Options;
 mod client;
 mod server;
@@ -157,7 +157,6 @@ impl From<cdk_common::nut04::QuoteState> for QuoteState {
         match value {
             cdk_common::MintQuoteState::Unpaid => Self::Unpaid,
             cdk_common::MintQuoteState::Paid => Self::Paid,
-            cdk_common::MintQuoteState::Pending => Self::Pending,
             cdk_common::MintQuoteState::Issued => Self::Issued,
         }
     }
@@ -176,6 +175,7 @@ impl From<cdk_common::mint::MeltQuote> for MeltQuote {
             payment_preimage: value.payment_preimage,
             request_lookup_id: value.request_lookup_id,
             msat_to_pay: value.msat_to_pay.map(|a| a.into()),
+            payment_method: value.payment_method.to_string(),
             created_time: value.created_time,
             paid_time: value.paid_time,
         }
@@ -202,6 +202,7 @@ impl TryFrom<MeltQuote> for cdk_common::mint::MeltQuote {
             msat_to_pay: value.msat_to_pay.map(|a| a.into()),
             created_time: value.created_time,
             paid_time: value.paid_time,
+            payment_method: PaymentMethod::from_str(&value.payment_method)?,
         })
     }
 }

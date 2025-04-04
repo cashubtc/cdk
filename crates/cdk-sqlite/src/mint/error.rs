@@ -56,6 +56,9 @@ pub enum Error {
     /// Invalid keyset ID
     #[error("Invalid keyset ID")]
     InvalidKeysetId,
+    /// Quote already pending
+    #[error("Quote is alreadu pending")]
+    QuotePending,
 }
 
 impl From<Error> for cdk_common::database::Error {

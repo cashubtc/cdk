@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
 use cdk::secp256k1::hashes::Hash;
@@ -132,7 +132,7 @@ impl MintPayment for Lnd {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         let mut client =
             fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
                 .await
@@ -177,7 +177,14 @@ impl MintPayment for Lnd {
                 match msg {
                     Ok(Some(msg)) => {
                         if msg.state == 1 {
-                            Some((hex::encode(msg.r_hash), (stream, cancel_token, is_active)))
+                            let payment_hash =  hex::encode(msg.r_hash);
+                            let wait_response = WaitPaymentResponse {
+                                request_lookup_id: payment_hash.clone(),
+                                payment_amount: Amount::ZERO,
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
+                            };
+                            Some((wait_response, (stream, cancel_token, is_active)))
                         } else {
                             None
                         }

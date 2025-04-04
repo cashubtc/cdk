@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use cashu::MintInfo;
+use cashu::{Amount, MintInfo};
 use uuid::Uuid;
 
 use super::Error;
@@ -49,12 +49,22 @@ pub trait QuotesDatabase {
     async fn add_mint_quote(&self, quote: MintMintQuote) -> Result<(), Self::Err>;
     /// Get [`MintMintQuote`]
     async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintMintQuote>, Self::Err>;
-    /// Update state of [`MintMintQuote`]
-    async fn update_mint_quote_state(
+    /// Increment amount paid [`MintMintQuote`]
+    async fn increment_mint_quote_amount_paid(
         &self,
         quote_id: &Uuid,
-        state: MintQuoteState,
-    ) -> Result<MintQuoteState, Self::Err>;
+        amount_paid: Amount,
+    ) -> Result<Amount, Self::Err>;
+    /// Increment amount paid [`MintMintQuote`]
+    async fn increment_mint_quote_amount_issued(
+        &self,
+        quote_id: &Uuid,
+        amount_issued: Amount,
+    ) -> Result<Amount, Self::Err>;
+    /// Set pending state of [`MintMintQuote`]
+    async fn set_mint_quote_pending(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
+    /// Unset pending state of [`MintMintQuote`]
+    async fn unset_mint_quote_pending(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
     /// Get all [`MintMintQuote`]s
     async fn get_mint_quote_by_request(
         &self,

@@ -20,7 +20,7 @@ use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
 use cdk::types::FeeReserve;
@@ -126,11 +126,17 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         tracing::info!("Starting stream for fake invoices");
         let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
-        Ok(Box::pin(receiver_stream.map(|label| label)))
+
+        Ok(Box::pin(receiver_stream.map(|label| WaitPaymentResponse {
+            request_lookup_id: label.clone(),
+            payment_amount: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            payment_id: label,
+        })))
     }
 
     #[instrument(skip_all)]

@@ -315,8 +315,8 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 result = ln.wait_any_incoming_payment() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(request_lookup_id) = stream.next().await {
-                                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{lookup_id: request_lookup_id} )).await {
+                            while let Some(response) = stream.next().await {
+                                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{lookup_id: response.request_lookup_id, payment_amount: response.payment_amount.into(), unit: response.unit.to_string(), payment_id: response.payment_id} )).await {
                     Ok(_) => {
                         // item (server response) was queued to be send to client
                     }

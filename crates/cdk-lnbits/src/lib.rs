@@ -16,7 +16,7 @@ use axum::Router;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
 use cdk::types::FeeReserve;
@@ -93,7 +93,7 @@ impl MintPayment for LNbits {
 
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -130,7 +130,13 @@ impl MintPayment for LNbits {
                             match check {
                                 Ok(state) => {
                                     if state {
-                                        Some((msg, (receiver, lnbits_api, cancel_token, is_active)))
+                                        let response = WaitPaymentResponse {
+                                            request_lookup_id: msg.clone(),
+                                            payment_amount: Amount::ZERO,
+                                            unit: CurrencyUnit::Sat,
+                                            payment_id: msg
+                                        };
+                                        Some((response, (receiver, lnbits_api, cancel_token, is_active)))
                                     } else {
                                         None
                                     }

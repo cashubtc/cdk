@@ -14,6 +14,8 @@ UPDATE mint_quote SET amount_paid = amount WHERE state = 'PAID' OR state = 'ISSU
 -- Set amount_minted equal to amount for quotes with ISSUED state
 UPDATE mint_quote SET amount_minted = amount WHERE state = 'ISSUED';
 
+DROP INDEX IF EXISTS mint_quote_state_index;
+
 -- Remove the state column from mint_quote table
 ALTER TABLE mint_quote DROP COLUMN state;
 

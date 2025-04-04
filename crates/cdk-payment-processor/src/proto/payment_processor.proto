@@ -83,6 +83,7 @@ message MeltQuote {
     optional uint64 msat_to_pay = 10;
     uint64 created_time = 11;
     optional uint64 paid_time = 12;
+    string payment_method = 13;
 }
 
 message MakePaymentRequest {
@@ -118,4 +119,7 @@ message WaitIncomingPaymentRequest {
 
 message WaitIncomingPaymentResponse {
   string lookup_id = 1;
+  uint64 payment_amount = 2;
+  string unit = 3;
+  string payment_id = 4;
 }

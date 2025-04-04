@@ -124,7 +124,7 @@ impl MintConnector for DirectMintConnection {
         &self,
         request: MeltBolt11Request<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let request_uuid = request.try_into().unwrap();
+        let request_uuid: MeltBolt11Request<Uuid> = request.try_into().unwrap();
         self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
     }
 
