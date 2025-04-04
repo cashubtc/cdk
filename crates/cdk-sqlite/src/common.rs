@@ -23,13 +23,24 @@ pub async fn create_sqlite_pool(
     #[cfg(feature = "sqlcipher")]
     let db_options = db_options.pragma("key", password);
 
-    let pool = SqlitePoolOptions::new()
+    let is_memory = path.contains(":memory:");
+
+    let options = SqlitePoolOptions::new()
         .min_connections(1)
-        .max_connections(1)
-        .idle_timeout(None)
-        .max_lifetime(None)
-        .connect_with(db_options)
-        .await?;
+        .max_connections(1);
+
+    let pool = if is_memory {
+        // Make sure that the connection is not closed after the first query, or any query, as long
+        // as the pool is not dropped
+        options
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .test_before_acquire(false)
+    } else {
+        options
+    }
+    .connect_with(db_options)
+    .await?;
 
     Ok(pool)
 }

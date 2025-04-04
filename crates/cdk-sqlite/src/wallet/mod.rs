@@ -35,29 +35,34 @@ impl WalletSqliteDatabase {
     /// Create new [`WalletSqliteDatabase`]
     #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        Ok(Self {
+        let db = Self {
             pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
-        })
+        };
+        db.migrate().await?;
+        Ok(db)
     }
 
     /// Create new [`WalletSqliteDatabase`]
     #[cfg(feature = "sqlcipher")]
     pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
-        Ok(Self {
+        let db = Self {
             pool: create_sqlite_pool(
                 path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
                 password,
             )
             .await?,
-        })
+        };
+        db.migrate().await?;
+        Ok(db)
     }
 
     /// Migrate [`WalletSqliteDatabase`]
-    pub async fn migrate(&self) {
+    async fn migrate(&self) -> Result<(), Error> {
         sqlx::migrate!("./src/wallet/migrations")
             .run(&self.pool)
             .await
-            .expect("Could not run migrations");
+            .map_err(|_| Error::CouldNotInitialize)?;
+        Ok(())
     }
 }
 
@@ -1146,8 +1151,6 @@ mod tests {
 
         #[cfg(not(feature = "sqlcipher"))]
         let db = WalletSqliteDatabase::new(path).await.unwrap();
-
-        db.migrate().await;
 
         // Create a proof with DLEQ
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
