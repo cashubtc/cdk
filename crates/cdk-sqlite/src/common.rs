@@ -31,5 +31,13 @@ pub async fn create_sqlite_pool(
         .connect_with(db_options)
         .await?;
 
+    if path.contains(":memory:") {
+        // Ensure that the pool has the minimum number of connections open
+        // This makes sure the pool initializes with exactly one connection.
+        // This is necessary because `min_connections` does not guarantee
+        // an immediate connection unless it is actively used or explicitly initialized.
+        pool.acquire().await?;
+    }
+
     Ok(pool)
 }
