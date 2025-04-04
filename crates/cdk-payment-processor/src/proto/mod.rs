@@ -97,6 +97,9 @@ impl From<cdk_common::nut05::MeltOptions> for Options {
             cdk_common::MeltOptions::Mpp { mpp } => Self::Mpp(Mpp {
                 amount: mpp.amount.into(),
             }),
+            cdk_common::MeltOptions::Amountless { amountless } => Self::Amountless(Amountless {
+                amount_msat: amountless.amount_msat.into(),
+            }),
         }
     }
 }
@@ -106,6 +109,9 @@ impl From<MeltOptions> for cdk_common::nut05::MeltOptions {
         let options = value.options.expect("option defined");
         match options {
             Options::Mpp(mpp) => cdk_common::MeltOptions::new_mpp(mpp.amount),
+            Options::Amountless(amountless) => {
+                cdk_common::MeltOptions::new_amountless(amountless.amount_msat)
+            }
         }
     }
 }

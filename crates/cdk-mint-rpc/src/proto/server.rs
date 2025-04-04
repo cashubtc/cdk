@@ -527,6 +527,10 @@ impl CdkMint for MintRPCServer {
                 .max
                 .map(Amount::from)
                 .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
+            amountless: current_nut05_settings
+                .as_ref()
+                .map(|s| s.amountless)
+                .unwrap_or_default(),
         };
 
         methods.push(updated_method_settings);

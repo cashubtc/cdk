@@ -61,6 +61,16 @@ impl Mint {
                 // because should have already been converted to the partial amount
                 amount
             }
+            Some(MeltOptions::Amountless { amountless: _ }) => {
+                if !nut15
+                    .methods
+                    .into_iter()
+                    .any(|m| m.method == method && m.unit == unit)
+                {
+                    return Err(Error::AmountlessInvoiceNotSupported(unit, method));
+                }
+                amount
+            }
             None => amount,
         };
 

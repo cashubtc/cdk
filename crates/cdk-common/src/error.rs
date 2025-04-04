@@ -88,6 +88,9 @@ pub enum Error {
     /// Could not get mint info
     #[error("Could not get mint info")]
     CouldNotGetMintInfo,
+    /// Multi-Part Payment not supported for unit and method
+    #[error("Amountless invoices are not supported for unit `{0}` and method `{1}`")]
+    AmountlessInvoiceNotSupported(CurrencyUnit, PaymentMethod),
 
     // Mint Errors
     /// Minting is disabled

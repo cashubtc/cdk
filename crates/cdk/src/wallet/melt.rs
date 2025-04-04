@@ -62,7 +62,7 @@ impl Wallet {
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await?;
+        let quote_res = self.client.post_melt_quote(quote_request).await.unwrap();
 
         if quote_res.amount != amount_quote_unit {
             tracing::warn!(

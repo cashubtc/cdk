@@ -35,9 +35,15 @@ message Mpp {
     uint64 amount = 1;
 }
 
+
+message Amountless {
+    uint64 amount_msat = 1;
+}
+
 message MeltOptions {
     oneof options {
         Mpp mpp = 1;
+        Amountless amountless = 2;
     }
 }
 
