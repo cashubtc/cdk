@@ -242,9 +242,9 @@ async fn test_mint_double_spend() {
         .keysets
         .first()
         .unwrap()
-        .clone()
-        .keys;
-    let keyset_id = Id::from(&keys);
+        .clone();
+
+    let keyset_id = keys.id;
 
     let preswap = PreMintSecrets::random(
         keyset_id,
@@ -307,9 +307,9 @@ async fn test_attempt_to_swap_by_overflowing() {
         .keysets
         .first()
         .unwrap()
-        .clone()
-        .keys;
-    let keyset_id = Id::from(&keys);
+        .clone();
+
+    let keyset_id = keys.id;
 
     let pre_mint_amount =
         PreMintSecrets::random(keyset_id, amount.into(), &SplitTarget::default()).unwrap();
@@ -552,9 +552,9 @@ async fn test_swap_overpay_underpay_fee() {
         .keysets
         .first()
         .unwrap()
-        .clone()
-        .keys;
-    let keyset_id = Id::from(&keys);
+        .clone();
+
+    let keyset_id = Id::v2_from_data(&keys.keys, &keys.unit, keys.final_expiry);
 
     let preswap = PreMintSecrets::random(keyset_id, 9998.into(), &SplitTarget::default()).unwrap();
 
@@ -626,9 +626,9 @@ async fn test_mint_enforce_fee() {
         .keysets
         .first()
         .unwrap()
-        .clone()
-        .keys;
-    let keyset_id = Id::from(&keys);
+        .clone();
+
+    let keyset_id = keys.id;
 
     let five_proofs: Vec<_> = proofs.drain(..5).collect();
 
@@ -921,7 +921,8 @@ async fn get_keyset_id(mint: &Mint) -> Id {
         .keysets
         .first()
         .unwrap()
-        .clone()
-        .keys;
-    Id::from(&keys)
+        .clone();
+    keys.verify_id()
+        .expect("Keyset ID generation is successful");
+    keys.id
 }
