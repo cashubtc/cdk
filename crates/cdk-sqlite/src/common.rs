@@ -36,7 +36,11 @@ pub async fn create_sqlite_pool(
         // This makes sure the pool initializes with exactly one connection.
         // This is necessary because `min_connections` does not guarantee
         // an immediate connection unless it is actively used or explicitly initialized.
-        pool.acquire().await?;
+        let mut connection = pool.acquire().await?;
+
+        // Hold the connection long enough that it's registered in the pool
+        // You can even run a simple query to "warm it up"
+        let _ = sqlx::query("SELECT 1").execute(&mut *connection).await?;
     }
 
     Ok(pool)
