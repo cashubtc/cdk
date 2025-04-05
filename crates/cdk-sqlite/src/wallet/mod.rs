@@ -180,6 +180,7 @@ WHERE mint_url=?
 
     #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+        println!("Debug pool {:?}", self.pool);
         let rec = sqlx::query(
             r#"
 SELECT *
