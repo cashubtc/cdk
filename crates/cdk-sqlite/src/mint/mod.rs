@@ -550,15 +550,28 @@ WHERE id=?;
             }
         };
 
-        let update = sqlx::query(
-            r#"
-        UPDATE mint_quote SET state = ? WHERE id = ?
-        "#,
-        )
-        .bind(state.to_string())
-        .bind(quote_id.as_hyphenated())
-        .execute(&mut *transaction)
-        .await;
+        let update_query = if state == MintQuoteState::Paid {
+            r#"UPDATE mint_quote SET state = ?, paid_time = ? WHERE id = ?"#
+        } else {
+            r#"UPDATE mint_quote SET state = ? WHERE id = ?"#
+        };
+
+        let current_time = unix_time();
+        
+        let update = if state == MintQuoteState::Paid {
+            sqlx::query(update_query)
+                .bind(state.to_string())
+                .bind(current_time as i64)
+                .bind(quote_id.as_hyphenated())
+                .execute(&mut *transaction)
+                .await
+        } else {
+            sqlx::query(update_query)
+                .bind(state.to_string())
+                .bind(quote_id.as_hyphenated())
+                .execute(&mut *transaction)
+                .await
+        };
 
         match update {
             Ok(_) => {
