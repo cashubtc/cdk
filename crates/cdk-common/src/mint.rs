@@ -33,6 +33,8 @@ pub struct MintQuote {
     pub created_time: u64,
     /// Unix time quote was paid
     pub paid_time: Option<u64>,
+    /// Unix time quote was issued
+    pub issued_time: Option<u64>,
 }
 
 impl MintQuote {
@@ -58,6 +60,7 @@ impl MintQuote {
             pubkey,
             created_time: unix_time(),
             paid_time: None,
+            issued_time: None,
         }
     }
 }
@@ -87,6 +90,11 @@ pub struct MeltQuote {
     ///
     /// Used for an amountless invoice
     pub msat_to_pay: Option<Amount>,
+    /// Unix time quote was created
+    #[serde(default)]
+    pub created_time: u64,
+    /// Unix time quote was paid
+    pub paid_time: Option<u64>,
 }
 
 impl MeltQuote {
@@ -113,6 +121,8 @@ impl MeltQuote {
             payment_preimage: None,
             request_lookup_id,
             msat_to_pay,
+            created_time: unix_time(),
+            paid_time: None,
         }
     }
 }

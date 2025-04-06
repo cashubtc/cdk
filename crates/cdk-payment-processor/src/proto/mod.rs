@@ -170,6 +170,8 @@ impl From<cdk_common::mint::MeltQuote> for MeltQuote {
             payment_preimage: value.payment_preimage,
             request_lookup_id: value.request_lookup_id,
             msat_to_pay: value.msat_to_pay.map(|a| a.into()),
+            created_time: value.created_time,
+            paid_time: value.paid_time,
         }
     }
 }
@@ -192,6 +194,8 @@ impl TryFrom<MeltQuote> for cdk_common::mint::MeltQuote {
             payment_preimage: value.payment_preimage,
             request_lookup_id: value.request_lookup_id,
             msat_to_pay: value.msat_to_pay.map(|a| a.into()),
+            created_time: value.created_time,
+            paid_time: value.paid_time,
         })
     }
 }
