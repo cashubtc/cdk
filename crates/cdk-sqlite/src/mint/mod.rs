@@ -550,27 +550,38 @@ WHERE id=?;
             }
         };
 
-        let update_query = if state == MintQuoteState::Paid {
-            r#"UPDATE mint_quote SET state = ?, paid_time = ? WHERE id = ?"#
-        } else {
-            r#"UPDATE mint_quote SET state = ? WHERE id = ?"#
+        let update_query = match state {
+            MintQuoteState::Paid => r#"UPDATE mint_quote SET state = ?, paid_time = ? WHERE id = ?"#,
+            MintQuoteState::Issued => r#"UPDATE mint_quote SET state = ?, issued_time = ? WHERE id = ?"#,
+            _ => r#"UPDATE mint_quote SET state = ? WHERE id = ?"#
         };
 
         let current_time = unix_time();
 
-        let update = if state == MintQuoteState::Paid {
-            sqlx::query(update_query)
-                .bind(state.to_string())
-                .bind(current_time as i64)
-                .bind(quote_id.as_hyphenated())
-                .execute(&mut *transaction)
-                .await
-        } else {
-            sqlx::query(update_query)
-                .bind(state.to_string())
-                .bind(quote_id.as_hyphenated())
-                .execute(&mut *transaction)
-                .await
+        let update = match state {
+            MintQuoteState::Paid => {
+                sqlx::query(update_query)
+                    .bind(state.to_string())
+                    .bind(current_time as i64)
+                    .bind(quote_id.as_hyphenated())
+                    .execute(&mut *transaction)
+                    .await
+            },
+            MintQuoteState::Issued => {
+                sqlx::query(update_query)
+                    .bind(state.to_string())
+                    .bind(current_time as i64)
+                    .bind(quote_id.as_hyphenated())
+                    .execute(&mut *transaction)
+                    .await
+            },
+            _ => {
+                sqlx::query(update_query)
+                    .bind(state.to_string())
+                    .bind(quote_id.as_hyphenated())
+                    .execute(&mut *transaction)
+                    .await
+            }
         };
 
         match update {
