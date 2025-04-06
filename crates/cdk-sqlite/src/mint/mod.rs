@@ -826,15 +826,28 @@ WHERE id=?;
             }
         };
 
-        let rec = sqlx::query(
-            r#"
-        UPDATE melt_quote SET state = ? WHERE id = ?
-        "#,
-        )
-        .bind(state.to_string())
-        .bind(quote_id.as_hyphenated())
-        .execute(&mut *transaction)
-        .await;
+        let update_query = if state == MeltQuoteState::Paid {
+            r#"UPDATE melt_quote SET state = ?, paid_time = ? WHERE id = ?"#
+        } else {
+            r#"UPDATE melt_quote SET state = ? WHERE id = ?"#
+        };
+
+        let current_time = cashu::util::unix_time();
+        
+        let rec = if state == MeltQuoteState::Paid {
+            sqlx::query(update_query)
+                .bind(state.to_string())
+                .bind(current_time as i64)
+                .bind(quote_id.as_hyphenated())
+                .execute(&mut *transaction)
+                .await
+        } else {
+            sqlx::query(update_query)
+                .bind(state.to_string())
+                .bind(quote_id.as_hyphenated())
+                .execute(&mut *transaction)
+                .await
+        };
 
         match rec {
             Ok(_) => {
