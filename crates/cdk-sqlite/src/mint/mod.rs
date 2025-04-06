@@ -1619,6 +1619,9 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         row.try_get("request_lookup_id").map_err(Error::from)?;
     let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
 
+    let row_created_time: i64 = row.try_get("created_time").map_err(Error::from)?;
+    let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
+
     let request_lookup_id = match row_request_lookup_id {
         Some(id) => id,
         None => match Bolt11Invoice::from_str(&row_request) {
@@ -1640,6 +1643,8 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         expiry: row_expiry as u64,
         request_lookup_id,
         pubkey,
+        created_time: row_created_time as u64,
+        paid_time: row_paid_time.map(|p| p as u64),
     })
 }
 
@@ -1659,6 +1664,9 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
 
     let row_msat_to_pay: Option<i64> = row.try_get("msat_to_pay").map_err(Error::from)?;
 
+    let row_created_time: i64 = row.try_get("created_time").map_err(Error::from)?;
+    let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
+
     Ok(mint::MeltQuote {
         id: row_id.into_uuid(),
         amount: Amount::from(row_amount as u64),
@@ -1670,6 +1678,8 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
         payment_preimage: row_preimage,
         request_lookup_id,
         msat_to_pay: row_msat_to_pay.map(|a| Amount::from(a as u64)),
+        created_time: row_created_time as u64,
+        paid_time: row_paid_time.map(|p| p as u64),
     })
 }
 
