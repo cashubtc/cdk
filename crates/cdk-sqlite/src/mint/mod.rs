@@ -557,7 +557,7 @@ WHERE id=?;
         };
 
         let current_time = unix_time();
-        
+
         let update = if state == MintQuoteState::Paid {
             sqlx::query(update_query)
                 .bind(state.to_string())
@@ -1648,6 +1648,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
 
     let row_created_time: i64 = row.try_get("created_time").map_err(Error::from)?;
     let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
+    let row_issued_time: Option<i64> = row.try_get("issued_time").map_err(Error::from)?;
 
     let request_lookup_id = match row_request_lookup_id {
         Some(id) => id,
@@ -1672,6 +1673,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         pubkey,
         created_time: row_created_time as u64,
         paid_time: row_paid_time.map(|p| p as u64),
+        issued_time: row_issued_time.map(|p| p as u64),
     })
 }
 
