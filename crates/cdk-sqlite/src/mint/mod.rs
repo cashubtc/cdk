@@ -369,22 +369,28 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         let res = sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, amount, unit, request, state, expiry, request_lookup_id, pubkey)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+(id, amount, unit, request, state, expiry, request_lookup_id, pubkey, created_time, paid_time, issued_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     amount = excluded.amount,
     unit = excluded.unit,
     request = excluded.request,
     state = excluded.state,
     expiry = excluded.expiry,
-    request_lookup_id = excluded.request_lookup_id
+    request_lookup_id = excluded.request_lookup_id,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time,
+    issued_time = excluded.issued_time
 ON CONFLICT(request_lookup_id) DO UPDATE SET
     amount = excluded.amount,
     unit = excluded.unit,
     request = excluded.request,
     state = excluded.state,
     expiry = excluded.expiry,
-    id = excluded.id
+    id = excluded.id,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time,
+    issued_time = excluded.issued_time
         "#,
         )
         .bind(quote.id.to_string())
@@ -395,6 +401,9 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.expiry as i64)
         .bind(quote.request_lookup_id)
         .bind(quote.pubkey.map(|p| p.to_string()))
+        .bind(quote.created_time as i64)
+        .bind(quote.paid_time.map(|t| t as i64))
+        .bind(quote.issued_time.map(|t| t as i64))
         .execute(&mut *transaction)
         .await;
 
