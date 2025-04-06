@@ -40,6 +40,7 @@ const MINT_QUOTES_TABLE: TableDefinition<[u8; 16], &str> = TableDefinition::new(
 const MELT_QUOTES_TABLE: TableDefinition<[u8; 16], &str> = TableDefinition::new("melt_quotes");
 const PROOFS_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("proofs");
 const PROOFS_STATE_TABLE: TableDefinition<[u8; 33], &str> = TableDefinition::new("proofs_state");
+const PROOF_CREATED_TIME: TableDefinition<[u8; 33], u64> = TableDefinition::new("proof_created_time");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 // Key is hex blinded_message B_ value is blinded_signature
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
@@ -151,6 +152,7 @@ impl MintRedbDatabase {
                         let _ = write_txn.open_table(MELT_QUOTES_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_STATE_TABLE)?;
+                        let _ = write_txn.open_table(PROOF_CREATED_TIME)?;
                         let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
                         let _ = write_txn.open_table(BLIND_SIGNATURE_CREATED_TIME)?;
                         let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
@@ -586,9 +588,17 @@ impl MintProofsDatabase for MintRedbDatabase {
 
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            let mut time_table = write_txn.open_table(PROOF_CREATED_TIME).map_err(Error::from)?;
             let mut quote_proofs_table = write_txn
                 .open_multimap_table(QUOTE_PROOFS_TABLE)
                 .map_err(Error::from)?;
+                
+            // Get current timestamp in seconds
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| Error::TimeError)?
+                .as_secs();
+                
             for proof in proofs {
                 let y: PublicKey = hash_to_curve(&proof.secret.to_bytes()).map_err(Error::from)?;
                 let y = y.to_bytes();
@@ -598,6 +608,11 @@ impl MintProofsDatabase for MintRedbDatabase {
                             y,
                             serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
                         )
+                        .map_err(Error::from)?;
+                        
+                    // Store creation time
+                    time_table
+                        .insert(y, current_time)
                         .map_err(Error::from)?;
                 }
 
@@ -647,9 +662,11 @@ impl MintProofsDatabase for MintRedbDatabase {
 
         {
             let mut proofs_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            let mut time_table = write_txn.open_table(PROOF_CREATED_TIME).map_err(Error::from)?;
 
             for y in ys {
                 proofs_table.remove(&y.to_bytes()).map_err(Error::from)?;
+                time_table.remove(&y.to_bytes()).map_err(Error::from)?;
             }
         }
 
