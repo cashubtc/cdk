@@ -130,8 +130,6 @@ async fn main() -> anyhow::Result<()> {
                 #[cfg(feature = "sqlcipher")]
                 let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
 
-                sqlite_db.migrate().await;
-
                 Arc::new(sqlite_db)
             }
             #[cfg(feature = "redb")]
