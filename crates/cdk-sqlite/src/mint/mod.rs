@@ -1030,12 +1030,14 @@ impl MintProofsDatabase for MintSqliteDatabase {
 
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let current_time = unix_time();
+        
         for proof in proofs {
             let result = sqlx::query(
                 r#"
 INSERT OR IGNORE INTO proof
-(y, amount, keyset_id, secret, c, witness, state, quote_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+(y, amount, keyset_id, secret, c, witness, state, quote_id, created_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
             )
             .bind(proof.y()?.to_bytes().to_vec())
@@ -1046,6 +1048,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
             .bind("UNSPENT")
             .bind(quote_id.map(|q| q.hyphenated()))
+            .bind(current_time as i64)
             .execute(&mut *transaction)
             .await;
 
@@ -1344,12 +1347,14 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let current_time = unix_time();
+        
         for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
             let res = sqlx::query(
                 r#"
 INSERT INTO blind_signature
-(y, amount, keyset_id, c, quote_id, dleq_e, dleq_s)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(y, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
             )
             .bind(message.to_bytes().to_vec())
@@ -1359,6 +1364,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(quote_id.map(|q| q.hyphenated()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()))
+            .bind(current_time as i64)
             .execute(&mut *transaction)
             .await;
 
