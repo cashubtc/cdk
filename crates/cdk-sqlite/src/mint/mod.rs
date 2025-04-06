@@ -560,9 +560,13 @@ WHERE id=?;
         };
 
         let update_query = match state {
-            MintQuoteState::Paid => r#"UPDATE mint_quote SET state = ?, paid_time = ? WHERE id = ?"#,
-            MintQuoteState::Issued => r#"UPDATE mint_quote SET state = ?, issued_time = ? WHERE id = ?"#,
-            _ => r#"UPDATE mint_quote SET state = ? WHERE id = ?"#
+            MintQuoteState::Paid => {
+                r#"UPDATE mint_quote SET state = ?, paid_time = ? WHERE id = ?"#
+            }
+            MintQuoteState::Issued => {
+                r#"UPDATE mint_quote SET state = ?, issued_time = ? WHERE id = ?"#
+            }
+            _ => r#"UPDATE mint_quote SET state = ? WHERE id = ?"#,
         };
 
         let current_time = unix_time();
@@ -575,7 +579,7 @@ WHERE id=?;
                     .bind(quote_id.as_hyphenated())
                     .execute(&mut *transaction)
                     .await
-            },
+            }
             MintQuoteState::Issued => {
                 sqlx::query(update_query)
                     .bind(state.to_string())
@@ -583,7 +587,7 @@ WHERE id=?;
                     .bind(quote_id.as_hyphenated())
                     .execute(&mut *transaction)
                     .await
-            },
+            }
             _ => {
                 sqlx::query(update_query)
                     .bind(state.to_string())
