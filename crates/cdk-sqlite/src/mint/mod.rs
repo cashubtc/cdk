@@ -15,6 +15,7 @@ use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
+use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
     MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
@@ -832,8 +833,8 @@ WHERE id=?;
             r#"UPDATE melt_quote SET state = ? WHERE id = ?"#
         };
 
-        let current_time = cashu::util::unix_time();
-        
+        let current_time = unix_time();
+
         let rec = if state == MeltQuoteState::Paid {
             sqlx::query(update_query)
                 .bind(state.to_string())
