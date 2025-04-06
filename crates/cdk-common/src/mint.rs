@@ -29,6 +29,7 @@ pub struct MintQuote {
     /// Pubkey
     pub pubkey: Option<PublicKey>,
     /// Unix time quote was created
+    #[serde(default)]
     pub created_time: u64,
     /// Unix time quote was paid
     pub paid_time: Option<u64>,
