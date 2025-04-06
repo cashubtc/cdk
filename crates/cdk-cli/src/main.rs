@@ -128,8 +128,6 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                sql.migrate().await;
-
                 Arc::new(sql)
             }
             "redb" => {

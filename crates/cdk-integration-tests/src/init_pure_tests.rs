@@ -193,7 +193,6 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
                 let database = cdk_sqlite::MintSqliteDatabase::new(&path)
                     .await
                     .expect("Could not create sqlite db");
-                database.migrate().await;
                 Arc::new(database)
             }
             "redb" => {
@@ -206,7 +205,6 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
             }
             "memory" => {
                 let database = cdk_sqlite::mint::memory::empty().await?;
-                database.migrate().await;
                 Arc::new(database)
             }
             _ => {
@@ -289,7 +287,6 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
                 let database = cdk_sqlite::WalletSqliteDatabase::new(&path)
                     .await
                     .expect("Could not create sqlite db");
-                database.migrate().await;
                 Arc::new(database)
             }
             "redb" => {
@@ -302,7 +299,6 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
             }
             "memory" => {
                 let database = cdk_sqlite::wallet::memory::empty().await?;
-                database.migrate().await;
                 Arc::new(database)
             }
             _ => {

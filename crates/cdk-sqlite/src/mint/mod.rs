@@ -81,29 +81,34 @@ impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
     #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        Ok(Self {
+        let db = Self {
             pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
-        })
+        };
+        db.migrate().await?;
+        Ok(db)
     }
 
     /// Create new [`MintSqliteDatabase`]
     #[cfg(feature = "sqlcipher")]
     pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
-        Ok(Self {
+        let db = Self {
             pool: create_sqlite_pool(
                 path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
                 password,
             )
             .await?,
-        })
+        };
+        db.migrate().await?;
+        Ok(db)
     }
 
     /// Migrate [`MintSqliteDatabase`]
-    pub async fn migrate(&self) {
+    async fn migrate(&self) -> Result<(), Error> {
         sqlx::migrate!("./src/mint/migrations")
             .run(&self.pool)
             .await
-            .expect("Could not run migrations");
+            .map_err(|_| Error::CouldNotInitialize)?;
+        Ok(())
     }
 }
 

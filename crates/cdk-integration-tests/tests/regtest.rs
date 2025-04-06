@@ -199,7 +199,6 @@ async fn test_multimint_melt() -> Result<()> {
     )?;
 
     let db = Arc::new(memory::empty().await?);
-    db.migrate().await;
     let wallet2 = Wallet::new(
         &get_second_mint_url_from_env(),
         CurrencyUnit::Sat,
