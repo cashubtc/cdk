@@ -1031,7 +1031,7 @@ impl MintProofsDatabase for MintSqliteDatabase {
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let current_time = unix_time();
-        
+
         for proof in proofs {
             let result = sqlx::query(
                 r#"
@@ -1348,7 +1348,7 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let current_time = unix_time();
-        
+
         for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
             let res = sqlx::query(
                 r#"
