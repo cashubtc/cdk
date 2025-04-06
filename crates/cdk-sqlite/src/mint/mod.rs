@@ -717,8 +717,8 @@ WHERE id=?
         let res = sqlx::query(
             r#"
 INSERT INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay, created_time, paid_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
@@ -728,7 +728,9 @@ ON CONFLICT(id) DO UPDATE SET
     expiry = excluded.expiry,
     payment_preimage = excluded.payment_preimage,
     request_lookup_id = excluded.request_lookup_id,
-    msat_to_pay = excluded.msat_to_pay
+    msat_to_pay = excluded.msat_to_pay,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time
 ON CONFLICT(request_lookup_id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
@@ -737,7 +739,9 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
     state = excluded.state,
     expiry = excluded.expiry,
     payment_preimage = excluded.payment_preimage,
-    id = excluded.id;
+    id = excluded.id,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time;
         "#,
         )
         .bind(quote.id.to_string())
@@ -750,6 +754,8 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.payment_preimage)
         .bind(quote.request_lookup_id)
         .bind(quote.msat_to_pay.map(|a| u64::from(a) as i64))
+        .bind(quote.created_time as i64)
+        .bind(quote.paid_time.map(|t| t as i64))
         .execute(&mut *transaction)
         .await;
 
