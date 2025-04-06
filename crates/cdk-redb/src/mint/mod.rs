@@ -44,6 +44,8 @@ const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config")
 // Key is hex blinded_message B_ value is blinded_signature
 const BLINDED_SIGNATURES: TableDefinition<[u8; 33], &str> =
     TableDefinition::new("blinded_signatures");
+const BLIND_SIGNATURE_CREATED_TIME: TableDefinition<[u8; 33], u64> =
+    TableDefinition::new("blind_signature_created_time");
 const QUOTE_PROOFS_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
     MultimapTableDefinition::new("quote_proofs");
 const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
@@ -150,6 +152,7 @@ impl MintRedbDatabase {
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(PROOFS_STATE_TABLE)?;
                         let _ = write_txn.open_table(BLINDED_SIGNATURES)?;
+                        let _ = write_txn.open_table(BLIND_SIGNATURE_CREATED_TIME)?;
                         let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
                         let _ = write_txn.open_multimap_table(QUOTE_SIGNATURES_TABLE)?;
 
@@ -817,15 +820,29 @@ impl MintSignaturesDatabase for MintRedbDatabase {
             let mut table = write_txn
                 .open_table(BLINDED_SIGNATURES)
                 .map_err(Error::from)?;
+            let mut time_table = write_txn
+                .open_table(BLIND_SIGNATURE_CREATED_TIME)
+                .map_err(Error::from)?;
             let mut quote_sigs_table = write_txn
                 .open_multimap_table(QUOTE_SIGNATURES_TABLE)
                 .map_err(Error::from)?;
+                
+            // Get current timestamp in seconds
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| Error::TimeError)?
+                .as_secs();
 
             for (blinded_message, blind_signature) in blinded_messages.iter().zip(blind_signatures)
             {
                 let blind_sig = serde_json::to_string(&blind_signature).map_err(Error::from)?;
                 table
                     .insert(blinded_message.to_bytes(), blind_sig.as_str())
+                    .map_err(Error::from)?;
+                    
+                // Store creation time
+                time_table
+                    .insert(blinded_message.to_bytes(), current_time)
                     .map_err(Error::from)?;
 
                 if let Some(quote_id) = &quote_id {
