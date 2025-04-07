@@ -1899,9 +1899,7 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
     let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
     let row_payment_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
 
-    let payment_method = row_payment_method
-        .map(|p| PaymentMethod::from_str(&p).ok())
-        .flatten();
+    let payment_method = row_payment_method.and_then(|p| PaymentMethod::from_str(&p).ok());
 
     Ok(mint::MeltQuote {
         id: row_id.into_uuid(),

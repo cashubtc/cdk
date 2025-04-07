@@ -58,6 +58,7 @@ pub struct MintQuote {
 
 impl MintQuote {
     /// Create new [`MintQuote`]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: Option<Uuid>,
         request: String,
@@ -175,7 +176,7 @@ impl MintQuote {
                 MintQuoteState::Issued
             }
             std::cmp::Ordering::Equal => {
-                // We do this extra check for backwards compatablity for quotes where amount paid/issed was not tracked
+                // We do this extra check for backwards compatibility for quotes where amount paid/issed was not tracked
                 // self.amount_paid equals other (amount issued)
                 // Handle case where paid amount exactly matches
                 MintQuoteState::Issued
@@ -226,6 +227,7 @@ pub struct MeltQuote {
 
 impl MeltQuote {
     /// Create new [`MeltQuote`]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request: String,
         unit: CurrencyUnit,

@@ -126,6 +126,6 @@ impl Mint {
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
-        Ok(quote.try_into()?)
+        quote.try_into()
     }
 }
