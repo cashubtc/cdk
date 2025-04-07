@@ -9,6 +9,8 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::melt::MeltRequest;
+use cdk_common::mint::MeltPaymentRequest;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -43,6 +45,7 @@ mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
+pub use issue::{MintQuoteRequest, MintQuoteResponse};
 pub use verification::Verification;
 
 /// Cashu Mint
@@ -327,6 +330,13 @@ impl Mint {
                 let key = key.clone();
                 join_set.spawn(async move {
             loop {
+
+                // HACK: Think is is a hack
+                // if ln.is_wait_invoice_active() {
+                //     tracing::warn!("Wait invoice is active for: {:?}", key);
+                //     break;
+                // }
+
                 tracing::info!("Restarting wait for: {:?}", key);
                 tokio::select! {
                     _ = shutdown.notified() => {
@@ -337,8 +347,8 @@ impl Mint {
                     result = ln.wait_any_incoming_payment() => {
                         match result {
                             Ok(mut stream) => {
-                                while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id).await {
+                                while let Some(wait_payment_response) = stream.next().await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_payment_response).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }
@@ -482,13 +492,14 @@ impl Mint {
     pub async fn handle_internal_melt_mint(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request<Uuid>,
+        melt_request: &MeltRequest,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        let request = match &melt_quote.request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11.to_string(),
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => offer.to_string(),
+        };
+
+        let mint_quote = match self.localstore.get_mint_quote_by_request(&request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -499,33 +510,38 @@ impl Mint {
         };
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
+        if mint_quote.state() == MintQuoteState::Issued
+            || mint_quote.state() == MintQuoteState::Paid
+        {
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
             tracing::error!("Proof inputs in melt quote overflowed");
             Error::AmountOverflow
         })?;
 
-        let mut mint_quote = mint_quote;
-
-        if mint_quote.amount > inputs_amount_quote_unit {
-            tracing::debug!(
-                "Not enough inuts provided: {} needed {}",
-                inputs_amount_quote_unit,
-                mint_quote.amount
-            );
-            return Err(Error::InsufficientFunds);
+        if let Some(amount) = mint_quote.amount {
+            if amount > inputs_amount_quote_unit {
+                tracing::debug!(
+                    "Not enough inuts provided: {} needed {}",
+                    inputs_amount_quote_unit,
+                    amount
+                );
+                return Err(Error::InsufficientFunds);
+            }
         }
 
-        mint_quote.state = MintQuoteState::Paid;
+        // REVIEW: We increment the mint quote here but there are error cases after this where this should be reverted.
+        self.localstore
+            .increment_mint_quote_amount_paid(
+                &mint_quote.id,
+                melt_quote.amount,
+                format!("{}:{}", mint_quote.id, melt_quote.id),
+            )
+            .await?;
 
-        let amount = melt_quote.amount;
-
-        self.update_mint_quote(mint_quote).await?;
-
-        Ok(Some(amount))
+        Ok(Some(melt_quote.amount))
     }
 
     /// Restore
@@ -660,7 +676,6 @@ mod tests {
     use cdk_common::common::PaymentProcessorKey;
     use cdk_sqlite::mint::memory::new_with_state;
     use secp256k1::Secp256k1;
-    use uuid::Uuid;
 
     use super::*;
 
@@ -761,7 +776,7 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-        melt_requests: Vec<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>,
+        melt_requests: Vec<(MeltRequest, PaymentProcessorKey)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {

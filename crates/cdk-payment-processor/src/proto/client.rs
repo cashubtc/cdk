@@ -7,9 +7,10 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    OutgoingPaymentOptions, PaymentIdentifier as CdkPaymentIdentifier, PaymentQuoteResponse,
+    WaitPaymentResponse,
 };
-use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState};
+use cdk_common::CurrencyUnit;
 use futures::{Stream, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -19,8 +20,9 @@ use tracing::instrument;
 
 use super::cdk_payment_processor_client::CdkPaymentProcessorClient;
 use super::{
-    CheckIncomingPaymentRequest, CheckOutgoingPaymentRequest, CreatePaymentRequest,
-    MakePaymentRequest, SettingsRequest, WaitIncomingPaymentRequest,
+    cdk_payment_id_to_proto, proto_to_cdk_payment_id, CheckIncomingPaymentRequest,
+    CheckOutgoingPaymentRequest, CreatePaymentRequest, MakePaymentRequest, SettingsRequest,
+    WaitIncomingPaymentRequest,
 };
 
 /// Payment Processor
@@ -34,7 +36,7 @@ pub struct PaymentProcessorClient {
 impl PaymentProcessorClient {
     /// Payment Processor
     pub async fn new(addr: &str, port: u16, tls_dir: Option<PathBuf>) -> anyhow::Result<Self> {
-        let addr = format!("{}:{}", addr, port);
+        let addr = format!("{addr}:{port}");
         let channel = if let Some(tls_dir) = tls_dir {
             // TLS directory exists, configure TLS
 
@@ -42,7 +44,7 @@ impl PaymentProcessorClient {
             let ca_pem_path = tls_dir.join("ca.pem");
             if !ca_pem_path.exists() {
                 let err_msg = format!("CA certificate file not found: {}", ca_pem_path.display());
-                tracing::error!("{}", err_msg);
+                tracing::error!("{err_msg}");
                 return Err(anyhow!(err_msg));
             }
 
@@ -53,7 +55,7 @@ impl PaymentProcessorClient {
                     "Client certificate file not found: {}",
                     client_pem_path.display()
                 );
-                tracing::error!("{}", err_msg);
+                tracing::error!("{err_msg}");
                 return Err(anyhow!(err_msg));
             }
 
@@ -61,7 +63,7 @@ impl PaymentProcessorClient {
             let client_key_path = tls_dir.join("client.key");
             if !client_key_path.exists() {
                 let err_msg = format!("Client key file not found: {}", client_key_path.display());
-                tracing::error!("{}", err_msg);
+                tracing::error!("{err_msg}");
                 return Err(anyhow!(err_msg));
             }
 
@@ -103,7 +105,7 @@ impl MintPayment for PaymentProcessorClient {
             .get_settings(Request::new(SettingsRequest {}))
             .await
             .map_err(|err| {
-                tracing::error!("Could not get settings: {}", err);
+                tracing::error!("Could not get settings: {err}");
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 
@@ -115,22 +117,46 @@ impl MintPayment for PaymentProcessorClient {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        description: String,
-        unix_expiry: Option<u64>,
+        options: cdk_common::payment::IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
+
+        // Convert from common IncomingPaymentOptions to protobuf IncomingPaymentOptions
+        let proto_options = match options {
+            cdk_common::payment::IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                super::IncomingPaymentOptions {
+                    options: Some(super::incoming_payment_options::Options::Bolt11(
+                        super::Bolt11IncomingPaymentOptions {
+                            description: bolt11_options.description,
+                            amount: bolt11_options.amount.into(),
+                            unix_expiry: bolt11_options.unix_expiry,
+                        },
+                    )),
+                }
+            }
+            cdk_common::payment::IncomingPaymentOptions::Bolt12(bolt12_options) => {
+                super::IncomingPaymentOptions {
+                    options: Some(super::incoming_payment_options::Options::Bolt12(
+                        super::Bolt12IncomingPaymentOptions {
+                            description: bolt12_options.description,
+                            amount: bolt12_options.amount.map(|a| a.into()),
+                            unix_expiry: bolt12_options.unix_expiry,
+                            single_use: bolt12_options.single_use,
+                        },
+                    )),
+                }
+            }
+        };
+
         let response = inner
             .create_payment(Request::new(CreatePaymentRequest {
-                amount: amount.into(),
                 unit: unit.to_string(),
-                description,
-                unix_expiry,
+                options: Some(proto_options),
             }))
             .await
             .map_err(|err| {
-                tracing::error!("Could not create payment request: {}", err);
+                tracing::error!("Could not create payment request: {err}");
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 
@@ -143,44 +169,140 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn get_payment_quote(
         &self,
-        request: &str,
         unit: &CurrencyUnit,
-        options: Option<MeltOptions>,
+        options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         let mut inner = self.inner.clone();
+
+        // Determine the request type and string based on the OutgoingPaymentOptions variant
+        let (request_str, request_type) = match &options {
+            OutgoingPaymentOptions::Bolt11(bolt11_options) => (
+                bolt11_options.bolt11.to_string(),
+                super::OutgoingPaymentRequestType::Bolt11Invoice,
+            ),
+            OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                // Get the reference from the Box
+                let bolt12_options = &**bolt12_options;
+                (
+                    bolt12_options.offer.to_string(),
+                    super::OutgoingPaymentRequestType::Bolt12Offer,
+                )
+            }
+        };
+
+        // Extract MeltOptions if present
+        let melt_options = match &options {
+            OutgoingPaymentOptions::Bolt11(bolt11_options) => bolt11_options.melt_options,
+            OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                // For Bolt12, we might have MeltOptions in the form of Amountless
+                bolt12_options
+                    .amount
+                    .map(cdk_common::MeltOptions::new_amountless)
+            }
+        };
+
         let response = inner
             .get_payment_quote(Request::new(super::PaymentQuoteRequest {
-                request: request.to_string(),
+                request: request_str,
                 unit: unit.to_string(),
-                options: options.map(|o| o.into()),
+                options: melt_options.map(|o| o.into()),
+                request_type: request_type.into(),
             }))
             .await
             .map_err(|err| {
-                tracing::error!("Could not get payment quote: {}", err);
+                tracing::error!("Could not get payment quote: {err}");
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 
         let response = response.into_inner();
 
-        Ok(response.into())
+        response.try_into().map_err(|err| {
+            tracing::error!("Could not convert payment quote response: {err}");
+            cdk_common::payment::Error::Custom(format!("Failed to convert payment quote: {err}"))
+        })
     }
 
     async fn make_payment(
         &self,
-        melt_quote: mint::MeltQuote,
-        partial_amount: Option<Amount>,
-        max_fee_amount: Option<Amount>,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
+
+        // We need to create a MeltQuote from the OutgoingPaymentOptions
+        // This is a bit of a hack since the gRPC API expects a MeltQuote
+        // First, we need to get a payment quote to construct the MeltQuote
+        let payment_quote = self.get_payment_quote(unit, options.clone()).await?;
+
+        // Construct a minimal MeltQuote for the request
+        let melt_quote = super::MeltQuote {
+            // Use the payment_quote's ID
+            id: payment_quote.request_lookup_id.to_string(),
+            // Use the provided unit
+            unit: unit.to_string(),
+            // Use the payment_quote's amount
+            amount: payment_quote.amount.into(),
+            // Convert the request from OutgoingPaymentOptions to string
+            request: match &options {
+                OutgoingPaymentOptions::Bolt11(bolt11) => bolt11.bolt11.to_string(),
+                OutgoingPaymentOptions::Bolt12(bolt12) => {
+                    // Access the boxed Bolt12 options
+                    bolt12.offer.to_string()
+                }
+            },
+            // Use the payment_quote's fee
+            fee_reserve: payment_quote.fee.into(),
+            // Set the state to UNPAID
+            state: super::QuoteState::Unpaid.into(),
+            // Default expiry
+            expiry: 0,
+            // No payment preimage yet
+            payment_preimage: None,
+            // Use the payment_quote's request_identifier
+            request_identifier: Some(cdk_payment_id_to_proto(&payment_quote.request_lookup_id)),
+            // Use the payment_quote's amount
+            msat_to_pay: Some(payment_quote.amount.into()),
+            // Current time in seconds
+            created_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            // No paid time yet
+            paid_time: None,
+            // Payment method based on the options
+            payment_method: match &options {
+                OutgoingPaymentOptions::Bolt11(_) => "bolt11".to_string(),
+                OutgoingPaymentOptions::Bolt12(_) => "bolt12".to_string(),
+            },
+            // MeltOptions from options if available
+            options: match &options {
+                OutgoingPaymentOptions::Bolt11(bolt11_options) => {
+                    bolt11_options.melt_options.map(|o| o.into())
+                }
+                OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                    // For Bolt12, we might have MeltOptions in the form of Amountless
+                    bolt12_options
+                        .amount
+                        .map(|amount| cdk_common::MeltOptions::new_amountless(amount).into())
+                }
+            },
+        };
+
+        // Extract max fee amount if present
+        let max_fee_amount = match &options {
+            OutgoingPaymentOptions::Bolt11(bolt11) => bolt11.max_fee_amount,
+            OutgoingPaymentOptions::Bolt12(bolt12) => bolt12.max_fee_amount,
+        };
+
         let response = inner
             .make_payment(Request::new(MakePaymentRequest {
-                melt_quote: Some(melt_quote.into()),
-                partial_amount: partial_amount.map(|a| a.into()),
+                melt_quote: Some(melt_quote),
+                partial_amount: None,
                 max_fee_amount: max_fee_amount.map(|a| a.into()),
             }))
             .await
             .map_err(|err| {
-                tracing::error!("Could not pay payment request: {}", err);
+                tracing::error!("Could not pay payment request: {err}");
 
                 if err.message().contains("already paid") {
                     cdk_common::payment::Error::InvoiceAlreadyPaid
@@ -202,7 +324,7 @@ impl MintPayment for PaymentProcessorClient {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         self.wait_incoming_payment_stream_is_active
             .store(true, Ordering::SeqCst);
         tracing::debug!("Client waiting for payment");
@@ -211,10 +333,10 @@ impl MintPayment for PaymentProcessorClient {
             .wait_incoming_payment(WaitIncomingPaymentRequest {})
             .await
             .map_err(|err| {
-                tracing::error!("Could not check incoming payment stream: {}", err);
+                tracing::error!("Could not check incoming payment stream: {err}");
                 cdk_common::payment::Error::Custom(err.to_string())
-            })?
-            .into_inner();
+            })?;
+        let stream = stream.into_inner();
 
         let cancel_token = self.cancel_incoming_payment_listener.clone();
         let cancel_fut = cancel_token.cancelled_owned();
@@ -225,11 +347,27 @@ impl MintPayment for PaymentProcessorClient {
             .filter_map(|item| async move {
                 match item {
                     Ok(value) => {
-                        tracing::warn!("{}", value.lookup_id);
-                        Some(value.lookup_id)
+                        if let Some(payment_id) = &value.payment_identifier {
+                            match proto_to_cdk_payment_id(payment_id) {
+                                Ok(identifier) => Some(WaitPaymentResponse {
+                                    payment_identifier: identifier,
+                                    payment_amount: value.payment_amount.into(),
+                                    // TODO: Handle this error
+                                    unit: CurrencyUnit::from_str(&value.unit).expect("Valid unit"),
+                                    payment_id: value.payment_id,
+                                }),
+                                Err(e) => {
+                                    tracing::error!("Error converting payment identifier: {e}");
+                                    None
+                                }
+                            }
+                        } else {
+                            tracing::error!("Payment identifier is missing");
+                            None
+                        }
                     }
                     Err(e) => {
-                        tracing::error!("Error in payment stream: {}", e);
+                        tracing::error!("Error in payment stream: {e}");
                         None // Skip this item and continue with the stream
                     }
                 }
@@ -255,38 +393,47 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn check_incoming_payment_status(
         &self,
-        request_lookup_id: &str,
-    ) -> Result<MintQuoteState, Self::Err> {
+        request_lookup_id: &CdkPaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
             .check_incoming_payment(Request::new(CheckIncomingPaymentRequest {
-                request_lookup_id: request_lookup_id.to_string(),
+                request_identifier: Some(cdk_payment_id_to_proto(request_lookup_id)),
             }))
             .await
             .map_err(|err| {
-                tracing::error!("Could not check incoming payment: {}", err);
+                tracing::error!("Could not check incoming payment: {err}");
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 
         let check_incoming = response.into_inner();
 
-        let status = check_incoming.status().as_str_name();
-
-        Ok(MintQuoteState::from_str(status)?)
+        // Convert the CheckIncomingPaymentResponse to Vec<WaitPaymentResponse>
+        Ok(check_incoming
+            .payments
+            .into_iter()
+            .map(|p| WaitPaymentResponse {
+                payment_identifier: proto_to_cdk_payment_id(p.payment_identifier.as_ref().unwrap())
+                    .unwrap(),
+                payment_amount: p.payment_amount.into(),
+                unit: CurrencyUnit::from_str(&p.unit).expect("Valid unit"),
+                payment_id: p.payment_id,
+            })
+            .collect())
     }
 
     async fn check_outgoing_payment(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &CdkPaymentIdentifier,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
             .check_outgoing_payment(Request::new(CheckOutgoingPaymentRequest {
-                request_lookup_id: request_lookup_id.to_string(),
+                request_identifier: Some(cdk_payment_id_to_proto(request_lookup_id)),
             }))
             .await
             .map_err(|err| {
-                tracing::error!("Could not check outgoing payment: {}", err);
+                tracing::error!("Could not check outgoing payment: {err}");
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 

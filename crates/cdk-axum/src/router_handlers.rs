@@ -177,11 +177,11 @@ pub(crate) async fn post_mint_bolt11_quote(
 
     let quote = state
         .mint
-        .get_mint_bolt11_quote(payload)
+        .get_mint_quote(payload.into())
         .await
         .map_err(into_response)?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -226,7 +226,7 @@ pub(crate) async fn get_check_mint_bolt11_quote(
             into_response(err)
         })?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[instrument(skip_all)]
@@ -313,7 +313,7 @@ pub(crate) async fn post_melt_bolt11_quote(
 
     let quote = state
         .mint
-        .get_melt_bolt11_quote(&payload)
+        .get_melt_quote(payload.into())
         .await
         .map_err(into_response)?;
 
@@ -398,7 +398,7 @@ pub(crate) async fn post_melt_bolt11(
 
     let res = state
         .mint
-        .melt_bolt11(&payload)
+        .melt(&payload.into())
         .await
         .map_err(into_response)?;
 

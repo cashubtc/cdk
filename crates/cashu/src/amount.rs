@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 
+use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -26,6 +27,12 @@ pub enum Error {
     /// Invalid amount
     #[error("Invalid Amount: {0}")]
     InvalidAmount(String),
+    /// Amount undefined
+    #[error("Amount undefined")]
+    AmountUndefined,
+    /// Utf8 parse error
+    #[error(transparent)]
+    Utf8ParseError(#[from] std::string::FromUtf8Error),
 }
 
 /// Amount can be any unit
@@ -262,6 +269,27 @@ impl std::ops::Div for Amount {
     fn div(self, other: Self) -> Self::Output {
         Amount(self.0 / other.0)
     }
+}
+
+/// Convert offer to amount in unit
+pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Error> {
+    let offer_amount = offer.amount().ok_or(Error::AmountUndefined)?;
+
+    let (amount, currency) = match offer_amount {
+        lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
+            (amount_msats, CurrencyUnit::Msat)
+        }
+        lightning::offers::offer::Amount::Currency {
+            iso4217_code,
+            amount,
+        } => (
+            amount,
+            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)
+                .map_err(|_| Error::CannotConvertUnits)?,
+        ),
+    };
+
+    to_unit(amount, &currency, unit).map_err(|_err| Error::CannotConvertUnits)
 }
 
 /// Kinds of targeting that are supported
