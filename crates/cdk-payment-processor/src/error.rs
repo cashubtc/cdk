@@ -8,6 +8,9 @@ pub enum Error {
     /// Invalid ID
     #[error("Invalid id")]
     InvalidId,
+    /// Invalid hash
+    #[error("Invalid hash")]
+    InvalidHash,
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] cdk_common::nuts::nut00::Error),

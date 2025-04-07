@@ -17,6 +17,9 @@ pub enum Error {
     /// Invalid payment hash
     #[error("Invalid hash")]
     InvalidHash,
+    /// Invalid payment hash
+    #[error("Invalid payment hash")]
+    InvalidPaymentHash,
     /// Cln Error
     #[error(transparent)]
     Cln(#[from] cln_rpc::Error),
@@ -26,6 +29,9 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] cdk_common::amount::Error),
+    /// Utf8 parse error
+    #[error(transparent)]
+    Utf8ParseError(#[from] std::string::FromUtf8Error),
 }
 
 impl From<Error> for cdk_common::payment::Error {

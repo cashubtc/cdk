@@ -40,6 +40,7 @@ async fn test_correct_keyset() {
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
             MintMeltLimits::new(1, 5_000),
+            None,
             Arc::new(fake_wallet),
         )
         .await

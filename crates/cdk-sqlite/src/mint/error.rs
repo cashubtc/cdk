@@ -8,6 +8,9 @@ pub enum Error {
     /// SQLX Error
     #[error(transparent)]
     SQLX(#[from] sqlx::Error),
+    /// CDK Error
+    #[error(transparent)]
+    CDK(#[from] cdk_common::error::Error),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),
@@ -59,6 +62,18 @@ pub enum Error {
     /// Invalid keyset ID
     #[error("Invalid keyset ID")]
     InvalidKeysetId,
+    /// Quote already pending
+    #[error("Quote is alreadu pending")]
+    QuotePending,
+    /// Parse invoice error
+    #[error(transparent)]
+    Invoice(#[from] lightning_invoice::ParseOrSemanticError),
+    /// Invalid payment method
+    #[error("Unsupported payment method")]
+    UnsupportedPaymentMethod,
+    /// Parse invoice error
+    #[error(transparent)]
+    Uuid(#[from] uuid::Error),
 }
 
 impl From<Error> for cdk_common::database::Error {
