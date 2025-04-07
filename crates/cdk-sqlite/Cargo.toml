@@ -18,7 +18,7 @@ sqlcipher = ["libsqlite3-sys"]
 kvac = ["dep:cashu_kvac"]
 
 [dependencies]
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", tag = "v0.0.4-alpha", optional = true }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", tag = "v0.0.5-alpha", optional = true }
 async-trait.workspace = true
 cdk-common.workspace = true
 bitcoin.workspace = true

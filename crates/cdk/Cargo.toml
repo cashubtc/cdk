@@ -22,7 +22,7 @@ http_subscription = []
 
 
 [dependencies]
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", tag = "v0.0.4-alpha", optional = true }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", tag = "v0.0.5-alpha", optional = true }
 cdk-common.workspace = true
 cbor-diag.workspace = true
 async-trait.workspace = true
