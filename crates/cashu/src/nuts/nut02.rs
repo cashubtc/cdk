@@ -153,6 +153,7 @@ impl Id {
         bytes
     }*/
 
+    /// *** V2 KEYSET ***
     /// create [`Id`] v2 from keys, unit and (optionally) expiry
     /// 1 - sort public keys by their amount in ascending order
     /// 2 - concatenate all public keys to one byte array
@@ -297,6 +298,83 @@ impl From<Id> for String {
         value.to_string()
     }
 }
+
+
+/// Improper prefix of the keyset ID. In case of v1, this is the whole ID.
+/// In case of v2, this is the 8-byte prefix
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct ShortKeysetId {
+    /// The version of the short keyset
+    version: KeySetVersion,
+    /// The improper prefix of the keyset ID bytes
+    prefix: [u8; 7]
+}
+
+impl From<Id> for ShortKeysetId {
+    fn from(id: Id) -> Self {
+        match id.version {
+            KeySetVersion::Version00 => Self { version: id.version, prefix: match id.id { IdBytes::V1(idbytes) => idbytes, _ => panic!("Unexpected IdBytes length") } },
+            KeySetVersion::Version01 => {
+                let version = id.version;
+                let mut prefix: [u8; 7] = [0u8; 7];
+                match id.id {
+                    IdBytes::V2(idbytes) => prefix.copy_from_slice(&idbytes[..7]),
+                    _ => panic!("Unexpected IdBytes length")
+                }
+
+                Self {
+                    version,
+                    prefix
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Display for ShortKeysetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hex_id = hex::encode(self.prefix);
+        f.write_str(&format!("{}{}", self.version, hex_id))
+    }
+}
+
+impl fmt::Debug for ShortKeysetId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let hex_id = hex::encode(self.prefix);
+        f.write_str(&format!("{}{}", self.version, hex_id))
+    }
+}
+
+impl TryFrom<String> for ShortKeysetId {
+    type Error = Error;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        ensure_cdk!(s.len() == 16, Error::Length);
+
+        let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
+        let mut prefix: [u8; 7] = [0u8; 7];
+        prefix.copy_from_slice(&hex::decode(&s[2..])?);
+
+        Ok(Self { version, prefix })
+    }
+}
+
+impl FromStr for ShortKeysetId {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s.to_string())
+    }
+}
+
+impl From<ShortKeysetId> for String {
+    fn from(value: ShortKeysetId) -> Self {
+        value.to_string()
+    }
+}
+
 
 /// Mint Keysets [NUT-02]
 /// Ids of mints keyset ids
@@ -522,7 +600,7 @@ mod test {
 
     use bitcoin::secp256k1::rand::{self, RngCore};
 
-    use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse};
+    use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
     use crate::util::hex;
@@ -755,5 +833,17 @@ mod test {
 
         let id_from_uppercase = Id::from_str(&SHORT_KEYSET_ID.to_uppercase());
         assert!(id_from_uppercase.is_ok());
+    }
+
+    #[test]
+    fn test_short_keyset_id_from_id() {
+        let idv1 = Id::from_str("009a1f293253e41e").unwrap();
+        let idv2 = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9").unwrap();
+
+        let short_id_1: ShortKeysetId = idv1.into();
+        let short_id_2: ShortKeysetId = idv2.into();
+
+        assert!(short_id_1.to_string() == "009a1f293253e41e");
+        assert!(short_id_2.to_string() == "0125bc634e270ad7")
     }
 }
