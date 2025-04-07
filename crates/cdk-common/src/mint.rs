@@ -1,6 +1,7 @@
 //! Mint types
 
 use bitcoin::bip32::DerivationPath;
+use cashu::util::unix_time;
 use cashu::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -27,6 +28,13 @@ pub struct MintQuote {
     pub request_lookup_id: String,
     /// Pubkey
     pub pubkey: Option<PublicKey>,
+    /// Unix time quote was created
+    #[serde(default)]
+    pub created_time: u64,
+    /// Unix time quote was paid
+    pub paid_time: Option<u64>,
+    /// Unix time quote was issued
+    pub issued_time: Option<u64>,
 }
 
 impl MintQuote {
@@ -50,6 +58,9 @@ impl MintQuote {
             expiry,
             request_lookup_id,
             pubkey,
+            created_time: unix_time(),
+            paid_time: None,
+            issued_time: None,
         }
     }
 }
@@ -79,6 +90,11 @@ pub struct MeltQuote {
     ///
     /// Used for an amountless invoice
     pub msat_to_pay: Option<Amount>,
+    /// Unix time quote was created
+    #[serde(default)]
+    pub created_time: u64,
+    /// Unix time quote was paid
+    pub paid_time: Option<u64>,
 }
 
 impl MeltQuote {
@@ -105,6 +121,8 @@ impl MeltQuote {
             payment_preimage: None,
             request_lookup_id,
             msat_to_pay,
+            created_time: unix_time(),
+            paid_time: None,
         }
     }
 }

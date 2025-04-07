@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use cdk_common::mint::MintQuote;
 use cdk_common::mint_url::MintUrl;
+use cdk_common::util::unix_time;
 use cdk_common::{Amount, CurrencyUnit, MintQuoteState, Proof, State};
 use lightning_invoice::Bolt11Invoice;
 use redb::{
@@ -209,6 +210,9 @@ impl From<V1MintQuote> for MintQuote {
             expiry: quote.expiry,
             request_lookup_id: Bolt11Invoice::from_str(&quote.request).unwrap().to_string(),
             pubkey: None,
+            created_time: unix_time(),
+            paid_time: None,
+            issued_time: None,
         }
     }
 }
