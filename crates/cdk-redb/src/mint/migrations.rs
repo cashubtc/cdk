@@ -5,16 +5,17 @@ use std::sync::Arc;
 
 use cdk_common::mint::MintQuote;
 use cdk_common::mint_url::MintUrl;
-use cdk_common::util::unix_time;
-use cdk_common::{Amount, CurrencyUnit, MintQuoteState, Proof, State};
+use cdk_common::util::{hex, unix_time};
+use cdk_common::{Amount, CurrencyUnit, MintQuoteState, Proof, PublicKey, State};
 use lightning_invoice::Bolt11Invoice;
 use redb::{
     Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use uuid::Uuid;
 
-use super::{Error, PROOFS_STATE_TABLE, PROOFS_TABLE, QUOTE_SIGNATURES_TABLE};
+use super::{Error, MINT_QUOTES_TABLE, PROOFS_STATE_TABLE, PROOFS_TABLE, QUOTE_SIGNATURES_TABLE};
 
 const ID_STR_MINT_QUOTES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_quotes");
 const PENDING_PROOFS_TABLE: TableDefinition<[u8; 33], &str> =
@@ -187,6 +188,66 @@ pub fn migrate_04_to_05(db: Arc<Database>) -> Result<u32, Error> {
     Ok(5)
 }
 
+#[instrument(skip_all)]
+pub fn migrate_05_to_06(db: Arc<Database>) -> Result<u32, Error> {
+    let read_txn = db.begin_read().map_err(Error::from)?;
+    let table = read_txn
+        .open_table(MINT_QUOTES_TABLE)
+        .map_err(Error::from)?;
+
+    let mint_quotes: HashMap<[u8; 16], Option<V5MintQuote>>;
+    {
+        mint_quotes = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .map(|(quote_id, mint_quote)| {
+                (
+                    quote_id.value(),
+                    serde_json::from_str(mint_quote.value()).ok(),
+                )
+            })
+            .collect();
+    }
+
+    let mint_quotes_count = mint_quotes.capacity();
+
+    tracing::info!("{} mint quotes before migrations.", mint_quotes_count);
+
+    let migrated_mint_quotes: HashMap<[u8; 16], Option<MintQuote>> = mint_quotes
+        .into_iter()
+        .map(|(quote_id, quote)| (quote_id, quote.map(|q| q.into())))
+        .collect();
+
+    tracing::info!(
+        "{} mint quotes after migrations.",
+        migrated_mint_quotes.capacity()
+    );
+
+    assert_eq!(mint_quotes_count, migrated_mint_quotes.capacity());
+
+    {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            for (quote_id, quote) in migrated_mint_quotes {
+                if let Some(quote) = quote {
+                    table.insert(quote_id, serde_json::to_string(&quote)?.as_str())?;
+                } else {
+                    tracing::warn!("Mint quote with is {:?} failed to be migrated.", quote_id);
+                }
+            }
+        }
+
+        write_txn.commit()?;
+    }
+
+    Ok(6)
+}
+
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct V1MintQuote {
@@ -195,13 +256,66 @@ struct V1MintQuote {
     pub amount: Amount,
     pub unit: CurrencyUnit,
     pub request: String,
-    pub state: MintQuoteState,
+    pub state: V4QuoteState,
     pub expiry: u64,
 }
 
-impl From<V1MintQuote> for MintQuote {
-    fn from(quote: V1MintQuote) -> MintQuote {
-        MintQuote {
+/// Possible states of a quote
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum V4QuoteState {
+    /// Quote has not been paid
+    #[default]
+    Unpaid,
+    /// Quote has been paid and wallet can mint
+    Paid,
+    /// ecash issued for quote
+    Issued,
+    Pending,
+}
+
+impl From<V4QuoteState> for MintQuoteState {
+    fn from(value: V4QuoteState) -> Self {
+        match value {
+            V4QuoteState::Unpaid => Self::Unpaid,
+            V4QuoteState::Paid => Self::Paid,
+            V4QuoteState::Issued => Self::Issued,
+            V4QuoteState::Pending => Self::Unpaid,
+        }
+    }
+}
+
+/// Mint Quote Info
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct V5MintQuote {
+    /// Quote id
+    pub id: Uuid,
+    /// Amount of quote
+    pub amount: Amount,
+    /// Unit of quote
+    pub unit: CurrencyUnit,
+    /// Quote payment request e.g. bolt11
+    pub request: String,
+    /// Quote state
+    pub state: V4QuoteState,
+    /// Expiration time of quote
+    pub expiry: u64,
+    /// Value used by ln backend to look up state of request
+    pub request_lookup_id: String,
+    /// Pubkey
+    pub pubkey: Option<PublicKey>,
+    /// Unix time quote was created
+    #[serde(default)]
+    pub created_time: u64,
+    /// Unix time quote was paid
+    pub paid_time: Option<u64>,
+    /// Unix time quote was issued
+    pub issued_time: Option<u64>,
+}
+
+impl From<V1MintQuote> for V5MintQuote {
+    fn from(quote: V1MintQuote) -> Self {
+        Self {
             id: quote.id,
             amount: quote.amount,
             unit: quote.unit,
@@ -214,6 +328,61 @@ impl From<V1MintQuote> for MintQuote {
             paid_time: None,
             issued_time: None,
         }
+    }
+}
+
+impl From<V5MintQuote> for MintQuote {
+    fn from(quote: V5MintQuote) -> MintQuote {
+        let pending = matches!(quote.state, V4QuoteState::Pending);
+
+        let mut payment_ids = vec![];
+
+        let request_lookup_id = cdk_common::payment::PaymentIdentifier::PaymentHash(
+            hex::decode(quote.request_lookup_id.clone())
+                .expect("Valid hex")
+                .try_into()
+                .expect("Valid hash"),
+        );
+
+        let (amount_paid, amount_issued) = match quote.state {
+            V4QuoteState::Unpaid => (Amount::ZERO, Amount::ZERO),
+            V4QuoteState::Paid => {
+                payment_ids.push(quote.request_lookup_id);
+                (quote.amount, Amount::ZERO)
+            }
+            V4QuoteState::Issued => (quote.amount, quote.amount),
+            V4QuoteState::Pending => (Amount::ZERO, Amount::ZERO),
+        };
+
+        let paid_time = if let Some(paid) = quote.paid_time {
+            vec![paid]
+        } else {
+            vec![]
+        };
+
+        let issued_time = if let Some(issued) = quote.issued_time {
+            vec![issued]
+        } else {
+            vec![]
+        };
+
+        Self::new(
+            Some(quote.id),
+            quote.request,
+            quote.unit,
+            Some(quote.amount),
+            quote.expiry,
+            request_lookup_id,
+            quote.pubkey,
+            amount_paid,
+            amount_issued,
+            payment_ids,
+            cdk_common::PaymentMethod::Bolt11,
+            pending,
+            quote.created_time,
+            paid_time,
+            issued_time,
+        )
     }
 }
 
@@ -238,7 +407,7 @@ fn migrate_mint_quotes_01_to_02(db: Arc<Database>) -> Result<(), Error> {
             .collect();
     }
 
-    let migrated_mint_quotes: HashMap<String, Option<MintQuote>> = mint_quotes
+    let migrated_mint_quotes: HashMap<String, Option<V5MintQuote>> = mint_quotes
         .into_iter()
         .map(|(quote_id, quote)| (quote_id, quote.map(|q| q.into())))
         .collect();

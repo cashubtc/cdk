@@ -53,6 +53,9 @@ pub enum Error {
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
     #[cfg(feature = "mint")]
     /// Invalid state transition
     #[error("Invalid state transition")]

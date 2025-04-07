@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::PaymentMethod;
 use tracing::instrument;
 
-use super::MintQuote;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
@@ -14,7 +14,7 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
-use crate::wallet::MintQuoteState;
+use crate::wallet::{MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -81,16 +81,16 @@ impl Wallet {
 
         let quote_res = self.client.post_mint_quote(request).await?;
 
-        let quote = MintQuote {
+        let quote = MintQuote::new(
+            quote_res.quote,
             mint_url,
-            id: quote_res.quote,
-            amount,
+            PaymentMethod::Bolt11,
+            Some(amount),
             unit,
-            request: quote_res.request,
-            state: quote_res.state,
-            expiry: quote_res.expiry.unwrap_or(0),
-            secret_key: Some(secret_key),
-        };
+            quote_res.request,
+            quote_res.expiry.unwrap_or(0),
+            Some(secret_key),
+        );
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
@@ -196,6 +196,10 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        if quote_info.payment_method != PaymentMethod::Bolt11 {
+            return Err(Error::UnsupportedPaymentMethod);
+        }
+
         let unix_time = unix_time();
 
         if quote_info.expiry > unix_time {
@@ -211,10 +215,17 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
+        let amount_mintable = quote_info.amount_mintable();
+
+        if amount_mintable == Amount::ZERO {
+            tracing::debug!("Amount mintable 0.");
+            return Err(Error::AmountUndefined);
+        }
+
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
-                quote_info.amount,
+                amount_mintable,
                 &amount_split_target,
                 spending_conditions,
             )?,
@@ -222,7 +233,7 @@ impl Wallet {
                 active_keyset_id,
                 count,
                 self.xpriv,
-                quote_info.amount,
+                amount_mintable,
                 &amount_split_target,
             )?,
         };
@@ -260,7 +271,6 @@ impl Wallet {
             &keys,
         )?;
 
-        // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         if spending_conditions.is_none() {

@@ -15,14 +15,16 @@ use cdk_common::database::{
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintInfo, MintQuoteState, Proof,
-    Proofs, PublicKey, State,
+    Amount, BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintInfo,
+    MintQuoteState, Proof, Proofs, PublicKey, State,
 };
-use migrations::{migrate_01_to_02, migrate_04_to_05};
+use migrations::{migrate_01_to_02, migrate_04_to_05, migrate_05_to_06};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+use tracing::instrument;
 use uuid::Uuid;
 
 use super::error::Error;
@@ -58,7 +60,7 @@ const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
 const MELT_REQUESTS: TableDefinition<[u8; 16], (&str, &str)> =
     TableDefinition::new("melt_requests");
 
-const DATABASE_VERSION: u32 = 5;
+const DATABASE_VERSION: u32 = 6;
 
 /// Mint Redbdatabase
 #[derive(Debug, Clone)]
@@ -110,6 +112,10 @@ impl MintRedbDatabase {
 
                             if current_file_version == 4 {
                                 current_file_version = migrate_04_to_05(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 5 {
+                                current_file_version = migrate_05_to_06(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
@@ -278,6 +284,7 @@ impl MintKeysDatabase for MintRedbDatabase {
 impl MintQuotesDatabase for MintRedbDatabase {
     type Err = database::Error;
 
+    #[instrument(skip(self))]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
@@ -297,6 +304,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
@@ -309,14 +317,17 @@ impl MintQuotesDatabase for MintRedbDatabase {
         }
     }
 
-    async fn update_mint_quote_state(
+    #[instrument(skip(self))]
+    async fn increment_mint_quote_amount_paid(
         &self,
         quote_id: &Uuid,
-        state: MintQuoteState,
-    ) -> Result<MintQuoteState, Self::Err> {
+        amount_paid: Amount,
+        payment_id: String,
+    ) -> Result<Amount, Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
-        let current_state;
+        let total_paid;
+
         {
             let mut mint_quote: MintQuote;
             let mut table = write_txn
@@ -333,8 +344,11 @@ impl MintQuotesDatabase for MintRedbDatabase {
                 mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
             }
 
-            current_state = mint_quote.state;
-            mint_quote.state = state;
+            mint_quote.add_payment_id(payment_id).map_err(Error::from)?;
+
+            total_paid = mint_quote
+                .increment_amount_paid(amount_paid)
+                .map_err(Error::from)?;
 
             {
                 table
@@ -349,8 +363,136 @@ impl MintQuotesDatabase for MintRedbDatabase {
         }
         write_txn.commit().map_err(Error::from)?;
 
-        Ok(current_state)
+        Ok(total_paid)
     }
+
+    #[instrument(skip(self))]
+    async fn increment_mint_quote_amount_issued(
+        &self,
+        quote_id: &Uuid,
+        amount_issued: Amount,
+    ) -> Result<Amount, Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        let total_issued;
+
+        {
+            let mut mint_quote: MintQuote;
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            {
+                let quote_guard = table
+                    .get(quote_id.as_bytes())
+                    .map_err(Error::from)?
+                    .ok_or(Error::UnknownQuote)?;
+
+                let quote = quote_guard.value();
+
+                mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
+            }
+
+            total_issued = mint_quote
+                .increment_amount_issued(amount_issued)
+                .map_err(Error::from)?;
+
+            {
+                table
+                    .insert(
+                        quote_id.as_bytes(),
+                        serde_json::to_string(&mint_quote)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(total_issued)
+    }
+
+    #[instrument(skip(self))]
+    async fn set_mint_quote_pending(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut mint_quote: MintQuote;
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            {
+                let quote_guard = table
+                    .get(quote_id.as_bytes())
+                    .map_err(Error::from)?
+                    .ok_or(Error::UnknownQuote)?;
+
+                let quote = quote_guard.value();
+
+                mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
+            }
+
+            // If already pending, return early without updating
+            if mint_quote.pending() {
+                return Err(Error::QuotePending.into());
+            }
+
+            mint_quote.set_pending();
+
+            {
+                table
+                    .insert(
+                        quote_id.as_bytes(),
+                        serde_json::to_string(&mint_quote)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn unset_mint_quote_pending(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut mint_quote: MintQuote;
+            let mut table = write_txn
+                .open_table(MINT_QUOTES_TABLE)
+                .map_err(Error::from)?;
+            {
+                let quote_guard = table
+                    .get(quote_id.as_bytes())
+                    .map_err(Error::from)?
+                    .ok_or(Error::UnknownQuote)?;
+
+                let quote = quote_guard.value();
+
+                mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
+            }
+
+            mint_quote.unset_pending();
+
+            {
+                table
+                    .insert(
+                        quote_id.as_bytes(),
+                        serde_json::to_string(&mint_quote)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
     async fn get_mint_quote_by_request(
         &self,
         request: &str,
@@ -369,7 +511,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
 
     async fn get_mint_quote_by_request_lookup_id(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let quotes = self.get_mint_quotes().await?;
 
@@ -414,7 +556,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
         for (_id, quote) in (table.iter().map_err(Error::from)?).flatten() {
             let quote: MintQuote = serde_json::from_str(quote.value()).map_err(Error::from)?;
 
-            if quote.state == state {
+            if quote.state() == state {
                 quotes.push(quote)
             }
         }

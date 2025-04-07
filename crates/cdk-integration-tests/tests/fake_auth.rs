@@ -514,7 +514,7 @@ async fn test_reuse_auth_proof() {
             .await
             .expect("Quote should be allowed");
 
-        assert!(quote.amount == 10.into());
+        assert!(quote.amount == Some(10.into()));
     }
 
     wallet
@@ -559,7 +559,6 @@ async fn test_melt_with_invalid_auth() {
         .await
         .expect("wallet has proofs");
 
-    println!("{:#?}", proofs);
     let proof = proofs.first().expect("wallet has one proof");
 
     let client = HttpClient::new(MintUrl::from_str(MINT_URL).expect("Valid mint url"), None);
@@ -645,7 +644,7 @@ async fn test_refresh_access_token() {
         .await
         .expect("failed to get mint quote with refreshed token");
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     // Verify the total number of auth tokens
     let total_auth_proofs = wallet.get_unspent_auth_proofs().await.unwrap();
@@ -731,7 +730,7 @@ async fn test_auth_token_spending_order() {
             .await
             .expect("failed to get mint quote");
 
-        assert_eq!(mint_quote.amount, 10.into());
+        assert_eq!(mint_quote.amount, Some(10.into()));
 
         // Check remaining tokens after each operation
         let remaining = wallet.get_unspent_auth_proofs().await.unwrap();

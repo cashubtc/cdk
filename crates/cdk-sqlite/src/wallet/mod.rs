@@ -12,8 +12,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, nut01, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, ProofDleq,
-    PublicKey, SecretKey, SpendingConditions, State,
+    database, nut01, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
+    ProofDleq, PublicKey, SecretKey, SpendingConditions, State,
 };
 use error::Error;
 use sqlx::sqlite::SqliteRow;
@@ -61,7 +61,10 @@ impl WalletSqliteDatabase {
         sqlx::migrate!("./src/wallet/migrations")
             .run(&self.pool)
             .await
-            .map_err(|_| Error::CouldNotInitialize)?;
+            .map_err(|err| {
+                tracing::error!("Could not migrate wallet: {:?}", err);
+                Error::CouldNotInitialize
+            })?;
         Ok(())
     }
 }
@@ -358,26 +361,32 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, secret_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+(id, mint_url, payment_method, amount, unit, request, state, expiry, amount_paid, amount_minted, secret_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
+    payment_method = excluded.payment_method,
     amount = excluded.amount,
     unit = excluded.unit,
     request = excluded.request,
     state = excluded.state,
     expiry = excluded.expiry,
+    amount_paid = excluded.amount_paid,
+    amount_minted = excluded.amount_minted,
     secret_key = excluded.secret_key
 ;
         "#,
         )
         .bind(quote.id.to_string())
         .bind(quote.mint_url.to_string())
-        .bind(u64::from(quote.amount) as i64)
+        .bind(quote.payment_method.to_string())
+        .bind(quote.amount.map(|a| u64::from(a) as i64))
         .bind(quote.unit.to_string())
         .bind(quote.request)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
+        .bind(u64::from(quote.amount_paid) as i64)
+        .bind(u64::from(quote.amount_minted) as i64)
         .bind(quote.secret_key.map(|p| p.to_string()))
         .execute(&self.pool)
         .await
@@ -964,12 +973,15 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
 fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
     let row_id: String = row.try_get("id").map_err(Error::from)?;
     let row_mint_url: String = row.try_get("mint_url").map_err(Error::from)?;
-    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let row_amount: Option<i64> = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
     let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
     let row_secret: Option<String> = row.try_get("secret_key").map_err(Error::from)?;
+    let row_method: String = row.try_get("payment_method").map_err(Error::from)?;
+    let row_amount_paid: i64 = row.try_get("amount_paid").map_err(Error::from)?;
+    let row_amount_minted: i64 = row.try_get("amount_minted").map_err(Error::from)?;
 
     let state = MintQuoteState::from_str(&row_state)?;
 
@@ -977,15 +989,22 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         .map(|key| SecretKey::from_str(&key))
         .transpose()?;
 
+    let amount_paid = row_amount_paid as u64;
+    let amount_minted = row_amount_minted as u64;
+    let payment_method = PaymentMethod::from_str(&row_method).map_err(Error::from)?;
+
     Ok(MintQuote {
         id: row_id,
         mint_url: MintUrl::from_str(&row_mint_url)?,
-        amount: Amount::from(row_amount as u64),
+        amount: row_amount.map(|a| Amount::from(a as u64)),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         request: row_request,
         state,
         expiry: row_expiry as u64,
         secret_key,
+        payment_method,
+        amount_minted: amount_minted.into(),
+        amount_paid: amount_paid.into(),
     })
 }
 

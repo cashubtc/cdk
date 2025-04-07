@@ -100,6 +100,10 @@ async fn test_happy_mint_melt_round_trip() {
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&invoice).await.unwrap();
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10)
+        .await
+        .unwrap();
+
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await
@@ -210,7 +214,7 @@ async fn test_happy_mint() {
 
     let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&invoice).await.unwrap();

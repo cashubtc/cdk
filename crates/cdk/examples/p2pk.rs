@@ -86,6 +86,7 @@ async fn main() -> Result<(), Error> {
             },
         )
         .await?;
+
     println!("Fee: {}", prepared_send.fee());
     let token = wallet.send(prepared_send, None).await?;
 

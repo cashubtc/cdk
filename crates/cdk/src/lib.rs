@@ -35,11 +35,11 @@ pub mod pub_sub;
 pub use cdk_common::{
     amount, common as types, dhke, ensure_cdk,
     error::{self, Error},
-    lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
+    lightning_invoice, mint_url, nuts, secret, util, Amount, Bolt11Invoice,
 };
 #[cfg(feature = "mint")]
 #[doc(hidden)]
-pub use cdk_common::{payment as cdk_payment, subscription};
+pub use cdk_common::{mint::MeltPaymentRequest, payment as cdk_payment, subscription, ws};
 
 pub mod fees;
 

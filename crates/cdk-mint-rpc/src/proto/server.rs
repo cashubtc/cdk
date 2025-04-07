@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use cdk::cdk_payment::WaitPaymentResponse;
 use cdk::mint::Mint;
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
@@ -643,22 +644,39 @@ impl CdkMint for MintRPCServer {
             .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
             .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
 
+        let payment_amount = match request.amount {
+            Some(amount) => {
+                if let Some(a) = mint_quote.amount {
+                    if a != amount.into() {
+                        return Err(Status::invalid_argument("Amount must equal mint quote"));
+                    }
+                }
+
+                amount
+            }
+            None => mint_quote
+                .amount
+                .ok_or(Status::invalid_argument("Amount must be given."))?
+                .into(),
+        };
+
         match state {
             MintQuoteState::Paid => {
                 self.mint
-                    .pay_mint_quote(&mint_quote)
+                    .pay_mint_quote(
+                        &mint_quote,
+                        WaitPaymentResponse {
+                            payment_identifier: mint_quote.request_lookup_id.clone(),
+                            payment_amount: payment_amount.into(),
+                            unit: mint_quote.unit.clone(),
+                            payment_id: request.payment_id.clone(),
+                        },
+                    )
                     .await
                     .map_err(|_| Status::internal("Could not find quote".to_string()))?;
             }
             _ => {
-                let mut mint_quote = mint_quote;
-
-                mint_quote.state = state;
-
-                self.mint
-                    .update_mint_quote(mint_quote)
-                    .await
-                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
+                todo!()
             }
         }
 
@@ -671,8 +689,10 @@ impl CdkMint for MintRPCServer {
             .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
 
         Ok(Response::new(UpdateNut04QuoteRequest {
-            state: mint_quote.state.to_string(),
+            state: mint_quote.state().to_string(),
             quote_id: mint_quote.id.to_string(),
+            amount: Some(payment_amount),
+            payment_id: request.payment_id,
         }))
     }
 

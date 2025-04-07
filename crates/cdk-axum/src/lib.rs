@@ -13,12 +13,17 @@ use axum::middleware::from_fn;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
+use bolt12_router::{
+    cache_post_melt_bolt12, cache_post_mint_bolt12, get_check_mint_bolt12_quote,
+    post_melt_bolt12_quote, post_mint_bolt12_quote,
+};
 use cache::HttpCache;
 use cdk::mint::Mint;
 use router_handlers::*;
 
 #[cfg(feature = "auth")]
 mod auth;
+mod bolt12_router;
 pub mod cache;
 mod router_handlers;
 mod ws;
@@ -134,8 +139,8 @@ pub struct MintState {
 pub struct ApiDocV1;
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
-pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default()).await
+pub async fn create_mint_router(mint: Arc<Mint>, include_bolt12: bool) -> Result<Router> {
+    create_mint_router_with_custom_cache(mint, Default::default(), include_bolt12).await
 }
 
 async fn cors_middleware(
@@ -182,13 +187,14 @@ async fn cors_middleware(
 pub async fn create_mint_router_with_custom_cache(
     mint: Arc<Mint>,
     cache: HttpCache,
+    include_bolt12: bool,
 ) -> Result<Router> {
     let state = MintState {
         mint,
         cache: Arc::new(cache),
     };
 
-    let v1_router = Router::new()
+    let mut v1_router = Router::new()
         .route("/keys", get(get_keys))
         .route("/keysets", get(get_keysets))
         .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
@@ -210,6 +216,13 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
+    // Conditionally create and merge bolt12_router
+    if include_bolt12 {
+        let bolt12_router = create_bolt12_router(state.clone());
+        //v1_router = bolt12_router.merge(v1_router);
+        v1_router = v1_router.merge(bolt12_router);
+    }
+
     let mint_router = Router::new()
         .nest("/v1", v1_router)
         .layer(from_fn(cors_middleware));
@@ -223,4 +236,21 @@ pub async fn create_mint_router_with_custom_cache(
     let mint_router = mint_router.with_state(state);
 
     Ok(mint_router)
+}
+
+fn create_bolt12_router(state: MintState) -> Router<MintState> {
+    Router::new()
+        .route("/melt/quote/bolt12", post(post_melt_bolt12_quote))
+        .route(
+            "/melt/quote/bolt12/{quote_id}",
+            get(get_check_melt_bolt11_quote),
+        )
+        .route("/melt/bolt12", post(cache_post_melt_bolt12))
+        .route("/mint/quote/bolt12", post(post_mint_bolt12_quote))
+        .route(
+            "/mint/quote/bolt12/{quote_id}",
+            get(get_check_mint_bolt12_quote),
+        )
+        .route("/mint/bolt12", post(cache_post_mint_bolt12))
+        .with_state(state)
 }

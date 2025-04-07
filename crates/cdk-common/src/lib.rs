@@ -12,6 +12,8 @@ pub mod common;
 pub mod database;
 pub mod error;
 #[cfg(feature = "mint")]
+pub mod melt;
+#[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "mint")]
 pub mod payment;
@@ -21,6 +23,7 @@ pub mod state;
 pub mod subscription;
 #[cfg(feature = "wallet")]
 pub mod wallet;
+#[cfg(feature = "mint")]
 pub mod ws;
 // re-exporting external crates
 pub use bitcoin;

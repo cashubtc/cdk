@@ -8,6 +8,7 @@ use std::{env, fs};
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
+use cashu::MeltQuoteBolt12Request;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -15,8 +16,8 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response, MintRequest,
+    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -71,10 +72,9 @@ impl MintConnector for DirectMintConnection {
         &self,
         request: MintQuoteBolt11Request,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
-        self.mint
-            .get_mint_bolt11_quote(request)
-            .await
-            .map(Into::into)
+        let res: MintQuoteBolt11Response<Uuid> =
+            self.mint.get_mint_quote(request.into()).await?.try_into()?;
+        Ok(res.into())
     }
 
     async fn get_mint_quote_status(
@@ -82,10 +82,13 @@ impl MintConnector for DirectMintConnection {
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
-        self.mint
+        let quote: MintQuoteBolt11Response<Uuid> = self
+            .mint
             .check_mint_quote(&quote_id_uuid)
-            .await
-            .map(Into::into)
+            .await?
+            .try_into()?;
+
+        Ok(quote.into())
     }
 
     async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
@@ -98,7 +101,7 @@ impl MintConnector for DirectMintConnection {
         request: MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         self.mint
-            .get_melt_bolt11_quote(&request)
+            .get_melt_quote(request.into())
             .await
             .map(Into::into)
     }
@@ -118,8 +121,8 @@ impl MintConnector for DirectMintConnection {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let request_uuid = request.try_into().unwrap();
-        self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
+        let request_uuid: MeltRequest<Uuid> = request.try_into().unwrap();
+        self.mint.melt(&request_uuid).await.map(Into::into)
     }
 
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
@@ -151,6 +154,59 @@ impl MintConnector for DirectMintConnection {
         let mut auth_wallet = self.auth_wallet.write().await;
 
         *auth_wallet = wallet;
+    }
+
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let res: MintQuoteBolt12Response<Uuid> =
+            self.mint.get_mint_quote(request.into()).await?.try_into()?;
+        Ok(res.into())
+    }
+
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
+        let quote: MintQuoteBolt12Response<Uuid> = self
+            .mint
+            .check_mint_quote(&quote_id_uuid)
+            .await?
+            .try_into()?;
+
+        Ok(quote.into())
+    }
+
+    /// Melt Quote [NUT-23]
+    async fn post_melt_bolt12_quote(
+        &self,
+        request: MeltQuoteBolt12Request,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        self.mint
+            .get_melt_quote(request.into())
+            .await
+            .map(Into::into)
+    }
+    /// Melt Quote Status [NUT-23]
+    async fn get_melt_bolt12_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
+        self.mint
+            .check_melt_quote(&quote_id_uuid)
+            .await
+            .map(Into::into)
+    }
+    /// Melt [NUT-23]
+    async fn post_melt_bolt12(
+        &self,
+        _request: MeltRequest<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        // Implementation to be added later
+        Err(Error::UnsupportedPaymentMethod)
     }
 }
 
@@ -224,6 +280,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
             MintMeltLimits::new(1, 10_000),
+            None,
             Arc::new(ln_fake_backend),
         )
         .await?;

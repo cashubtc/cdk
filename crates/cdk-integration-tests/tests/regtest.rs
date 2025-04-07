@@ -231,7 +231,7 @@ async fn test_multimint_melt() {
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wait_for_mint_to_be_paid(&wallet1, &quote.id, 60)
+    wait_for_mint_to_be_paid(&wallet1, &quote.id, 10)
         .await
         .unwrap();
     wallet1
@@ -244,9 +244,11 @@ async fn test_multimint_melt() {
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wait_for_mint_to_be_paid(&wallet2, &quote.id, 60)
+
+    wait_for_mint_to_be_paid(&wallet2, &quote.id, 10)
         .await
         .unwrap();
+
     wallet2
         .mint(&quote.id, SplitTarget::default(), None)
         .await
@@ -348,7 +350,7 @@ async fn test_regtest_melt_amountless() {
 
     let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     lnd_client
         .pay_invoice(mint_quote.request)

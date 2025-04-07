@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -27,7 +28,7 @@
     pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, crane, fenix, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, rust-overlay, flake-utils, pre-commit-hooks, crane, fenix, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -43,6 +44,11 @@
         # Dependencies
         pkgs = import nixpkgs {
           inherit system overlays;
+        };
+        
+        # Unstable packages
+        pkgs-unstable = import nixpkgs-unstable {
+          inherit system;
         };
 
 
@@ -77,7 +83,7 @@
           nixpkgs-fmt
           typos
           lnd
-          clightning
+          pkgs-unstable.clightning
           bitcoind
           sqlx-cli
           cargo-outdated
