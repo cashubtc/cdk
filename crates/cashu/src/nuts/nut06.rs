@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
-use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
+use super::{nut04, nut05, nut15, nut19, nut23, MppMethodSettings};
 #[cfg(feature = "auth")]
 use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
 
@@ -324,6 +324,14 @@ pub struct Nuts {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "auth")]
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT23 Settings
+    #[serde(rename = "23")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut23: Option<nut23::Settings>,
+    /// NUT24 Settings
+    #[serde(rename = "24")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut24: Option<nut05::Settings>,
 }
 
 impl Nuts {
@@ -437,6 +445,22 @@ impl Nuts {
     pub fn nut20(self, supported: bool) -> Self {
         Self {
             nut20: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut23 settings
+    pub fn nut23(self, nut23_settings: nut23::Settings) -> Self {
+        Self {
+            nut23: Some(nut23_settings),
+            ..self
+        }
+    }
+
+    /// Nut05 settings
+    pub fn nut24(self, nut24_settings: nut05::Settings) -> Self {
+        Self {
+            nut24: Some(nut24_settings),
             ..self
         }
     }

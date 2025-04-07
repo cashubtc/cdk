@@ -34,9 +34,9 @@ use crate::OidcClient;
 mod auth;
 mod balance;
 mod builder;
+mod issue;
 mod keysets;
 mod melt;
-mod mint;
 mod mint_connector;
 pub mod multi_mint_wallet;
 mod proofs;
@@ -617,14 +617,6 @@ impl Wallet {
     #[instrument(skip(self, token))]
     pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
-
-        // TODO: Get mint url
-        // if mint_url != &self.mint_url {
-        //     return Err(Error::IncorrectWallet(format!(
-        //         "Should be {} not {}",
-        //         self.mint_url, mint_url
-        //     )));
-        // }
 
         let proofs = token.proofs();
         for proof in proofs {
