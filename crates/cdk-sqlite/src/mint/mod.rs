@@ -1,30 +1,32 @@
 //! SQLite Mint
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
+use bitcoin::hashes::sha256::Hash;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{
     self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
     MintSignaturesDatabase,
 };
-use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
+use cdk_common::mint::{self, MeltPaymentRequest, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::secret::Secret;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltQuoteState, MeltRequest,
-    MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    Amount, BlindSignature, BlindSignatureDleq, Bolt11Invoice, CurrencyUnit, Id, MeltQuoteState,
+    MeltRequest, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
+    State,
 };
 use error::Error;
-use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Pool, Row, Sqlite};
+use tracing::instrument;
 use uuid::fmt::Hyphenated;
 use uuid::Uuid;
 
@@ -45,6 +47,67 @@ pub struct MintSqliteDatabase {
 }
 
 impl MintSqliteDatabase {
+    /// Helper function to get payment IDs and timestamps from a quote ID
+    async fn get_payment_ids_and_timestamps(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        quote_id: &Uuid,
+    ) -> Result<(Vec<String>, Vec<u64>), database::Error> {
+        // Get payment IDs and timestamps from the mint_quote_payments table
+        let payments = sqlx::query(
+            r#"
+SELECT payment_id, timestamp
+FROM mint_quote_payments
+WHERE quote_id=?;
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(Error::from)?;
+
+        // Extract payment IDs and paid timestamps
+        let mut payment_ids = Vec::new();
+        let mut paid_timestamps = Vec::new();
+        for payment in payments {
+            let payment_id: String = payment.try_get("payment_id").map_err(Error::from)?;
+            let timestamp: i64 = payment.try_get("timestamp").map_err(Error::from)?;
+            payment_ids.push(payment_id);
+            paid_timestamps.push(timestamp as u64);
+        }
+
+        Ok((payment_ids, paid_timestamps))
+    }
+
+    /// Helper function to get issued timestamps from a quote ID
+    async fn get_issued_timestamps(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        quote_id: &Uuid,
+    ) -> Result<Vec<u64>, database::Error> {
+        // Get issued timestamps from the mint_quote_issued table
+        let issued_timestamps = sqlx::query(
+            r#"
+SELECT amount, timestamp
+FROM mint_quote_issued
+WHERE quote_id=?;
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(Error::from)?;
+
+        // Extract issued timestamps
+        let mut issued_timestamps_vec = Vec::new();
+        for issued in issued_timestamps {
+            let timestamp: i64 = issued.try_get("timestamp").map_err(Error::from)?;
+            issued_timestamps_vec.push(timestamp as u64);
+        }
+
+        Ok(issued_timestamps_vec)
+    }
+
     /// Check if any proofs are spent
     async fn check_for_spent_proofs<'e, 'c: 'e, E>(
         &self,
@@ -108,7 +171,11 @@ impl MintSqliteDatabase {
         sqlx::migrate!("./src/mint/migrations")
             .run(&self.pool)
             .await
-            .map_err(|_| Error::CouldNotInitialize)?;
+            .map_err(|err| {
+                tracing::error!("Could start migrate db: {}", err);
+
+                Error::CouldNotInitialize
+            })?;
         Ok(())
     }
 }
@@ -368,47 +435,27 @@ FROM keyset;
 impl MintQuotesDatabase for MintSqliteDatabase {
     type Err = database::Error;
 
+    #[instrument(skip_all)]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let res = sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, amount, unit, request, state, expiry, request_lookup_id, pubkey, created_time, paid_time, issued_time)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    amount = excluded.amount,
-    unit = excluded.unit,
-    request = excluded.request,
-    state = excluded.state,
-    expiry = excluded.expiry,
-    request_lookup_id = excluded.request_lookup_id,
-    created_time = excluded.created_time,
-    paid_time = excluded.paid_time,
-    issued_time = excluded.issued_time
-ON CONFLICT(request_lookup_id) DO UPDATE SET
-    amount = excluded.amount,
-    unit = excluded.unit,
-    request = excluded.request,
-    state = excluded.state,
-    expiry = excluded.expiry,
-    id = excluded.id,
-    created_time = excluded.created_time,
-    paid_time = excluded.paid_time,
-    issued_time = excluded.issued_time
+(id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, pending, payment_method)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
-        .bind(u64::from(quote.amount) as i64)
+        .bind(quote.amount.map(|a|   u64::from(a) as i64))
         .bind(quote.unit.to_string())
-        .bind(quote.request)
-        .bind(quote.state.to_string())
+        .bind(quote.request.clone())
         .bind(quote.expiry as i64)
-        .bind(quote.request_lookup_id)
+        .bind(&serde_json::to_string(&quote.request_lookup_id)?)
         .bind(quote.pubkey.map(|p| p.to_string()))
         .bind(quote.created_time as i64)
-        .bind(quote.paid_time.map(|t| t as i64))
-        .bind(quote.issued_time.map(|t| t as i64))
+        .bind(quote.pending())
+        .bind(quote.payment_method.to_string())
         .execute(&mut *transaction)
         .await;
 
@@ -418,7 +465,7 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
                 Ok(())
             }
             Err(err) => {
-                tracing::error!("SQLite Could not update keyset");
+                tracing::error!("SQLite could not add mint quote: {}", err);
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -428,8 +475,11 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         }
     }
 
+    #[instrument(skip_all)]
     async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        // First get the mint quote
         let rec = sqlx::query(
             r#"
 SELECT *
@@ -443,15 +493,29 @@ WHERE id=?;
 
         match rec {
             Ok(rec) => {
+                // Get payment IDs, timestamps, and issued timestamps using helper functions
+                let (payment_ids, paid_timestamps) = self
+                    .get_payment_ids_and_timestamps(&mut transaction, quote_id)
+                    .await?;
+                let issued_timestamps = self
+                    .get_issued_timestamps(&mut transaction, quote_id)
+                    .await?;
+
                 transaction.commit().await.map_err(Error::from)?;
-                Ok(Some(sqlite_row_to_mint_quote(rec)?))
+
+                // Create the MintQuote with the additional data
+                let mint_quote =
+                    sqlite_row_to_mint_quote(rec, payment_ids, paid_timestamps, issued_timestamps)?;
+
+                Ok(Some(mint_quote))
             }
             Err(err) => match err {
                 sqlx::Error::RowNotFound => {
                     transaction.commit().await.map_err(Error::from)?;
                     Ok(None)
                 }
-                _ => {
+                err => {
+                    tracing::error!("Could not get mint quote: {}.", err);
                     if let Err(err) = transaction.rollback().await {
                         tracing::error!("Could not rollback sql transaction: {}", err);
                     }
@@ -461,6 +525,7 @@ WHERE id=?;
         }
     }
 
+    #[instrument(skip_all)]
     async fn get_mint_quote_by_request(
         &self,
         request: &str,
@@ -479,8 +544,25 @@ WHERE request=?;
 
         match rec {
             Ok(rec) => {
+                let quote_id =
+                    Uuid::parse_str(rec.try_get::<'_, &str, &str>("id").unwrap()).unwrap();
+
+                // Get payment IDs, timestamps, and issued timestamps using helper functions
+                let (payment_ids, paid_timestamps) = self
+                    .get_payment_ids_and_timestamps(&mut transaction, &quote_id)
+                    .await?;
+                let issued_timestamps = self
+                    .get_issued_timestamps(&mut transaction, &quote_id)
+                    .await?;
+
                 transaction.commit().await.map_err(Error::from)?;
-                Ok(Some(sqlite_row_to_mint_quote(rec)?))
+
+                Ok(Some(sqlite_row_to_mint_quote(
+                    rec,
+                    payment_ids,
+                    paid_timestamps,
+                    issued_timestamps,
+                )?))
             }
             Err(err) => match err {
                 sqlx::Error::RowNotFound => {
@@ -497,9 +579,212 @@ WHERE request=?;
         }
     }
 
+    #[instrument(skip(self))]
+    async fn increment_mint_quote_amount_paid(
+        &self,
+        quote_id: &Uuid,
+        amount_paid: Amount,
+        payment_id: String,
+    ) -> Result<Amount, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        // Check if payment_id already exists in mint_quote_payments
+        let payment_check = sqlx::query(
+            r#"
+SELECT payment_id
+FROM mint_quote_payments
+WHERE payment_id = ?;
+            "#,
+        )
+        .bind(&payment_id)
+        .fetch_optional(&mut *transaction)
+        .await;
+
+        match payment_check {
+            Ok(Some(_)) => {
+                // Payment ID already exists
+                tracing::error!("Payment ID already exists: {}", payment_id);
+                transaction.rollback().await.map_err(Error::from)?;
+                return Err(Error::from(cdk_common::Error::DuplicatePaymentId).into());
+            }
+            Ok(None) => {
+                // Payment ID doesn't exist, continue processing
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not check payment ID: {}", err);
+                transaction.rollback().await.map_err(Error::from)?;
+                return Err(Error::from(err).into());
+            }
+        }
+
+        // First get the current quote to check its current amount_paid
+        let rec = sqlx::query(
+            r#"
+SELECT amount_paid
+FROM mint_quote
+WHERE id=?;
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .fetch_one(&mut *transaction)
+        .await;
+
+        let current_amount_paid = match rec {
+            Ok(rec) => {
+                let amount: Option<i64> = rec.try_get("amount_paid").map_err(Error::from)?;
+                Amount::from(amount.unwrap_or(0) as u64)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get mint quote amount_paid");
+                transaction.rollback().await.map_err(Error::from)?;
+                return Err(Error::from(err).into());
+            }
+        };
+
+        // Calculate new amount_paid
+        let new_amount_paid = current_amount_paid
+            .checked_add(amount_paid)
+            .ok_or_else(|| database::Error::AmountOverflow)?;
+
+        // Update the amount_paid in the database
+        let update = sqlx::query(
+            r#"
+UPDATE mint_quote 
+SET amount_paid = ? 
+WHERE id = ?
+            "#,
+        )
+        .bind(u64::from(new_amount_paid) as i64)
+        .bind(quote_id.as_hyphenated())
+        .execute(&mut *transaction)
+        .await;
+
+        if let Err(err) = update {
+            tracing::error!("SQLite could not update mint quote amount_paid");
+            transaction.rollback().await.map_err(Error::from)?;
+            return Err(Error::from(err).into());
+        }
+
+        // Add payment_id to mint_quote_payments table
+        let current_time = unix_time();
+        let insert_payment = sqlx::query(
+            r#"
+INSERT INTO mint_quote_payments
+(quote_id, payment_id, timestamp)
+VALUES (?, ?, ?);
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .bind(&payment_id)
+        .bind(current_time as i64)
+        .execute(&mut *transaction)
+        .await;
+
+        match insert_payment {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(new_amount_paid)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not insert payment ID: {}", err);
+                transaction.rollback().await.map_err(Error::from)?;
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn increment_mint_quote_amount_issued(
+        &self,
+        quote_id: &Uuid,
+        amount_issued: Amount,
+    ) -> Result<Amount, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        // First get the current quote to check its current amount_minted
+        let rec = sqlx::query(
+            r#"
+SELECT amount_minted
+FROM mint_quote
+WHERE id=?;
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .fetch_one(&mut *transaction)
+        .await;
+
+        let current_amount_issued = match rec {
+            Ok(rec) => {
+                let amount: Option<i64> = rec.try_get("amount_minted").map_err(Error::from)?;
+                Amount::from(amount.unwrap_or(0) as u64)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not get mint quote amount_minted");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                return Err(Error::from(err).into());
+            }
+        };
+
+        // Calculate new amount_issued
+        let new_amount_issued = current_amount_issued
+            .checked_add(amount_issued)
+            .ok_or_else(|| database::Error::AmountOverflow)?;
+
+        // Update the amount_minted in the database
+        let update = sqlx::query(
+            r#"
+UPDATE mint_quote 
+SET amount_minted = ? 
+WHERE id = ?
+            "#,
+        )
+        .bind(u64::from(new_amount_issued) as i64)
+        .bind(quote_id.as_hyphenated())
+        .execute(&mut *transaction)
+        .await;
+
+        if let Err(err) = update {
+            tracing::error!("SQLite could not update mint quote amount_minted");
+            if let Err(err) = transaction.rollback().await {
+                tracing::error!("Could not rollback sql transaction: {}", err);
+            }
+            return Err(Error::from(err).into());
+        }
+
+        // Add record to mint_quote_issued table with timestamp
+        let current_time = unix_time();
+        let insert_issued = sqlx::query(
+            r#"
+INSERT INTO mint_quote_issued
+(quote_id, amount, timestamp)
+VALUES (?, ?, ?);
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .bind(u64::from(amount_issued) as i64)
+        .bind(current_time as i64)
+        .execute(&mut *transaction)
+        .await;
+
+        match insert_issued {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(new_amount_issued)
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not insert issued timestamp: {}", err);
+                transaction.rollback().await.map_err(Error::from)?;
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    #[instrument(skip(self))]
     async fn get_mint_quote_by_request_lookup_id(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -507,18 +792,38 @@ WHERE request=?;
             r#"
 SELECT *
 FROM mint_quote
-WHERE request_lookup_id=?;
+WHERE request_lookup_id=? OR request_lookup_id=?;
         "#,
         )
-        .bind(request_lookup_id)
+        .bind(serde_json::to_string(&request_lookup_id)?)
+        .bind(request_lookup_id.to_string())
         .fetch_one(&mut *transaction)
         .await;
 
         match rec {
             Ok(rec) => {
+                let quote_id = Uuid::parse_str(
+                    rec.try_get::<'_, &str, &str>("id")
+                        .map_err(|_| Error::UnknownQuoteTTL)?,
+                )
+                .map_err(Error::from)?;
+
+                // Get payment IDs, timestamps, and issued timestamps using helper functions
+                let (payment_ids, paid_timestamps) = self
+                    .get_payment_ids_and_timestamps(&mut transaction, &quote_id)
+                    .await?;
+                let issued_timestamps = self
+                    .get_issued_timestamps(&mut transaction, &quote_id)
+                    .await?;
+
                 transaction.commit().await.map_err(Error::from)?;
 
-                Ok(Some(sqlite_row_to_mint_quote(rec)?))
+                Ok(Some(sqlite_row_to_mint_quote(
+                    rec,
+                    payment_ids,
+                    paid_timestamps,
+                    issued_timestamps,
+                )?))
             }
             Err(err) => match err {
                 sqlx::Error::RowNotFound => {
@@ -535,80 +840,35 @@ WHERE request_lookup_id=?;
         }
     }
 
-    async fn update_mint_quote_state(
-        &self,
-        quote_id: &Uuid,
-        state: MintQuoteState,
-    ) -> Result<MintQuoteState, Self::Err> {
+    #[instrument(skip(self))]
+    async fn set_mint_quote_pending(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
-        let rec = sqlx::query(
+        // Use a single query that updates only if pending is FALSE
+        let update = sqlx::query(
             r#"
-SELECT *
-FROM mint_quote
-WHERE id=?;
-        "#,
+UPDATE mint_quote 
+SET pending = TRUE 
+WHERE id = ? AND pending = FALSE;
+            "#,
         )
         .bind(quote_id.as_hyphenated())
-        .fetch_one(&mut *transaction)
+        .execute(&mut *transaction)
         .await;
-        let quote = match rec {
-            Ok(row) => sqlite_row_to_mint_quote(row)?,
-            Err(err) => {
-                tracing::error!("SQLite Could not update keyset");
-                if let Err(err) = transaction.rollback().await {
-                    tracing::error!("Could not rollback sql transaction: {}", err);
-                }
-
-                return Err(Error::from(err).into());
-            }
-        };
-
-        let update_query = match state {
-            MintQuoteState::Paid => {
-                r#"UPDATE mint_quote SET state = ?, paid_time = ? WHERE id = ?"#
-            }
-            MintQuoteState::Issued => {
-                r#"UPDATE mint_quote SET state = ?, issued_time = ? WHERE id = ?"#
-            }
-            _ => r#"UPDATE mint_quote SET state = ? WHERE id = ?"#,
-        };
-
-        let current_time = unix_time();
-
-        let update = match state {
-            MintQuoteState::Paid => {
-                sqlx::query(update_query)
-                    .bind(state.to_string())
-                    .bind(current_time as i64)
-                    .bind(quote_id.as_hyphenated())
-                    .execute(&mut *transaction)
-                    .await
-            }
-            MintQuoteState::Issued => {
-                sqlx::query(update_query)
-                    .bind(state.to_string())
-                    .bind(current_time as i64)
-                    .bind(quote_id.as_hyphenated())
-                    .execute(&mut *transaction)
-                    .await
-            }
-            _ => {
-                sqlx::query(update_query)
-                    .bind(state.to_string())
-                    .bind(quote_id.as_hyphenated())
-                    .execute(&mut *transaction)
-                    .await
-            }
-        };
 
         match update {
-            Ok(_) => {
+            Ok(result) => {
                 transaction.commit().await.map_err(Error::from)?;
-                Ok(quote.state)
+
+                // If no rows were affected, the quote was already pending
+                if result.rows_affected() == 0 {
+                    return Err(Error::QuotePending.into());
+                }
+
+                Ok(())
             }
             Err(err) => {
-                tracing::error!("SQLite Could not update keyset");
+                tracing::error!("SQLite Could not set mint quote pending");
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -618,9 +878,46 @@ WHERE id=?;
         }
     }
 
+    #[instrument(skip(self))]
+    async fn unset_mint_quote_pending(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        // Get the state and update pending in a single query
+        let rec = sqlx::query(
+            r#"
+UPDATE mint_quote 
+SET pending = FALSE 
+WHERE id = ?;
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .execute(&mut *transaction)
+        .await;
+
+        match rec {
+            Ok(result) => {
+                transaction.commit().await.map_err(Error::from)?;
+                // If no rows were affected, the quote was already pending
+                if result.rows_affected() == 0 {
+                    return Err(database::Error::UnknownQuote);
+                }
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite Could not unset mint quote pending");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+
+                return Err(Error::from(err).into());
+            }
+        }
+    }
+
+    #[instrument(skip(self))]
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-        let rec = sqlx::query(
+        let rows = sqlx::query(
             r#"
 SELECT *
 FROM mint_quote
@@ -629,14 +926,37 @@ FROM mint_quote
         .fetch_all(&mut *transaction)
         .await;
 
-        match rec {
+        match rows {
             Ok(rows) => {
-                transaction.commit().await.map_err(Error::from)?;
-                let mint_quotes = rows
-                    .into_iter()
-                    .map(sqlite_row_to_mint_quote)
-                    .collect::<Result<Vec<MintQuote>, _>>()?;
+                let mut mint_quotes = Vec::with_capacity(rows.len());
 
+                // Process each row and fetch the related data
+                for row in rows {
+                    let quote_id = Uuid::parse_str(
+                        row.try_get::<'_, &str, &str>("id")
+                            .map_err(|_| Error::UnknownQuoteTTL)?,
+                    )
+                    .map_err(Error::from)?;
+
+                    // Get payment IDs, timestamps, and issued timestamps using helper functions
+                    let (payment_ids, paid_timestamps) = self
+                        .get_payment_ids_and_timestamps(&mut transaction, &quote_id)
+                        .await?;
+                    let issued_timestamps = self
+                        .get_issued_timestamps(&mut transaction, &quote_id)
+                        .await?;
+
+                    let quote = sqlite_row_to_mint_quote(
+                        row,
+                        payment_ids,
+                        paid_timestamps,
+                        issued_timestamps,
+                    )?;
+
+                    mint_quotes.push(quote);
+                }
+
+                transaction.commit().await.map_err(Error::from)?;
                 Ok(mint_quotes)
             }
             Err(err) => {
@@ -650,12 +970,13 @@ FROM mint_quote
         }
     }
 
+    #[instrument(skip(self))]
     async fn get_mint_quotes_with_state(
         &self,
         state: MintQuoteState,
     ) -> Result<Vec<MintQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
-        let rec = sqlx::query(
+        let rows = sqlx::query(
             r#"
 SELECT *
 FROM mint_quote
@@ -666,14 +987,37 @@ WHERE state = ?
         .fetch_all(&mut *transaction)
         .await;
 
-        match rec {
+        match rows {
             Ok(rows) => {
-                transaction.commit().await.map_err(Error::from)?;
-                let mint_quotes = rows
-                    .into_iter()
-                    .map(sqlite_row_to_mint_quote)
-                    .collect::<Result<Vec<MintQuote>, _>>()?;
+                let mut mint_quotes = Vec::with_capacity(rows.len());
 
+                // Process each row and fetch the related data
+                for row in rows {
+                    let quote_id = Uuid::parse_str(
+                        row.try_get::<'_, &str, &str>("id")
+                            .map_err(|_| Error::UnknownQuoteTTL)?,
+                    )
+                    .map_err(Error::from)?;
+
+                    // Get payment IDs, timestamps, and issued timestamps using helper functions
+                    let (payment_ids, paid_timestamps) = self
+                        .get_payment_ids_and_timestamps(&mut transaction, &quote_id)
+                        .await?;
+                    let issued_timestamps = self
+                        .get_issued_timestamps(&mut transaction, &quote_id)
+                        .await?;
+
+                    let quote = sqlite_row_to_mint_quote(
+                        row,
+                        payment_ids,
+                        paid_timestamps,
+                        issued_timestamps,
+                    )?;
+
+                    mint_quotes.push(quote);
+                }
+
+                transaction.commit().await.map_err(Error::from)?;
                 Ok(mint_quotes)
             }
             Err(err) => {
@@ -687,6 +1031,7 @@ WHERE state = ?
         }
     }
 
+    #[instrument(skip(self))]
     async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -717,12 +1062,13 @@ WHERE id=?
         }
     }
 
+    #[instrument(skip(self))]
     async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let res = sqlx::query(
             r#"
 INSERT INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay, created_time, paid_time)
+(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, created_time, paid_time, options)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit,
@@ -733,9 +1079,9 @@ ON CONFLICT(id) DO UPDATE SET
     expiry = excluded.expiry,
     payment_preimage = excluded.payment_preimage,
     request_lookup_id = excluded.request_lookup_id,
-    msat_to_pay = excluded.msat_to_pay,
     created_time = excluded.created_time,
-    paid_time = excluded.paid_time
+    paid_time = excluded.paid_time,
+    options = excluded.options
 ON CONFLICT(request_lookup_id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
@@ -746,21 +1092,22 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
     payment_preimage = excluded.payment_preimage,
     id = excluded.id,
     created_time = excluded.created_time,
-    paid_time = excluded.paid_time;
+    paid_time = excluded.paid_time,
+    options = excluded.options;
         "#,
         )
         .bind(quote.id.to_string())
         .bind(quote.unit.to_string())
         .bind(u64::from(quote.amount) as i64)
-        .bind(quote.request)
+        .bind(serde_json::to_string(&quote.request)?)
         .bind(u64::from(quote.fee_reserve) as i64)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
         .bind(quote.payment_preimage)
-        .bind(quote.request_lookup_id)
-        .bind(quote.msat_to_pay.map(|a| u64::from(a) as i64))
+        .bind(serde_json::to_string(&quote.request_lookup_id)?)
         .bind(quote.created_time as i64)
         .bind(quote.paid_time.map(|t| t as i64))
+        .bind(quote.options.map(|o| serde_json::to_string(&o).ok()))
         .execute(&mut *transaction)
         .await;
 
@@ -780,6 +1127,8 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
             }
         }
     }
+
+    #[instrument(skip(self))]
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
@@ -804,7 +1153,8 @@ WHERE id=?;
                     transaction.commit().await.map_err(Error::from)?;
                     Ok(None)
                 }
-                _ => {
+                err => {
+                    tracing::error!("Could not get melt quote: {}.", err);
                     if let Err(err) = transaction.rollback().await {
                         tracing::error!("Could not rollback sql transaction: {}", err);
                     }
@@ -815,6 +1165,7 @@ WHERE id=?;
         }
     }
 
+    #[instrument(skip(self))]
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let rec = sqlx::query(
@@ -836,6 +1187,7 @@ FROM melt_quote
                 Ok(melt_quotes)
             }
             Err(err) => {
+                tracing::error!("Could not get melt quotes {}.", err);
                 if let Err(err) = transaction.rollback().await {
                     tracing::error!("Could not rollback sql transaction: {}", err);
                 }
@@ -845,6 +1197,7 @@ FROM melt_quote
         }
     }
 
+    #[instrument(skip(self))]
     async fn update_melt_quote_state(
         &self,
         quote_id: &Uuid,
@@ -915,6 +1268,7 @@ WHERE id=?;
         Ok(quote.state)
     }
 
+    #[instrument(skip(self))]
     async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let res = sqlx::query(
@@ -943,6 +1297,7 @@ WHERE id=?
         }
     }
 
+    #[instrument(skip_all)]
     async fn add_melt_request(
         &self,
         melt_request: MeltRequest<Uuid>,
@@ -962,7 +1317,7 @@ ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit
         "#,
         )
-        .bind(melt_request.quote())
+        .bind(melt_request.quote().hyphenated())
         .bind(serde_json::to_string(&melt_request.inputs())?)
         .bind(serde_json::to_string(&melt_request.outputs())?)
         .bind(ln_key.method.to_string())
@@ -986,6 +1341,7 @@ ON CONFLICT(id) DO UPDATE SET
         }
     }
 
+    #[instrument(skip(self))]
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
@@ -1033,6 +1389,7 @@ WHERE id=?;
 impl MintProofsDatabase for MintSqliteDatabase {
     type Err = database::Error;
 
+    #[instrument(skip_all)]
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
         let current_time = unix_time();
@@ -1674,46 +2031,78 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
     })
 }
 
-fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
+fn sqlite_row_to_mint_quote(
+    row: SqliteRow,
+    payment_ids: Vec<String>,
+    paid_timestamps: Vec<u64>,
+    issued_timestamps: Vec<u64>,
+) -> Result<MintQuote, Error> {
     let row_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
-    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let row_amount: Option<i64> = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
-    let row_state: String = row.try_get("state").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
     let row_request_lookup_id: Option<String> =
         row.try_get("request_lookup_id").map_err(Error::from)?;
     let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
+    let row_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
+    let row_amount_paid: Option<i64> = row.try_get("amount_paid").map_err(Error::from)?;
+    let row_amount_minted: Option<i64> = row.try_get("amount_minted").map_err(Error::from)?;
+
+    let pending: bool = row.try_get("pending").map_err(Error::from)?;
 
     let row_created_time: i64 = row.try_get("created_time").map_err(Error::from)?;
-    let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
-    let row_issued_time: Option<i64> = row.try_get("issued_time").map_err(Error::from)?;
 
-    let request_lookup_id = match row_request_lookup_id {
-        Some(id) => id,
-        None => match Bolt11Invoice::from_str(&row_request) {
-            Ok(invoice) => invoice.payment_hash().to_string(),
-            Err(_) => row_request.clone(),
+    let request_lookup_id: PaymentIdentifier = match row_request_lookup_id {
+        Some(lookup_id) => match serde_json::from_str(&lookup_id).map_err(Error::from) {
+            Ok(payment_id) => payment_id,
+            Err(err) => {
+                tracing::error!(
+                    "Could not deserialize payment identifyer {}: {}.",
+                    lookup_id,
+                    err
+                );
+                if let Ok(hash) = Hash::from_str(&lookup_id) {
+                    PaymentIdentifier::PaymentHash(*hash.as_ref())
+                } else if let Ok(bolt11) = Bolt11Invoice::from_str(&lookup_id) {
+                    PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref())
+                } else {
+                    PaymentIdentifier::CustomId(lookup_id)
+                }
+            }
         },
+        None => {
+            let bolt11 = Bolt11Invoice::from_str(&row_request).map_err(Error::from)?;
+            PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref())
+        }
     };
 
     let pubkey = row_pubkey
         .map(|key| PublicKey::from_str(&key))
         .transpose()?;
 
-    Ok(MintQuote {
-        id: row_id.into_uuid(),
-        amount: Amount::from(row_amount as u64),
-        unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
-        request: row_request,
-        state: MintQuoteState::from_str(&row_state).map_err(Error::from)?,
-        expiry: row_expiry as u64,
+    let payment_method = row_method.and_then(|m| PaymentMethod::from_str(&m).ok());
+
+    let amount_paid = row_amount_paid.unwrap_or(0) as u64;
+    let amount_minted = row_amount_minted.unwrap_or(0) as u64;
+
+    Ok(MintQuote::new(
+        Some(row_id.into_uuid()),
+        row_request,
+        CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
+        row_amount.map(|a| Amount::from(a as u64)),
+        row_expiry as u64,
         request_lookup_id,
         pubkey,
-        created_time: row_created_time as u64,
-        paid_time: row_paid_time.map(|p| p as u64),
-        issued_time: row_issued_time.map(|p| p as u64),
-    })
+        amount_paid.into(),
+        amount_minted.into(),
+        payment_ids,
+        payment_method.unwrap_or_default(),
+        pending,
+        row_created_time as u64,
+        paid_timestamps,
+        issued_timestamps,
+    ))
 }
 
 fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
@@ -1731,23 +2120,69 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
     let request_lookup_id = row_request_lookup.unwrap_or(row_request.clone());
 
     let row_msat_to_pay: Option<i64> = row.try_get("msat_to_pay").map_err(Error::from)?;
+    let row_melt_options: Option<String> = row.try_get("options").map_err(Error::from)?;
 
     let row_created_time: i64 = row.try_get("created_time").map_err(Error::from)?;
     let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
+    let row_payment_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
+
+    let payment_method = row_payment_method.and_then(|p| PaymentMethod::from_str(&p).ok());
+
+    let request_lookup_id: PaymentIdentifier =
+        match serde_json::from_str(&request_lookup_id).map_err(Error::from) {
+            Ok(payment_id) => payment_id,
+            Err(err) => {
+                tracing::error!(
+                    "Could not deserialize payment identifyer {}: {}.",
+                    request_lookup_id,
+                    err
+                );
+                if let Ok(hash) = Hash::from_str(&request_lookup_id) {
+                    tracing::info!("Payment id is hash");
+                    PaymentIdentifier::PaymentHash(*hash.as_ref())
+                } else if let Ok(bolt11) = Bolt11Invoice::from_str(&request_lookup_id) {
+                    PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref())
+                } else {
+                    PaymentIdentifier::CustomId(request_lookup_id)
+                }
+            }
+        };
+
+    let options = row_melt_options
+        .map(|option| serde_json::from_str(&option).map_err(Error::from))
+        .transpose()
+        .unwrap()
+        .or_else(|| {
+            row_msat_to_pay.map(|amount| cdk_common::MeltOptions::new_amountless(amount as u64))
+        });
+
+    let request = match serde_json::from_str(&row_request) {
+        Ok(req) => req,
+        Err(err) => {
+            tracing::debug!(
+                "Melt quote from pre migrations defaulting to bolt11 {}.",
+                err
+            );
+            let bolt11 = Bolt11Invoice::from_str(&row_request)?;
+
+            MeltPaymentRequest::Bolt11 { bolt11 }
+        }
+    };
 
     Ok(mint::MeltQuote {
         id: row_id.into_uuid(),
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
-        request: row_request,
+        request,
         fee_reserve: Amount::from(row_fee_reserve as u64),
         state: QuoteState::from_str(&row_state)?,
         expiry: row_expiry as u64,
         payment_preimage: row_preimage,
         request_lookup_id,
-        msat_to_pay: row_msat_to_pay.map(|a| Amount::from(a as u64)),
         created_time: row_created_time as u64,
         paid_time: row_paid_time.map(|p| p as u64),
+        payment_method: payment_method.unwrap_or_default(),
+        options,
     })
 }
 
@@ -1824,16 +2259,18 @@ fn sqlite_row_to_melt_request(
     let row_method: String = row.try_get("method").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
 
+    let method = PaymentMethod::from_str(&row_method)?;
+
+    let ln_key = PaymentProcessorKey {
+        unit: CurrencyUnit::from_str(&row_unit)?,
+        method: method.clone(),
+    };
+
     let melt_request = MeltRequest::new(
         quote_id.into_uuid(),
         serde_json::from_str(&row_inputs)?,
         row_outputs.and_then(|o| serde_json::from_str(&o).ok()),
     );
-
-    let ln_key = PaymentProcessorKey {
-        unit: CurrencyUnit::from_str(&row_unit)?,
-        method: PaymentMethod::from_str(&row_method)?,
-    };
 
     Ok((melt_request, ln_key))
 }

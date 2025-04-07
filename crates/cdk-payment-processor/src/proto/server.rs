@@ -5,8 +5,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk_common::payment::MintPayment;
+use cdk_common::payment::{MintPayment, OutgoingPaymentOptions};
+use cdk_common::CurrencyUnit;
 use futures::{Stream, StreamExt};
+use lightning::offers::offer::Offer;
+use lightning_invoice::Bolt11Invoice;
 use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
@@ -17,6 +20,7 @@ use tonic::{async_trait, Request, Response, Status};
 use tracing::instrument;
 
 use super::cdk_payment_processor_server::{CdkPaymentProcessor, CdkPaymentProcessorServer};
+use super::{cdk_payment_id_to_proto, outgoing_payment_variant, proto_to_cdk_payment_id};
 use crate::proto::*;
 
 type ResponseStream =
@@ -162,7 +166,7 @@ impl Drop for PaymentProcessorServer {
 impl CdkPaymentProcessor for PaymentProcessorServer {
     async fn get_settings(
         &self,
-        _request: Request<SettingsRequest>,
+        _request: Request<EmptyRequest>,
     ) -> Result<Response<SettingsResponse>, Status> {
         let settings: Value = self
             .inner
@@ -179,18 +183,40 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         &self,
         request: Request<CreatePaymentRequest>,
     ) -> Result<Response<CreatePaymentResponse>, Status> {
-        let CreatePaymentRequest {
-            amount,
-            unit,
-            description,
-            unix_expiry,
-        } = request.into_inner();
+        let CreatePaymentRequest { unit, options } = request.into_inner();
 
         let unit =
             CurrencyUnit::from_str(&unit).map_err(|_| Status::invalid_argument("Invalid unit"))?;
+
+        let options =
+            options.ok_or_else(|| Status::invalid_argument("Payment options required"))?;
+
+        // Convert from protobuf IncomingPaymentOptions to common IncomingPaymentOptions
+        let payment_options = match options.options {
+            Some(crate::proto::incoming_payment_options::Options::Bolt11(bolt11_options)) => {
+                cdk_common::payment::IncomingPaymentOptions::Bolt11(
+                    cdk_common::payment::Bolt11IncomingPaymentOptions {
+                        description: bolt11_options.description,
+                        amount: bolt11_options.amount.into(),
+                        unix_expiry: bolt11_options.unix_expiry,
+                    },
+                )
+            }
+            Some(crate::proto::incoming_payment_options::Options::Bolt12(bolt12_options)) => {
+                cdk_common::payment::IncomingPaymentOptions::Bolt12(Box::new(
+                    cdk_common::payment::Bolt12IncomingPaymentOptions {
+                        description: bolt12_options.description,
+                        amount: bolt12_options.amount.map(|a| a.into()),
+                        unix_expiry: bolt12_options.unix_expiry,
+                    },
+                ))
+            }
+            None => return Err(Status::invalid_argument("No payment options provided")),
+        };
+
         let invoice_response = self
             .inner
-            .create_incoming_payment_request(amount.into(), &unit, description, unix_expiry)
+            .create_incoming_payment_request(&unit, payment_options)
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;
 
@@ -203,20 +229,48 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
     ) -> Result<Response<PaymentQuoteResponse>, Status> {
         let request = request.into_inner();
 
-        let options: Option<cdk_common::MeltOptions> =
-            request.options.as_ref().map(|options| (*options).into());
+        // Convert the request type from proto enum to OutgoingPaymentOptions
+        let request_str = &request.request;
+        let payment_options = match request.request_type() {
+            OutgoingPaymentRequestType::Bolt11Invoice => {
+                let bolt11 = Bolt11Invoice::from_str(request_str)
+                    .map_err(|_| Status::invalid_argument("Invalid BOLT11 invoice"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Bolt11(Box::new(
+                    cdk_common::payment::Bolt11OutgoingPaymentOptions {
+                        bolt11,
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: request.options.as_ref().map(|o| (*o).into()),
+                    },
+                ))
+            }
+            OutgoingPaymentRequestType::Bolt12Offer => {
+                let offer = Offer::from_str(&request.request)
+                    .map_err(|_| Status::invalid_argument("Invalid BOLT12 invoice"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
+                    cdk_common::payment::Bolt12OutgoingPaymentOptions {
+                        offer,
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        invoice: None,
+                        melt_options: request.options.as_ref().map(|o| (*o).into()),
+                    },
+                ))
+            }
+        };
 
         let payment_quote = self
             .inner
             .get_payment_quote(
-                &request.request,
                 &CurrencyUnit::from_str(&request.unit)
                     .map_err(|_| Status::invalid_argument("Invalid currency unit"))?,
-                options,
+                payment_options,
             )
             .await
             .map_err(|err| {
-                tracing::error!("Could not get bolt11 melt quote: {}", err);
+                tracing::error!("Could not get payment quote: {}", err);
                 Status::internal("Could not get melt quote")
             })?;
 
@@ -229,17 +283,57 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
     ) -> Result<Response<MakePaymentResponse>, Status> {
         let request = request.into_inner();
 
+        let payment_options = request
+            .payment_options
+            .ok_or(Status::invalid_argument("Payment options are required"))?;
+
+        let options_type = match payment_options.options.clone() {
+            Some(outgoing_payment_variant::Options::Bolt11(bolt11_options)) => {
+                // For BOLT11, create Bolt11OutgoingPaymentOptions
+                let bolt11 = Bolt11Invoice::from_str(&bolt11_options.bolt11)
+                    .map_err(|_| Status::invalid_argument("Invalid BOLT11 invoice"))?;
+
+                OutgoingPaymentOptions::Bolt11(Box::new(
+                    cdk_common::payment::Bolt11OutgoingPaymentOptions {
+                        bolt11,
+                        max_fee_amount: bolt11_options.max_fee_amount.map(|a| a.into()),
+                        timeout_secs: bolt11_options.timeout_secs,
+                        melt_options: bolt11_options.melt_options.map(|o| o.into()),
+                    },
+                ))
+            }
+            Some(outgoing_payment_variant::Options::Bolt12(bolt12_options)) => {
+                // For BOLT12
+                let offer = Offer::from_str(&bolt12_options.offer)
+                    .map_err(|_| Status::invalid_argument("Invalid BOLT12 offer"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
+                    cdk_common::payment::Bolt12OutgoingPaymentOptions {
+                        offer,
+                        max_fee_amount: bolt12_options.max_fee_amount.map(|a| a.into()),
+                        timeout_secs: bolt12_options.timeout_secs,
+                        invoice: bolt12_options.invoice,
+                        melt_options: bolt12_options.melt_options.map(|o| o.into()),
+                    },
+                ))
+            }
+            None => return Err(Status::invalid_argument("No payment options specified")),
+        };
+
+        // Extract currency unit based on the first variant found
+        let unit = match &payment_options.options {
+            Some(outgoing_payment_variant::Options::Bolt11(_)) => {
+                CurrencyUnit::Sat // Default to SAT for Bolt11
+            }
+            Some(outgoing_payment_variant::Options::Bolt12(_)) => {
+                CurrencyUnit::Sat // Default to SAT for Bolt12
+            }
+            None => return Err(Status::invalid_argument("No payment options specified")),
+        };
+
         let pay_invoice = self
             .inner
-            .make_payment(
-                request
-                    .melt_quote
-                    .ok_or(Status::invalid_argument("Meltquote is required"))?
-                    .try_into()
-                    .map_err(|_err| Status::invalid_argument("Invalid melt quote"))?,
-                request.partial_amount.map(|a| a.into()),
-                request.max_fee_amount.map(|a| a.into()),
-            )
+            .make_payment(&unit, options_type)
             .await
             .map_err(|err| {
                 tracing::error!("Could not make payment: {}", err);
@@ -264,14 +358,31 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
     ) -> Result<Response<CheckIncomingPaymentResponse>, Status> {
         let request = request.into_inner();
 
+        let request_identifier = request
+            .request_identifier
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("Missing request identifier"))
+            .and_then(|id| {
+                proto_to_cdk_payment_id(id)
+                    .map_err(|_| Status::invalid_argument("Invalid request identifier"))
+            })?;
+
         let check_response = self
             .inner
-            .check_incoming_payment_status(&request.request_lookup_id)
+            .check_incoming_payment_status(&request_identifier)
             .await
             .map_err(|_| Status::internal("Could not check incoming payment status"))?;
 
         Ok(Response::new(CheckIncomingPaymentResponse {
-            status: QuoteState::from(check_response).into(),
+            payments: check_response
+                .into_iter()
+                .map(|p| WaitIncomingPaymentResponse {
+                    payment_identifier: Some(cdk_payment_id_to_proto(&p.payment_identifier)),
+                    payment_amount: p.payment_amount.into(),
+                    unit: p.unit.to_string(),
+                    payment_id: p.payment_id,
+                })
+                .collect(),
         }))
     }
 
@@ -281,23 +392,30 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
     ) -> Result<Response<MakePaymentResponse>, Status> {
         let request = request.into_inner();
 
+        let request_identifier = request
+            .request_identifier
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("Missing request identifier"))
+            .and_then(|id| {
+                proto_to_cdk_payment_id(id)
+                    .map_err(|_| Status::invalid_argument("Invalid request identifier"))
+            })?;
+
         let check_response = self
             .inner
-            .check_outgoing_payment(&request.request_lookup_id)
+            .check_outgoing_payment(&request_identifier)
             .await
-            .map_err(|_| Status::internal("Could not check incoming payment status"))?;
+            .map_err(|_| Status::internal("Could not check outgoing payment status"))?;
 
         Ok(Response::new(check_response.into()))
     }
 
     type WaitIncomingPaymentStream = ResponseStream;
 
-    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
-    #[allow(clippy::incompatible_msrv)]
     #[instrument(skip_all)]
     async fn wait_incoming_payment(
         &self,
-        _request: Request<WaitIncomingPaymentRequest>,
+        _request: Request<EmptyRequest>,
     ) -> Result<Response<Self::WaitIncomingPaymentStream>, Status> {
         tracing::debug!("Server waiting for payment stream");
         let (tx, rx) = mpsc::channel(128);
@@ -315,9 +433,16 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 result = ln.wait_any_incoming_payment() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(request_lookup_id) = stream.next().await {
-                                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{lookup_id: request_lookup_id} )).await {
-                    Ok(_) => {
+                            while let Some(response) = stream.next().await {
+                                tracing::debug!("Received payment notification on stream");
+                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{
+                                    payment_identifier: Some(cdk_payment_id_to_proto(&response.payment_identifier)),
+                                    payment_amount: response.payment_amount.into(),
+                                    unit: response.unit.to_string(),
+                                    payment_id: response.payment_id
+                                } )).await {
+                    Ok(h) => {
+                        tracing::info!("{:?}",h);
                         // item (server response) was queued to be send to client
                     }
                     Err(item) => {

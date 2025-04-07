@@ -225,7 +225,7 @@ impl Mint {
                 }
             }
         } else {
-            tracing::debug!("No auth required for endpoint: {:?}", endpoint);
+            tracing::trace!("No auth required for endpoint: {:?}", endpoint);
         }
 
         tracing::debug!("Auth verification completed successfully");

@@ -182,6 +182,8 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::debug!("Ln backendd: {:?}", settings.ln.ln_backend);
 
+    let bolt12;
+
     match settings.ln.ln_backend {
         #[cfg(feature = "cln")]
         LnBackend::Cln => {
@@ -200,15 +202,32 @@ async fn main() -> anyhow::Result<()> {
                     CurrencyUnit::Sat,
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    None,
                     cln.clone(),
                 )
                 .await?;
+
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt12,
+                    mint_melt_limits,
+                    None,
+                    cln.clone(),
+                )
+                .await?;
+
+            bolt12 = true;
 
             if let Some(input_fee) = settings.info.input_fee_ppk {
                 mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
             }
 
             let nut17_supported = SupportedMethods::default_bolt11(CurrencyUnit::Sat);
+
+            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+
+            let nut17_supported = SupportedMethods::default_bolt12(CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
@@ -224,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
                     CurrencyUnit::Sat,
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    None,
                     Arc::new(lnbits),
                 )
                 .await?;
@@ -232,8 +252,12 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let nut17_supported = SupportedMethods::default_bolt11(CurrencyUnit::Sat);
-
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+
+            let nut17_supported = SupportedMethods::default_bolt12(CurrencyUnit::Sat);
+            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+
+            bolt12 = false;
         }
         #[cfg(feature = "lnd")]
         LnBackend::Lnd => {
@@ -247,6 +271,7 @@ async fn main() -> anyhow::Result<()> {
                     CurrencyUnit::Sat,
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    None,
                     Arc::new(lnd),
                 )
                 .await?;
@@ -257,6 +282,8 @@ async fn main() -> anyhow::Result<()> {
             let nut17_supported = SupportedMethods::default_bolt11(CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+
+            bolt12 = false;
         }
         #[cfg(feature = "fakewallet")]
         LnBackend::FakeWallet => {
@@ -276,17 +303,35 @@ async fn main() -> anyhow::Result<()> {
                         unit.clone(),
                         PaymentMethod::Bolt11,
                         mint_melt_limits,
+                        None,
                         fake.clone(),
                     )
                     .await?;
+
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt12,
+                        mint_melt_limits,
+                        None,
+                        fake.clone(),
+                    )
+                    .await?;
+
                 if let Some(input_fee) = settings.info.input_fee_ppk {
                     mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
                 }
 
-                let nut17_supported = SupportedMethods::default_bolt11(unit);
+                let nut17_supported = SupportedMethods::default_bolt11(unit.clone());
+
+                mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+
+                let nut17_supported = SupportedMethods::default_bolt12(unit);
 
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
+
+            bolt12 = true;
         }
         #[cfg(feature = "grpc-processor")]
         LnBackend::GrpcProcessor => {
@@ -310,14 +355,28 @@ async fn main() -> anyhow::Result<()> {
                     .setup(&mut ln_routers, &settings, unit.clone())
                     .await?;
 
+                let processor = Arc::new(processor);
+
                 mint_builder = mint_builder
                     .add_ln_backend(
                         unit.clone(),
                         PaymentMethod::Bolt11,
                         mint_melt_limits,
-                        Arc::new(processor),
+                        None,
+                        processor.clone(),
                     )
                     .await?;
+
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt12,
+                        mint_melt_limits,
+                        None,
+                        processor.clone(),
+                    )
+                    .await?;
+
                 if let Some(input_fee) = settings.info.input_fee_ppk {
                     mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
                 }
@@ -325,6 +384,7 @@ async fn main() -> anyhow::Result<()> {
                 let nut17_supported = SupportedMethods::default_bolt11(unit);
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
+            bolt12 = true;
         }
         LnBackend::None => {
             tracing::error!(
@@ -369,11 +429,23 @@ async fn main() -> anyhow::Result<()> {
         .with_description(settings.mint_info.description)
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    let cached_endpoints = vec![
+    let mut cached_endpoints = vec![
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt11),
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MeltBolt11),
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::Swap),
     ];
+
+    if bolt12 {
+        tracing::info!("Bolt12 cache supported adding endpoints.");
+        cached_endpoints.push(CachedEndpoint::new(
+            NUT19Method::Post,
+            NUT19Path::MintBolt12,
+        ));
+        cached_endpoints.push(CachedEndpoint::new(
+            NUT19Method::Post,
+            NUT19Path::MeltBolt12,
+        ));
+    }
 
     let cache: HttpCache = settings.info.http_cache.into();
 
@@ -417,22 +489,45 @@ async fn main() -> anyhow::Result<()> {
         let mut unprotected_endpoints = vec![];
 
         {
+            // Protect mint BOLT11 endpoints
             let mint_quote_protected_endpoint = ProtectedEndpoint::new(
                 cdk::nuts::Method::Post,
                 cdk::nuts::RoutePath::MintQuoteBolt11,
             );
             let mint_protected_endpoint =
                 ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MintBolt11);
+
+            // Protect mint BOLT12 endpoints if configured
+            let mint_bolt12_quote_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Post,
+                cdk::nuts::RoutePath::MintQuoteBolt12,
+            );
+            let mint_bolt12_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MintBolt12);
+
             if auth_settings.enabled_mint {
                 protected_endpoints.insert(mint_quote_protected_endpoint, AuthRequired::Blind);
-
                 protected_endpoints.insert(mint_protected_endpoint, AuthRequired::Blind);
-
                 blind_auth_endpoints.push(mint_quote_protected_endpoint);
                 blind_auth_endpoints.push(mint_protected_endpoint);
+
+                // Add BOLT12 endpoints to protected list if configured
+                if bolt12 {
+                    protected_endpoints
+                        .insert(mint_bolt12_quote_protected_endpoint, AuthRequired::Blind);
+                    protected_endpoints.insert(mint_bolt12_protected_endpoint, AuthRequired::Blind);
+                    blind_auth_endpoints.push(mint_bolt12_quote_protected_endpoint);
+                    blind_auth_endpoints.push(mint_bolt12_protected_endpoint);
+                }
             } else {
                 unprotected_endpoints.push(mint_protected_endpoint);
                 unprotected_endpoints.push(mint_quote_protected_endpoint);
+
+                // Add BOLT12 endpoints to unprotected list if configured
+                if bolt12 {
+                    unprotected_endpoints.push(mint_bolt12_protected_endpoint);
+                    unprotected_endpoints.push(mint_bolt12_quote_protected_endpoint);
+                }
             }
         }
 
@@ -444,15 +539,38 @@ async fn main() -> anyhow::Result<()> {
             let melt_protected_endpoint =
                 ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MeltBolt11);
 
+            // Protect melt BOLT12 endpoints if configured
+            let melt_bolt12_quote_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Post,
+                cdk::nuts::RoutePath::MeltQuoteBolt12,
+            );
+            let melt_bolt12_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MeltBolt12);
+
             if auth_settings.enabled_melt {
                 protected_endpoints.insert(melt_quote_protected_endpoint, AuthRequired::Blind);
                 protected_endpoints.insert(melt_protected_endpoint, AuthRequired::Blind);
 
                 blind_auth_endpoints.push(melt_quote_protected_endpoint);
                 blind_auth_endpoints.push(melt_protected_endpoint);
+
+                // Add BOLT12 endpoints to protected list if configured
+                if bolt12 {
+                    protected_endpoints
+                        .insert(melt_bolt12_quote_protected_endpoint, AuthRequired::Blind);
+                    protected_endpoints.insert(melt_bolt12_protected_endpoint, AuthRequired::Blind);
+                    blind_auth_endpoints.push(melt_bolt12_quote_protected_endpoint);
+                    blind_auth_endpoints.push(melt_bolt12_protected_endpoint);
+                }
             } else {
                 unprotected_endpoints.push(melt_quote_protected_endpoint);
                 unprotected_endpoints.push(melt_protected_endpoint);
+
+                // Add BOLT12 endpoints to unprotected list if configured
+                if bolt12 {
+                    unprotected_endpoints.push(melt_bolt12_protected_endpoint);
+                    unprotected_endpoints.push(melt_bolt12_quote_protected_endpoint);
+                }
             }
         }
 
@@ -474,11 +592,29 @@ async fn main() -> anyhow::Result<()> {
                 cdk::nuts::RoutePath::MintQuoteBolt11,
             );
 
+            // Add BOLT12 check endpoints if configured
+            let check_mint_bolt12_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Get,
+                cdk::nuts::RoutePath::MintQuoteBolt12,
+            );
+
             if auth_settings.enabled_check_mint_quote {
                 protected_endpoints.insert(check_mint_protected_endpoint, AuthRequired::Blind);
                 blind_auth_endpoints.push(check_mint_protected_endpoint);
+
+                // Add BOLT12 endpoints to protected list if configured
+                if bolt12 {
+                    protected_endpoints
+                        .insert(check_mint_bolt12_protected_endpoint, AuthRequired::Blind);
+                    blind_auth_endpoints.push(check_mint_bolt12_protected_endpoint);
+                }
             } else {
                 unprotected_endpoints.push(check_mint_protected_endpoint);
+
+                // Add BOLT12 endpoints to unprotected list if configured
+                if bolt12 {
+                    unprotected_endpoints.push(check_mint_bolt12_protected_endpoint);
+                }
             }
         }
 
@@ -488,11 +624,29 @@ async fn main() -> anyhow::Result<()> {
                 cdk::nuts::RoutePath::MeltQuoteBolt11,
             );
 
+            // Add BOLT12 check endpoints if configured
+            let check_melt_bolt12_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Get,
+                cdk::nuts::RoutePath::MeltQuoteBolt12,
+            );
+
             if auth_settings.enabled_check_melt_quote {
                 protected_endpoints.insert(check_melt_protected_endpoint, AuthRequired::Blind);
                 blind_auth_endpoints.push(check_melt_protected_endpoint);
+
+                // Add BOLT12 endpoints to protected list if configured
+                if bolt12 {
+                    protected_endpoints
+                        .insert(check_melt_bolt12_protected_endpoint, AuthRequired::Blind);
+                    blind_auth_endpoints.push(check_melt_bolt12_protected_endpoint);
+                }
             } else {
                 unprotected_endpoints.push(check_melt_protected_endpoint);
+
+                // Add BOLT12 endpoints to unprotected list if configured
+                if bolt12 {
+                    unprotected_endpoints.push(check_melt_bolt12_protected_endpoint);
+                }
             }
         }
 
@@ -545,13 +699,15 @@ async fn main() -> anyhow::Result<()> {
     // Checks the status of all pending melt quotes
     // Pending melt quotes where the payment has gone through inputs are burnt
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
-    mint.check_pending_melt_quotes().await?;
+    mint.check_pending_melt_quotes().await.unwrap();
+
+    tracing::info!("Bolt12 is supported: {}", bolt12);
 
     let listen_addr = settings.info.listen_host;
     let listen_port = settings.info.listen_port;
 
     let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache).await?;
+        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache, bolt12).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)
