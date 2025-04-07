@@ -42,3 +42,7 @@ CREATE TABLE mint_quote_issued (
 
 -- Create index on quote_id for faster lookups
 CREATE INDEX idx_mint_quote_issued_quote_id ON mint_quote_issued(quote_id);
+
+
+-- Add new columns to melt_quote table
+ALTER TABLE melt_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'BOLT11';
