@@ -8,10 +8,13 @@ pub mod cdk_database {
     pub use cdk_common::database::Error;
     #[cfg(all(feature = "mint", feature = "auth"))]
     pub use cdk_common::database::MintAuthDatabase;
-    #[cfg(feature = "mint")]
-    pub use cdk_common::database::MintDatabase;
     #[cfg(feature = "wallet")]
     pub use cdk_common::database::WalletDatabase;
+    #[cfg(feature = "mint")]
+    pub use cdk_common::database::{
+        MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+        MintSignaturesDatabase,
+    };
 }
 
 #[cfg(feature = "mint")]
