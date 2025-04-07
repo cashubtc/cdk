@@ -299,7 +299,6 @@ impl From<Id> for String {
     }
 }
 
-
 /// Improper prefix of the keyset ID. In case of v1, this is the whole ID.
 /// In case of v2, this is the 8-byte prefix
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -309,25 +308,28 @@ pub struct ShortKeysetId {
     /// The version of the short keyset
     version: KeySetVersion,
     /// The improper prefix of the keyset ID bytes
-    prefix: [u8; 7]
+    prefix: [u8; 7],
 }
 
 impl From<Id> for ShortKeysetId {
     fn from(id: Id) -> Self {
         match id.version {
-            KeySetVersion::Version00 => Self { version: id.version, prefix: match id.id { IdBytes::V1(idbytes) => idbytes, _ => panic!("Unexpected IdBytes length") } },
+            KeySetVersion::Version00 => Self {
+                version: id.version,
+                prefix: match id.id {
+                    IdBytes::V1(idbytes) => idbytes,
+                    _ => panic!("Unexpected IdBytes length"),
+                },
+            },
             KeySetVersion::Version01 => {
                 let version = id.version;
                 let mut prefix: [u8; 7] = [0u8; 7];
                 match id.id {
                     IdBytes::V2(idbytes) => prefix.copy_from_slice(&idbytes[..7]),
-                    _ => panic!("Unexpected IdBytes length")
+                    _ => panic!("Unexpected IdBytes length"),
                 }
 
-                Self {
-                    version,
-                    prefix
-                }
+                Self { version, prefix }
             }
         }
     }
@@ -374,7 +376,6 @@ impl From<ShortKeysetId> for String {
         value.to_string()
     }
 }
-
 
 /// Mint Keysets [NUT-02]
 /// Ids of mints keyset ids
@@ -838,12 +839,13 @@ mod test {
     #[test]
     fn test_short_keyset_id_from_id() {
         let idv1 = Id::from_str("009a1f293253e41e").unwrap();
-        let idv2 = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9").unwrap();
+        let idv2 = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9")
+            .unwrap();
 
         let short_id_1: ShortKeysetId = idv1.into();
         let short_id_2: ShortKeysetId = idv2.into();
 
         assert!(short_id_1.to_string() == "009a1f293253e41e");
-        assert!(short_id_2.to_string() == "0125bc634e270ad7")
+        assert!(short_id_2.to_string() == "0125bc634e270ad7");
     }
 }
