@@ -890,7 +890,7 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.id.to_string())
         .bind(quote.unit.to_string())
         .bind(u64::from(quote.amount) as i64)
-        .bind(quote.request)
+        .bind(serde_json::to_string(&quote.request)?)
         .bind(u64::from(quote.fee_reserve) as i64)
         .bind(quote.state.to_string())
         .bind(quote.expiry as i64)
@@ -1905,7 +1905,7 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
         id: row_id.into_uuid(),
         amount: Amount::from(row_amount as u64),
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
-        request: row_request,
+        request: serde_json::from_str(&row_request)?,
         fee_reserve: Amount::from(row_fee_reserve as u64),
         state: QuoteState::from_str(&row_state)?,
         expiry: row_expiry as u64,

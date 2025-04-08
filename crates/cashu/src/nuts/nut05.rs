@@ -419,11 +419,11 @@ where
     Q: ToString,
 {
     // async fn verify(&self, service: &MyService) -> Result<Quote, Error>;
-    /// Get id for [`MeltRequest`]
+    /// Get id for MeltRequest
     fn quote_id(&self) -> &Q;
-    /// Get inputs for [`MeltRequest`]
+    /// Get inputs for MeltRequest
     fn inputs(&self) -> &Proofs;
-    /// Get outputs for [`MeltRequest`]
+    /// Get outputs for MeltRequest
     fn outputs(&self) -> &Option<Vec<BlindedMessage>>;
     /// Total [`Amount`] of [`Proofs`]
     fn inputs_amount(&self) -> Result<Amount, Error>;

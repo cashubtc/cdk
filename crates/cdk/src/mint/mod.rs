@@ -488,9 +488,10 @@ impl Mint {
     where
         R: MeltRequestTrait<Uuid>,
     {
+        // TODO: How should this work with a bolt12 offer
         let mint_quote = match self
             .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
+            .get_mint_quote_by_request(&melt_quote.request.to_string())
             .await
         {
             Ok(Some(mint_quote)) => mint_quote,

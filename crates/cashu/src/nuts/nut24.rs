@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut05::MeltRequestTrait;
-use super::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
+use super::{BlindedMessage, CurrencyUnit, MeltOptions, PaymentMethod, Proofs};
 use crate::Amount;
 
 /// NUT18 Error
@@ -26,7 +26,7 @@ pub struct MeltQuoteBolt12Request {
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
     /// Payment Options
-    pub amount: Option<Amount>,
+    pub options: Option<MeltOptions>,
 }
 
 /// Melt Bolt12 Request [NUT-18]

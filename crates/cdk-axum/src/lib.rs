@@ -19,6 +19,7 @@ use router_handlers::*;
 
 #[cfg(feature = "auth")]
 mod auth;
+mod bolt12_router;
 pub mod cache;
 mod router_handlers;
 mod ws;

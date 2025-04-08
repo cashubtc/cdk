@@ -3,8 +3,10 @@
 use bitcoin::bip32::DerivationPath;
 use cashu::util::unix_time;
 use cashu::{
-    MeltQuoteBolt11Response, MintQuoteBolt11Response, MintQuoteBolt12Response, PaymentMethod,
+    Bolt11Invoice, MeltQuoteBolt11Response, MintQuoteBolt11Response, MintQuoteBolt12Response,
+    PaymentMethod,
 };
+use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use uuid::Uuid;
@@ -200,7 +202,7 @@ pub struct MeltQuote {
     /// Quote amount
     pub amount: Amount,
     /// Quote Payment request e.g. bolt11
-    pub request: String,
+    pub request: MeltPaymentRequest,
     /// Quote fee reserve
     pub fee_reserve: Amount,
     /// Quote state
@@ -229,7 +231,7 @@ impl MeltQuote {
     /// Create new [`MeltQuote`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        request: String,
+        request: MeltPaymentRequest,
         unit: CurrencyUnit,
         amount: Amount,
         fee_reserve: Amount,
@@ -255,6 +257,59 @@ impl MeltQuote {
             paid_time: None,
             payment_method,
         }
+    }
+}
+
+/// Payment request
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeltPaymentRequest {
+    /// Bolt11 Payment
+    Bolt11 {
+        /// Bolt11 invoice
+        bolt11: Bolt11Invoice,
+    },
+    /// Bolt12 Payment
+    Bolt12 {
+        /// Offer
+        #[serde(with = "offer_serde")]
+        offer: Box<Offer>,
+        /// Invoice
+        invoice: Option<String>,
+    },
+}
+
+impl std::fmt::Display for MeltPaymentRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{}", bolt11.to_string()),
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => write!(f, "{}", offer.to_string()),
+        }
+    }
+}
+
+mod offer_serde {
+    use std::str::FromStr;
+
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    use super::Offer;
+
+    pub fn serialize<S>(offer: &Offer, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = offer.to_string();
+        serializer.serialize_str(&s)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Box<Offer>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Box::new(Offer::from_str(&s).map_err(|_| {
+            serde::de::Error::custom("Invalid Bolt12 Offer")
+        })?))
     }
 }
 
@@ -343,7 +398,7 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<Uuid> {
             expiry: melt_quote.expiry,
             payment_preimage: melt_quote.payment_preimage,
             change: None,
-            request: Some(melt_quote.request.clone()),
+            request: Some(melt_quote.request.to_string()),
             unit: Some(melt_quote.unit.clone()),
         }
     }
