@@ -18,10 +18,11 @@ use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
 use crate::{
-    ContactInfo, GetInfoRequest, GetInfoResponse, RotateNextKeysetRequest,
-    RotateNextKeysetResponse, UpdateContactRequest, UpdateDescriptionRequest, UpdateIconUrlRequest,
-    UpdateMotdRequest, UpdateNameRequest, UpdateNut04QuoteRequest, UpdateNut04Request,
-    UpdateNut05Request, UpdateQuoteTtlRequest, UpdateResponse, UpdateUrlRequest,
+    ContactInfo, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
+    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
+    UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
+    UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
+    UpdateResponse, UpdateUrlRequest,
 };
 
 /// Error
@@ -582,6 +583,23 @@ impl CdkMint for MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         Ok(Response::new(UpdateResponse {}))
+    }
+
+    /// Gets the mint's quote time-to-live settings
+    async fn get_quote_ttl(
+        &self,
+        _request: Request<GetQuoteTtlRequest>,
+    ) -> Result<Response<GetQuoteTtlResponse>, Status> {
+        let ttl = self
+            .mint
+            .quote_ttl()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(GetQuoteTtlResponse {
+            mint_ttl: ttl.mint_ttl,
+            melt_ttl: ttl.melt_ttl,
+        }))
     }
 
     /// Updates a specific NUT-04 quote's state
