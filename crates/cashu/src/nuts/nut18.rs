@@ -10,7 +10,7 @@ use bitcoin::base64::{alphabet, Engine};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{CurrencyUnit, Proofs};
+use super::{CurrencyUnit, Proofs, PublicKey, SigFlag};
 use crate::mint_url::MintUrl;
 use crate::Amount;
 
@@ -28,6 +28,9 @@ pub enum Error {
     /// Base64 error
     #[error(transparent)]
     Base64Error(#[from] bitcoin::base64::DecodeError),
+    /// P2PK Conversion Error
+    #[error("Failed to convert P2PK to SpendingConditions: {0}")]
+    P2PKConversionError(String),
 }
 
 /// Transport Type
@@ -170,12 +173,77 @@ pub struct PaymentRequest {
     /// Transport
     #[serde(rename = "t")]
     pub transports: Vec<Transport>,
+    /// P2PK parameters
+    #[serde(rename = "p")]
+    pub p2pk: Option<P2PK>,
 }
 
 impl PaymentRequest {
     /// Create a new PaymentRequestBuilder
     pub fn builder() -> PaymentRequestBuilder {
         PaymentRequestBuilder::default()
+    }
+}
+
+/// P2PK
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct P2PK {
+    /// Pubkeys
+    pub pubkeys: Vec<PublicKey>,
+    /// Sigflag
+    pub sigflag: Option<SigFlag>,
+    /// Locktime
+    pub locktime: Option<u64>,
+    /// Refund
+    pub refund: Option<Vec<PublicKey>>,
+}
+
+impl TryFrom<P2PK> for super::nut11::SpendingConditions {
+    type Error = Error;
+
+    fn try_from(p2pk: P2PK) -> Result<Self, Self::Error> {
+        // Get the first pubkey as the main P2PK pubkey
+        let main_pubkey = p2pk
+            .pubkeys
+            .first()
+            .cloned()
+            .ok_or(Error::P2PKConversionError("Missing pubkey".to_string()))?;
+
+        // Create conditions from the remaining parameters
+        let conditions = if p2pk.pubkeys.len() > 1
+            || p2pk.sigflag.is_some()
+            || p2pk.locktime.is_some()
+            || p2pk.refund.is_some()
+        {
+            let mut additional_pubkeys = p2pk.pubkeys.clone();
+            if !additional_pubkeys.is_empty() {
+                // Remove the first pubkey as it's used as the main P2PK pubkey
+                additional_pubkeys.remove(0);
+            }
+
+            Some(super::nut11::Conditions {
+                locktime: p2pk.locktime,
+                pubkeys: if additional_pubkeys.is_empty() {
+                    None
+                } else {
+                    Some(additional_pubkeys)
+                },
+                refund_keys: p2pk.refund,
+                num_sigs: if p2pk.pubkeys.len() > 1 {
+                    Some(p2pk.pubkeys.len() as u64)
+                } else {
+                    None
+                },
+                sig_flag: p2pk.sigflag.unwrap_or_default(),
+            })
+        } else {
+            None
+        };
+
+        Ok(super::nut11::SpendingConditions::P2PKConditions {
+            data: main_pubkey,
+            conditions,
+        })
     }
 }
 
@@ -189,6 +257,7 @@ pub struct PaymentRequestBuilder {
     mints: Option<Vec<MintUrl>>,
     description: Option<String>,
     transports: Vec<Transport>,
+    p2pk: Option<P2PK>,
 }
 
 impl PaymentRequestBuilder {
@@ -252,6 +321,24 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set P2PK parameters
+    pub fn p2pk(
+        mut self,
+        pubkeys: Vec<PublicKey>,
+        sigflag: Option<SigFlag>,
+        locktime: Option<u64>,
+        refund: Option<Vec<PublicKey>>,
+    ) -> Self {
+        self.p2pk = Some(P2PK {
+            pubkeys,
+            sigflag,
+            locktime,
+            refund,
+        });
+
+        self
+    }
+
     /// Build the PaymentRequest
     pub fn build(self) -> PaymentRequest {
         PaymentRequest {
@@ -262,6 +349,7 @@ impl PaymentRequestBuilder {
             mints: self.mints,
             description: self.description,
             transports: self.transports,
+            p2pk: self.p2pk,
         }
     }
 }
@@ -355,6 +443,7 @@ mod tests {
                 .expect("valid mint url")]),
             description: None,
             transports: vec![transport.clone()],
+            p2pk: None,
         };
 
         let request_str = request.to_string();
