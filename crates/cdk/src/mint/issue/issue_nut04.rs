@@ -62,17 +62,7 @@ impl Mint {
 
         self.check_mint_request_acceptable(amount, &unit).await?;
 
-        let ln = self
-            .ln
-            .get(&PaymentProcessorKey::new(
-                unit.clone(),
-                PaymentMethod::Bolt11,
-            ))
-            .ok_or_else(|| {
-                tracing::info!("Bolt11 mint request for unsupported unit");
-
-                Error::UnsupportedUnit
-            })?;
+        let ln = self.get_payment_processor(&unit, PaymentMethod::Bolt11)?;
 
         let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
 
