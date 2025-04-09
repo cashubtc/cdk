@@ -4,7 +4,7 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
-## [Unreleased]
+## [0.9.0](https://github.com/cashubtc/cdk/releases/tag/v0.9.0)
 ### Added
 - Amountless invoices [NUT](https://github.com/cashubtc/nuts/pull/173) [PR](https://github.com/cashubtc/cdk/pull/497) ([thesimplekid]).
 - `create_time`, `paid_time` to mint and melt quotes [PR](https://github.com/cashubtc/cdk/pull/708) ([thesimplekid]).
