@@ -18,7 +18,7 @@ kvac = ["dep:cashu_kvac"]
 mint = ["cashu/mint", "dep:uuid"]
 
 [dependencies]
-cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", tag = "v0.0.5-alpha", optional = true }
+cashu_kvac = { git = "https://github.com/lollerfirst/cashu-kvac.git", rev = "5c9e3e17bc70b0c4ac254048e140c799ce4a97bf", optional = true }
 async-trait.workspace = true
 bitcoin.workspace = true
 cashu.workspace = true

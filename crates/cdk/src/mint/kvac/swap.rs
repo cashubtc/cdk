@@ -1,5 +1,4 @@
 use cashu_kvac::secp::GroupElement;
-use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::{KvacIssuedMac, KvacNullifier, KvacSwapRequest, KvacSwapResponse};
 use cdk_common::State;
 use tracing::instrument;
@@ -36,9 +35,8 @@ impl Mint {
 
         // Issue MACs
         let mut issued_macs = vec![];
-        let mut proving_transcript = CashuTranscript::new();
         for output in swap_request.outputs.iter() {
-            let result = self.issue_mac(output, &mut proving_transcript).await;
+            let result = self.issue_mac(output).await;
             // Set nullifiers unspent in case of error
             match result {
                 Err(e) => {

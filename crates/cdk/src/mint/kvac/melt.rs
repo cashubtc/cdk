@@ -1,6 +1,5 @@
 use anyhow::bail;
 use cashu_kvac::secp::{GroupElement, TweakKind};
-use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::amount::to_unit;
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::kvac::{
@@ -391,9 +390,8 @@ impl Mint {
 
         // Issue MACs
         let mut issued_macs = vec![];
-        let mut proving_transcript = CashuTranscript::new();
         for output in outputs.iter() {
-            let result = self.issue_mac(output, &mut proving_transcript).await;
+            let result = self.issue_mac(output).await;
             // Set nullifiers unspent in case of error
             match result {
                 Err(e) => {

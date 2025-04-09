@@ -1,6 +1,6 @@
 //! KVAC Bootstrap interactions
 
-use cashu_kvac::kvac::{BootstrapProof, IParamsProof};
+use cashu_kvac::kvac::{BootstrapProof, IssuanceProof};
 use cashu_kvac::models::Coin;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::common::KvacCoinInfo;
@@ -63,7 +63,6 @@ impl Wallet {
         // Verify IParams Proofs and construct coins
         let mut coins = vec![];
         let mint_keys = self.get_kvac_keyset_keys(active_keyset_id).await?;
-        let mut verifying_transcript = CashuTranscript::new();
         for (pre_coin, issued_mac) in pre_coins.into_iter().zip(response.issued_macs.into_iter()) {
             let proof = issued_mac.issuance_proof;
             let mac = issued_mac.mac;
@@ -73,11 +72,10 @@ impl Wallet {
                 mac.clone(),
             );
 
-            if !IParamsProof::verify(
+            if !IssuanceProof::verify(
                 &mint_keys.0,
                 &inner_coin,
                 proof.clone(),
-                &mut verifying_transcript,
             ) {
                 return Err(Error::from(IParamsVerificationError));
             }

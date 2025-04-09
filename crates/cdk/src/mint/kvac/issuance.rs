@@ -1,7 +1,6 @@
 //! KVAC MAC issuance
-use cashu_kvac::kvac::IParamsProof;
+use cashu_kvac::kvac::IssuanceProof;
 use cashu_kvac::models::{MAC, ZKP};
-use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::KvacCoinMessage;
 use tracing::instrument;
 
@@ -13,7 +12,6 @@ impl Mint {
     pub async fn issue_mac(
         &self,
         input: &KvacCoinMessage,
-        proving_transcript: &mut CashuTranscript,
     ) -> Result<(MAC, ZKP), Error> {
         let KvacCoinMessage {
             commitments,
@@ -51,12 +49,11 @@ impl Mint {
             Some(t_tag),
         )
         .expect("MAC generate");
-        let iparams_proof = IParamsProof::create(
+        let iparams_proof = IssuanceProof::create(
             &key_pair.private_key,
             &c,
             &commitments.0,
-            Some(&commitments.1),
-            proving_transcript,
+            Some(&commitments.1)
         );
 
         Ok((c, iparams_proof))

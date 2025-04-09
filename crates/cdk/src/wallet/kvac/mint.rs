@@ -1,5 +1,5 @@
 //! KVAC mint request
-use cashu_kvac::kvac::{BalanceProof, IParamsProof, MacProof, RangeProof};
+use cashu_kvac::kvac::{BalanceProof, IssuanceProof, MacProof, RangeProof};
 use cashu_kvac::models::{AmountAttribute, Coin};
 use cashu_kvac::secp::GroupElement;
 use cashu_kvac::transcript::CashuTranscript;
@@ -35,7 +35,6 @@ impl Wallet {
             .await?;
 
         let mut proving_transcript = CashuTranscript::new();
-        let mut verifying_transcript = CashuTranscript::new();
 
         // Set selected inputs as pending
         let nullifiers: Vec<GroupElement> = inputs
@@ -118,11 +117,10 @@ impl Wallet {
                     );
 
                     let keys = self.get_kvac_keyset_keys(pre_coin.keyset_id).await?;
-                    if !IParamsProof::verify(
+                    if !IssuanceProof::verify(
                         &keys.0,
                         &inner_coin,
                         issued_mac.issuance_proof.clone(),
-                        &mut verifying_transcript,
                     ) {
                         tracing::error!("couldn't verify MAC issuance! the mint is probably tagging!");
                         tracing::error!(

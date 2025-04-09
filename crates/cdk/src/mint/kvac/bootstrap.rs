@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-
 use cashu_kvac::kvac::BootstrapProof;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::Error::{
@@ -73,9 +72,8 @@ impl Mint {
         // Proofs are verified. Issue MACs.
         // ...And prove to the client that the correct key was used.
         let mut issued_macs: Vec<KvacIssuedMac> = vec![];
-        let mut proving_transcript = CashuTranscript::new();
         for output in outputs.into_iter() {
-            let (mac, proof) = self.issue_mac(&output, &mut proving_transcript).await?;
+            let (mac, proof) = self.issue_mac(&output).await?;
             issued_macs.push(KvacIssuedMac {
                 mac,
                 commitments: output.commitments,
