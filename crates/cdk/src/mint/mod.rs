@@ -68,14 +68,18 @@ pub struct Mint {
 
 impl Mint {
     /// Get the payment processor for the given unit and payment method
-    fn get_payment_processor(
+    pub fn get_payment_processor(
         &self,
-        unit: &CurrencyUnit,
+        unit: CurrencyUnit,
         payment_method: PaymentMethod,
     ) -> Result<Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>, Error> {
-        let key = PaymentProcessorKey::new(unit.clone(), payment_method);
+        let key = PaymentProcessorKey::new(unit.clone(), payment_method.clone());
         self.ln.get(&key).cloned().ok_or_else(|| {
-            tracing::info!("{:?} mint request for unsupported unit", payment_method);
+            tracing::info!(
+                "No payment processor set for pair {}, {}",
+                unit,
+                payment_method
+            );
             Error::UnsupportedUnit
         })
     }

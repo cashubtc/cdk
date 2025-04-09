@@ -452,6 +452,10 @@ impl CdkMint for MintRPCServer {
         let payment_method = PaymentMethod::from_str(&request_inner.method)
             .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
 
+        self.mint
+            .get_payment_processor(unit.clone(), payment_method.clone())
+            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
+
         let current_nut04_settings = nut04_settings.remove_settings(&unit, &payment_method);
 
         let mut methods = nut04_settings.methods.clone();
@@ -511,6 +515,10 @@ impl CdkMint for MintRPCServer {
 
         let payment_method = PaymentMethod::from_str(&request_inner.method)
             .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
+
+        self.mint
+            .get_payment_processor(unit.clone(), payment_method.clone())
+            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
 
         let current_nut05_settings = nut05_settings.remove_settings(&unit, &payment_method);
 

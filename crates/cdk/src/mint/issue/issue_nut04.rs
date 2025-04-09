@@ -7,7 +7,6 @@ use crate::mint::{
     MintQuoteBolt11Response, MintQuoteState, NotificationPayload, PublicKey, Verification,
 };
 use crate::nuts::PaymentMethod;
-use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error, Mint};
 
@@ -62,7 +61,7 @@ impl Mint {
 
         self.check_mint_request_acceptable(amount, &unit).await?;
 
-        let ln = self.get_payment_processor(&unit, PaymentMethod::Bolt11)?;
+        let ln = self.get_payment_processor(unit.clone(), PaymentMethod::Bolt11)?;
 
         let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
 
