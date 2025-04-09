@@ -16,6 +16,7 @@ service CdkMint {
     rpc UpdateNut04(UpdateNut04Request) returns (UpdateResponse) {}
     rpc UpdateNut05(UpdateNut05Request) returns (UpdateResponse) {}
     rpc UpdateQuoteTtl(UpdateQuoteTtlRequest) returns (UpdateResponse) {}
+    rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
     rpc UpdateNut04Quote(UpdateNut04QuoteRequest) returns (UpdateNut04QuoteRequest) {}
     rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
 }
@@ -92,6 +93,14 @@ message UpdateNut05Request {
 message UpdateQuoteTtlRequest {
     optional uint64 mint_ttl = 1;
     optional uint64 melt_ttl = 2;
+}
+
+message GetQuoteTtlRequest {
+}
+
+message GetQuoteTtlResponse {
+    uint64 mint_ttl = 1;
+    uint64 melt_ttl = 2;
 }
 
 
