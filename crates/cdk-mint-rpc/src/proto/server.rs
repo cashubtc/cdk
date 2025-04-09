@@ -346,10 +346,10 @@ impl CdkMint for MintRPCServer {
             .mint_info()
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
-        let urls = info.urls;
-        urls.clone().unwrap_or_default().push(url);
+        let mut urls = info.urls.unwrap_or_default();
+        urls.push(url);
 
-        info.urls = urls;
+        info.urls = Some(urls.clone());
 
         self.mint
             .set_mint_info(info)
