@@ -4,7 +4,7 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 use crate::cdk_mint_client::CdkMintClient;
-use crate::UpdateQuoteTtlRequest;
+use crate::{GetQuoteTtlRequest, UpdateQuoteTtlRequest};
 
 /// Command to update the time-to-live (TTL) settings for quotes
 ///
@@ -37,6 +37,31 @@ pub async fn update_quote_ttl(
             melt_ttl: sub_command_args.melt_ttl,
         }))
         .await?;
+
+    Ok(())
+}
+
+/// Command to get the current time-to-live (TTL) settings for quotes
+///
+/// This command retrieves the current TTL settings for mint and melt quotes.
+#[derive(Args)]
+pub struct GetQuoteTtlCommand {}
+
+/// Executes the get_quote_ttl command against the mint server
+///
+/// This function sends an RPC request to retrieve the current TTL settings for mint and melt quotes.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
+pub async fn get_quote_ttl(client: &mut CdkMintClient<Channel>) -> Result<()> {
+    let response = client
+        .get_quote_ttl(Request::new(GetQuoteTtlRequest {}))
+        .await?
+        .into_inner();
+
+    println!("Quote TTL Settings:");
+    println!("  Mint TTL: {} seconds", response.mint_ttl);
+    println!("  Melt TTL: {} seconds", response.melt_ttl);
 
     Ok(())
 }
