@@ -8,6 +8,7 @@
 ### Added
 - Amountless invoices [NUT](https://github.com/cashubtc/nuts/pull/173) [PR](https://github.com/cashubtc/cdk/pull/497) ([thesimplekid]).
 - `create_time`, `paid_time` to mint and melt quotes [PR](https://github.com/cashubtc/cdk/pull/708) ([thesimplekid]).
+- cdk-mint-rpc: Added get mint and melt quotes ttl [PR](https://github.com/cashubtc/cdk/pull/716) ([thesimplekid]).
 
 ### Changed
 - cashu: Move wallet mod to cdk-common ([thesimplekid]).
@@ -17,6 +18,8 @@
 ### Fixed
 - Creation of memory sqlite db [PR](https://github.com/cashubtc/cdk/pull/707) ([crodas]).
 - cdk-cli: Ensure auth wallet is created before attempting to mint pending [PR](https://github.com/cashubtc/cdk/pull/704) ([thesimplekid]).
+- cdk-mint-rpc: Adding mint urls was not updating correctly [PR](https://github.com/cashubtc/cdk/pull/716) ([thesimplekid]).
+- cdk-mint-rpc: Fixed setting long description [PR](https://github.com/cashubtc/cdk/pull/716) ([thesimplekid]).
 
 
 ## [v0.8.1](https://github.com/cashubtc/cdk/releases/tag/v0.8.1)
