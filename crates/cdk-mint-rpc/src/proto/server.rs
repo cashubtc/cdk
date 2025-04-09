@@ -284,7 +284,7 @@ impl CdkMint for MintRPCServer {
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
-        info.description = Some(description);
+        info.description_long = Some(description);
 
         self.mint
             .set_mint_info(info)
