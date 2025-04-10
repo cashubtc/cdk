@@ -9,6 +9,8 @@ use std::sync::Arc;
 use anyhow::Result;
 #[cfg(feature = "auth")]
 use auth::create_auth_router;
+use axum::middleware::from_fn;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use cache::HttpCache;
@@ -137,6 +139,45 @@ pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
     create_mint_router_with_custom_cache(mint, Default::default()).await
 }
 
+async fn cors_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    // Handle preflight requests
+    if req.method() == axum::http::Method::OPTIONS {
+        let mut response = Response::new("".into());
+        response
+            .headers_mut()
+            .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+        response.headers_mut().insert(
+            "Access-Control-Allow-Methods",
+            "GET, POST, OPTIONS".parse().unwrap(),
+        );
+        response.headers_mut().insert(
+            "Access-Control-Allow-Headers",
+            "Content-Type".parse().unwrap(),
+        );
+        return response;
+    }
+
+    // Call the next handler
+    let mut response = next.run(req).await;
+
+    response
+        .headers_mut()
+        .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+    response.headers_mut().insert(
+        "Access-Control-Allow-Methods",
+        "GET, POST, OPTIONS".parse().unwrap(),
+    );
+    response.headers_mut().insert(
+        "Access-Control-Allow-Headers",
+        "Content-Type".parse().unwrap(),
+    );
+
+    response
+}
+
 /// Create mint [`Router`] with required endpoints for cashu mint with a custom
 /// backend for cache
 pub async fn create_mint_router_with_custom_cache(
@@ -170,7 +211,9 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mint_router = Router::new().nest("/v1", v1_router);
+    let mint_router = Router::new()
+        .nest("/v1", v1_router)
+        .layer(from_fn(cors_middleware));
 
     #[cfg(feature = "auth")]
     let mint_router = {
