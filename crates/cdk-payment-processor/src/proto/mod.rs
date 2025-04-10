@@ -122,7 +122,7 @@ impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
         let bolt12 = value.melt_options.expect("option defined");
 
         Self::Bolt12 {
-            invoice: bolt12.invoice,
+            invoice: bolt12.bolt12.invoice,
         }
     }
 }
@@ -131,7 +131,7 @@ impl From<cdk_common::payment::PaymentQuoteOptions> for PaymentQuoteOptions {
     fn from(value: cdk_common::payment::PaymentQuoteOptions) -> Self {
         match value {
             cdk_common::payment::PaymentQuoteOptions::Bolt12 { invoice } => Self { 
-                melt_options: Some(Bolt12Options { invoice }),
+                melt_options: Some(payment_quote_options::MeltOptions::Bolt12(Bolt12Options { invoice })),
             },
         }
     }
@@ -208,6 +208,8 @@ impl TryFrom<MeltQuote> for cdk_common::mint::MeltQuote {
     type Error = crate::error::Error;
 
     fn try_from(value: MeltQuote) -> Result<Self, Self::Error> {
+        let bolt11 = Bolt11Invoice::from_str(&value.request)?;
+        
         Ok(Self {
             id: value
                 .id
@@ -215,7 +217,7 @@ impl TryFrom<MeltQuote> for cdk_common::mint::MeltQuote {
                 .map_err(|_| crate::error::Error::InvalidId)?,
             unit: value.unit.parse()?,
             amount: value.amount.into(),
-            request: Bolt11Invoice::from_str(&value.request)?,
+            request: cdk_common::mint::MeltPaymentRequest::Bolt11 { bolt11 },
             fee_reserve: value.fee_reserve.into(),
             state: cdk_common::nut05::QuoteState::from(value.state()),
             expiry: value.expiry,
