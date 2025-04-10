@@ -83,7 +83,7 @@ just test
 
 ### Running Integration Tests
 ```bash
-just itest REDB/SQLITE/MEMEORY
+just itest REDB/SQLITE/MEMORY
 ```
 
 NOTE: if this command fails on macos change the nix channel to unstable (in the `flake.nix` file modify `nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";` to `nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";`)
