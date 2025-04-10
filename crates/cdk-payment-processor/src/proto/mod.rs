@@ -79,6 +79,7 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
             amount: value.amount.into(),
             fee: value.fee.into(),
             state: QuoteState::from(value.state).into(),
+            options: value.options.map(|o| o.into()),
         }
     }
 }
@@ -116,6 +117,24 @@ impl From<MeltOptions> for cdk_common::nut05::MeltOptions {
     }
 }
 
+impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
+    fn from(value: PaymentQuoteOptions) -> Self {
+        let options = value.melt_options.expect("option defined");
+
+        Self::Bolt12 {
+            invoice: options.invoice,
+        }
+    }
+}
+
+impl From<cdk_common::payment::PaymentQuoteOptions> for PaymentQuoteOptions {
+    fn from(value: cdk_common::payment::PaymentQuoteOptions) -> Self {
+        match value {
+            Bolt12Options { invoice } => Self { options: () },
+        }
+    }
+}
+
 impl From<PaymentQuoteResponse> for cdk_common::payment::PaymentQuoteResponse {
     fn from(value: PaymentQuoteResponse) -> Self {
         Self {
@@ -123,6 +142,7 @@ impl From<PaymentQuoteResponse> for cdk_common::payment::PaymentQuoteResponse {
             amount: value.amount.into(),
             fee: value.fee.into(),
             state: value.state().into(),
+            options: value.options.map(|o| o.into()),
         }
     }
 }
