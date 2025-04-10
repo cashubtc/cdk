@@ -120,7 +120,7 @@ impl From<MeltOptions> for cdk_common::nut05::MeltOptions {
 impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
     fn from(value: PaymentQuoteOptions) -> Self {
         let melt_options = value.melt_options.expect("option defined");
-        
+
         // Extract the Bolt12Options from the oneof field
         if let payment_quote_options::MeltOptions::Bolt12(bolt12) = melt_options {
             Self::Bolt12 {
@@ -135,8 +135,10 @@ impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
 impl From<cdk_common::payment::PaymentQuoteOptions> for PaymentQuoteOptions {
     fn from(value: cdk_common::payment::PaymentQuoteOptions) -> Self {
         match value {
-            cdk_common::payment::PaymentQuoteOptions::Bolt12 { invoice } => Self { 
-                melt_options: Some(payment_quote_options::MeltOptions::Bolt12(Bolt12Options { invoice })),
+            cdk_common::payment::PaymentQuoteOptions::Bolt12 { invoice } => Self {
+                melt_options: Some(payment_quote_options::MeltOptions::Bolt12(Bolt12Options {
+                    invoice,
+                })),
             },
         }
     }
@@ -214,7 +216,7 @@ impl TryFrom<MeltQuote> for cdk_common::mint::MeltQuote {
 
     fn try_from(value: MeltQuote) -> Result<Self, Self::Error> {
         let bolt11 = Bolt11Invoice::from_str(&value.request)?;
-        
+
         Ok(Self {
             id: value
                 .id
