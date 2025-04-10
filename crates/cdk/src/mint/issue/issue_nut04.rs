@@ -215,18 +215,6 @@ impl Mint {
             mint_quote.id
         );
         if mint_quote.state != MintQuoteState::Issued && mint_quote.state != MintQuoteState::Paid {
-            let unix_time = unix_time();
-
-            if mint_quote.expiry < unix_time {
-                tracing::warn!(
-                    "Mint quote {} paid at {} expired at {}, leaving current state",
-                    mint_quote.id,
-                    mint_quote.expiry,
-                    unix_time,
-                );
-                return Err(Error::ExpiredQuote(mint_quote.expiry, unix_time));
-            }
-
             self.localstore
                 .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
                 .await?;
