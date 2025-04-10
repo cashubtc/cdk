@@ -194,10 +194,10 @@ impl Wallet {
             .ok_or(Error::UnknownQuote)?;
 
         let unix_time = unix_time();
-        ensure_cdk!(
-            quote_info.expiry > unix_time || quote_info.expiry == 0,
-            Error::ExpiredQuote(quote_info.expiry, unix_time)
-        );
+
+        if quote_info.expiry > unix_time {
+            tracing::warn!("Attempting to mint with expired quote.");
+        }
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
