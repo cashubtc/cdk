@@ -138,13 +138,23 @@ pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
     create_mint_router_with_custom_cache(mint, Default::default()).await
 }
 
-async fn cors_middleware(req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next) -> Response {
+async fn cors_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
     // Call the next handler
     let mut response = next.run(req).await;
 
-    response.headers_mut().insert("Access-Control-Allow-Origin", "*".parse().unwrap());
-    response.headers_mut().insert("Access-Control-Allow-Methods", "GET, POST".parse().unwrap());
-    response.headers_mut().insert("Access-Control-Allow-Headers", "Content-Type".parse().unwrap());
+    response
+        .headers_mut()
+        .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+    response
+        .headers_mut()
+        .insert("Access-Control-Allow-Methods", "GET, POST".parse().unwrap());
+    response.headers_mut().insert(
+        "Access-Control-Allow-Headers",
+        "Content-Type".parse().unwrap(),
+    );
 
     response
 }
@@ -182,7 +192,9 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mint_router = Router::new().nest("/v1", v1_router).layer(from_fn(cors_middleware));
+    let mint_router = Router::new()
+        .nest("/v1", v1_router)
+        .layer(from_fn(cors_middleware));
 
     #[cfg(feature = "auth")]
     let mint_router = {
