@@ -142,15 +142,33 @@ async fn cors_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
+    // Handle preflight requests
+    if req.method() == axum::http::Method::OPTIONS {
+        let mut response = Response::new("".into());
+        response
+            .headers_mut()
+            .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+        response.headers_mut().insert(
+            "Access-Control-Allow-Methods",
+            "GET, POST, OPTIONS".parse().unwrap(),
+        );
+        response.headers_mut().insert(
+            "Access-Control-Allow-Headers",
+            "Content-Type".parse().unwrap(),
+        );
+        return response;
+    }
+
     // Call the next handler
     let mut response = next.run(req).await;
 
     response
         .headers_mut()
         .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
-    response
-        .headers_mut()
-        .insert("Access-Control-Allow-Methods", "GET, POST".parse().unwrap());
+    response.headers_mut().insert(
+        "Access-Control-Allow-Methods",
+        "GET, POST, OPTIONS".parse().unwrap(),
+    );
     response.headers_mut().insert(
         "Access-Control-Allow-Headers",
         "Content-Type".parse().unwrap(),
