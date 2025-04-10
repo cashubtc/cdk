@@ -79,7 +79,7 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
             amount: value.amount.into(),
             fee: value.fee.into(),
             state: QuoteState::from(value.state).into(),
-            options: value.options.map(|o| o.into()),
+            melt_options: value.options.map(|o| o.into()),
         }
     }
 }
@@ -119,10 +119,10 @@ impl From<MeltOptions> for cdk_common::nut05::MeltOptions {
 
 impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
     fn from(value: PaymentQuoteOptions) -> Self {
-        let options = value.melt_options.expect("option defined");
+        let bolt12 = value.melt_options.expect("option defined");
 
         Self::Bolt12 {
-            invoice: options.invoice,
+            invoice: bolt12.invoice,
         }
     }
 }
@@ -130,7 +130,9 @@ impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
 impl From<cdk_common::payment::PaymentQuoteOptions> for PaymentQuoteOptions {
     fn from(value: cdk_common::payment::PaymentQuoteOptions) -> Self {
         match value {
-            Bolt12Options { invoice } => Self { options: () },
+            cdk_common::payment::PaymentQuoteOptions::Bolt12 { invoice } => Self { 
+                melt_options: Some(Bolt12Options { invoice }),
+            },
         }
     }
 }
@@ -142,7 +144,7 @@ impl From<PaymentQuoteResponse> for cdk_common::payment::PaymentQuoteResponse {
             amount: value.amount.into(),
             fee: value.fee.into(),
             state: value.state().into(),
-            options: value.options.map(|o| o.into()),
+            options: value.melt_options.map(|o| o.into()),
         }
     }
 }
@@ -188,7 +190,7 @@ impl From<cdk_common::mint::MeltQuote> for MeltQuote {
             id: value.id.to_string(),
             unit: value.unit.to_string(),
             amount: value.amount.into(),
-            request: value.request,
+            request: value.request.to_string(),
             fee_reserve: value.fee_reserve.into(),
             state: QuoteState::from(value.state).into(),
             expiry: value.expiry,
@@ -213,7 +215,7 @@ impl TryFrom<MeltQuote> for cdk_common::mint::MeltQuote {
                 .map_err(|_| crate::error::Error::InvalidId)?,
             unit: value.unit.parse()?,
             amount: value.amount.into(),
-            request: value.request.clone(),
+            request: Bolt11Invoice::from_str(&value.request)?,
             fee_reserve: value.fee_reserve.into(),
             state: cdk_common::nut05::QuoteState::from(value.state()),
             expiry: value.expiry,
