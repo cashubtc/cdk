@@ -136,6 +136,15 @@ pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
 
 
 async fn cors_middleware(req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next) -> Response {
+    // Handle preflight requests
+    if req.method() == axum::http::Method::OPTIONS {
+        let mut response = Response::new("".into());
+        response.headers_mut().insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+        response.headers_mut().insert("Access-Control-Allow-Methods", "GET, POST, OPTIONS".parse().unwrap());
+        response.headers_mut().insert("Access-Control-Allow-Headers", "Content-Type".parse().unwrap());
+        return response;
+    }
+
     // Call the next handler
     let mut response = next.run(req).await;
 
@@ -195,7 +204,7 @@ pub async fn create_mint_router_with_custom_cache(
     let mint_router = Router::new().nest("/v1", v1_router).layer(from_fn(cors_middleware));
 
     #[cfg(feature = "kvac")]
-    let mint_router = mint_router.nest("/v2", v2_router);
+    let mint_router = mint_router.nest("/v2", v2_router).layer(from_fn(cors_middleware));
 
     let mint_router = mint_router.with_state(state);
 
