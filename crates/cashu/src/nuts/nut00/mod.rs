@@ -150,6 +150,9 @@ pub enum Error {
     /// Unsupported token
     #[error("Unsupported payment method")]
     UnsupportedPaymentMethod,
+    /// Duplicate proofs in token
+    #[error("Duplicate proofs in token")]
+    DuplicateProofs,
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
