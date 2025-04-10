@@ -99,12 +99,24 @@ impl MultiMintWallet {
         self.wallets.lock().await.values().cloned().collect()
     }
 
-    /// Get Wallet from MultiMintWallet
+    /// Get [Wallet] from [MultiMintWallet]. Return `None` if no wallet is found.
+    ///
+    /// See also: [MultiMintWallet::expect_wallet]
     #[instrument(skip(self))]
     pub async fn get_wallet(&self, wallet_key: &WalletKey) -> Option<Wallet> {
         let wallets = self.wallets.lock().await;
 
         wallets.get(wallet_key).cloned()
+    }
+
+    /// Get [Wallet] from [MultiMintWallet], or throw an [Error::UnknownWallet] if none is found.
+    ///
+    /// See also: [MultiMintWallet::get_wallet]
+    #[instrument(skip(self))]
+    pub async fn expect_wallet(&self, wallet_key: &WalletKey) -> Result<Wallet, Error> {
+        self.get_wallet(wallet_key)
+            .await
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))
     }
 
     /// Check if mint unit pair is in wallet
@@ -171,10 +183,7 @@ impl MultiMintWallet {
         amount: Amount,
         opts: SendOptions,
     ) -> Result<PreparedSend, Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
 
         wallet.prepare_send(amount, opts).await
     }
@@ -187,10 +196,7 @@ impl MultiMintWallet {
         send: PreparedSend,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
 
         wallet.send(send, memo).await
     }
@@ -203,10 +209,7 @@ impl MultiMintWallet {
         amount: Amount,
         description: Option<String>,
     ) -> Result<MintQuote, Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
 
         wallet.mint_quote(amount, description).await
     }
@@ -221,10 +224,7 @@ impl MultiMintWallet {
         let mut amount_minted = HashMap::new();
         match wallet_key {
             Some(wallet_key) => {
-                let wallet = self
-                    .get_wallet(&wallet_key)
-                    .await
-                    .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+                let wallet = self.expect_wallet(&wallet_key).await?;
 
                 let amount = wallet.check_all_mint_quotes().await?;
                 amount_minted.insert(wallet.unit, amount);
@@ -252,10 +252,7 @@ impl MultiMintWallet {
         quote_id: &str,
         conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
         wallet
             .mint(quote_id, SplitTarget::default(), conditions)
             .await
@@ -280,17 +277,9 @@ impl MultiMintWallet {
 
         let mint_url = token_data.mint_url()?;
 
-        // Check that all mints in tokes have wallets
-        let wallet_key = WalletKey::new(mint_url.clone(), unit.clone());
-        if !self.has(&wallet_key).await {
-            return Err(Error::UnknownWallet(wallet_key.clone()));
-        }
-
+        // Check that we have a wallet for the mint in the token
         let wallet_key = WalletKey::new(mint_url.clone(), unit);
-        let wallet = self
-            .get_wallet(&wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(&wallet_key).await?;
 
         match wallet
             .receive_proofs(proofs, opts, token_data.memo().clone())
@@ -320,10 +309,7 @@ impl MultiMintWallet {
         wallet_key: &WalletKey,
         max_fee: Option<Amount>,
     ) -> Result<Melted, Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
 
         let quote = wallet.melt_quote(bolt11.to_string(), options).await?;
         if let Some(max_fee) = max_fee {
@@ -336,10 +322,7 @@ impl MultiMintWallet {
     /// Restore
     #[instrument(skip(self))]
     pub async fn restore(&self, wallet_key: &WalletKey) -> Result<Amount, Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
 
         wallet.restore().await
     }
@@ -352,10 +335,7 @@ impl MultiMintWallet {
         token: &Token,
         conditions: SpendingConditions,
     ) -> Result<(), Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
 
         wallet.verify_token_p2pk(token, conditions)
     }
@@ -367,10 +347,7 @@ impl MultiMintWallet {
         wallet_key: &WalletKey,
         token: &Token,
     ) -> Result<(), Error> {
-        let wallet = self
-            .get_wallet(wallet_key)
-            .await
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+        let wallet = self.expect_wallet(wallet_key).await?;
 
         wallet.verify_token_dleq(token).await
     }
