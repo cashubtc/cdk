@@ -122,12 +122,9 @@ impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
         let melt_options = value.melt_options.expect("option defined");
 
         // Extract the Bolt12Options from the oneof field
-        if let payment_quote_options::MeltOptions::Bolt12(bolt12) = melt_options {
-            Self::Bolt12 {
-                invoice: bolt12.invoice,
-            }
-        } else {
-            panic!("Expected Bolt12 options")
+        let payment_quote_options::MeltOptions::Bolt12(bolt12) = melt_options;
+        Self::Bolt12 {
+            invoice: bolt12.invoice,
         }
     }
 }
