@@ -13,7 +13,7 @@ async-trait = "0.1.83"
 cashu.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, default-features=false, features = [
-    "mint",
+    "mint", "auth",
 ] }
 tracing.workspace = true
 tokio.workspace = true

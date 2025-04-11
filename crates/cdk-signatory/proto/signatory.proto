@@ -51,10 +51,10 @@ message CustomDerivationPath {
 }
 
 enum CurrencyUnitType {
-  CURRENCY_UNIT_SAT = 0;
-  CURRENCY_UNIT_MSAT = 1;
-  CURRENCY_UNIT_USD = 2;
-  CURRENCY_UNIT_EUR = 3;
+  SAT = 0;
+  MSAT = 1;
+  USD = 2;
+  EUR = 3;
 }
 
 message CurrencyUnit {
