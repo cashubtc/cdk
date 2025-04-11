@@ -65,6 +65,23 @@ pub struct MintQuote {
     pub amount_paid: Amount,
 }
 
+impl MintQuote {
+    /// Calculate the total amount including any fees
+    pub fn total_amount(&self) -> Amount {
+        self.amount_paid
+    }
+    
+    /// Check if the quote has expired
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time > self.expiry
+    }
+    
+    /// Check if the quote is in a completed state
+    pub fn is_completed(&self) -> bool {
+        matches!(self.state, MintQuoteState::Paid | MintQuoteState::Minted)
+    }
+}
+
 /// Melt Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
