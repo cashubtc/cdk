@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::util::hex;
-use cashu::{nut00, nuts::nut23::MintQuoteBolt12Response, PaymentMethod, Proofs, PublicKey};
+use cashu::{nut00, PaymentMethod, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
@@ -70,15 +70,10 @@ impl MintQuote {
     pub fn total_amount(&self) -> Amount {
         self.amount_paid
     }
-    
+
     /// Check if the quote has expired
     pub fn is_expired(&self, current_time: u64) -> bool {
         current_time > self.expiry
-    }
-    
-    /// Check if the quote is in a completed state
-    pub fn is_completed(&self) -> bool {
-        matches!(self.state, MintQuoteState::Paid | MintQuoteState::Minted)
     }
 }
 
