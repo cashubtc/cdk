@@ -64,14 +64,13 @@ async fn test_correct_keyset() {
         .await
         .unwrap();
 
-    let active = mint.localstore.get_active_keysets().await.unwrap();
+    let active = mint.get_active_keysets().await.expect("get_active_keysets");
 
     let active = active
         .get(&CurrencyUnit::Sat)
         .expect("There is a keyset for unit");
 
     let keyset_info = mint
-        .localstore
         .get_keyset_info(active)
         .await
         .unwrap()
@@ -81,14 +80,13 @@ async fn test_correct_keyset() {
 
     let mint = mint_builder.build().await.unwrap();
 
-    let active = mint.localstore.get_active_keysets().await.unwrap();
+    let active = mint.get_active_keysets().await.expect("get_active_keysets");
 
     let active = active
         .get(&CurrencyUnit::Sat)
         .expect("There is a keyset for unit");
 
     let keyset_info = mint
-        .localstore
         .get_keyset_info(active)
         .await
         .unwrap()

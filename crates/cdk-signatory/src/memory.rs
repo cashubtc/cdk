@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::amount::Amount;
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
@@ -26,7 +26,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet};
 /// is not accessible from the outside.
 pub struct Memory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
-    localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+    localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     auth_localstore:
         Option<Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>>,
     secp_ctx: Secp256k1<secp256k1::All>,
@@ -37,7 +37,7 @@ pub struct Memory {
 impl Memory {
     /// Creates a new MemorySignatory instance
     pub async fn new(
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,
