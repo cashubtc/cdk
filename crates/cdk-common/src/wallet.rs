@@ -70,6 +70,7 @@ pub struct MintQuote {
 
 impl MintQuote {
     /// Create a new MintQuote
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         mint_url: MintUrl,
@@ -112,15 +113,15 @@ impl MintQuote {
     ///
     pub fn amount_mintable(&self) -> Amount {
         println!("{:?}", self);
-        let diffrence = self.amount_paid - self.amount_minted;
+        let difference = self.amount_paid - self.amount_minted;
 
-        if diffrence == Amount::ZERO && self.state != MintQuoteState::Issued {
+        if difference == Amount::ZERO && self.state != MintQuoteState::Issued {
             if let Some(amount) = self.amount {
                 return amount;
             }
         }
 
-        diffrence
+        difference
     }
 }
 

@@ -87,8 +87,8 @@ impl Mint {
                 tracing::error!("Payment backend did not return invoice");
                 Error::InvoiceMissing
             })
-            .and_then(|options| match options {
-                PaymentQuoteOptions::Bolt12 { invoice } => Ok(invoice),
+            .map(|options| match options {
+                PaymentQuoteOptions::Bolt12 { invoice } => invoice,
             })?;
 
         let payment_request = MeltPaymentRequest::Bolt12 {

@@ -281,8 +281,8 @@ pub enum MeltPaymentRequest {
 impl std::fmt::Display for MeltPaymentRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{}", bolt11.to_string()),
-            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => write!(f, "{}", offer.to_string()),
+            MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{}", bolt11),
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => write!(f, "{}", offer),
         }
     }
 }

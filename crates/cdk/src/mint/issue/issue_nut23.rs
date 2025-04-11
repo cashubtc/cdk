@@ -143,6 +143,6 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        Ok(quote.try_into()?)
+        quote.try_into()
     }
 }

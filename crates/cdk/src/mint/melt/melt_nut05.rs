@@ -57,7 +57,7 @@ impl Mint {
                 // Verify there is no corresponding mint quote.
                 // Otherwise a wallet is trying to pay someone internally, but
                 // with a multi-part quote. And that's just not possible.
-                if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
+                if (self.localstore.get_mint_quote_by_request(request).await?).is_some() {
                     return Err(Error::InternalMultiPartMeltQuote);
                 }
 
@@ -84,7 +84,6 @@ impl Mint {
                     }
                     PaymentMethod::Bolt12 => {
                         // Amountless is always supported for bolt12
-                        ()
                     }
                     PaymentMethod::Custom(_) => {
                         return Err(Error::UnsupportedPaymentMethod);
