@@ -241,22 +241,22 @@ impl From<cashu::CurrencyUnit> for CurrencyUnit {
         match value {
             cashu::CurrencyUnit::Sat => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
-                    CurrencyUnitType::CurrencyUnitSat.into(),
+                    CurrencyUnitType::Sat.into(),
                 )),
             },
             cashu::CurrencyUnit::Msat => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
-                    CurrencyUnitType::CurrencyUnitMsat.into(),
+                    CurrencyUnitType::Msat.into(),
                 )),
             },
             cashu::CurrencyUnit::Usd => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
-                    CurrencyUnitType::CurrencyUnitUsd.into(),
+                    CurrencyUnitType::Usd.into(),
                 )),
             },
             cashu::CurrencyUnit::Eur => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
-                    CurrencyUnitType::CurrencyUnitEur.into(),
+                    CurrencyUnitType::Eur.into(),
                 )),
             },
             cashu::CurrencyUnit::Custom(name) => CurrencyUnit {
@@ -276,10 +276,10 @@ impl TryInto<cashu::CurrencyUnit> for CurrencyUnit {
                 .try_into()
                 .map_err(|_| Status::invalid_argument("Invalid currency unit"))?
             {
-                CurrencyUnitType::CurrencyUnitSat => Ok(cashu::CurrencyUnit::Sat),
-                CurrencyUnitType::CurrencyUnitMsat => Ok(cashu::CurrencyUnit::Msat),
-                CurrencyUnitType::CurrencyUnitUsd => Ok(cashu::CurrencyUnit::Usd),
-                CurrencyUnitType::CurrencyUnitEur => Ok(cashu::CurrencyUnit::Eur),
+                CurrencyUnitType::Sat => Ok(cashu::CurrencyUnit::Sat),
+                CurrencyUnitType::Msat => Ok(cashu::CurrencyUnit::Msat),
+                CurrencyUnitType::Usd => Ok(cashu::CurrencyUnit::Usd),
+                CurrencyUnitType::Eur => Ok(cashu::CurrencyUnit::Eur),
             },
             Some(currency_unit::CurrencyUnit::CustomUnit(name)) => {
                 Ok(cashu::CurrencyUnit::Custom(name))
