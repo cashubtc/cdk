@@ -1,7 +1,7 @@
 -- Add new columns to mint_quote table
 ALTER TABLE mint_quote ADD COLUMN amount_paid INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mint_quote ADD COLUMN amount_minted INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE mint_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'BOLT11';
+ALTER TABLE mint_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'bolt11';
 ALTER TABLE mint_quote ADD COLUMN single_use BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE mint_quote ADD COLUMN pending BOOLEAN NOT NULL DEFAULT FALSE;
 

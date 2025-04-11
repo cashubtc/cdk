@@ -7,6 +7,7 @@ use cdk::nuts::{
     MeltBolt12Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request, MintBolt11Request,
     MintBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
 };
+use tracing::instrument;
 use uuid::Uuid;
 
 use crate::{into_response, MintState};
@@ -20,6 +21,7 @@ use crate::{into_response, MintState};
     )
 ))]
 /// Get mint bolt12 quote
+#[instrument(skip_all, fields(amount = ?payload.amount))]
 pub async fn get_mint_bolt12_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt12Request>,
@@ -46,6 +48,7 @@ pub async fn get_mint_bolt12_quote(
     )
 ))]
 /// Get mint bolt12 quote
+#[instrument(skip_all, fields(quote_id = ?quote_id))]
 pub async fn get_check_mint_bolt12_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
@@ -70,6 +73,7 @@ pub async fn get_check_mint_bolt12_quote(
     )
 ))]
 /// Request a quote for melting tokens
+#[instrument(skip_all, fields(quote_id = ?payload.quote))]
 pub async fn post_mint_bolt12(
     State(state): State<MintState>,
     Json(payload): Json<MintBolt11Request<Uuid>>,

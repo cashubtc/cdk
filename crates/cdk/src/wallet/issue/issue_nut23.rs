@@ -1,4 +1,7 @@
-use cdk_common::SecretKey;
+use std::collections::HashMap;
+
+use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::{Proofs, SecretKey};
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -81,7 +84,7 @@ impl Wallet {
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Amount, Error> {
+    ) -> Result<Proofs, Error> {
         // Check that mint is in store of mints
         if self
             .localstore
@@ -123,6 +126,11 @@ impl Wallet {
                 state.amount_paid - state.amount_issued
             }
         };
+
+        if amount == Amount::ZERO {
+            tracing::error!("Cannot mint zero amount.");
+            return Err(Error::InvoiceAmountUndefined);
+        }
 
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
@@ -176,10 +184,8 @@ impl Wallet {
             &keys,
         )?;
 
-        let minted_amount = proofs.total_amount()?;
-
         // Remove filled quote from store
-        //self.localstore.remove_mint_quote(&quote_info.id).await?;
+        self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         if spending_conditions.is_none() {
             // Update counter for keyset
@@ -188,11 +194,11 @@ impl Wallet {
                 .await?;
         }
 
-        let proofs = proofs
-            .into_iter()
+        let proof_infos = proofs
+            .iter()
             .map(|proof| {
                 ProofInfo::new(
-                    proof,
+                    proof.clone(),
                     self.mint_url.clone(),
                     State::Unspent,
                     quote_info.unit.clone(),
@@ -201,9 +207,24 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proofs, vec![]).await?;
+        self.localstore.update_proofs(proof_infos, vec![]).await?;
 
-        Ok(minted_amount)
+        // Add transaction to store
+        self.localstore
+            .add_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: proofs.total_amount()?,
+                fee: Amount::ZERO,
+                unit: self.unit.clone(),
+                ys: proofs.ys()?,
+                timestamp: unix_time(),
+                memo: None,
+                metadata: HashMap::new(),
+            })
+            .await?;
+
+        Ok(proofs)
     }
 
     /// Check mint quote status

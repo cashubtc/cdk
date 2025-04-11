@@ -380,8 +380,8 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         let res = sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, paid_time, issued_time, pending)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, paid_time, issued_time, pending, payment_method)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     amount = excluded.amount,
     unit = excluded.unit,
@@ -415,6 +415,7 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.paid_time.map(|t| t as i64))
         .bind(quote.issued_time.map(|t| t as i64))
         .bind(quote.pending())
+        .bind(quote.payment_method.to_string())
         .execute(&mut *transaction)
         .await;
 

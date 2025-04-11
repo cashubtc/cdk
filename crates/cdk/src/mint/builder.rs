@@ -22,7 +22,7 @@ use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod,
+    MppMethodSettings, NUT04Settings, NUT05Settings, PaymentMethod,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -189,27 +189,54 @@ impl MintBuilder {
             self.mint_info.nuts.nut15 = mpp;
         }
 
-        if method == PaymentMethod::Bolt11 {
-            let mint_method_settings = MintMethodSettings {
-                method: method.clone(),
-                unit: unit.clone(),
-                min_amount: Some(limits.mint_min),
-                max_amount: Some(limits.mint_max),
-                description: settings.invoice_description,
-            };
+        let mint_method_settings = MintMethodSettings {
+            method: method.clone(),
+            unit: unit.clone(),
+            min_amount: Some(limits.mint_min),
+            max_amount: Some(limits.mint_max),
+            description: settings.invoice_description,
+        };
 
-            self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-            self.mint_info.nuts.nut04.disabled = false;
+        let melt_method_settings = MeltMethodSettings {
+            method: method.clone(),
+            unit,
+            min_amount: Some(limits.melt_min),
+            max_amount: Some(limits.melt_max),
+            amountless: settings.amountless,
+        };
 
-            let melt_method_settings = MeltMethodSettings {
-                method,
-                unit,
-                min_amount: Some(limits.melt_min),
-                max_amount: Some(limits.melt_max),
-                amountless: settings.amountless,
-            };
-            self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-            self.mint_info.nuts.nut05.disabled = false;
+        match method {
+            PaymentMethod::Bolt11 => {
+                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+                self.mint_info.nuts.nut04.disabled = false;
+
+                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+                self.mint_info.nuts.nut05.disabled = false;
+            }
+            PaymentMethod::Bolt12 => {
+                let nut23 = self
+                    .mint_info
+                    .nuts
+                    .nut23
+                    .get_or_insert_with(NUT04Settings::default);
+                nut23.methods.push(mint_method_settings);
+                nut23.disabled = false;
+
+                self.mint_info.nuts.nut23 = Some(nut23.clone());
+
+                let nut24 = self
+                    .mint_info
+                    .nuts
+                    .nut24
+                    .get_or_insert_with(NUT05Settings::default);
+
+                nut24.methods.push(melt_method_settings);
+                nut24.disabled = false;
+                self.mint_info.nuts.nut24 = Some(nut24.clone());
+            }
+            PaymentMethod::Custom(_) => {
+                tracing::info!("Adding payment method for custome unit. Not adding to nuts.");
+            }
         }
 
         ln.insert(ln_key.clone(), ln_backend);

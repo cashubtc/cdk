@@ -16,15 +16,15 @@ impl Mint {
         unit: &CurrencyUnit,
     ) -> Result<(), Error> {
         let mint_info = self.localstore.get_mint_info().await?;
-        let nut23 = &mint_info
-            .nuts
-            .nut23
-            .ok_or(Error::UnsupportedPaymentMethod)?;
+        let nut23 = &mint_info.nuts.nut23.ok_or_else(|| {
+            tracing::debug!("Attempted to mint quote for unsupported unit.");
+            Error::UnsupportedPaymentMethod
+        })?;
 
         ensure_cdk!(!nut23.disabled, Error::MintingDisabled);
 
         let settings = nut23
-            .get_settings(unit, &PaymentMethod::Bolt11)
+            .get_settings(unit, &PaymentMethod::Bolt12)
             .ok_or(Error::UnsupportedUnit)?;
         if let Some(amount) = amount {
             let is_above_max = settings
@@ -65,11 +65,13 @@ impl Mint {
         self.check_bolt12_mint_request_acceptable(amount, &unit)
             .await?;
 
+        let payment_method = PaymentMethod::Bolt12;
+
         let ln = self
             .ln
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::Bolt12,
+                payment_method.clone(),
             ))
             .ok_or_else(|| {
                 tracing::info!("Bolt12 mint request for unsupported unit");
@@ -88,7 +90,7 @@ impl Mint {
                 // TODO: We need to make this an option on the trait
                 amount.unwrap_or_default(),
                 &unit,
-                &PaymentMethod::Bolt11,
+                &payment_method,
                 description.unwrap_or("".to_string()),
                 Some(quote_expiry),
             )
@@ -111,7 +113,7 @@ impl Mint {
             Amount::ZERO,
             single_use,
             vec![],
-            PaymentMethod::Bolt12,
+            payment_method,
             false,
             unix_time(),
             None,
