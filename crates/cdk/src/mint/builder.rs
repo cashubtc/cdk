@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{self, MintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
@@ -36,6 +36,8 @@ pub struct MintBuilder {
     pub mint_info: MintInfo,
     /// Mint Storage backend
     localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
+    ///
+    keystore: Option<Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>>,
     /// Mint Storage backend
     #[cfg(feature = "auth")]
     auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
@@ -89,6 +91,15 @@ impl MintBuilder {
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
+        self
+    }
+
+    /// Set keystore database
+    pub fn with_keystore(
+        mut self,
+        keystore: Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>,
+    ) -> MintBuilder {
+        self.keystore = Some(keystore);
         self
     }
 
@@ -334,7 +345,7 @@ impl MintBuilder {
         } else {
             let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
             let in_memory_signatory = cdk_signatory::memory::Memory::new(
-                localstore.clone(),
+                self.keystore.clone().ok_or(anyhow!("keystore not set"))?,
                 None,
                 seed,
                 self.supported_units.clone(),

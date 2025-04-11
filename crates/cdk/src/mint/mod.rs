@@ -286,9 +286,7 @@ impl Mint {
             if let std::collections::hash_map::Entry::Vacant(e) =
                 fee_per_keyset.entry(proof.keyset_id)
             {
-                // TODO: Get this from signatory
                 let mint_keyset_info = self
-                    .localstore
                     .get_keyset_info(&proof.keyset_id)
                     .await?
                     .ok_or(Error::UnknownKeySet)?;
@@ -304,6 +302,40 @@ impl Mint {
         let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
 
         Ok(fee)
+    }
+
+    /// Get active keysets
+    pub async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Error> {
+        Ok(self
+            .signatory
+            .keysets()
+            .await?
+            .into_iter()
+            .filter_map(|keyset| {
+                if keyset.info.active {
+                    Some((keyset.info.unit.clone(), keyset.info.id))
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
+    /// Get keyset info
+    pub async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Error> {
+        Ok(self
+            .signatory
+            .keysets()
+            .await?
+            .into_iter()
+            .filter_map(|keyset| {
+                if keyset.info.id == *id {
+                    Some(keyset.info)
+                } else {
+                    None
+                }
+            })
+            .next())
     }
 
     /// Blind Sign
@@ -412,7 +444,7 @@ impl Mint {
     /// Get the total amount issed by keyset
     #[instrument(skip_all)]
     pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.localstore.get_keyset_infos().await?;
+        let keysets = self.keysets().await?.keysets;
 
         let mut total_issued = HashMap::new();
 
@@ -433,7 +465,7 @@ impl Mint {
     /// Total redeemed for keyset
     #[instrument(skip_all)]
     pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.localstore.get_keyset_infos().await?;
+        let keysets = self.keysets().await?.keysets;
 
         let mut total_redeemed = HashMap::new();
 
