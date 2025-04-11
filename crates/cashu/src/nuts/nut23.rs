@@ -42,9 +42,10 @@ pub struct MintQuoteBolt12Request {
 
 /// Mint quote response [NUT-19]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MintQuoteBolt12Response {
+#[serde(bound = "Q: Serialize + Deserialize")]
+pub struct MintQuoteBolt12Response<Q> {
     /// Quote Id
-    pub quote: String,
+    pub quote: Q,
     /// Payment request to fulfil
     pub request: String,
     /// Single use
