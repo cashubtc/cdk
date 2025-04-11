@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(feature = "mint")]
 use uuid::Uuid;
 
 use super::nut00::CurrencyUnit;
