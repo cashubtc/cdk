@@ -77,16 +77,16 @@ impl Wallet {
 
         let quote_res = self.client.post_mint_quote(request).await?;
 
-        let quote = MintQuote {
+        let quote = MintQuote::new(
+            quote_res.quote,
             mint_url,
-            id: quote_res.quote,
+            crate::nuts::PaymentMethod::Bolt11,
             amount,
             unit,
-            request: quote_res.request,
-            state: quote_res.state,
-            expiry: quote_res.expiry.unwrap_or(0),
-            secret_key: Some(secret_key),
-        };
+            quote_res.request,
+            quote_res.expiry.unwrap_or(0),
+            Some(secret_key),
+        );
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
