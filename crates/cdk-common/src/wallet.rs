@@ -75,6 +75,32 @@ impl MintQuote {
     pub fn is_expired(&self, current_time: u64) -> bool {
         current_time > self.expiry
     }
+    
+    /// Create a new MintQuote
+    pub fn new(
+        id: String,
+        mint_url: MintUrl,
+        payment_method: PaymentMethod,
+        amount: Amount,
+        unit: CurrencyUnit,
+        request: String,
+        expiry: u64,
+        secret_key: Option<SecretKey>,
+    ) -> Self {
+        Self {
+            id,
+            mint_url,
+            payment_method,
+            amount,
+            unit,
+            request,
+            state: MintQuoteState::Unpaid,
+            expiry,
+            secret_key,
+            amount_minted: Amount::ZERO,
+            amount_paid: Amount::ZERO,
+        }
+    }
 }
 
 /// Melt Quote Info
