@@ -18,6 +18,7 @@ use cdk::nuts::{
     MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PaymentMethod,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
+use cdk_common::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
@@ -157,6 +158,27 @@ impl MintConnector for DirectMintConnection {
         let mut auth_wallet = self.auth_wallet.write().await;
 
         *auth_wallet = wallet;
+    }
+    
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        self.mint
+            .get_mint_bolt12_quote(request)
+            .await
+            .map(Into::into)
+    }
+    
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
+        self.mint
+            .check_mint_bolt12_quote(&quote_id_uuid)
+            .await
+            .map(Into::into)
     }
 }
 
