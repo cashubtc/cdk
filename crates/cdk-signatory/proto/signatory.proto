@@ -40,7 +40,7 @@ message Keys {
 
 message RotateKeyArguments {
     CurrencyUnit unit = 1;
-    uint32 derivation_path_index = 2;
+    optional uint32 derivation_path_index = 2;
     uint32 max_order = 3;
     uint64 input_fee_ppk = 4;
 }
