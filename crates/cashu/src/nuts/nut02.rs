@@ -42,6 +42,12 @@ pub enum Error {
     /// Keyset id does not match
     #[error("Keyset id incorrect")]
     IncorrectKeysetId,
+    /// Short keyset id does not match any of the provided IDv2s
+    #[error("Short keyset id does not match any of the provided IDv2s")]
+    UnknownShortKeysetId,
+    /// Short keyset id is ill-formed
+    #[error("Short keyset id is ill-formed")]
+    MalformedShortKeysetId,
     /// Slice Error
     #[error(transparent)]
     Slice(#[from] TryFromSliceError),
@@ -119,7 +125,9 @@ pub struct Id {
 
 impl Id {
     const STRLEN_V1: usize = 14;
+    const BYTELEN_V1: usize = 7;
     const STRLEN_V2: usize = 62;
+    const BYTELEN_V2: usize = 31;
 
     /// [`Id`] to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -223,6 +231,38 @@ impl Id {
                     .try_into()
                     .expect("Invalid length of hex id"),
             ),
+        }
+    }
+
+    /// Selects the correct IDv2 from a list of keysets and the given short-id
+    /// or returns the short-id in the case of v1.
+    pub fn from_short_keyset_id(
+        short_id: &ShortKeysetId,
+        keysets_info: &[KeySetInfo],
+    ) -> Result<Self, Error> {
+        // Check prefix length
+        if short_id.prefix.len() < Self::BYTELEN_V1 || short_id.prefix.len() > Self::BYTELEN_V2 {
+            return Err(Error::MalformedShortKeysetId);
+        }
+
+        match short_id.version {
+            KeySetVersion::Version00 => {
+                let mut idbytes: [u8; Self::BYTELEN_V1] = [0u8; Self::BYTELEN_V1];
+                idbytes.copy_from_slice(&short_id.prefix[..Self::BYTELEN_V1]);
+                Ok(Self {
+                    version: short_id.version,
+                    id: IdBytes::V1(idbytes),
+                })
+            }
+            KeySetVersion::Version01 => {
+                // We return the first match or error
+                for keyset_info in keysets_info.iter() {
+                    if keyset_info.id.id.to_vec()[..short_id.prefix.len()] == short_id.prefix {
+                        return Ok(keyset_info.id);
+                    }
+                }
+                Err(Error::UnknownShortKeysetId)
+            }
         }
     }
 }
