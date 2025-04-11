@@ -21,8 +21,9 @@ use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, 
+    MintQuoteBolt12Request, MintQuoteBolt12Response, RestoreRequest, RestoreResponse, 
+    SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
@@ -392,6 +393,47 @@ impl MintConnector for HttpClient {
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
         self.core.http_post(url, auth_token, &request).await
+    }
+
+    /// Mint Quote Bolt12 [NUT-23]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "bolt12"])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt12)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.core.http_post(url, auth_token, &request).await
+    }
+
+    /// Mint Quote Bolt12 status
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "bolt12", quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MintQuoteBolt12)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_get(url, auth_token).await
     }
 }
 
