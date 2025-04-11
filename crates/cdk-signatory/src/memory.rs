@@ -310,9 +310,27 @@ impl Signatory for Memory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<MintKeySetInfo, Error> {
+        let path_index = if let Some(path_index) = args.derivation_path_index {
+            path_index
+        } else {
+            let current_keyset_id = self
+                .localstore
+                .get_active_keyset_id(&args.unit)
+                .await?
+                .ok_or(Error::UnsupportedUnit)?;
+
+            let keyset_info = self
+                .localstore
+                .get_keyset_info(&current_keyset_id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+
+            keyset_info.derivation_path_index.unwrap_or(1) + 1
+        };
+
         let derivation_path = match self.custom_paths.get(&args.unit) {
             Some(path) => path.clone(),
-            None => derivation_path_from_unit(args.unit.clone(), args.derivation_path_index)
+            None => derivation_path_from_unit(args.unit.clone(), path_index)
                 .ok_or(Error::UnsupportedUnit)?,
         };
 
@@ -320,7 +338,7 @@ impl Signatory for Memory {
             &self.secp_ctx,
             self.xpriv,
             derivation_path,
-            Some(args.derivation_path_index),
+            Some(path_index),
             args.unit.clone(),
             args.max_order,
             args.input_fee_ppk,
