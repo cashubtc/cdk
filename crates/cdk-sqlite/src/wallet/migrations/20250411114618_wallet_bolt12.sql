@@ -5,8 +5,8 @@ ALTER TABLE mint_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'BOLT11';
 ALTER TABLE mint_quote ADD COLUMN single_use BOOLEAN NOT NULL DEFAULT TRUE;
 
 -- Remove NOT NULL constraint from amount column
-PRAGMA foreign_keys=off;
 BEGIN TRANSACTION;
+PRAGMA foreign_keys=off;
 CREATE TABLE mint_quote_new (
     id TEXT PRIMARY KEY,
     mint_url TEXT NOT NULL,
@@ -25,8 +25,8 @@ CREATE TABLE mint_quote_new (
 INSERT INTO mint_quote_new SELECT * FROM mint_quote;
 DROP TABLE mint_quote;
 ALTER TABLE mint_quote_new RENAME TO mint_quote;
-COMMIT;
 PRAGMA foreign_keys=on;
+COMMIT;
 
 -- Set amount_paid equal to amount for quotes with PAID or ISSUED state
 UPDATE mint_quote SET amount_paid = amount WHERE state = 'PAID' OR state = 'ISSUED';
