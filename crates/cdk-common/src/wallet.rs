@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::util::hex;
-use cashu::{nut00, PaymentMethod, Proofs, PublicKey};
+use cashu::{nut00, nuts::nut23::MintQuoteBolt12Response, PaymentMethod, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
