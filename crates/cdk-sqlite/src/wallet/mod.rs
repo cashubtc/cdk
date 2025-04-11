@@ -359,26 +359,38 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, secret_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+(id, mint_url, payment_method, amount, unit, request, state, created_at, paid_at, expires_at, amount_paid, amount_minted, single_use, secret_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
+    payment_method = excluded.payment_method,
     amount = excluded.amount,
     unit = excluded.unit,
     request = excluded.request,
     state = excluded.state,
-    expiry = excluded.expiry,
+    created_at = excluded.created_at,
+    paid_at = excluded.paid_at,
+    expires_at = excluded.expires_at,
+    amount_paid = excluded.amount_paid,
+    amount_minted = excluded.amount_minted,
+    single_use = excluded.single_use,
     secret_key = excluded.secret_key
 ;
         "#,
         )
         .bind(quote.id.to_string())
         .bind(quote.mint_url.to_string())
+        .bind(quote.payment_method.to_string())
         .bind(quote.amount.map(|a| u64::from(a) as i64))
         .bind(quote.unit.to_string())
         .bind(quote.request)
         .bind(quote.state.to_string())
-        .bind(quote.expiry as i64)
+        .bind(crate::util::unix_time() as i64) // created_at
+        .bind(None::<i64>) // paid_at
+        .bind(quote.expiry as i64) // expires_at
+        .bind(u64::from(quote.amount_paid) as i64)
+        .bind(u64::from(quote.amount_minted) as i64)
+        .bind(true) // single_use default to true
         .bind(quote.secret_key.map(|p| p.to_string()))
         .execute(&self.pool)
         .await
