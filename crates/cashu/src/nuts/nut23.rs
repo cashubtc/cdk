@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::Uuid;
 
 use super::nut00::CurrencyUnit;
 use super::PublicKey;
@@ -58,4 +59,21 @@ pub struct MintQuoteBolt12Response<Q> {
     pub amount_issued: Amount,
     /// Pubkey
     pub pubkey: PublicKey,
+}
+
+#[cfg(feature = "mint")]
+impl From<MintQuoteBolt12Response<Uuid>> for MintQuoteBolt12Response<String> {
+    fn from(value: MintQuoteBolt12Response<Uuid>) -> Self {
+        Self {
+            quote: value.quote.to_string(),
+            amount: value.amount,
+            fee_reserve: value.fee_reserve,
+            state: value.state,
+            expiry: value.expiry,
+            payment_preimage: value.payment_preimage,
+            change: value.change,
+            request: value.request,
+            unit: value.unit,
+        }
+    }
 }
