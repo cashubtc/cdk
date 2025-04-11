@@ -206,9 +206,10 @@ mod tests {
         let paths = matching_route_paths("^/v1/mint/.*").unwrap();
 
         // Should match only mint paths
-        assert_eq!(paths.len(), 2);
+        assert_eq!(paths.len(), 3);
         assert!(paths.contains(&RoutePath::MintQuoteBolt11));
         assert!(paths.contains(&RoutePath::MintBolt11));
+        assert!(paths.contains(&RoutePath::MintQuoteBolt12));
 
         // Should not match other paths
         assert!(!paths.contains(&RoutePath::MeltQuoteBolt11));
@@ -222,9 +223,10 @@ mod tests {
         let paths = matching_route_paths(".*/quote/.*").unwrap();
 
         // Should match only quote paths
-        assert_eq!(paths.len(), 2);
+        assert_eq!(paths.len(), 3);
         assert!(paths.contains(&RoutePath::MintQuoteBolt11));
         assert!(paths.contains(&RoutePath::MeltQuoteBolt11));
+        assert!(paths.contains(&RoutePath::MintQuoteBolt12));
 
         // Should not match non-quote paths
         assert!(!paths.contains(&RoutePath::MintBolt11));
@@ -339,12 +341,13 @@ mod tests {
             "https://example.com/.well-known/openid-configuration"
         );
         assert_eq!(settings.client_id, "client123");
-        assert_eq!(settings.protected_endpoints.len(), 3); // 2 mint paths + 1 swap path
+        assert_eq!(settings.protected_endpoints.len(), 4); // 3 mint paths + 1 swap path
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
             ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
             ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
         ]);
 
         let deserlized_protected = settings.protected_endpoints.into_iter().collect();
