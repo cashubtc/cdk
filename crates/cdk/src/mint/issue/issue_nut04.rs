@@ -79,6 +79,7 @@ impl Mint {
             .create_incoming_payment_request(
                 amount,
                 &unit,
+                &PaymentMethod::Bolt11,
                 description.unwrap_or("".to_string()),
                 Some(quote_expiry),
             )

@@ -3,7 +3,7 @@ use axum::extract::{Json, Path, State};
 use axum::response::Response;
 use cdk::nuts::{
     MeltBolt12Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request, MintBolt11Request,
-    MintBolt11Response, MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
+    MintBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
 };
 use uuid::Uuid;
 
@@ -21,7 +21,7 @@ use crate::{into_response, MintState};
 pub async fn get_mint_bolt12_quote(
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt12Request>,
-) -> Result<Json<MintQuoteBolt12Response>, Response> {
+) -> Result<Json<MintQuoteBolt12Response<Uuid>>, Response> {
     let quote = state
         .mint
         .get_mint_bolt12_quote(payload)
@@ -47,10 +47,10 @@ pub async fn get_mint_bolt12_quote(
 pub async fn get_check_mint_bolt12_quote(
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
-) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+) -> Result<Json<MintQuoteBolt12Response<Uuid>>, Response> {
     let quote = state
         .mint
-        .check_mint_quote(&quote_id)
+        .check_mint_bolt12_quote(&quote_id)
         .await
         .map_err(into_response)?;
 
@@ -122,9 +122,13 @@ pub async fn get_melt_bolt12_quote(
 /// Requests tokens to be destroyed and sent out via Lightning.
 pub async fn post_melt_bolt12(
     State(state): State<MintState>,
-    Json(payload): Json<MeltBolt12Request>,
-) -> Result<Json<MeltQuoteBolt11Response>, Response> {
-    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+    Json(payload): Json<MeltBolt12Request<Uuid>>,
+) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    let res = state
+        .mint
+        .melt_bolt11(&payload)
+        .await
+        .map_err(into_response)?;
 
     Ok(Json(res))
 }

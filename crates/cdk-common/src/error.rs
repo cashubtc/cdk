@@ -91,6 +91,9 @@ pub enum Error {
     /// Multi-Part Payment not supported for unit and method
     #[error("Amountless invoices are not supported for unit `{0}` and method `{1}`")]
     AmountlessInvoiceNotSupported(CurrencyUnit, PaymentMethod),
+    /// Invoice not created
+    #[error("Invoice not created")]
+    InvoiceMissing,
 
     // Mint Errors
     /// Minting is disabled

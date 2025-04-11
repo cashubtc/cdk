@@ -404,14 +404,14 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<Uuid> {
     }
 }
 
-impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response {
+impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<Uuid> {
     type Error = crate::Error;
 
     fn try_from(
         mint_quote: crate::mint::MintQuote,
-    ) -> Result<MintQuoteBolt12Response, crate::Error> {
+    ) -> Result<MintQuoteBolt12Response<Uuid>, crate::Error> {
         Ok(MintQuoteBolt12Response {
-            quote: mint_quote.id.to_string(),
+            quote: mint_quote.id,
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
             amount_paid: mint_quote.amount_paid,

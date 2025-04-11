@@ -46,7 +46,7 @@ pub struct MintQuote {
     #[serde(default)]
     pub payment_method: PaymentMethod,
     /// Amount of quote
-    pub amount: Amount,
+    pub amount: Option<Amount>,
     /// Unit of quote
     pub unit: CurrencyUnit,
     /// Quote payment request e.g. bolt11
@@ -63,29 +63,23 @@ pub struct MintQuote {
     /// Amount paid to the mint for the quote
     #[serde(default)]
     pub amount_paid: Amount,
+    /// Single use
+    #[serde(default)]
+    pub single_use: bool,
 }
 
 impl MintQuote {
-    /// Calculate the total amount including any fees
-    pub fn total_amount(&self) -> Amount {
-        self.amount_paid
-    }
-
-    /// Check if the quote has expired
-    pub fn is_expired(&self, current_time: u64) -> bool {
-        current_time > self.expiry
-    }
-    
     /// Create a new MintQuote
     pub fn new(
         id: String,
         mint_url: MintUrl,
         payment_method: PaymentMethod,
-        amount: Amount,
+        amount: Option<Amount>,
         unit: CurrencyUnit,
         request: String,
         expiry: u64,
         secret_key: Option<SecretKey>,
+        single_use: bool,
     ) -> Self {
         Self {
             id,
@@ -99,7 +93,34 @@ impl MintQuote {
             secret_key,
             amount_minted: Amount::ZERO,
             amount_paid: Amount::ZERO,
+            single_use,
         }
+    }
+
+    /// Calculate the total amount including any fees
+    pub fn total_amount(&self) -> Amount {
+        self.amount_paid
+    }
+
+    /// Check if the quote has expired
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time > self.expiry
+    }
+
+    /// Amount that can be minted
+    ///
+    ///
+    pub fn amount_mintable(&self) -> Amount {
+        println!("{:?}", self);
+        let diffrence = self.amount_paid - self.amount_minted;
+
+        if diffrence == Amount::ZERO && self.state != MintQuoteState::Issued {
+            if let Some(amount) = self.amount {
+                return amount;
+            }
+        }
+
+        diffrence
     }
 }
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use cdk_common::ensure_cdk;
 use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::{ensure_cdk, PaymentMethod};
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -80,12 +80,13 @@ impl Wallet {
         let quote = MintQuote::new(
             quote_res.quote,
             mint_url,
-            crate::nuts::PaymentMethod::Bolt11,
-            amount,
+            PaymentMethod::Bolt11,
+            Some(amount),
             unit,
             quote_res.request,
             quote_res.expiry.unwrap_or(0),
             Some(secret_key),
+            true,
         );
 
         self.localstore.add_mint_quote(quote.clone()).await?;
@@ -193,10 +194,10 @@ impl Wallet {
             .ok_or(Error::UnknownQuote)?;
 
         let unix_time = unix_time();
-        ensure_cdk!(
-            quote_info.expiry > unix_time || quote_info.expiry == 0,
-            Error::ExpiredQuote(quote_info.expiry, unix_time)
-        );
+
+        if quote_info.expiry > unix_time {
+            tracing::warn!("Attempting to mint with expired quote.");
+        }
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
@@ -207,10 +208,12 @@ impl Wallet {
 
         let count = count.map_or(0, |c| c + 1);
 
+        let amount_mintable = quote_info.amount_mintable();
+
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
-                quote_info.amount,
+                amount_mintable,
                 &amount_split_target,
                 spending_conditions,
             )?,
@@ -218,7 +221,7 @@ impl Wallet {
                 active_keyset_id,
                 count,
                 self.xpriv,
-                quote_info.amount,
+                amount_mintable,
                 &amount_split_target,
             )?,
         };

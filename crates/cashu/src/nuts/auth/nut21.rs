@@ -149,6 +149,9 @@ pub enum RoutePath {
     /// Mint Blind Auth
     #[serde(rename = "/v1/auth/blind/mint")]
     MintBlindAuth,
+    /// Bolt12 Mint Quote
+    #[serde(rename = "/v1/mint/quote/bolt12")]
+    MintQuoteBolt12,
 }
 
 /// Returns [`RoutePath`]s that match regex

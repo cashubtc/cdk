@@ -18,10 +18,10 @@ use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
 use cdk::util::unix_time;
-use cdk::{mint, Bolt11Invoice};
+use cdk::{ensure_cdk, mint, Bolt11Invoice, MeltPaymentRequest};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
@@ -196,6 +196,7 @@ impl MintPayment for LNbits {
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
+            options: None,
         })
     }
 
@@ -205,9 +206,23 @@ impl MintPayment for LNbits {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        ensure_cdk!(
+            melt_quote.payment_method == PaymentMethod::Bolt11,
+            cdk_payment::Error::UnsupportedUnit
+        );
+
+        let payment_request = melt_quote.request;
+
+        let bolt11 = match payment_request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11,
+            _ => {
+                return Err(cdk_payment::Error::UnsupportedUnit);
+            }
+        };
+
         let pay_response = self
             .lnbits_api
-            .pay_invoice(&melt_quote.request, None)
+            .pay_invoice(&bolt11.to_string(), None)
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay invoice");
@@ -251,11 +266,16 @@ impl MintPayment for LNbits {
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
+        payment_method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         if unit != &CurrencyUnit::Sat {
             return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
+        }
+
+        if payment_method != &PaymentMethod::Bolt11 {
+            return Err(Self::Err::Anyhow(anyhow!("Unsupported method")));
         }
 
         let time_now = unix_time();

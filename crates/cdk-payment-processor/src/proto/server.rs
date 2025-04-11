@@ -184,13 +184,25 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             unit,
             description,
             unix_expiry,
+            method,
         } = request.into_inner();
 
         let unit =
             CurrencyUnit::from_str(&unit).map_err(|_| Status::invalid_argument("Invalid unit"))?;
+
+        let method = method.map_or(Ok(PaymentMethod::Bolt11), |m| {
+            PaymentMethod::from_str(&m).map_err(|_| Status::invalid_argument("Invalid method"))
+        })?;
+
         let invoice_response = self
             .inner
-            .create_incoming_payment_request(amount.into(), &unit, description, unix_expiry)
+            .create_incoming_payment_request(
+                amount.into(),
+                &unit,
+                &method,
+                description,
+                unix_expiry,
+            )
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;
 

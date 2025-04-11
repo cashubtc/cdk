@@ -18,10 +18,10 @@ use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
 use cdk::util::{hex, unix_time};
-use cdk::{mint, Bolt11Invoice};
+use cdk::{mint, Bolt11Invoice, MeltPaymentRequest};
 use cln_rpc::model::requests::{
     InvoiceRequest, ListinvoicesRequest, ListpaysRequest, PayRequest, WaitanyinvoiceRequest,
 };
@@ -238,6 +238,7 @@ impl MintPayment for Cln {
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
+            options: None,
         })
     }
 
@@ -247,7 +248,14 @@ impl MintPayment for Cln {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let payment_request = &melt_quote.request;
+
+        let bolt11 = match payment_request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11,
+            _ => {
+                return Err(cdk_payment::Error::UnsupportedUnit);
+            }
+        };
         let pay_state = self
             .check_outgoing_payment(&bolt11.payment_hash().to_string())
             .await?;
@@ -338,9 +346,14 @@ impl MintPayment for Cln {
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
+        payment_method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        if payment_method == &PaymentMethod::Bolt12 {
+            todo!()
+        }
+
         let time_now = unix_time();
 
         let mut cln_client = self.cln_client.lock().await;

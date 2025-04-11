@@ -7,6 +7,7 @@ use std::str::FromStr;
 use cdk_common::amount::{amount_for_offer, to_unit};
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
+use cdk_common::payment::PaymentQuoteOptions;
 use cdk_common::util::unix_time;
 use cdk_common::{
     CurrencyUnit, MeltOptions, MeltQuoteBolt11Response, MeltQuoteBolt12Request, PaymentMethod,
@@ -80,9 +81,19 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        let invoice = payment_quote
+            .options
+            .ok_or_else(|| {
+                tracing::error!("Payment backend did not return invoice");
+                Error::InvoiceMissing
+            })
+            .and_then(|options| match options {
+                PaymentQuoteOptions::Bolt12 { invoice } => Ok(invoice),
+            })?;
+
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
-            invoice: payment_quote.invoice,
+            invoice: Some(invoice),
         };
 
         let quote = MeltQuote::new(

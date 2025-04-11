@@ -21,9 +21,9 @@ use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, 
-    MintQuoteBolt12Request, MintQuoteBolt12Response, RestoreRequest, RestoreResponse, 
-    SwapRequest, SwapResponse,
+    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, RestoreRequest, RestoreResponse, SwapRequest,
+    SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};

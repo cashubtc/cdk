@@ -3,7 +3,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use cashu::MeltOptions;
+use cashu::{MeltOptions, PaymentMethod};
 use futures::Stream;
 use lightning_invoice::ParseOrSemanticError;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,7 @@ pub trait MintPayment {
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
+        method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err>;
@@ -154,6 +155,18 @@ pub struct PaymentQuoteResponse {
     pub fee: Amount,
     /// Status
     pub state: MeltQuoteState,
+    /// Payment Quote Options
+    pub options: Option<PaymentQuoteOptions>,
+}
+
+/// Payment quote options
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentQuoteOptions {
+    /// Bolt12 payment options
+    Bolt12 {
+        /// Bolt12 invoice
+        invoice: String,
+    },
 }
 
 /// Wait any invoice response

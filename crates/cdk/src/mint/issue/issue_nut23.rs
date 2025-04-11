@@ -2,6 +2,7 @@ use cdk_common::common::PaymentProcessorKey;
 use cdk_common::mint::MintQuote;
 use cdk_common::{CurrencyUnit, PaymentMethod};
 use tracing::instrument;
+use uuid::Uuid;
 
 use crate::nuts::nut23::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use crate::util::unix_time;
@@ -51,7 +52,7 @@ impl Mint {
     pub async fn get_mint_bolt12_quote(
         &self,
         mint_quote_request: MintQuoteBolt12Request,
-    ) -> Result<MintQuoteBolt12Response, Error> {
+    ) -> Result<MintQuoteBolt12Response<Uuid>, Error> {
         let MintQuoteBolt12Request {
             amount,
             unit,
@@ -87,6 +88,7 @@ impl Mint {
                 // TODO: We need to make this an option on the trait
                 amount.unwrap_or_default(),
                 &unit,
+                &PaymentMethod::Bolt11,
                 description.unwrap_or("".to_string()),
                 Some(quote_expiry),
             )
@@ -127,5 +129,20 @@ impl Mint {
         self.localstore.add_mint_quote(quote.clone()).await?;
 
         quote.try_into()
+    }
+
+    /// Check mint quote
+    #[instrument(skip(self))]
+    pub async fn check_mint_bolt12_quote(
+        &self,
+        quote_id: &Uuid,
+    ) -> Result<MintQuoteBolt12Response<Uuid>, Error> {
+        let quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote.try_into()?)
     }
 }

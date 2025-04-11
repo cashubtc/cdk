@@ -15,10 +15,10 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PaymentMethod,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
-use cdk_common::{MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
@@ -159,7 +159,7 @@ impl MintConnector for DirectMintConnection {
 
         *auth_wallet = wallet;
     }
-    
+
     async fn post_mint_bolt12_quote(
         &self,
         request: MintQuoteBolt12Request,
@@ -169,7 +169,7 @@ impl MintConnector for DirectMintConnection {
             .await
             .map(Into::into)
     }
-    
+
     async fn get_mint_quote_bolt12_status(
         &self,
         quote_id: &str,

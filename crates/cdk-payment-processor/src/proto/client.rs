@@ -9,7 +9,7 @@ use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState};
+use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState, PaymentMethod};
 use futures::{Stream, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -117,6 +117,7 @@ impl MintPayment for PaymentProcessorClient {
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
+        method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -125,6 +126,7 @@ impl MintPayment for PaymentProcessorClient {
             .create_payment(Request::new(CreatePaymentRequest {
                 amount: amount.into(),
                 unit: unit.to_string(),
+                method: Some(method.to_string()),
                 description,
                 unix_expiry,
             }))

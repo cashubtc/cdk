@@ -61,7 +61,10 @@ impl WalletSqliteDatabase {
         sqlx::migrate!("./src/wallet/migrations")
             .run(&self.pool)
             .await
-            .map_err(|_| Error::CouldNotInitialize)?;
+            .map_err(|err| {
+                tracing::error!("Could not migrate wallet: {:?}", err);
+                Error::CouldNotInitialize
+            })?;
         Ok(())
     }
 }
@@ -359,8 +362,8 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, mint_url, payment_method, amount, unit, request, state, created_at, paid_at, expires_at, amount_paid, amount_minted, single_use, secret_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(id, mint_url, payment_method, amount, unit, request, state, expiry, amount_paid, amount_minted, single_use, secret_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
     payment_method = excluded.payment_method,
@@ -368,9 +371,7 @@ ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit,
     request = excluded.request,
     state = excluded.state,
-    created_at = excluded.created_at,
-    paid_at = excluded.paid_at,
-    expires_at = excluded.expires_at,
+    expiry = excluded.expiry,
     amount_paid = excluded.amount_paid,
     amount_minted = excluded.amount_minted,
     single_use = excluded.single_use,
@@ -385,12 +386,10 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(quote.unit.to_string())
         .bind(quote.request)
         .bind(quote.state.to_string())
-        .bind(crate::util::unix_time() as i64) // created_at
-        .bind(None::<i64>) // paid_at
-        .bind(quote.expiry as i64) // expires_at
+        .bind(quote.expiry as i64)
         .bind(u64::from(quote.amount_paid) as i64)
         .bind(u64::from(quote.amount_minted) as i64)
-        .bind(true) // single_use default to true
+        .bind(quote.single_use)
         .bind(quote.secret_key.map(|p| p.to_string()))
         .execute(&self.pool)
         .await
@@ -986,6 +985,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
     let row_method: String = row.try_get("payment_method").map_err(Error::from)?;
     let row_amount_paid: i64 = row.try_get("amount_paid").map_err(Error::from)?;
     let row_amount_minted: i64 = row.try_get("amount_minted").map_err(Error::from)?;
+    let single_use: bool = row.try_get("single_use").map_err(Error::from)?;
 
     let state = MintQuoteState::from_str(&row_state)?;
 
@@ -1009,6 +1009,7 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         payment_method,
         amount_minted: amount_minted.into(),
         amount_paid: amount_paid.into(),
+        single_use,
     })
 }
 
