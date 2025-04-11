@@ -42,7 +42,7 @@ pub struct MintQuoteBolt12Request {
 
 /// Mint quote response [NUT-19]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(bound = "Q: Serialize + Deserialize")]
+#[serde(bound = "Q: Serialize + for<'de> Deserialize<'de>")]
 pub struct MintQuoteBolt12Response<Q> {
     /// Quote Id
     pub quote: Q,
