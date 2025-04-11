@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use cdk_common::mint::MintQuote;
 use cdk_common::mint_url::MintUrl;
-use cdk_common::util::unix_time;
-use cdk_common::{Amount, CurrencyUnit, MintQuoteState, Proof, State};
+use cdk_common::{Amount, CurrencyUnit, MintQuoteState, PaymentMethod, Proof, State};
 use lightning_invoice::Bolt11Invoice;
 use redb::{
     Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
@@ -201,19 +200,25 @@ struct V1MintQuote {
 
 impl From<V1MintQuote> for MintQuote {
     fn from(quote: V1MintQuote) -> MintQuote {
-        MintQuote {
-            id: quote.id,
-            amount: quote.amount,
-            unit: quote.unit,
-            request: quote.request.clone(),
-            state: quote.state,
-            expiry: quote.expiry,
-            request_lookup_id: Bolt11Invoice::from_str(&quote.request).unwrap().to_string(),
-            pubkey: None,
-            created_time: unix_time(),
-            paid_time: None,
-            issued_time: None,
-        }
+        MintQuote::new(
+            Some(quote.id),
+            quote.request.clone(),
+            quote.unit,
+            quote.amount,
+            quote.expiry,
+            Bolt11Invoice::from_str(&quote.request).unwrap().to_string(),
+            None,
+            Amount::ZERO,
+            Amount::ZERO,
+            true,
+            vec![],
+            PaymentMethod::Bolt11,
+            false,
+            0,
+            None,
+            None,
+            // TODO: Create real migrations
+        )
     }
 }
 

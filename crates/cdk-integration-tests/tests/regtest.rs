@@ -313,7 +313,7 @@ async fn test_regtest_melt_amountless() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(mint_amount, None).await?;
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     lnd_client.pay_invoice(mint_quote.request).await?;
 

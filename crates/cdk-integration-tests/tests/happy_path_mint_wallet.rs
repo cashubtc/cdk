@@ -102,15 +102,16 @@ async fn test_happy_mint_melt_round_trip() -> Result<()> {
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
-    let mint_amount = proofs.total_amount()?;
+    let mint_amount = proofs.total_amount().unwrap();
 
     assert!(mint_amount == 100.into());
 
     let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
-    let melt = wallet.melt_quote(invoice, None).await?;
+    let melt = wallet.melt_quote(invoice, None).await.unwrap();
 
     write
         .send(Message::Text(
@@ -207,7 +208,7 @@ async fn test_happy_mint() -> Result<()> {
 
     let mint_quote = wallet.mint_quote(mint_amount, None).await?;
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request)?;
     pay_if_regtest(&invoice).await?;

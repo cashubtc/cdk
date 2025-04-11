@@ -15,8 +15,9 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
     MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PaymentMethod,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -124,7 +125,7 @@ impl MintConnector for DirectMintConnection {
         &self,
         request: MeltBolt11Request<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let request_uuid = request.try_into().unwrap();
+        let request_uuid: MeltBolt11Request<Uuid> = request.try_into().unwrap();
         self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
     }
 
@@ -157,6 +158,27 @@ impl MintConnector for DirectMintConnection {
         let mut auth_wallet = self.auth_wallet.write().await;
 
         *auth_wallet = wallet;
+    }
+
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        self.mint
+            .get_mint_bolt12_quote(request)
+            .await
+            .map(Into::into)
+    }
+
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let quote_id_uuid = Uuid::from_str(quote_id).unwrap();
+        self.mint
+            .check_mint_bolt12_quote(&quote_id_uuid)
+            .await
+            .map(Into::into)
     }
 }
 

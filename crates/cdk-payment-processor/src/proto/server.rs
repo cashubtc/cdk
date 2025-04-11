@@ -184,13 +184,25 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             unit,
             description,
             unix_expiry,
+            method,
         } = request.into_inner();
 
         let unit =
             CurrencyUnit::from_str(&unit).map_err(|_| Status::invalid_argument("Invalid unit"))?;
+
+        let method = method.map_or(Ok(PaymentMethod::Bolt11), |m| {
+            PaymentMethod::from_str(&m).map_err(|_| Status::invalid_argument("Invalid method"))
+        })?;
+
         let invoice_response = self
             .inner
-            .create_incoming_payment_request(amount.into(), &unit, description, unix_expiry)
+            .create_incoming_payment_request(
+                amount.into(),
+                &unit,
+                &method,
+                description,
+                unix_expiry,
+            )
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;
 
@@ -315,8 +327,8 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 result = ln.wait_any_incoming_payment() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(request_lookup_id) = stream.next().await {
-                                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{lookup_id: request_lookup_id} )).await {
+                            while let Some(response) = stream.next().await {
+                                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{lookup_id: response.request_lookup_id, payment_amount: response.payment_amount.into(), unit: response.unit.to_string(), payment_id: response.payment_id} )).await {
                     Ok(_) => {
                         // item (server response) was queued to be send to client
                     }

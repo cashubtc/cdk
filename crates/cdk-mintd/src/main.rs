@@ -552,7 +552,7 @@ async fn main() -> anyhow::Result<()> {
     let listen_port = settings.info.listen_port;
 
     let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache).await?;
+        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache, true).await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)

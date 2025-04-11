@@ -3,7 +3,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use cashu::MeltOptions;
+use cashu::{MeltOptions, PaymentMethod};
 use futures::Stream;
 use lightning_invoice::ParseOrSemanticError;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,7 @@ pub trait MintPayment {
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
+        method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err>;
@@ -96,7 +97,7 @@ pub trait MintPayment {
     /// Returns a stream of request_lookup_id once invoices are paid
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err>;
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err>;
 
     /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool;
@@ -154,6 +155,33 @@ pub struct PaymentQuoteResponse {
     pub fee: Amount,
     /// Status
     pub state: MeltQuoteState,
+    /// Payment Quote Options
+    pub options: Option<PaymentQuoteOptions>,
+}
+
+/// Payment quote options
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentQuoteOptions {
+    /// Bolt12 payment options
+    Bolt12 {
+        /// Bolt12 invoice
+        invoice: String,
+    },
+}
+
+/// Wait any invoice response
+#[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
+pub struct WaitPaymentResponse {
+    /// Request look up id
+    /// Id that relates the quote and payment request
+    pub request_lookup_id: String,
+    /// Payment amount
+    pub payment_amount: Amount,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Unique id of payment
+    // Payment hash
+    pub payment_id: String,
 }
 
 /// Ln backend settings

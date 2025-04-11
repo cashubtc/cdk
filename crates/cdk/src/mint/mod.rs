@@ -9,6 +9,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::nut05::MeltRequestTrait;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -338,7 +339,7 @@ impl Mint {
                         match result {
                             Ok(mut stream) => {
                                 while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id).await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(request_lookup_id).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }
@@ -479,14 +480,18 @@ impl Mint {
     /// In this case the mint can settle the payment internally and no ln payment is
     /// needed
     #[instrument(skip_all)]
-    pub async fn handle_internal_melt_mint(
+    pub async fn handle_internal_melt_mint<R>(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request<Uuid>,
-    ) -> Result<Option<Amount>, Error> {
+        melt_request: &R,
+    ) -> Result<Option<Amount>, Error>
+    where
+        R: MeltRequestTrait<Uuid>,
+    {
+        // TODO: How should this work with a bolt12 offer
         let mint_quote = match self
             .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
+            .get_mint_quote_by_request(&melt_quote.request.to_string())
             .await
         {
             Ok(Some(mint_quote)) => mint_quote,
@@ -499,16 +504,16 @@ impl Mint {
         };
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
+        if mint_quote.state() == MintQuoteState::Issued
+            || mint_quote.state() == MintQuoteState::Paid
+        {
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
             tracing::error!("Proof inputs in melt quote overflowed");
             Error::AmountOverflow
         })?;
-
-        let mut mint_quote = mint_quote;
 
         if mint_quote.amount > inputs_amount_quote_unit {
             tracing::debug!(
@@ -519,11 +524,15 @@ impl Mint {
             return Err(Error::InsufficientFunds);
         }
 
-        mint_quote.state = MintQuoteState::Paid;
-
         let amount = melt_quote.amount;
 
-        self.update_mint_quote(mint_quote).await?;
+        self.localstore
+            .increment_mint_quote_amount_paid(&mint_quote.id, amount)
+            .await?;
+
+        let mut mint_quote = mint_quote;
+
+        mint_quote.increment_amount_paid(amount)?;
 
         Ok(Some(amount))
     }

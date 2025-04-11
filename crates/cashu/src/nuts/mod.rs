@@ -23,6 +23,8 @@ pub mod nut17;
 pub mod nut18;
 pub mod nut19;
 pub mod nut20;
+pub mod nut23;
+pub mod nut24;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -66,3 +68,5 @@ pub use nut18::{
     PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport, TransportBuilder,
     TransportType,
 };
+pub use nut23::{MintQuoteBolt12Request, MintQuoteBolt12Response};
+pub use nut24::{MeltBolt12Request, MeltQuoteBolt12Request};

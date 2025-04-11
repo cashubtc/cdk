@@ -20,11 +20,11 @@ use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
-use cdk::{ensure_cdk, mint};
+use cdk::{ensure_cdk, mint, MeltPaymentRequest};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
@@ -126,11 +126,17 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         tracing::info!("Starting stream for fake invoices");
         let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
         let receiver_stream = ReceiverStream::new(receiver);
-        Ok(Box::pin(receiver_stream.map(|label| label)))
+
+        Ok(Box::pin(receiver_stream.map(|label| WaitPaymentResponse {
+            request_lookup_id: label.clone(),
+            payment_amount: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            payment_id: label,
+        })))
     }
 
     #[instrument(skip_all)]
@@ -164,6 +170,7 @@ impl MintPayment for FakeWallet {
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
+            options: None,
         })
     }
 
@@ -174,43 +181,71 @@ impl MintPayment for FakeWallet {
         _partial_msats: Option<Amount>,
         _max_fee_msats: Option<Amount>,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        match melt_quote.payment_method {
+            PaymentMethod::Bolt11 => {
+                let payment_request = melt_quote.request;
 
-        let payment_hash = bolt11.payment_hash().to_string();
+                let bolt11 = match payment_request {
+                    MeltPaymentRequest::Bolt11 { bolt11 } => bolt11,
+                    _ => {
+                        return Err(cdk_payment::Error::UnsupportedUnit);
+                    }
+                };
 
-        let description = bolt11.description().to_string();
+                let payment_hash = bolt11.payment_hash().to_string();
 
-        let status: Option<FakeInvoiceDescription> = serde_json::from_str(&description).ok();
+                let description = bolt11.description().to_string();
 
-        let mut payment_states = self.payment_states.lock().await;
-        let payment_status = status
-            .clone()
-            .map(|s| s.pay_invoice_state)
-            .unwrap_or(MeltQuoteState::Paid);
+                let status: Option<FakeInvoiceDescription> =
+                    serde_json::from_str(&description).ok();
 
-        let checkout_going_status = status
-            .clone()
-            .map(|s| s.check_payment_state)
-            .unwrap_or(MeltQuoteState::Paid);
+                let mut payment_states = self.payment_states.lock().await;
+                let payment_status = status
+                    .clone()
+                    .map(|s| s.pay_invoice_state)
+                    .unwrap_or(MeltQuoteState::Paid);
 
-        payment_states.insert(payment_hash.clone(), checkout_going_status);
+                let checkout_going_status = status
+                    .clone()
+                    .map(|s| s.check_payment_state)
+                    .unwrap_or(MeltQuoteState::Paid);
 
-        if let Some(description) = status {
-            if description.check_err {
-                let mut fail = self.failed_payment_check.lock().await;
-                fail.insert(payment_hash.clone());
+                payment_states.insert(payment_hash.clone(), checkout_going_status);
+
+                if let Some(description) = status {
+                    if description.check_err {
+                        let mut fail = self.failed_payment_check.lock().await;
+                        fail.insert(payment_hash.clone());
+                    }
+
+                    ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
+                }
+
+                Ok(MakePaymentResponse {
+                    payment_proof: Some("".to_string()),
+                    payment_lookup_id: payment_hash,
+                    status: payment_status,
+                    total_spent: melt_quote.amount + 1.into(),
+                    unit: melt_quote.unit,
+                })
             }
-
-            ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
+            PaymentMethod::Bolt12 => {
+                let bolt12 = &match melt_quote.request {
+                    MeltPaymentRequest::Bolt11 { .. } => return Err(Error::WrongRequestType.into()),
+                    MeltPaymentRequest::Bolt12 { offer, invoice: _ } => offer,
+                };
+                Ok(MakePaymentResponse {
+                    payment_proof: Some("".to_string()),
+                    payment_lookup_id: bolt12.to_string(),
+                    status: MeltQuoteState::Paid,
+                    total_spent: melt_quote.amount,
+                    unit: melt_quote.unit,
+                })
+            }
+            PaymentMethod::Custom(_) => {
+                panic!("Unssuported method");
+            }
         }
-
-        Ok(MakePaymentResponse {
-            payment_proof: Some("".to_string()),
-            payment_lookup_id: payment_hash,
-            status: payment_status,
-            total_spent: melt_quote.amount + 1.into(),
-            unit: melt_quote.unit,
-        })
     }
 
     #[instrument(skip_all)]
@@ -218,9 +253,13 @@ impl MintPayment for FakeWallet {
         &self,
         amount: Amount,
         _unit: &CurrencyUnit,
+        payment_method: &PaymentMethod,
         description: String,
         _unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        if payment_method == &PaymentMethod::Bolt12 {
+            todo!()
+        }
         // Since this is fake we just use the amount no matter the unit to create an invoice
         let amount_msat = amount;
 

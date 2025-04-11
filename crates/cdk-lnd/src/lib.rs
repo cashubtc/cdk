@@ -18,13 +18,13 @@ use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::secp256k1::hashes::Hash;
 use cdk::types::FeeReserve;
 use cdk::util::hex;
-use cdk::{mint, Bolt11Invoice};
+use cdk::{ensure_cdk, mint, Bolt11Invoice, MeltPaymentRequest};
 use error::Error;
 use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
 use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
@@ -132,7 +132,7 @@ impl MintPayment for Lnd {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         let mut client =
             fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
                 .await
@@ -177,7 +177,14 @@ impl MintPayment for Lnd {
                 match msg {
                     Ok(Some(msg)) => {
                         if msg.state == 1 {
-                            Some((hex::encode(msg.r_hash), (stream, cancel_token, is_active)))
+                            let payment_hash =  hex::encode(msg.r_hash);
+                            let wait_response = WaitPaymentResponse {
+                                request_lookup_id: payment_hash.clone(),
+                                payment_amount: Amount::ZERO,
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
+                            };
+                            Some((wait_response, (stream, cancel_token, is_active)))
                         } else {
                             None
                         }
@@ -233,6 +240,7 @@ impl MintPayment for Lnd {
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
+            options: None,
         })
     }
 
@@ -243,8 +251,19 @@ impl MintPayment for Lnd {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        ensure_cdk!(
+            melt_quote.payment_method == PaymentMethod::Bolt11,
+            cdk_payment::Error::UnsupportedUnit
+        );
+
         let payment_request = melt_quote.request;
-        let bolt11 = Bolt11Invoice::from_str(&payment_request)?;
+
+        let bolt11 = match payment_request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11,
+            _ => {
+                return Err(cdk_payment::Error::UnsupportedUnit);
+            }
+        };
 
         let pay_state = self
             .check_outgoing_payment(&bolt11.payment_hash().to_string())
@@ -262,7 +281,6 @@ impl MintPayment for Lnd {
             }
         }
 
-        let bolt11 = Bolt11Invoice::from_str(&payment_request)?;
         let amount_msat: u64 = match bolt11.amount_milli_satoshis() {
             Some(amount_msat) => amount_msat,
             None => melt_quote
@@ -275,7 +293,7 @@ impl MintPayment for Lnd {
         match partial_amount {
             Some(part_amt) => {
                 let partial_amount_msat = to_unit(part_amt, &melt_quote.unit, &CurrencyUnit::Msat)?;
-                let invoice = Bolt11Invoice::from_str(&payment_request)?;
+                let invoice = bolt11;
 
                 // Extract information from invoice
                 let pub_key = invoice.get_payee_pub_key();
@@ -370,7 +388,7 @@ impl MintPayment for Lnd {
             }
             None => {
                 let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
-                    payment_request,
+                    payment_request: bolt11.to_string(),
                     fee_limit: max_fee.map(|f| {
                         let limit = Limit::Fixed(u64::from(f) as i64);
 
@@ -422,9 +440,14 @@ impl MintPayment for Lnd {
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
+        payment_method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        if payment_method != &PaymentMethod::Bolt11 {
+            return Err(cdk_payment::Error::UnsupportedPaymentOption);
+        }
+
         let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
 
         let invoice_request = fedimint_tonic_lnd::lnrpc::Invoice {

@@ -10,23 +10,24 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
 use cdk::util::{hex, unix_time};
-use cdk::{mint, Bolt11Invoice};
+use cdk::{mint, Bolt11Invoice, MeltPaymentRequest};
 use cln_rpc::model::requests::{
     InvoiceRequest, ListinvoicesRequest, ListpaysRequest, PayRequest, WaitanyinvoiceRequest,
 };
 use cln_rpc::model::responses::{
     ListinvoicesInvoices, ListinvoicesInvoicesStatus, ListpaysPaysStatus, PayStatus,
-    WaitanyinvoiceStatus,
+    WaitanyinvoiceResponse, WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
 use error::Error;
@@ -86,9 +87,11 @@ impl MintPayment for Cln {
         self.wait_invoice_cancel_token.cancel()
     }
 
+    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
+    #[allow(clippy::incompatible_msrv)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         let last_pay_index = self.get_last_pay_index().await?;
         let cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
@@ -104,10 +107,6 @@ impl MintPayment for Cln {
                 is_active.store(true, Ordering::SeqCst);
 
                 loop {
-                    let request = WaitanyinvoiceRequest {
-                        timeout: None,
-                        lastpay_index: last_pay_idx,
-                    };
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
                             // Set the stream as inactive
@@ -115,22 +114,46 @@ impl MintPayment for Cln {
                             // End the stream
                             return None;
                         }
-                        result = cln_client.call_typed(&request) => {
+                        result = cln_client.call(cln_rpc::Request::WaitAnyInvoice(WaitanyinvoiceRequest {
+                            timeout: None,
+                            lastpay_index: last_pay_idx,
+                        })) => {
                             match result {
                                 Ok(invoice) => {
 
+                                        // Try to convert the invoice to WaitanyinvoiceResponse
+                            let wait_any_response_result: Result<WaitanyinvoiceResponse, _> =
+                                invoice.try_into();
+
+                            let wait_any_response = match wait_any_response_result {
+                                Ok(response) => response,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to parse WaitAnyInvoice response: {:?}",
+                                        e
+                                    );
+                                    // Continue to the next iteration without panicking
+                                    continue;
+                                }
+                            };
+
                             // Check the status of the invoice
                             // We only want to yield invoices that have been paid
-                            match invoice.status {
+                            match wait_any_response.status {
                                 WaitanyinvoiceStatus::PAID => (),
                                 WaitanyinvoiceStatus::EXPIRED => continue,
                             }
 
-                            last_pay_idx = invoice.pay_index;
+                            last_pay_idx = wait_any_response.pay_index;
 
-                            let payment_hash = invoice.payment_hash.to_string();
+                            let payment_hash = wait_any_response.payment_hash.to_string();
 
-                            let request_look_up = match invoice.bolt12 {
+
+                            // TODO: Handle unit conversion
+                            let amount_msats = wait_any_response.amount_received_msat.expect("status is paid there should be an amount");
+                            let amount_sats =  amount_msats.msat() / 1000;
+
+                            let request_lookup_id = match wait_any_response.bolt12 {
                                 // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
                                 // Since this is not returned in the wait any response,
                                 // we need to do a second query for it.
@@ -157,15 +180,22 @@ impl MintPayment for Cln {
                                         }
                                     }
                                 }
-                                None => payment_hash,
+                                None => payment_hash.clone(),
                             };
 
-                            return Some((request_look_up, (cln_client, last_pay_idx, cancel_token, is_active)));
+                            let response = WaitPaymentResponse {
+                                request_lookup_id,
+                                payment_amount: amount_sats.into(),
+                                unit: CurrencyUnit::Sat,
+                                payment_id: payment_hash
+                            };
+
+                            break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));
                                 }
                                 Err(e) => {
                                     tracing::warn!("Error fetching invoice: {e}");
-                                    is_active.store(false, Ordering::SeqCst);
-                                    return None;
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    continue;
                                 }
                             }
                         }
@@ -208,6 +238,7 @@ impl MintPayment for Cln {
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
+            options: None,
         })
     }
 
@@ -217,7 +248,14 @@ impl MintPayment for Cln {
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        let payment_request = &melt_quote.request;
+
+        let bolt11 = match payment_request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11,
+            _ => {
+                return Err(cdk_payment::Error::UnsupportedUnit);
+            }
+        };
         let pay_state = self
             .check_outgoing_payment(&bolt11.payment_hash().to_string())
             .await?;
@@ -308,9 +346,14 @@ impl MintPayment for Cln {
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
+        payment_method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        if payment_method == &PaymentMethod::Bolt12 {
+            todo!()
+        }
+
         let time_now = unix_time();
 
         let mut cln_client = self.cln_client.lock().await;
