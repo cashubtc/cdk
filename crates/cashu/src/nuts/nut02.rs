@@ -301,50 +301,51 @@ impl From<Id> for String {
 
 /// Improper prefix of the keyset ID. In case of v1, this is the whole ID.
 /// In case of v2, this is the 8-byte prefix
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ShortKeysetId {
     /// The version of the short keyset
     version: KeySetVersion,
     /// The improper prefix of the keyset ID bytes
-    prefix: [u8; 7],
+    prefix: Vec<u8>,
 }
 
 impl From<Id> for ShortKeysetId {
     fn from(id: Id) -> Self {
-        match id.version {
-            KeySetVersion::Version00 => Self {
-                version: id.version,
-                prefix: match id.id {
-                    IdBytes::V1(idbytes) => idbytes,
-                    _ => panic!("Unexpected IdBytes length"),
-                },
-            },
-            KeySetVersion::Version01 => {
-                let version = id.version;
-                let mut prefix: [u8; 7] = [0u8; 7];
+        let version = id.version;
+        let prefix: Vec<u8> = match id.version {
+            KeySetVersion::Version00 => {
                 match id.id {
-                    IdBytes::V2(idbytes) => prefix.copy_from_slice(&idbytes[..7]),
+                    IdBytes::V1(idbytes) => Vec::from(&idbytes),
                     _ => panic!("Unexpected IdBytes length"),
                 }
-
-                Self { version, prefix }
+            },
+            KeySetVersion::Version01 => {
+                match id.id {
+                    IdBytes::V2(idbytes) => Vec::from(&idbytes[..7]),
+                    _ => panic!("Unexpected IdBytes length"),
+                }
             }
+        };
+
+        Self {
+            version,
+            prefix,
         }
     }
 }
 
 impl fmt::Display for ShortKeysetId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hex_id = hex::encode(self.prefix);
+        let hex_id = hex::encode(&self.prefix);
         f.write_str(&format!("{}{}", self.version, hex_id))
     }
 }
 
 impl fmt::Debug for ShortKeysetId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let hex_id = hex::encode(self.prefix);
+        let hex_id = hex::encode(&self.prefix);
         f.write_str(&format!("{}{}", self.version, hex_id))
     }
 }
@@ -356,8 +357,7 @@ impl TryFrom<String> for ShortKeysetId {
         ensure_cdk!(s.len() == 16, Error::Length);
 
         let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
-        let mut prefix: [u8; 7] = [0u8; 7];
-        prefix.copy_from_slice(&hex::decode(&s[2..])?);
+        let prefix = hex::decode(&s[2..])?;
 
         Ok(Self { version, prefix })
     }
