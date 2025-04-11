@@ -20,6 +20,7 @@ pub enum Error {
 
 /// Melt quote request [NUT-18]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteBolt12Request {
     /// Bolt12 invoice to be paid
     pub request: String,
@@ -31,6 +32,7 @@ pub struct MeltQuoteBolt12Request {
 
 /// Melt Bolt12 Request [NUT-18]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MeltBolt12Request<Q> {
     /// Quote ID

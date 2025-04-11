@@ -1,6 +1,8 @@
 use anyhow::Result;
 use axum::extract::{Json, Path, State};
 use axum::response::Response;
+#[cfg(feature = "swagger")]
+use cdk::error::ErrorResponse;
 use cdk::nuts::{
     MeltBolt12Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request, MintBolt11Request,
     MintBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
@@ -14,7 +16,7 @@ use crate::{into_response, MintState};
     context_path = "/v1",
     path = "/mint/quote/bolt12",
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt12Response, content_type = "application/json")
+        (status = 200, description = "Successful response", body = MintQuoteBolt12Response<String>, content_type = "application/json")
     )
 ))]
 /// Get mint bolt12 quote
@@ -39,7 +41,7 @@ pub async fn get_mint_bolt12_quote(
         ("quote_id" = String, description = "The quote ID"),
     ),
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt12Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintQuoteBolt12Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -61,7 +63,7 @@ pub async fn get_check_mint_bolt12_quote(
     post,
     context_path = "/v1",
     path = "/mint/bolt12",
-    request_body(content = MintBolt11Request, description = "Request params", content_type = "application/json"),
+    request_body(content = MintBolt11Request<String>, description = "Request params", content_type = "application/json"),
     responses(
         (status = 200, description = "Successful response", body = MintBolt11Response, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
@@ -90,7 +92,7 @@ pub async fn post_mint_bolt12(
     path = "/melt/quote/bolt12",
     request_body(content = MeltQuoteBolt12Request, description = "Quote params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -111,9 +113,9 @@ pub async fn get_melt_bolt12_quote(
     post,
     context_path = "/v1",
     path = "/melt/bolt12",
-    request_body(content = MeltBolt12Request, description = "Melt params", content_type = "application/json"),
+    request_body(content = MeltBolt12Request<String>, description = "Melt params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
