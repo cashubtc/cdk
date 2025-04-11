@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use cdk_signatory::signatory::RotateKeyArguments;
 use tracing::instrument;
 
@@ -45,23 +43,17 @@ impl Mint {
     /// Return a list of all supported keysets
     #[instrument(skip_all)]
     pub async fn keysets(&self) -> Result<KeysetResponse, Error> {
-        let keysets = self.localstore.get_keyset_infos().await?;
-        let active_keysets: HashSet<Id> = self
-            .localstore
-            .get_active_keysets()
+        let keysets = self
+            .signatory
+            .keysets()
             .await?
-            .values()
-            .cloned()
-            .collect();
-
-        let keysets = keysets
             .into_iter()
-            .filter(|k| k.unit != CurrencyUnit::Auth)
+            .filter(|k| k.key.unit != CurrencyUnit::Auth)
             .map(|k| KeySetInfo {
-                id: k.id,
-                unit: k.unit,
-                active: active_keysets.contains(&k.id),
-                input_fee_ppk: k.input_fee_ppk,
+                id: k.key.id,
+                unit: k.key.unit,
+                active: k.info.active,
+                input_fee_ppk: k.info.input_fee_ppk,
             })
             .collect();
 
