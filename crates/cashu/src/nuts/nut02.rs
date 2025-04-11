@@ -236,21 +236,24 @@ impl Id {
 
     /// Selects the correct IDv2 from a list of keysets and the given short-id
     /// or returns the short-id in the case of v1.
-    pub fn from_short_keyset_id(short_id: &ShortKeysetId, keysets_info: &[KeySetInfo]) -> Result<Self, Error> {
+    pub fn from_short_keyset_id(
+        short_id: &ShortKeysetId,
+        keysets_info: &[KeySetInfo],
+    ) -> Result<Self, Error> {
         // Check prefix length
         if short_id.prefix.len() < Self::BYTELEN_V1 || short_id.prefix.len() > Self::BYTELEN_V2 {
             return Err(Error::MalformedShortKeysetId);
         }
 
         match short_id.version {
-            KeySetVersion::Version00 => { 
+            KeySetVersion::Version00 => {
                 let mut idbytes: [u8; Self::BYTELEN_V1] = [0u8; Self::BYTELEN_V1];
                 idbytes.copy_from_slice(&short_id.prefix[..Self::BYTELEN_V1]);
-                Ok(Self { 
+                Ok(Self {
                     version: short_id.version,
-                    id: IdBytes::V1(idbytes)
+                    id: IdBytes::V1(idbytes),
                 })
-            },
+            }
             KeySetVersion::Version01 => {
                 // We return the first match or error
                 for keyset_info in keysets_info.iter() {
