@@ -66,14 +66,12 @@ impl From<MintQuoteBolt12Response<Uuid>> for MintQuoteBolt12Response<String> {
     fn from(value: MintQuoteBolt12Response<Uuid>) -> Self {
         Self {
             quote: value.quote.to_string(),
-            amount: value.amount,
-            fee_reserve: value.fee_reserve,
-            state: value.state,
-            expiry: value.expiry,
-            payment_preimage: value.payment_preimage,
-            change: value.change,
             request: value.request,
-            unit: value.unit,
+            single_use: value.single_use,
+            expiry: value.expiry,
+            amount_paid: value.amount_paid,
+            amount_issued: value.amount_issued,
+            pubkey: value.pubkey,
         }
     }
 }
