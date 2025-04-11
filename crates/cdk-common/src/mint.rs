@@ -139,9 +139,6 @@ pub struct MintKeySetInfo {
     pub active: bool,
     /// Starting unix time Keyset is valid from
     pub valid_from: u64,
-    /// When the Keyset is valid to
-    /// This is not shown to the wallet and can only be used internally
-    pub valid_to: Option<u64>,
     /// [`DerivationPath`] keyset
     pub derivation_path: DerivationPath,
     /// DerivationPath index of Keyset
@@ -151,6 +148,8 @@ pub struct MintKeySetInfo {
     /// Input Fee ppk
     #[serde(default = "default_fee")]
     pub input_fee_ppk: u64,
+    /// Final expiry
+    pub final_expiry: Option<u64>,
 }
 
 /// Default fee
@@ -165,6 +164,7 @@ impl From<MintKeySetInfo> for KeySetInfo {
             unit: keyset_info.unit,
             active: keyset_info.active,
             input_fee_ppk: keyset_info.input_fee_ppk,
+            final_expiry: keyset_info.final_expiry,
         }
     }
 }
