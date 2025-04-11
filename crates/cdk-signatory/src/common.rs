@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, All, Secp256k1};
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{CurrencyUnit, Id, MintKeySet};
@@ -15,7 +15,7 @@ use cdk_common::util::unix_time;
 pub async fn init_keysets(
     xpriv: Xpriv,
     secp_ctx: &Secp256k1<All>,
-    localstore: &Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+    localstore: &Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     supported_units: &HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
 ) -> Result<(HashMap<Id, MintKeySet>, Vec<CurrencyUnit>), Error> {

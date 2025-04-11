@@ -39,6 +39,7 @@ pub trait KeysDatabase {
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 }
+
 /// Mint Quote Database trait
 #[async_trait]
 pub trait QuotesDatabase {
@@ -169,10 +170,7 @@ pub trait SignaturesDatabase {
 /// Mint Database trait
 #[async_trait]
 pub trait Database<Error>:
-    KeysDatabase<Err = Error>
-    + QuotesDatabase<Err = Error>
-    + ProofsDatabase<Err = Error>
-    + SignaturesDatabase<Err = Error>
+    QuotesDatabase<Err = Error> + ProofsDatabase<Err = Error> + SignaturesDatabase<Err = Error>
 {
     /// Set [`MintInfo`]
     async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error>;
