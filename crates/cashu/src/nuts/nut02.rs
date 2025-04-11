@@ -315,24 +315,17 @@ impl From<Id> for ShortKeysetId {
     fn from(id: Id) -> Self {
         let version = id.version;
         let prefix: Vec<u8> = match id.version {
-            KeySetVersion::Version00 => {
-                match id.id {
-                    IdBytes::V1(idbytes) => Vec::from(&idbytes),
-                    _ => panic!("Unexpected IdBytes length"),
-                }
+            KeySetVersion::Version00 => match id.id {
+                IdBytes::V1(idbytes) => Vec::from(&idbytes),
+                _ => panic!("Unexpected IdBytes length"),
             },
-            KeySetVersion::Version01 => {
-                match id.id {
-                    IdBytes::V2(idbytes) => Vec::from(&idbytes[..7]),
-                    _ => panic!("Unexpected IdBytes length"),
-                }
-            }
+            KeySetVersion::Version01 => match id.id {
+                IdBytes::V2(idbytes) => Vec::from(&idbytes[..7]),
+                _ => panic!("Unexpected IdBytes length"),
+            },
         };
 
-        Self {
-            version,
-            prefix,
-        }
+        Self { version, prefix }
     }
 }
 
