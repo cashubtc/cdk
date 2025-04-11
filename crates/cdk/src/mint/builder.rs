@@ -235,7 +235,7 @@ impl MintBuilder {
                 self.mint_info.nuts.nut24 = Some(nut24.clone());
             }
             PaymentMethod::Custom(_) => {
-                tracing::info!("Adding payment method for custome unit. Not adding to nuts.");
+                tracing::info!("Adding payment method for custom unit. Not adding to nuts.");
             }
         }
 
