@@ -31,10 +31,13 @@ impl From<CurrencyUnit> for KeysetIdentifier {
     }
 }
 
+/// RotateKeyArguments
+///
+/// This struct is used to pass the arguments to the rotate_keyset function
 #[derive(Debug, Clone)]
 pub struct RotateKeyArguments {
     pub unit: CurrencyUnit,
-    pub derivation_path_index: u32,
+    pub derivation_path_index: Option<u32>,
     pub max_order: u8,
     pub input_fee_ppk: u64,
 }

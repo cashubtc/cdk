@@ -286,6 +286,7 @@ impl Mint {
             if let std::collections::hash_map::Entry::Vacant(e) =
                 fee_per_keyset.entry(proof.keyset_id)
             {
+                // TODO: Get this from signatory
                 let mint_keyset_info = self
                     .localstore
                     .get_keyset_info(&proof.keyset_id)

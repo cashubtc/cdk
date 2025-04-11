@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use cdk_signatory::signatory::RotateKeyArguments;
 use tracing::instrument;
 
@@ -45,23 +43,17 @@ impl Mint {
     /// Return a list of all supported keysets
     #[instrument(skip_all)]
     pub async fn keysets(&self) -> Result<KeysetResponse, Error> {
-        let keysets = self.localstore.get_keyset_infos().await?;
-        let active_keysets: HashSet<Id> = self
-            .localstore
-            .get_active_keysets()
+        let keysets = self
+            .signatory
+            .keysets()
             .await?
-            .values()
-            .cloned()
-            .collect();
-
-        let keysets = keysets
             .into_iter()
-            .filter(|k| k.unit != CurrencyUnit::Auth)
+            .filter(|k| k.key.unit != CurrencyUnit::Auth)
             .map(|k| KeySetInfo {
-                id: k.id,
-                unit: k.unit,
-                active: active_keysets.contains(&k.id),
-                input_fee_ppk: k.input_fee_ppk,
+                id: k.key.id,
+                unit: k.key.unit,
+                active: k.info.active,
+                input_fee_ppk: k.info.input_fee_ppk,
             })
             .collect();
 
@@ -93,7 +85,7 @@ impl Mint {
         self.signatory
             .rotate_keyset(RotateKeyArguments {
                 unit,
-                derivation_path_index,
+                derivation_path_index: Some(derivation_path_index),
                 max_order,
                 input_fee_ppk,
             })
@@ -108,33 +100,13 @@ impl Mint {
         max_order: u8,
         input_fee_ppk: u64,
     ) -> Result<MintKeySetInfo, Error> {
-        let current_keyset_id = self
-            .localstore
-            .get_active_keyset_id(&unit)
-            .await?
-            .ok_or(Error::UnsupportedUnit)?;
-
-        let keyset_info = self
-            .localstore
-            .get_keyset_info(&current_keyset_id)
-            .await?
-            .ok_or(Error::UnknownKeySet)?;
-
-        tracing::debug!(
-            "Current active keyset {} path index {:?}",
-            keyset_info.id,
-            keyset_info.derivation_path_index
-        );
-
-        let keyset_info = self
-            .rotate_keyset(
+        self.signatory
+            .rotate_keyset(RotateKeyArguments {
                 unit,
-                keyset_info.derivation_path_index.unwrap_or(1) + 1,
                 max_order,
+                derivation_path_index: None,
                 input_fee_ppk,
-            )
-            .await?;
-
-        Ok(keyset_info)
+            })
+            .await
     }
 }
