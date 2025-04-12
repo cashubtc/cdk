@@ -38,6 +38,7 @@ impl Mint {
             .await?;
 
         if ln_status != quote.state() && quote.state() != MintQuoteState::Issued {
+            tracing::info!("Stored quote state did not match ln state on check.");
             self.pubsub_manager
                 .mint_quote_bolt11_status(quote.clone(), ln_status);
         }

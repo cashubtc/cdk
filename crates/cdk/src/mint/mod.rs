@@ -330,11 +330,11 @@ impl Mint {
                 join_set.spawn(async move {
             loop {
 
-                // TODO: Think is is a hack
-                if ln.is_wait_invoice_active() {
-                    tracing::warn!("Wait invoice is active for: {:?}", key);
-                    break;
-                }
+                // HACK: Think is is a hack
+                // if ln.is_wait_invoice_active() {
+                //     tracing::warn!("Wait invoice is active for: {:?}", key);
+                //     break;
+                // }
 
                 tracing::info!("Restarting wait for: {:?}", key);
                 tokio::select! {

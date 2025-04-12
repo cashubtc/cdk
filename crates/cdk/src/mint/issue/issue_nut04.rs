@@ -139,7 +139,10 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?;
 
         let state = match quote.state() {
-            MintQuoteState::Unpaid => self.check_mint_quote_paid(quote_id).await?,
+            MintQuoteState::Unpaid => {
+                tracing::debug!("Check called on unpaid mint quote. Checking ...");
+                self.check_mint_quote_paid(quote_id).await?
+            }
             s => s,
         };
 

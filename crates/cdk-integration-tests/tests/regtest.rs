@@ -156,7 +156,8 @@ async fn test_websocket_connection() -> Result<()> {
     let msg = timeout(Duration::from_secs(10), subscription.recv())
         .await
         .expect("timeout waiting for unpaid notification")
-        .ok_or_else(|| anyhow::anyhow!("No unpaid notification received"))?;
+        .ok_or_else(|| anyhow::anyhow!("No unpaid notification received"))
+        .unwrap();
 
     match msg {
         NotificationPayload::MintQuoteBolt11Response(response) => {
@@ -173,7 +174,8 @@ async fn test_websocket_connection() -> Result<()> {
     let msg = timeout(Duration::from_secs(10), subscription.recv())
         .await
         .expect("timeout waiting for paid notification")
-        .ok_or_else(|| anyhow::anyhow!("No paid notification received"))?;
+        .ok_or_else(|| anyhow::anyhow!("No paid notification received"))
+        .unwrap();
 
     match msg {
         NotificationPayload::MintQuoteBolt11Response(response) => {
