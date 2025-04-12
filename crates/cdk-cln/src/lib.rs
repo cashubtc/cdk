@@ -401,7 +401,7 @@ impl MintPayment for Cln {
 
                 let label = Uuid::new_v4().to_string();
 
-                // Match like this untill we change to option
+                // Match like this until we change to option
                 let amount = match amount == Amount::ZERO {
                     false => {
                         let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
