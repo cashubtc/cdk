@@ -9,6 +9,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut05::MeltRequestTrait;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
@@ -495,12 +496,12 @@ impl Mint {
     where
         R: MeltRequestTrait<Uuid>,
     {
-        // TODO: How should this work with a bolt12 offer
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request.to_string())
-            .await
-        {
+        let request = match &melt_quote.request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11.to_string(),
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => offer.to_string(),
+        };
+
+        let mint_quote = match self.localstore.get_mint_quote_by_request(&request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -522,26 +523,23 @@ impl Mint {
             Error::AmountOverflow
         })?;
 
-        if mint_quote.amount > inputs_amount_quote_unit {
-            tracing::debug!(
-                "Not enough inuts provided: {} needed {}",
-                inputs_amount_quote_unit,
-                mint_quote.amount
-            );
-            return Err(Error::InsufficientFunds);
+        if let Some(amount) = mint_quote.amount {
+            if amount > inputs_amount_quote_unit {
+                tracing::debug!(
+                    "Not enough inuts provided: {} needed {}",
+                    inputs_amount_quote_unit,
+                    amount
+                );
+                return Err(Error::InsufficientFunds);
+            }
         }
 
-        let amount = melt_quote.amount;
-
+        // REVIEW: We increment the mint quote here but there are error cases after this where this should be reverted.
         self.localstore
-            .increment_mint_quote_amount_paid(&mint_quote.id, amount)
+            .increment_mint_quote_amount_paid(&mint_quote.id, melt_quote.amount)
             .await?;
 
-        let mut mint_quote = mint_quote;
-
-        mint_quote.increment_amount_paid(amount)?;
-
-        Ok(Some(amount))
+        Ok(Some(melt_quote.amount))
     }
 
     /// Restore

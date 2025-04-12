@@ -405,7 +405,7 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         "#,
         )
         .bind(quote.id.to_string())
-        .bind(u64::from(quote.amount) as i64)
+        .bind(quote.amount.map(|a|   u64::from(a) as i64))
         .bind(quote.unit.to_string())
         .bind(quote.request.clone())
         .bind(quote.expiry as i64)
@@ -1825,7 +1825,7 @@ fn sqlite_row_to_keyset_info(row: SqliteRow) -> Result<MintKeySetInfo, Error> {
 
 fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
-    let row_amount: i64 = row.try_get("amount").map_err(Error::from)?;
+    let row_amount: Option<i64> = row.try_get("amount").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let row_request: String = row.try_get("request").map_err(Error::from)?;
     let row_expiry: i64 = row.try_get("expiry").map_err(Error::from)?;
@@ -1864,7 +1864,7 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         Some(row_id.into_uuid()),
         row_request,
         CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
-        Amount::from(row_amount as u64),
+        row_amount.map(|a| Amount::from(a as u64)),
         row_expiry as u64,
         request_lookup_id,
         pubkey,

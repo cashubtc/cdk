@@ -625,6 +625,22 @@ impl CdkMint for MintRPCServer {
             .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
             .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
 
+        let payment_amount = match request.amount {
+            Some(amount) => {
+                if let Some(a) = mint_quote.amount {
+                    if a != amount.into() {
+                        return Err(Status::invalid_argument("Amount must equal mint quote"));
+                    }
+                }
+
+                amount
+            }
+            None => mint_quote
+                .amount
+                .ok_or(Status::invalid_argument("Amount must be given."))?
+                .into(),
+        };
+
         match state {
             MintQuoteState::Paid => {
                 self.mint
@@ -632,8 +648,7 @@ impl CdkMint for MintRPCServer {
                         &mint_quote,
                         WaitPaymentResponse {
                             request_lookup_id: mint_quote.request_lookup_id.clone(),
-                            // TODO: Get this from rpc
-                            payment_amount: mint_quote.amount,
+                            payment_amount: payment_amount.into(),
                             unit: mint_quote.unit.clone(),
                             // TODO: Get this from rpc
                             payment_id: "".to_string(),
@@ -658,6 +673,7 @@ impl CdkMint for MintRPCServer {
         Ok(Response::new(UpdateNut04QuoteRequest {
             state: mint_quote.state().to_string(),
             quote_id: mint_quote.id.to_string(),
+            amount: Some(payment_amount),
         }))
     }
 

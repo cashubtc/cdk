@@ -93,7 +93,7 @@ impl Mint {
 
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
-            invoice: Some(invoice),
+            invoice,
         };
 
         let quote = MeltQuote::new(

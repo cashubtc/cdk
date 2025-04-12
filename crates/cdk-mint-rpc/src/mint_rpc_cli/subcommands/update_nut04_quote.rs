@@ -17,6 +17,8 @@ pub struct UpdateNut04QuoteCommand {
     /// The new state to set for the quote (default: "PAID")
     #[arg(default_value = "PAID")]
     state: String,
+    #[arg(default_value = "0")]
+    amount: u64,
 }
 
 /// Executes the update_nut04_quote_state command against the mint server
@@ -31,10 +33,17 @@ pub async fn update_nut04_quote_state(
     client: &mut CdkMintClient<Channel>,
     sub_command_args: &UpdateNut04QuoteCommand,
 ) -> Result<()> {
+    let amount = if sub_command_args.amount == 0 {
+        None
+    } else {
+        Some(sub_command_args.amount)
+    };
+
     let response = client
         .update_nut04_quote(Request::new(UpdateNut04QuoteRequest {
             quote_id: sub_command_args.quote_id.clone(),
             state: sub_command_args.state.clone(),
+            amount,
         }))
         .await?;
 

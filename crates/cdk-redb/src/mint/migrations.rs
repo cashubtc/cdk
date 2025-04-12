@@ -204,7 +204,7 @@ impl From<V1MintQuote> for MintQuote {
             Some(quote.id),
             quote.request.clone(),
             quote.unit,
-            quote.amount,
+            Some(quote.amount),
             quote.expiry,
             Bolt11Invoice::from_str(&quote.request).unwrap().to_string(),
             None,

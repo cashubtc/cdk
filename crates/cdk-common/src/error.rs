@@ -46,6 +46,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Amount undefined
+    #[error("Amount undefined")]
+    AmountUndefined,
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,

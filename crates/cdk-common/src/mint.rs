@@ -20,7 +20,7 @@ pub struct MintQuote {
     /// Quote id
     pub id: Uuid,
     /// Amount of quote
-    pub amount: Amount,
+    pub amount: Option<Amount>,
     /// Unit of quote
     pub unit: CurrencyUnit,
     /// Quote payment request e.g. bolt11
@@ -65,7 +65,7 @@ impl MintQuote {
         id: Option<Uuid>,
         request: String,
         unit: CurrencyUnit,
-        amount: Amount,
+        amount: Option<Amount>,
         expiry: u64,
         request_lookup_id: String,
         pubkey: Option<PublicKey>,
@@ -274,7 +274,7 @@ pub enum MeltPaymentRequest {
         #[serde(with = "offer_serde")]
         offer: Box<Offer>,
         /// Invoice
-        invoice: Option<String>,
+        invoice: String,
     },
 }
 
@@ -363,7 +363,7 @@ impl From<MintQuote> for MintQuoteBolt11Response<Uuid> {
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
             pubkey: mint_quote.pubkey,
-            amount: Some(mint_quote.amount),
+            amount: mint_quote.amount,
             unit: Some(mint_quote.unit.clone()),
         }
     }
@@ -418,6 +418,8 @@ impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<Uuid> {
             amount_issued: mint_quote.amount_issued,
             single_use: mint_quote.single_use,
             pubkey: mint_quote.pubkey.ok_or(crate::Error::AmountKey)?,
+            amount: mint_quote.amount,
+            unit: mint_quote.unit,
         })
     }
 }

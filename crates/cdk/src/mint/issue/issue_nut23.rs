@@ -104,8 +104,7 @@ impl Mint {
             None,
             create_invoice_response.request.to_string(),
             unit.clone(),
-            // TODO: Should be option
-            amount.unwrap_or_default(),
+            amount,
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
             Some(pubkey),

@@ -69,11 +69,13 @@ pub trait MintPayment {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
+        // TODO: needs to be an option
         amount: Amount,
         unit: &CurrencyUnit,
         method: &PaymentMethod,
         description: String,
         unix_expiry: Option<u64>,
+        // TODO: need single use
     ) -> Result<CreateIncomingPaymentResponse, Self::Err>;
 
     /// Get payment quote

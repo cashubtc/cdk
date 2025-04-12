@@ -93,7 +93,7 @@ impl Mint {
             None,
             create_invoice_response.request.to_string(),
             unit.clone(),
-            amount,
+            Some(amount),
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
             pubkey,
@@ -149,7 +149,7 @@ impl Mint {
             state,
             expiry: Some(quote.expiry),
             pubkey: quote.pubkey,
-            amount: Some(quote.amount),
+            amount: quote.amount,
             unit: Some(quote.unit.clone()),
         })
     }
@@ -310,7 +310,7 @@ impl Mint {
         }
 
         let mint_amount = match mint_quote.payment_method {
-            PaymentMethod::Bolt11 => mint_quote.amount,
+            PaymentMethod::Bolt11 => mint_quote.amount.ok_or(Error::AmountUndefined)?,
             PaymentMethod::Bolt12 => {
                 if mint_quote.amount_issued() > mint_quote.amount_paid() {
                     tracing::error!(
@@ -346,7 +346,7 @@ impl Mint {
         // We check the total value of blinded messages == mint quote
         if amount != mint_amount {
             return Err(Error::TransactionUnbalanced(
-                mint_quote.amount.into(),
+                mint_amount.into(),
                 mint_request.total_amount()?.into(),
                 0,
             ));
