@@ -28,7 +28,7 @@ The project is split up into several crates in the `crates/` directory:
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
-    * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint managemtn gRPC client cli.
+    * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint management gRPC client cli.
 
 
 ## Development 
@@ -83,6 +83,8 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [18][18] | Payment Requests  | :heavy_check_mark: |
 | [19][19] | Cached responses  | :heavy_check_mark: |
 | [20][20] | Signature on Mint Quote  | :heavy_check_mark: |
+| [21][21] | Clear Authentication | :heavy_check_mark: |
+| [22][22] | Blind Authentication  | :heavy_check_mark: |
 
 
 ## Bindings
@@ -123,3 +125,5 @@ Please see the [development guide](DEVELOPMENT.md).
 [18]: https://github.com/cashubtc/nuts/blob/main/18.md
 [19]: https://github.com/cashubtc/nuts/blob/main/19.md
 [20]: https://github.com/cashubtc/nuts/blob/main/20.md
+[20]: https://github.com/cashubtc/nuts/blob/main/21.md
+[20]: https://github.com/cashubtc/nuts/blob/main/22.md

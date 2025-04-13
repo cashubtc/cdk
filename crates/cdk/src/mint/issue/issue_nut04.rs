@@ -7,7 +7,6 @@ use crate::mint::{
     MintQuoteBolt11Response, MintQuoteState, NotificationPayload, PublicKey, Verification,
 };
 use crate::nuts::PaymentMethod;
-use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error, Mint};
 
@@ -62,17 +61,7 @@ impl Mint {
 
         self.check_mint_request_acceptable(amount, &unit).await?;
 
-        let ln = self
-            .ln
-            .get(&PaymentProcessorKey::new(
-                unit.clone(),
-                PaymentMethod::Bolt11,
-            ))
-            .ok_or_else(|| {
-                tracing::info!("Bolt11 mint request for unsupported unit");
-
-                Error::UnsupportedUnit
-            })?;
+        let ln = self.get_payment_processor(unit.clone(), PaymentMethod::Bolt11)?;
 
         let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
 
@@ -226,18 +215,6 @@ impl Mint {
             mint_quote.id
         );
         if mint_quote.state != MintQuoteState::Issued && mint_quote.state != MintQuoteState::Paid {
-            let unix_time = unix_time();
-
-            if mint_quote.expiry < unix_time {
-                tracing::warn!(
-                    "Mint quote {} paid at {} expired at {}, leaving current state",
-                    mint_quote.id,
-                    mint_quote.expiry,
-                    unix_time,
-                );
-                return Err(Error::ExpiredQuote(mint_quote.expiry, unix_time));
-            }
-
             self.localstore
                 .update_mint_quote_state(&mint_quote.id, MintQuoteState::Paid)
                 .await?;

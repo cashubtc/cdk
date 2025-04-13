@@ -35,9 +35,15 @@ message Mpp {
     uint64 amount = 1;
 }
 
+
+message Amountless {
+    uint64 amount_msat = 1;
+}
+
 message MeltOptions {
     oneof options {
         Mpp mpp = 1;
+        Amountless amountless = 2;
     }
 }
 
@@ -75,6 +81,8 @@ message MeltQuote {
     optional string payment_preimage = 8;
     string request_lookup_id = 9;
     optional uint64 msat_to_pay = 10;
+    uint64 created_time = 11;
+    optional uint64 paid_time = 12;
 }
 
 message MakePaymentRequest {

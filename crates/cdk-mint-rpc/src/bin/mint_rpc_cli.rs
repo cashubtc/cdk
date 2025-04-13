@@ -16,7 +16,7 @@ const DEFAULT_WORK_DIR: &str = ".cdk-mint-rpc-cli";
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Address of RPC server
-    #[arg(short, long, default_value = "http://127.0.0.1:8086")]
+    #[arg(short, long, default_value = "https://127.0.0.1:8086")]
     addr: String,
 
     /// Logging level
@@ -59,6 +59,8 @@ enum Commands {
     UpdateNut05(subcommands::UpdateNut05Command),
     /// Update quote ttl
     UpdateQuoteTtl(subcommands::UpdateQuoteTtlCommand),
+    /// Get quote ttl
+    GetQuoteTtl,
     /// Update Nut04 quote
     UpdateNut04QuoteState(subcommands::UpdateNut04QuoteCommand),
     /// Rotate next keyset
@@ -180,6 +182,9 @@ async fn main() -> Result<()> {
         }
         Commands::UpdateNut05(sub_command_args) => {
             subcommands::update_nut05(&mut client, &sub_command_args).await?;
+        }
+        Commands::GetQuoteTtl => {
+            subcommands::get_quote_ttl(&mut client).await?;
         }
         Commands::UpdateQuoteTtl(sub_command_args) => {
             subcommands::update_quote_ttl(&mut client, &sub_command_args).await?;

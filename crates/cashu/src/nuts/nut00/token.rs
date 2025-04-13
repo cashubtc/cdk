@@ -236,9 +236,20 @@ impl TokenV3 {
             .collect()
     }
 
-    /// Value
+    /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
+        let proofs: Vec<ProofV3> = self.token.iter().flat_map(|t| t.proofs.clone()).collect();
+        let unique_count = proofs
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+
+        // Check if there are any duplicate proofs
+        if unique_count != proofs.len() {
+            return Err(Error::DuplicateProofs);
+        }
+
         Ok(Amount::try_sum(
             self.token
                 .iter()
@@ -357,15 +368,21 @@ impl TokenV4 {
             .collect()
     }
 
-    /// Value
+    /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        Ok(Amount::try_sum(
-            self.token
-                .iter()
-                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
-                .collect::<Result<Vec<Amount>, _>>()?,
-        )?)
+        let proofs = self.proofs();
+        let unique_count = proofs
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+
+        // Check if there are any duplicate proofs
+        if unique_count != proofs.len() {
+            return Err(Error::DuplicateProofs);
+        }
+
+        proofs.total_amount()
     }
 
     /// Memo
@@ -507,6 +524,7 @@ mod tests {
 
     use super::*;
     use crate::mint_url::MintUrl;
+    use crate::secret::Secret;
     use crate::util::hex;
 
     #[test]
@@ -644,5 +662,55 @@ mod tests {
         let tokenv4_bytes = tokenv4.to_raw_bytes().expect("Serialization error");
         let tokenv4_bytes_ = tokenv4_.to_raw_bytes().expect("Serialization error");
         assert!(tokenv4_bytes_ == tokenv4_bytes);
+    }
+
+    #[test]
+    fn test_token_with_duplicate_proofs() {
+        // Create a token with duplicate proofs
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+
+        let secret = Secret::generate();
+        // Create two identical proofs
+        let proof1 = Proof {
+            amount: Amount::from(10),
+            keyset_id,
+            secret: secret.clone(),
+            c: "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"
+                .parse()
+                .unwrap(),
+            witness: None,
+            dleq: None,
+        };
+
+        let proof2 = proof1.clone(); // Duplicate proof
+
+        // Create a token with the duplicate proofs
+        let proofs = vec![proof1.clone(), proof2].into_iter().collect();
+        let token = Token::new(mint_url.clone(), proofs, None, CurrencyUnit::Sat);
+
+        // Verify that value() returns an error
+        let result = token.value();
+        assert!(result.is_err());
+
+        // Create a token with unique proofs
+        let proof3 = Proof {
+            amount: Amount::from(10),
+            keyset_id,
+            secret: Secret::generate(),
+            c: "03bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"
+                .parse()
+                .unwrap(), // Different C value
+            witness: None,
+            dleq: None,
+        };
+
+        let proofs = vec![proof1, proof3].into_iter().collect();
+        let token = Token::new(mint_url, proofs, None, CurrencyUnit::Sat);
+
+        // Verify that value() succeeds with unique proofs
+        let result = token.value();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Amount::from(20));
     }
 }

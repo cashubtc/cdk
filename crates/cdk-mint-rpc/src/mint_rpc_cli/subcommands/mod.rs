@@ -33,5 +33,5 @@ pub use update_nut04::{update_nut04, UpdateNut04Command};
 pub use update_nut04_quote::{update_nut04_quote_state, UpdateNut04QuoteCommand};
 pub use update_nut05::{update_nut05, UpdateNut05Command};
 pub use update_short_description::{update_short_description, UpdateShortDescriptionCommand};
-pub use update_ttl::{update_quote_ttl, UpdateQuoteTtlCommand};
+pub use update_ttl::{get_quote_ttl, update_quote_ttl, UpdateQuoteTtlCommand};
 pub use update_urls::{add_url, remove_url, AddUrlCommand, RemoveUrlCommand};

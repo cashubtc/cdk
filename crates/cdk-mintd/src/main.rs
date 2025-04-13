@@ -130,8 +130,6 @@ async fn main() -> anyhow::Result<()> {
                 #[cfg(feature = "sqlcipher")]
                 let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
 
-                sqlite_db.migrate().await;
-
                 Arc::new(sqlite_db)
             }
             #[cfg(feature = "redb")]
@@ -622,7 +620,11 @@ async fn main() -> anyhow::Result<()> {
         if mint.mint_info().await.is_err() {
             tracing::info!("Mint info not set on mint, setting.");
             mint.set_mint_info(mint_builder.mint_info).await?;
+            mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
         } else {
+            if mint.localstore.get_quote_ttl().await.is_err() {
+                mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
+            }
             tracing::info!("Mint info already set, not using config file settings.");
         }
     } else {

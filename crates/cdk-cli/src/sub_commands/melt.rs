@@ -57,39 +57,52 @@ pub async fn pay(
     stdin.read_line(&mut user_input)?;
     let bolt11 = Bolt11Invoice::from_str(user_input.trim())?;
 
-    let mut options: Option<MeltOptions> = None;
+    let available_funds =
+        <cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT;
 
-    if sub_command_args.mpp {
-        println!("Enter the amount you would like to pay in sats, for a mpp payment.");
+    // Determine payment amount and options
+    let options = if sub_command_args.mpp || bolt11.amount_milli_satoshis().is_none() {
+        // Get user input for amount
+        println!(
+            "Enter the amount you would like to pay in sats for a {} payment.",
+            if sub_command_args.mpp {
+                "MPP"
+            } else {
+                "amountless invoice"
+            }
+        );
+
         let mut user_input = String::new();
-        let stdin = io::stdin();
-        io::stdout().flush().unwrap();
-        stdin.read_line(&mut user_input)?;
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut user_input)?;
 
-        let user_amount = user_input.trim_end().parse::<u64>()?;
+        let user_amount = user_input.trim_end().parse::<u64>()? * MSAT_IN_SAT;
 
-        if user_amount
-            .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT))
-        {
+        if user_amount > available_funds {
             bail!("Not enough funds");
         }
 
-        options = Some(MeltOptions::new_mpp(user_amount * MSAT_IN_SAT));
-    } else if bolt11
-        .amount_milli_satoshis()
-        .unwrap()
-        .gt(&(<cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT))
-    {
-        bail!("Not enough funds");
-    }
+        Some(if sub_command_args.mpp {
+            MeltOptions::new_mpp(user_amount)
+        } else {
+            MeltOptions::new_amountless(user_amount)
+        })
+    } else {
+        // Check if invoice amount exceeds available funds
+        let invoice_amount = bolt11.amount_milli_satoshis().unwrap();
+        if invoice_amount > available_funds {
+            bail!("Not enough funds");
+        }
+        None
+    };
 
+    // Process payment
     let quote = wallet.melt_quote(bolt11.to_string(), options).await?;
-
     println!("{:?}", quote);
 
     let melt = wallet.melt(&quote.id).await?;
-
     println!("Paid invoice: {}", melt.state);
+
     if let Some(preimage) = melt.preimage {
         println!("Payment preimage: {}", preimage);
     }

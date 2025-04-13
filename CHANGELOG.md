@@ -4,31 +4,44 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+## [0.9.0](https://github.com/cashubtc/cdk/releases/tag/v0.9.0)
+### Added
+- Amountless invoices [NUT](https://github.com/cashubtc/nuts/pull/173) [PR](https://github.com/cashubtc/cdk/pull/497) ([thesimplekid]).
+- `create_time`, `paid_time` to mint and melt quotes [PR](https://github.com/cashubtc/cdk/pull/708) ([thesimplekid]).
+- cdk-mint-rpc: Added get mint and melt quotes ttl [PR](https://github.com/cashubtc/cdk/pull/716) ([thesimplekid]).
 
-## [Unreleased]
 ### Changed
-- cashu move wallet mod to cdk-common ([thesimplekid]).
+- cashu: Move wallet mod to cdk-common ([thesimplekid]).
+- Export Mint DB Traits [PR](https://github.com/cashubtc/cdk/pull/710) ([davidcaseria]).
+- Move Mint and Melt quote to `cdk` commit from `cashu` [PR](https://github.com/cashubtc/cdk/pull/665) ([thesimplekid]).
+
+### Fixed
+- Creation of memory sqlite db [PR](https://github.com/cashubtc/cdk/pull/707) ([crodas]).
+- cdk-cli: Ensure auth wallet is created before attempting to mint pending [PR](https://github.com/cashubtc/cdk/pull/704) ([thesimplekid]).
+- cdk-mint-rpc: Adding mint urls was not updating correctly [PR](https://github.com/cashubtc/cdk/pull/716) ([thesimplekid]).
+- cdk-mint-rpc: Fixed setting long description [PR](https://github.com/cashubtc/cdk/pull/716) ([thesimplekid]).
 
 
 ## [v0.8.1](https://github.com/cashubtc/cdk/releases/tag/v0.8.1)
 ### Fixed
-- cashu: Handle url with paths [PR](https://github.com/cashubtc/cdk/pull/678) ([benthecarmane]).
+- cashu: Handle url with paths [PR](https://github.com/cashubtc/cdk/pull/678) ([benthecarman]).
 
 ### Changed
-- cdk: export `MintKeySetInfo` [PR](https://github.com/cashubtc/cdk/pull/673) ([davidcaseria]).
+- cdk: Export `MintKeySetInfo` [PR](https://github.com/cashubtc/cdk/pull/673) ([davidcaseria]).
 
 ## [v0.8.0](https://github.com/cashubtc/cdk/releases/tag/v0.8.0)
 ### Fixed
-- cdk: proof matches conditions was not matching payment conditions correctly ([thesimplekid]).
+- cdk: Proof matches conditions was not matching payment conditions correctly ([thesimplekid]).
 - cdk: Updating mint_url would remove proofs when we want to keep them ([ok300]).
 - Wallet: Fix ability to receive cashu tokens that include DLEQ proofs ([ok300]).
 - cdk-sqlite: Wallet was not storing dleq proofs ([thesimplekid]).
+
 ### Changed
 - Updated MSRV to 1.75.0 ([thesimplekid]).
 - cdk-sqlite: Do not use `UPDATE OR REPLACE` ([crodas]).
 - cdk: Refactor keyset init ([lollerfirst]).
 - Feature-gated lightning backends (CLN, LND, LNbits, FakeWallet) for selective compilation ([thesimplekid]).
-- cdk-sqlite: update sqlx to 0.7.4 ([benthecarman]).
+- cdk-sqlite: Update sqlx to 0.7.4 ([benthecarman]).
 - Unifies and optimizes the proof selection algorithm to use Wallet::select_proofs ([davidcaseria]).
 - Wallet::send now requires a PreparedSend ([davidcaseria]).
 - WalletDatabase proof state update functions have been consolidated into update_proofs_state ([davidcaseria]).
@@ -58,15 +71,15 @@
 - Remove `get_nostr_last_checked` from `WalletDatabase` ([thesimplekid]).
 - Remove `add_nostr_last_checked` from `WalletDatabase` ([thesimplekid]).
 
-## [cdk-mind:v0.7.4](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.7.4)
+## [cdk-mintd:v0.7.4](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.7.4)
 ### Changed
-- cdk-mintd: update to cdk v0.7.2 ([thesimplekid]).
+- cdk-mintd: Update to cdk v0.7.2 ([thesimplekid]).
 
 ## [cdk:v0.7.2](https://github.com/cashubtc/cdk/releases/tag/cdk-v0.7.2)
 ### Fixed
 - cdk: Ordering of swap verification checks ([thesimplekid]).
 
-## [cdk-mintd-v0.7.2]
+## [cdk-mintd-v0.7.2](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.7.2)
 ### Fixed
 - cdk-mintd: Fixed mint and melt error on mint initialized with RPC interface disabled ([ok300]).
 
@@ -75,64 +88,63 @@
 ### Changed
 - cdk: Debug print of `Id` is hex ([thesimplekid]).
 - cdk: Debug print of mint secret is the hash ([thesimplekid]).
-- cdk: Use check_incoming payment on attempted mint or check mint qutoe ([thesimplekid]).
+- cdk: Use check_incoming payment on attempted mint or check mint quote ([thesimplekid]).
 - cdk-cln: Use `call_typed` for cln rpc calls ([daywalker90]).
 
 ### Added
 - cdk: Mint builder add ability to set custom derivation paths ([thesimplekid]).
 
 ### Fixed
-- cdk-cln: return error on stream error ([thesimplekid]).
+- cdk-cln: Return error on stream error ([thesimplekid]).
 
 
 ## [v0.7.0](https://github.com/cashubtc/cdk/releases/tag/v0.7.0)
 ### Changed
-* Moved db traits to `cdk-common` ([crodas]).
-* Moved other common types to `cdk-common` ([crodas]).
-* `Wallet::mint` returns the minted `Proofs` and not just the amount ([davidcaseria]).
+- Moved db traits to `cdk-common` ([crodas]).
+- Moved other common types to `cdk-common` ([crodas]).
+- `Wallet::mint` returns the minted `Proofs` and not just the amount ([davidcaseria]).
 
 ### Added
-* `Token::to_raw_bytes` serializes generic token to raw bytes ([lollerfirst]).
-* `Token::try_from` for `Vec<u8>` constructs a generic token from raw bytes ([lollerfirst]).
-* `TokenV4::to_raw_bytes()` serializes a TokenV4 to raw bytes following the spec ([lollerfirst]).
-* `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
-* cdk-mint-rpc: Mint management gRPC client and server ([thesimplekid]).
-* cdk-common: cdk specific types and traits ([crodas]).
-* cashu: Core types and functions defined in NUTs ([crodas]).
+- `Token::to_raw_bytes` serializes generic token to raw bytes ([lollerfirst]).
+- `Token::try_from` for `Vec<u8>` constructs a generic token from raw bytes ([lollerfirst]).
+- `TokenV4::to_raw_bytes()` serializes a TokenV4 to raw bytes following the spec ([lollerfirst]).
+- `Wallet::receive_raw` which receives raw binary tokens ([lollerfirst]).
+- cdk-mint-rpc: Mint management gRPC client and server ([thesimplekid]).
+- cdk-common: cdk specific types and traits ([crodas]).
+- cashu: Core types and functions defined in NUTs ([crodas]).
 
 ### Fixed
-* Multimint unit check when wallet receiving token ([thesimplekid]).
-* Mint start up with most recent keyset after a rotation ([thesimplekid]).
+- Multimint unit check when wallet receiving token ([thesimplekid]).
+- Mint start up with most recent keyset after a rotation ([thesimplekid]).
 
 
 ## [cdk-v0.6.1, cdk-mintd-v0.6.2](https://github.com/cashubtc/cdk/releases/tag/cdk-mintd-v0.6.1)
 ### Fixed
-cdk: Missing check on mint that outputs equals the quote amount ([thesimplekid]).
-cdk: Reset mint quote status if in state that cannot continue ([thesimplekid]).
+- cdk: Missing check on mint that outputs equals the quote amount ([thesimplekid]).
+- cdk: Reset mint quote status if in state that cannot continue ([thesimplekid]).
 
 ## [v0.6.1](https://github.com/cashubtc/cdk/releases/tag/cdk-v0.6.1)
 ### Added
-cdk-mintd: Get work-dir from env var ([thesimplekid])
+- cdk-mintd: Get work-dir from env var ([thesimplekid]).
 
 ## [v0.6.0](https://github.com/cashubtc/cdk/releases/tag/v0.6.0)
-
 ### Changed
-cdk: Enforce `quote_id` to uuid type in mint ([tdelabro]).
-cdk: Refactor wallet mint connector ([ok300]).
+- cdk: Enforce `quote_id` to uuid type in mint ([tdelabro]).
+- cdk: Refactor wallet mint connector ([ok300]).
 
 ### Added
-cdk: `NUT19` Settings in `NUT06` info ([thesimplekid]).
-cdk: `NUT17` Websocket support for wallet ([crodas]).
-cdk-axum: Redis cache backend ([crodas]).
-cdk-mints: Get mint settings from env vars ([thesimplekid]).
-cdk-axum: HTTP compression support ([ok300]).
+- cdk: `NUT19` Settings in `NUT06` info ([thesimplekid]).
+- cdk: `NUT17` Websocket support for wallet ([crodas]).
+- cdk-axum: Redis cache backend ([crodas]).
+- cdk-mints: Get mint settings from env vars ([thesimplekid]).
+- cdk-axum: HTTP compression support ([ok300]).
 
 ### Fixed
-cdk-sqlite: keyset counter was overwritten when keyset was fetched from mint ([thesimplekid]).
-cdk-cli: on `mint` use `unit` from cli args ([thesimplekid]).
-cdk-cli: on `restore` create `wallet` if it does not exist ([thesimplekid]).
-cdk: Signaling support for optional nuts ([thesimplekid]).
-cdk-phd: Check payment has valid uuis ([thesimplekid]).
+- cdk-sqlite: Keyset counter was overwritten when keyset was fetched from mint ([thesimplekid]).
+- cdk-cli: On `mint` use `unit` from cli args ([thesimplekid]).
+- cdk-cli: On `restore` create `wallet` if it does not exist ([thesimplekid]).
+- cdk: Signaling support for optional nuts ([thesimplekid]).
+- cdk-phd: Check payment has valid uuid ([thesimplekid]).
 
 ## [v0.5.0](https://github.com/cashubtc/cdk/releases/tag/v0.5.0)
 ### Changed
@@ -150,20 +162,20 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 - cdk: Use `MintUrl` directly in wallet client ([ok300]).
 - cdk-cli: Change cdk-cli pay command to melt ([mubarak23]).
 - cdk: Rename `Wallet::get_proofs` to `Wallet::get_unspent_proofs` ([ok300]).
-- cdk: `Id` to `u32` changed from `TryFrom` to `From` ([vnprc]). 
+- cdk: `Id` to `u32` changed from `TryFrom` to `From` ([vnprc]).
 
 
 ### Added
 - cdk: Added description to `MintQuoteBolt11Request` ([lollerfirst]).
 - cdk(wallet): Added description to `mint_quote` ([lollerfirst]).
 - cdk: Add `amount` and `fee_paid` to `Melted` ([davidcaseria]).
-- cdk: Add `from_proofs` on `Melted` ([davidcaseria]). 
+- cdk: Add `from_proofs` on `Melted` ([davidcaseria]).
 - cdk: Add unit on `PaymentResponse` ([thesimplekid]).
 - cdk: Add description for mint quote ([lollerfirst]).
 - cdk-axum: Add cache to some endpoints ([lollerfirst]).
 - cdk: Add Proofs trait ([ok300]).
 - cdk: Wallet verifies keyset id when first fetching keys ([thesimplekid]).
-- cdk-mind: Add swagger docs ([ok300]).
+- cdk-mintd: Add swagger docs ([ok300]).
 - cdk: NUT18 payment request support ([thesimplekid]).
 - cdk: Add `Wallet::get_proofs_with` ([ok300]).
 - cdk: Mint NUT-17 Websocket support ([crodas]).
@@ -181,8 +193,6 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 
 
 ## [v0.4.0](https://github.com/cashubtc/cdk/releases/tag/v0.4.0)
-### Summary
-
 ### Changed
 - cdk: Reduce MSRV to 1.63.0 ([thesimplekid]).
 - cdk-axum: Reduce MSRV to 1.63.0 ([thesimplekid]).
@@ -201,19 +211,15 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 ### Added
 - cdk: Multiple error types ([thesimplekid]).
 
-
 ### Fixed
-- cdk(mint): use checked addition on amount to ensure there is no overflow ([thesimplekid]).
+- cdk(mint): Use checked addition on amount to ensure there is no overflow ([thesimplekid]).
 
 ### Removed
 - cdk(wallet): Removed CDK wallet error ([thesimplekid]).
 - cdk(mint): Removed CDK mint error ([thesimplekid]).
 
 
-## [0.3.0](https://github.com/cashubtc/cdk/releases/tag/v0.3.0)
-
-### Summary
-
+## [v0.3.0](https://github.com/cashubtc/cdk/releases/tag/v0.3.0)
 ### Changed
 - cdk(wallet): `fn send` returns `Token` so the user can use the struct of convert it to a v3 or v4 string ([thesimplekid]).
 - cdk(wallet): Publicly export `MultiMintWallet` ([thesimplekid]).
@@ -224,7 +230,7 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 - cdk-cli: Receive will add wallet when receiving if mint is unknown ([thesimplekid]).
 - cdk(cdk-database/mint): Rename `get_blinded_signatures` to `get_blind_signatures` ([thesimplekid]).
 - cdk(cdk-database/mint): Rename `get_blinded_signatures_for_keyset` to `get_blind_signatures_for_keyset` ([thesimplekid]).
-- cdk(mint): typo rename `total_redeame` to `total_redeemed` ([vnprc])
+- cdk(mint): Typo rename `total_redeame` to `total_redeemed` ([vnprc]).
 - cdk(mint): Refactored `MintKeySet::generate_from_xpriv` and `MintKeySet::generate_from_seed` methods to accept max_order, currency_unit, and derivation_path parameters directly ([vnprc]).
 - cdk(wallet): Return WalletKey for UnknownWallet error ([davidcaseria]).
 - cdk(cdk-lightning): `CreateInvoiceResponse` added expiry time to better support backends where it cannot be set ([thesimplekid]).
@@ -243,7 +249,7 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 - cdk(mint): Add `total_issued` and `total_redeamed` ([thesimplekid]).
 - cdk(cdk-database/mint) Add `get_proofs_by_keyset_id` ([thesimplekid]).
 - cdk(wallet/mint): Add `mint_icon_url` ([cjbeery24]).
-- cdk: Add `MintUrl` that sanatizes mint url by removing trailing `/` ([cjbeery24]).
+- cdk: Add `MintUrl` that sanitizes mint url by removing trailing `/` ([cjbeery24]).
 - cdk(cdk-database/mint): Add `update_proofs` that both adds new `ProofInfo`s to the db and deletes ([davidcaseria]).
 - cdk(cdk-database/mint): Add `set_pending_proofs`, `reserve_proofs`, and `set_unspent_proofs` ([davidcaseria]).
 
@@ -262,7 +268,6 @@ cdk-phd: Check payment has valid uuis ([thesimplekid]).
 - cdk(cdk-database/mint): Remove `set_proof_state`, `remove_proofs` and `add_proofs` ([davidcaseria]).
 
 ## [v0.2.0](https://github.com/cashubtc/cdk/releases/tag/v0.2.0)
-
 ### Summary
 This release introduces TokenV4, which uses CBOR encoding as the default token format. It also includes fee support for both wallet and mint operations.
 
@@ -293,16 +298,12 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 - cdk: NUT06 deserialize `MintInfo` ([thesimplekid]).
 
 
-## [v0.1.1]
-
-### Summary
-
+## [v0.1.1](https://github.com/cashubtc/cdk/releases/tag/v0.1.1)
 ### Changed
 - cdk(wallet): `wallet::total_pending_balance` does not include reserved proofs ([thesimplekid]).
 
-
 ### Added
-- cdk(wallet): Added get reserved proofs [thesimplekid](https://github.com/thesimplekid).
+- cdk(wallet): Added get reserved proofs ([thesimplekid]).
 
 <!-- Contributors -->
 [thesimplekid]: https://github.com/thesimplekid

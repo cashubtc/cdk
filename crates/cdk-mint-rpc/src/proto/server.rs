@@ -18,10 +18,11 @@ use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
 use crate::{
-    ContactInfo, GetInfoRequest, GetInfoResponse, RotateNextKeysetRequest,
-    RotateNextKeysetResponse, UpdateContactRequest, UpdateDescriptionRequest, UpdateIconUrlRequest,
-    UpdateMotdRequest, UpdateNameRequest, UpdateNut04QuoteRequest, UpdateNut04Request,
-    UpdateNut05Request, UpdateQuoteTtlRequest, UpdateResponse, UpdateUrlRequest,
+    ContactInfo, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
+    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
+    UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
+    UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
+    UpdateResponse, UpdateUrlRequest,
 };
 
 /// Error
@@ -283,7 +284,7 @@ impl CdkMint for MintRPCServer {
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
-        info.description = Some(description);
+        info.description_long = Some(description);
 
         self.mint
             .set_mint_info(info)
@@ -346,10 +347,10 @@ impl CdkMint for MintRPCServer {
             .mint_info()
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
-        let urls = info.urls;
-        urls.clone().unwrap_or_default().push(url);
+        let mut urls = info.urls.unwrap_or_default();
+        urls.push(url);
 
-        info.urls = urls;
+        info.urls = Some(urls.clone());
 
         self.mint
             .set_mint_info(info)
@@ -452,6 +453,10 @@ impl CdkMint for MintRPCServer {
         let payment_method = PaymentMethod::from_str(&request_inner.method)
             .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
 
+        self.mint
+            .get_payment_processor(unit.clone(), payment_method.clone())
+            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
+
         let current_nut04_settings = nut04_settings.remove_settings(&unit, &payment_method);
 
         let mut methods = nut04_settings.methods.clone();
@@ -512,6 +517,10 @@ impl CdkMint for MintRPCServer {
         let payment_method = PaymentMethod::from_str(&request_inner.method)
             .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
 
+        self.mint
+            .get_payment_processor(unit.clone(), payment_method.clone())
+            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
+
         let current_nut05_settings = nut05_settings.remove_settings(&unit, &payment_method);
 
         let mut methods = nut05_settings.methods;
@@ -527,6 +536,10 @@ impl CdkMint for MintRPCServer {
                 .max
                 .map(Amount::from)
                 .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
+            amountless: current_nut05_settings
+                .as_ref()
+                .map(|s| s.amountless)
+                .unwrap_or_default(),
         };
 
         methods.push(updated_method_settings);
@@ -570,6 +583,23 @@ impl CdkMint for MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         Ok(Response::new(UpdateResponse {}))
+    }
+
+    /// Gets the mint's quote time-to-live settings
+    async fn get_quote_ttl(
+        &self,
+        _request: Request<GetQuoteTtlRequest>,
+    ) -> Result<Response<GetQuoteTtlResponse>, Status> {
+        let ttl = self
+            .mint
+            .quote_ttl()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(GetQuoteTtlResponse {
+            mint_ttl: ttl.mint_ttl,
+            melt_ttl: ttl.melt_ttl,
+        }))
     }
 
     /// Updates a specific NUT-04 quote's state

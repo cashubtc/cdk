@@ -33,7 +33,6 @@ impl Mint {
     ) -> Result<(), Error> {
         let mint_info = self.localstore.get_mint_info().await?;
         let nut05 = mint_info.nuts.nut05;
-        let nut15 = mint_info.nuts.nut15;
 
         ensure_cdk!(!nut05.disabled, Error::MeltingDisabled);
 
@@ -43,6 +42,7 @@ impl Mint {
 
         let amount = match options {
             Some(MeltOptions::Mpp { mpp: _ }) => {
+                let nut15 = mint_info.nuts.nut15;
                 // Verify there is no corresponding mint quote.
                 // Otherwise a wallet is trying to pay someone internally, but
                 // with a multi-part quote. And that's just not possible.
@@ -59,6 +59,13 @@ impl Mint {
                 }
                 // Assign `amount`
                 // because should have already been converted to the partial amount
+                amount
+            }
+            Some(MeltOptions::Amountless { amountless: _ }) => {
+                if !settings.amountless {
+                    return Err(Error::AmountlessInvoiceNotSupported(unit, method));
+                }
+
                 amount
             }
             None => amount,

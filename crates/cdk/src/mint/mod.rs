@@ -68,6 +68,23 @@ pub struct Mint {
 }
 
 impl Mint {
+    /// Get the payment processor for the given unit and payment method
+    pub fn get_payment_processor(
+        &self,
+        unit: CurrencyUnit,
+        payment_method: PaymentMethod,
+    ) -> Result<Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>, Error> {
+        let key = PaymentProcessorKey::new(unit.clone(), payment_method.clone());
+        self.ln.get(&key).cloned().ok_or_else(|| {
+            tracing::info!(
+                "No payment processor set for pair {}, {}",
+                unit,
+                payment_method
+            );
+            Error::UnsupportedUnit
+        })
+    }
+
     /// Create new [`Mint`] without authentication
     pub async fn new(
         seed: &[u8],

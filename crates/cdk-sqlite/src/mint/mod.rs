@@ -15,6 +15,7 @@ use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
+use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
     MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
@@ -81,29 +82,34 @@ impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
     #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        Ok(Self {
+        let db = Self {
             pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?).await?,
-        })
+        };
+        db.migrate().await?;
+        Ok(db)
     }
 
     /// Create new [`MintSqliteDatabase`]
     #[cfg(feature = "sqlcipher")]
     pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
-        Ok(Self {
+        let db = Self {
             pool: create_sqlite_pool(
                 path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
                 password,
             )
             .await?,
-        })
+        };
+        db.migrate().await?;
+        Ok(db)
     }
 
     /// Migrate [`MintSqliteDatabase`]
-    pub async fn migrate(&self) {
+    async fn migrate(&self) -> Result<(), Error> {
         sqlx::migrate!("./src/mint/migrations")
             .run(&self.pool)
             .await
-            .expect("Could not run migrations");
+            .map_err(|_| Error::CouldNotInitialize)?;
+        Ok(())
     }
 }
 
@@ -368,22 +374,28 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         let res = sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, amount, unit, request, state, expiry, request_lookup_id, pubkey)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+(id, amount, unit, request, state, expiry, request_lookup_id, pubkey, created_time, paid_time, issued_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     amount = excluded.amount,
     unit = excluded.unit,
     request = excluded.request,
     state = excluded.state,
     expiry = excluded.expiry,
-    request_lookup_id = excluded.request_lookup_id
+    request_lookup_id = excluded.request_lookup_id,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time,
+    issued_time = excluded.issued_time
 ON CONFLICT(request_lookup_id) DO UPDATE SET
     amount = excluded.amount,
     unit = excluded.unit,
     request = excluded.request,
     state = excluded.state,
     expiry = excluded.expiry,
-    id = excluded.id
+    id = excluded.id,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time,
+    issued_time = excluded.issued_time
         "#,
         )
         .bind(quote.id.to_string())
@@ -394,6 +406,9 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.expiry as i64)
         .bind(quote.request_lookup_id)
         .bind(quote.pubkey.map(|p| p.to_string()))
+        .bind(quote.created_time as i64)
+        .bind(quote.paid_time.map(|t| t as i64))
+        .bind(quote.issued_time.map(|t| t as i64))
         .execute(&mut *transaction)
         .await;
 
@@ -549,15 +564,43 @@ WHERE id=?;
             }
         };
 
-        let update = sqlx::query(
-            r#"
-        UPDATE mint_quote SET state = ? WHERE id = ?
-        "#,
-        )
-        .bind(state.to_string())
-        .bind(quote_id.as_hyphenated())
-        .execute(&mut *transaction)
-        .await;
+        let update_query = match state {
+            MintQuoteState::Paid => {
+                r#"UPDATE mint_quote SET state = ?, paid_time = ? WHERE id = ?"#
+            }
+            MintQuoteState::Issued => {
+                r#"UPDATE mint_quote SET state = ?, issued_time = ? WHERE id = ?"#
+            }
+            _ => r#"UPDATE mint_quote SET state = ? WHERE id = ?"#,
+        };
+
+        let current_time = unix_time();
+
+        let update = match state {
+            MintQuoteState::Paid => {
+                sqlx::query(update_query)
+                    .bind(state.to_string())
+                    .bind(current_time as i64)
+                    .bind(quote_id.as_hyphenated())
+                    .execute(&mut *transaction)
+                    .await
+            }
+            MintQuoteState::Issued => {
+                sqlx::query(update_query)
+                    .bind(state.to_string())
+                    .bind(current_time as i64)
+                    .bind(quote_id.as_hyphenated())
+                    .execute(&mut *transaction)
+                    .await
+            }
+            _ => {
+                sqlx::query(update_query)
+                    .bind(state.to_string())
+                    .bind(quote_id.as_hyphenated())
+                    .execute(&mut *transaction)
+                    .await
+            }
+        };
 
         match update {
             Ok(_) => {
@@ -679,8 +722,8 @@ WHERE id=?
         let res = sqlx::query(
             r#"
 INSERT INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(id, unit, amount, request, fee_reserve, state, expiry, payment_preimage, request_lookup_id, msat_to_pay, created_time, paid_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
@@ -690,7 +733,9 @@ ON CONFLICT(id) DO UPDATE SET
     expiry = excluded.expiry,
     payment_preimage = excluded.payment_preimage,
     request_lookup_id = excluded.request_lookup_id,
-    msat_to_pay = excluded.msat_to_pay
+    msat_to_pay = excluded.msat_to_pay,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time
 ON CONFLICT(request_lookup_id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
@@ -699,7 +744,9 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
     state = excluded.state,
     expiry = excluded.expiry,
     payment_preimage = excluded.payment_preimage,
-    id = excluded.id;
+    id = excluded.id,
+    created_time = excluded.created_time,
+    paid_time = excluded.paid_time;
         "#,
         )
         .bind(quote.id.to_string())
@@ -712,6 +759,8 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .bind(quote.payment_preimage)
         .bind(quote.request_lookup_id)
         .bind(quote.msat_to_pay.map(|a| u64::from(a) as i64))
+        .bind(quote.created_time as i64)
+        .bind(quote.paid_time.map(|t| t as i64))
         .execute(&mut *transaction)
         .await;
 
@@ -826,15 +875,28 @@ WHERE id=?;
             }
         };
 
-        let rec = sqlx::query(
-            r#"
-        UPDATE melt_quote SET state = ? WHERE id = ?
-        "#,
-        )
-        .bind(state.to_string())
-        .bind(quote_id.as_hyphenated())
-        .execute(&mut *transaction)
-        .await;
+        let update_query = if state == MeltQuoteState::Paid {
+            r#"UPDATE melt_quote SET state = ?, paid_time = ? WHERE id = ?"#
+        } else {
+            r#"UPDATE melt_quote SET state = ? WHERE id = ?"#
+        };
+
+        let current_time = unix_time();
+
+        let rec = if state == MeltQuoteState::Paid {
+            sqlx::query(update_query)
+                .bind(state.to_string())
+                .bind(current_time as i64)
+                .bind(quote_id.as_hyphenated())
+                .execute(&mut *transaction)
+                .await
+        } else {
+            sqlx::query(update_query)
+                .bind(state.to_string())
+                .bind(quote_id.as_hyphenated())
+                .execute(&mut *transaction)
+                .await
+        };
 
         match rec {
             Ok(_) => {
@@ -973,12 +1035,14 @@ impl MintProofsDatabase for MintSqliteDatabase {
 
     async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let current_time = unix_time();
+
         for proof in proofs {
             let result = sqlx::query(
                 r#"
 INSERT OR IGNORE INTO proof
-(y, amount, keyset_id, secret, c, witness, state, quote_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+(y, amount, keyset_id, secret, c, witness, state, quote_id, created_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
             )
             .bind(proof.y()?.to_bytes().to_vec())
@@ -989,6 +1053,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             .bind(proof.witness.map(|w| serde_json::to_string(&w).unwrap()))
             .bind("UNSPENT")
             .bind(quote_id.map(|q| q.hyphenated()))
+            .bind(current_time as i64)
             .execute(&mut *transaction)
             .await;
 
@@ -1287,12 +1352,14 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+        let current_time = unix_time();
+
         for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
             let res = sqlx::query(
                 r#"
 INSERT INTO blind_signature
-(y, amount, keyset_id, c, quote_id, dleq_e, dleq_s)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+(y, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         "#,
             )
             .bind(message.to_bytes().to_vec())
@@ -1302,6 +1369,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .bind(quote_id.map(|q| q.hyphenated()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()))
             .bind(signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()))
+            .bind(current_time as i64)
             .execute(&mut *transaction)
             .await;
 
@@ -1619,6 +1687,10 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         row.try_get("request_lookup_id").map_err(Error::from)?;
     let row_pubkey: Option<String> = row.try_get("pubkey").map_err(Error::from)?;
 
+    let row_created_time: i64 = row.try_get("created_time").map_err(Error::from)?;
+    let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
+    let row_issued_time: Option<i64> = row.try_get("issued_time").map_err(Error::from)?;
+
     let request_lookup_id = match row_request_lookup_id {
         Some(id) => id,
         None => match Bolt11Invoice::from_str(&row_request) {
@@ -1640,6 +1712,9 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
         expiry: row_expiry as u64,
         request_lookup_id,
         pubkey,
+        created_time: row_created_time as u64,
+        paid_time: row_paid_time.map(|p| p as u64),
+        issued_time: row_issued_time.map(|p| p as u64),
     })
 }
 
@@ -1659,6 +1734,9 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
 
     let row_msat_to_pay: Option<i64> = row.try_get("msat_to_pay").map_err(Error::from)?;
 
+    let row_created_time: i64 = row.try_get("created_time").map_err(Error::from)?;
+    let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
+
     Ok(mint::MeltQuote {
         id: row_id.into_uuid(),
         amount: Amount::from(row_amount as u64),
@@ -1670,6 +1748,8 @@ fn sqlite_row_to_melt_quote(row: SqliteRow) -> Result<mint::MeltQuote, Error> {
         payment_preimage: row_preimage,
         request_lookup_id,
         msat_to_pay: row_msat_to_pay.map(|a| Amount::from(a as u64)),
+        created_time: row_created_time as u64,
+        paid_time: row_paid_time.map(|p| p as u64),
     })
 }
 
