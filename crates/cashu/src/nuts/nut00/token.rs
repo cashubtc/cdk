@@ -229,10 +229,12 @@ impl TokenV3 {
     pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Proofs {
         self.token
             .iter()
-            .flat_map(|token| token.proofs.iter().map(|p| {
-                let long_id = Id::from_short_keyset_id(&p.keyset_id, mint_keysets).unwrap();
-                p.into_proof(&long_id)
-            }))
+            .flat_map(|token| {
+                token.proofs.iter().map(|p| {
+                    let long_id = Id::from_short_keyset_id(&p.keyset_id, mint_keysets).unwrap();
+                    p.into_proof(&long_id)
+                })
+            })
             .collect()
     }
 
@@ -314,16 +316,19 @@ impl fmt::Display for TokenV3 {
 
 impl From<TokenV4> for TokenV3 {
     fn from(token: TokenV4) -> Self {
-        let proofs: Vec<ProofV3> = token.token
+        let proofs: Vec<ProofV3> = token
+            .token
             .into_iter()
-            .flat_map(|token| token.proofs.into_iter().map(move |p| ProofV3 {
-                    amount: p.amount, 
+            .flat_map(|token| {
+                token.proofs.into_iter().map(move |p| ProofV3 {
+                    amount: p.amount,
                     keyset_id: token.keyset_id.clone(),
                     secret: p.secret,
                     c: p.c,
                     witness: p.witness,
                     dleq: p.dleq,
-                }))
+                })
+            })
             .collect();
 
         let token_v3_token = TokenV3Token {
@@ -363,8 +368,7 @@ impl TokenV4 {
             .flat_map(|token| {
                 let long_id = Id::from_short_keyset_id(&token.keyset_id, mint_keysets).unwrap();
                 token.proofs.iter().map(move |p| p.into_proof(&long_id))
-            }
-            )
+            })
             .collect()
     }
 
@@ -453,8 +457,7 @@ impl TryFrom<TokenV3> for TokenV4 {
     type Error = Error;
     fn try_from(token: TokenV3) -> Result<Self, Self::Error> {
         let mint_urls = token.mint_urls();
-        let proofs: Vec<ProofV3> = token.token
-            .into_iter().flat_map(|t| t.proofs).collect();
+        let proofs: Vec<ProofV3> = token.token.into_iter().flat_map(|t| t.proofs).collect();
 
         ensure_cdk!(mint_urls.len() == 1, Error::UnsupportedToken);
 
@@ -462,14 +465,20 @@ impl TryFrom<TokenV3> for TokenV4 {
 
         let proofs = proofs
             .into_iter()
-            .fold(HashMap::<ShortKeysetId, Vec<ProofV4>>::new(), |mut acc, val| {
-                acc.entry(val.keyset_id.clone())
-                    .and_modify(|p: &mut Vec<ProofV4>| p.push(val.clone().into()))
-                    .or_insert(vec![val.clone().into()]);
-                acc
-            })
+            .fold(
+                HashMap::<ShortKeysetId, Vec<ProofV4>>::new(),
+                |mut acc, val| {
+                    acc.entry(val.keyset_id.clone())
+                        .and_modify(|p: &mut Vec<ProofV4>| p.push(val.clone().into()))
+                        .or_insert(vec![val.clone().into()]);
+                    acc
+                },
+            )
             .into_iter()
-            .map(|(id, proofs)| TokenV4Token { keyset_id: id, proofs } )
+            .map(|(id, proofs)| TokenV4Token {
+                keyset_id: id,
+                proofs,
+            })
             .collect();
 
         Ok(TokenV4 {
@@ -580,7 +589,8 @@ mod tests {
 
         match token {
             Token::TokenV4(token) => {
-                let tokens: Vec<ShortKeysetId> = token.token.iter().map(|t| t.keyset_id.clone()).collect();
+                let tokens: Vec<ShortKeysetId> =
+                    token.token.iter().map(|t| t.keyset_id.clone()).collect();
 
                 assert_eq!(tokens.len(), 2);
 

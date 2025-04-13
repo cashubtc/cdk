@@ -515,7 +515,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
-            keyset_id: keyset_id.into()
+            keyset_id: keyset_id.into(),
         }
     }
 }
