@@ -548,10 +548,10 @@ impl WalletDatabase for WalletRexieDatabase {
     }
 
     async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
-        let rexie = self.db.lock().await;
-
         // Verify ID by recomputing id
         keyset.verify_id()?;
+
+        let rexie = self.db.lock().await;
 
         let transaction = rexie
             .transaction(&[MINT_KEYS], TransactionMode::ReadWrite)
