@@ -27,10 +27,9 @@ pub struct Info {
 impl std::fmt::Debug for Info {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Use a fallback approach that won't panic
-        let mnemonic_display = match sha256::Hash::hash(self.mnemonic.clone().into_bytes().as_ref())
-        {
-            Ok(hash) => format!("<hashed: {}>", hash),
-            Err(_) => String::from("<protected>"), // Fallback if hashing fails
+        let mnemonic_display = {
+            let hash = sha256::Hash::hash(self.mnemonic.clone().into_bytes().as_ref());
+            format!("<hashed: {}>", hash)
         };
 
         f.debug_struct("Info")
