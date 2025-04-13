@@ -371,7 +371,7 @@ impl TokenV4 {
     /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        let proofs = self.proofs();
+        let proofs: Vec<ProofV4> = self.token.iter().flat_map(|t| t.proofs.clone()).collect();
         let unique_count = proofs
             .iter()
             .collect::<std::collections::HashSet<_>>()
@@ -382,7 +382,12 @@ impl TokenV4 {
             return Err(Error::DuplicateProofs);
         }
 
-        proofs.total_amount()
+        Ok(Amount::try_sum(
+            self.token
+                .iter()
+                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .collect::<Result<Vec<Amount>, _>>()?,
+        )?)
     }
 
     /// Memo

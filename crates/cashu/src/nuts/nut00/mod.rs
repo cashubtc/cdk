@@ -423,6 +423,12 @@ impl ProofV4 {
     }
 }
 
+impl Hash for ProofV4 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.secret.hash(state);
+    }
+}
+
 impl From<Proof> for ProofV4 {
     fn from(proof: Proof) -> ProofV4 {
         let Proof {
