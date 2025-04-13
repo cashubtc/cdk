@@ -149,18 +149,6 @@ impl Id {
         self.version
     }
 
-    /*
-    /// [`Id`] as bytes
-    pub fn as_bytes(&self) -> [u8; Self::BYTELEN + 1] {
-        let mut bytes = [0u8; Self::BYTELEN + 1];
-        bytes[0] = self.version.to_byte();
-        match self.id {
-            IdBytes::V1(id) => bytes[1..].copy_from_slice(&id),
-            IdBytes::V2(id) => bytes[1..].copy_from_slice(&id),
-        }
-        bytes
-    }*/
-
     /// *** V2 KEYSET ***
     /// create [`Id`] v2 from keys, unit and (optionally) expiry
     /// 1 - sort public keys by their amount in ascending order
@@ -349,6 +337,20 @@ pub struct ShortKeysetId {
     version: KeySetVersion,
     /// The improper prefix of the keyset ID bytes
     prefix: Vec<u8>,
+}
+
+impl ShortKeysetId {
+    /// [`ShortKeysetId`] to bytes
+    pub fn to_bytes(&self) -> Vec<u8> {
+        [vec![self.version.to_byte()], self.prefix.clone()].concat()
+    }
+
+    /// [`ShortKeysetId`] from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let version = KeySetVersion::from_byte(&bytes[0])?;
+        let prefix = bytes[1..].to_vec();
+        Ok(Self { version, prefix })
+    }
 }
 
 impl From<Id> for ShortKeysetId {

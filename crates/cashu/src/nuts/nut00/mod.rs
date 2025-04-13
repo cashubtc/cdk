@@ -12,6 +12,7 @@ use std::string::FromUtf8Error;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
 use super::nut10;
 #[cfg(feature = "wallet")]
@@ -435,6 +436,77 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+        }
+    }
+}
+
+impl From<ProofV3> for ProofV4 {
+    fn from(proof: ProofV3) -> Self {
+        Self {
+            amount: proof.amount,
+            secret: proof.secret,
+            c: proof.c,
+            witness: proof.witness,
+            dleq: proof.dleq,
+        }
+    }
+}
+
+/// Proof v3 with short keyset id
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofV3 {
+    /// Amount
+    pub amount: Amount,
+    /// Short keyset id
+    #[serde(rename = "id")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub keyset_id: ShortKeysetId,
+    /// Secret message
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub secret: Secret,
+    /// Unblinded signature
+    #[serde(rename = "C")]
+    #[cfg_attr(feature = "swagger", schema(value_type = String))]
+    pub c: PublicKey,
+    /// Witness
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub witness: Option<Witness>,
+    /// DLEQ Proof
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dleq: Option<ProofDleq>,
+}
+
+impl ProofV3 {
+    /// [`ProofV3`] into [`Proof`]
+    pub fn into_proof(&self, keyset_id: &Id) -> Proof {
+        Proof {
+            amount: self.amount,
+            keyset_id: *keyset_id,
+            secret: self.secret.clone(),
+            c: self.c,
+            witness: self.witness.clone(),
+            dleq: self.dleq.clone(),
+        }
+    }
+}
+
+impl From<Proof> for ProofV3 {
+    fn from(proof: Proof) -> ProofV3 {
+        let Proof {
+            amount,
+            keyset_id,
+            secret,
+            c,
+            witness,
+            dleq,
+        } = proof;
+        ProofV3 {
+            amount,
+            secret,
+            c,
+            witness,
+            dleq,
+            keyset_id: keyset_id.into()
         }
     }
 }
