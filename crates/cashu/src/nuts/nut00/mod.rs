@@ -514,6 +514,12 @@ impl From<Proof> for ProofV3 {
     }
 }
 
+impl Hash for ProofV3 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.secret.hash(state);
+    }
+}
+
 fn serialize_v4_pubkey<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
