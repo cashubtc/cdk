@@ -153,7 +153,7 @@ impl Id {
     /// create [`Id`] v2 from keys, unit and (optionally) expiry
     /// 1 - sort public keys by their amount in ascending order
     /// 2 - concatenate all public keys to one byte array
-    /// 3 - concatenate the unit string to the byte array (e.g. "unit:sat")
+    /// 3 - concatenate the lowercase unit string to the byte array (e.g. "unit:sat")
     /// 4 - If a final expiration is specified, convert it into a radix-10 string and concatenate it (e.g "final_expiry:1896187313")
     /// 5 - HASH_SHA256 the concatenated byte array and take the first 31 bytes
     /// 6 - prefix it with a keyset ID version byte
