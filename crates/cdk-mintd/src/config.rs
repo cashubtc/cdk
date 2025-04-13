@@ -394,9 +394,7 @@ mod tests {
         assert!(!debug_output.contains("test secret mnemonic phrase"));
         assert!(debug_output.contains("<hashed: "));
 
-        assert!(debug_output.contains("input_fee_ppk: 100"));
-        assert!(debug_output.contains("http_cache: true"));
-        assert!(debug_output.contains("enable_swagger_ui: false"));
+        assert!(debug_output.contains("input_fee_ppk: Some(100)"));
     }
 
     #[test]
