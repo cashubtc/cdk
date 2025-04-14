@@ -13,6 +13,17 @@ use thiserror::Error;
 use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
 use crate::{mint, Amount};
 
+/// Payment identifier types
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentIdentifier {
+    /// Label identifier
+    Label(String),
+    /// Offer ID identifier
+    OfferId(String),
+    /// Payment hash identifier
+    PaymentHash(String),
+}
+
 /// CDK Lightning Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -110,7 +121,7 @@ pub trait MintPayment {
     /// Check the status of an incoming payment
     async fn check_incoming_payment_status(
         &self,
-        request_lookup_id: &str,
+        payment_identifier: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err>;
 
     /// Check the status of an outgoing payment
@@ -176,7 +187,7 @@ pub enum PaymentQuoteOptions {
 pub struct WaitPaymentResponse {
     /// Request look up id
     /// Id that relates the quote and payment request
-    pub request_lookup_id: String,
+    pub payment_identifier: PaymentIdentifier,
     /// Payment amount
     pub payment_amount: Amount,
     /// Unit
