@@ -471,14 +471,11 @@ pub struct ProofV3 {
     pub amount: Amount,
     /// Short keyset id
     #[serde(rename = "id")]
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub keyset_id: ShortKeysetId,
     /// Secret message
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub secret: Secret,
     /// Unblinded signature
     #[serde(rename = "C")]
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub c: PublicKey,
     /// Witness
     #[serde(skip_serializing_if = "Option::is_none")]
